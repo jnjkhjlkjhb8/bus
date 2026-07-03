@@ -3,18 +3,26 @@ package main
 import (
 	"encoding/csv"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 )
 
+// holidayCSVURL is the New Taipei City open-data CSV of Taiwan national
+// holidays / working-day adjustments, loaded at boot.
+// Dataset: https://data.ntpc.gov.tw/datasets/308dcd75-6434-45bc-a95f-584da4fed251
 const holidayCSVURL = "https://data.ntpc.gov.tw/api/datasets/308dcd75-6434-45bc-a95f-584da4fed251/csv/file"
 
+// holidayMap maps "2006-01-02" to whether that date is a holiday. It stays nil
+// until loadHolidays succeeds, and isHoliday falls back to weekends while nil.
 var holidayMap map[string]bool
 
+// taipei is the Asia/Taipei location used for all local-date calculations
+// (holidays, hour/weekday features, schedule matching). Loaded in init.
 var taipei *time.Location
 
+// init loads the Asia/Taipei location and panics if the tz database is missing,
+// since every date calculation in the package depends on it.
 func init() {
 	var err error
 	taipei, err = time.LoadLocation("Asia/Taipei")
@@ -23,15 +31,19 @@ func init() {
 	}
 }
 
+// loadHolidays fetches and parses the holiday CSV into holidayMap. On any fetch,
+// status, or parse failure it logs and leaves holidayMap unchanged, so isHoliday
+// keeps using the weekday fallback. The CSV's column 0 is the yyyymmdd date and
+// column 3 holds "是" for a holiday.
 func loadHolidays() {
 	resp, err := http.Get(holidayCSVURL)
 	if err != nil {
-		log.Printf("[HOLIDAY] fetch error: %v — weekday fallback active", err)
+		log.Infof("[HOLIDAY] fetch error: %v — weekday fallback active", err)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		log.Printf("[HOLIDAY] fetch error: status=%d — weekday fallback active", resp.StatusCode)
+		log.Infof("[HOLIDAY] fetch error: status=%d — weekday fallback active", resp.StatusCode)
 		return
 	}
 	r := csv.NewReader(resp.Body)
@@ -56,9 +68,12 @@ func loadHolidays() {
 		m[t.Format("2006-01-02")] = strings.TrimSpace(rec[3]) == "是"
 	}
 	holidayMap = m
-	log.Printf("[HOLIDAY] loaded %d entries", len(m))
+	log.Infof("[HOLIDAY] loaded %d entries", len(m))
 }
 
+// isHoliday reports whether t (evaluated in Taipei local time) is a holiday. It
+// uses the loaded holiday table when available and otherwise falls back to
+// treating Saturday and Sunday as holidays.
 func isHoliday(t time.Time) bool {
 	key := t.In(taipei).Format("2006-01-02")
 	if holidayMap != nil {

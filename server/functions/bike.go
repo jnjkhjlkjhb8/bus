@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -16,6 +15,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// bikeStation is the subset of a TDX Bike/Station record used for the static
+// station table (identity, name, coordinates, capacity).
 type bikeStation struct {
 	StationUID  string `json:"StationUID"`
 	StationID   string `json:"StationID"`
@@ -32,6 +33,9 @@ type bikeStation struct {
 	BikesCapacity uint8 `json:"BikesCapacity"`
 	ServiceType   uint8 `json:"ServiceType"`
 }
+
+// bikeAvailability is the subset of a TDX Bike/Availability record used for the
+// realtime bike ETA cache (live rentable/returnable counts per station).
 type bikeAvailability struct {
 	StationUID               string `json:"StationUID"`
 	StationID                string `json:"StationID"`
@@ -44,29 +48,38 @@ type bikeAvailability struct {
 	} `json:"AvailableRentBikesDetail"`
 }
 
-func bikeStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
-	log.Printf("[BIKE] action=bike_static event=start")
+// bikeStatic is the daily static-ingestion entry point for bike-share stations.
+// It always returns nil; failures are logged per-city inside getbikeStation so
+// one city's error does not fail the whole daily run.
+func bikeStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) error {
+	log.Infof("[BIKE] action=bike_static event=start")
 	getbikeStation(ctx, client, rc, db)
-	log.Printf("[BIKE] action=bike_static event=complete")
+	log.Infof("[BIKE] action=bike_static event=complete")
+	return nil
 }
+
+// getbikeStation upserts bike-share stations into bike_stations, city by city,
+// via a per-city temp-table COPY then ON CONFLICT upsert. Cities with no public
+// bike-share feed are skipped (the inline list mirrors ingestBikeSkip). The
+// "YouBike2.0_" name prefix is stripped before storing.
 func getbikeStation(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
-	log.Printf("[BIKE] action=getbike_station event=start")
+	log.Infof("[BIKE] action=getbike_station event=start")
 	for _, city := range cities {
 		if city == "Keelung" || city == "HsinchuCounty" || city == "NantouCounty" || city == "YilanCounty" || city == "PenghuCounty" || city == "KinmenCounty" || city == "LienchiangCounty" || city == "InterCity" || city == "HualienCounty" {
 			continue
 		}
-		log.Printf("[BIKE] action=getbike_station city=%s event=city_start", city)
+		log.Infof("[BIKE] action=getbike_station city=%s event=city_start", city)
 		dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Bike/Station/City/%s", city), "bike_stations"+city)
 		func() {
 			if flipopen != nil {
 				defer flipopen()
 			}
 			if err != nil || !comp {
-				log.Printf("[BIKE] action=getbike_station city=%s event=skip reason=api_error=%s", city, err)
+				log.Infof("[BIKE] action=getbike_station city=%s event=skip reason=api_error=%s", city, err)
 				return
 			}
 			if _, err := dec.Token(); err != nil {
-				log.Printf("[BIKE] action=getbike_station city=%s event=decode_error error=%v", city, err.Error())
+				log.Infof("[BIKE] action=getbike_station city=%s event=decode_error error=%v", city, err.Error())
 				return
 			}
 			row := [][]interface{}{}
@@ -112,47 +125,55 @@ func getbikeStation(ctx context.Context, client *resty.Client, rc *redis.Client,
 					ON CONFLICT (station_uid) DO UPDATE SET name = EXCLUDED.name,capacity = EXCLUDED.capacity,service_type = EXCLUDED.service_type,city = excluded.city,geom = EXCLUDED.geom,address = EXCLUDED.address,updated_at = NOW();`
 				b, err := db.Begin(ctx)
 				if err != nil {
-					log.Println(err.Error())
+					log.Infoln(err.Error())
 					return
 				}
-				_, _ = b.Exec(ctx, c1)
+				if _, err := b.Exec(ctx, c1); err != nil {
+					log.Infof("[BIKE] action=getbike_station city=%s event=create_temp_error error=%v", city, err)
+					return
+				}
 				_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_bike"}, []string{"uid", "id", "name", "cap", "type", "city", "geom", "addr"}, pgx.CopyFromRows(row))
 				if err == nil {
 					if _, execErr := b.Exec(ctx, c2); execErr != nil {
-						log.Printf("[BIKE] action=getbike_station city=%s event=exec_error error=%v", city, execErr)
+						log.Infof("[BIKE] action=getbike_station city=%s event=exec_error error=%v", city, execErr)
 					}
 					if commitErr := b.Commit(ctx); commitErr != nil {
-						log.Printf("[BIKE] action=getbike_station city=%s event=commit_error error=%v", city, commitErr)
+						log.Infof("[BIKE] action=getbike_station city=%s event=commit_error error=%v", city, commitErr)
 					} else {
-						log.Printf("[BIKE] action=getbike_station city=%s event=success station_count=%d", city, len(row))
+						log.Infof("[BIKE] action=getbike_station city=%s event=success station_count=%d", city, len(row))
 					}
 				} else {
-					log.Printf("[BIKE] action=getbike_station city=%s event=copyfrom_error error=%v", city, err)
+					log.Infof("[BIKE] action=getbike_station city=%s event=copyfrom_error error=%v", city, err)
 					_ = b.Rollback(ctx)
 				}
 			}
 		}()
 	}
-	log.Printf("[BIKE] action=getbike_station event=complete")
+	log.Infof("[BIKE] action=getbike_station event=complete")
 }
+
+// bikeEta refreshes live bike availability into Redis every 30s. For each
+// non-skipped city it fetches TDX Bike/Availability and pipelines a protobuf
+// BikeEta per station under bike_availability:<StationUID> with a 2-minute TTL,
+// so stale data expires if a city stops updating.
 func bikeEta(client *resty.Client, rc *redis.Client) {
-	log.Printf("[BIKE_ETA] action=bike_eta event=start")
+	log.Infof("[BIKE_ETA] action=bike_eta event=start")
 	for _, city := range cities {
 		if city == "Keelung" || city == "HsinchuCounty" || city == "NantouCounty" || city == "YilanCounty" || city == "PenghuCounty" || city == "KinmenCounty" || city == "LienchiangCounty" || city == "InterCity" || city == "HualienCounty" {
 			continue
 		}
-		log.Printf("[BIKE_ETA] action=bike_eta city=%s event=city_start", city)
+		log.Infof("[BIKE_ETA] action=bike_eta city=%s event=city_start", city)
 		dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
 		if !comp {
-			log.Printf("[BIKE_ETA] action=bike_eta city=%s event=skip reason=no updated", city)
+			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=no updated", city)
 			continue
 		}
 		if err != nil {
-			log.Printf("[BIKE_ETA] action=bike_eta city=%s event=skip reason=api_error,error=%s", city, err)
+			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=api_error,error=%s", city, err)
 			continue
 		}
 		if _, err := dec.Token(); err != nil {
-			log.Printf("[BIKE_ETA] action=bike_eta city=%s event=decode_error error=%v", city, err)
+			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=decode_error error=%v", city, err)
 			continue
 		}
 		func() {
@@ -177,8 +198,8 @@ func bikeEta(client *resty.Client, rc *redis.Client) {
 				}
 			}
 			_, _ = pipe.Exec()
-			log.Printf("[BIKE_ETA] action= %s bike_eta event=complete", city)
+			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)
 		}()
 	}
-	log.Printf("[BIKE_ETA] action=bike_eta event=complete")
+	log.Infof("[BIKE_ETA] action=bike_eta event=complete")
 }

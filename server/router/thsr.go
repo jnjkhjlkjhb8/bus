@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -37,6 +36,9 @@ type thsrfare struct {
 	FareClass  uint8 `db:"fare_class"`
 	CabinClass uint8 `db:"cabin_class"`
 	Price      int32 `db:"price"`
+}
+type thsrFareDB interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 type raw_thsrfare struct {
 	OriginStationID      string `json:"OriginStationID"`
@@ -93,36 +95,58 @@ type raw_thsr_availableseatstatus struct {
 }
 
 func thsr_price(ctx context.Context, start, end string, client *resty.Client, db *pgxpool.Pool, rc *redis.Client) {
-	getthsrfares(ctx, client, rc, db)
-	rows, _ := db.Query(ctx, `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2;`, start, end)
+	bytes, err := thsrFarePayload(ctx, start, end, db, func() {
+		getthsrfares(ctx, client, rc, db)
+	})
+	if err != nil {
+		log.Infof("thsr fare error: %v", err)
+		return
+	}
+	if err = rc.Set(fmt.Sprintf("THSR_Fare:%s:%s", start, end), bytes, 1*time.Hour).Err(); err != nil {
+		log.Infof("redis set error: %v", err)
+	}
+}
+func thsrFarePayload(ctx context.Context, start, end string, db thsrFareDB, refresh func()) ([]byte, error) {
+	arr, err := queryThsrFares(ctx, db, start, end)
+	if err != nil {
+		return nil, err
+	}
+	if len(arr) == 0 && refresh != nil {
+		refresh()
+		arr, err = queryThsrFares(ctx, db, start, end)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return proto.Marshal(&models.ThsaFares{Items: arr})
+}
+func queryThsrFares(ctx context.Context, db thsrFareDB, start, end string) ([]*models.ThsaFare, error) {
+	rows, err := db.Query(ctx, `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2;`, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[thsrfare])
-	rows.Close()
-	arr := []*models.ThsaFare{}
+	if err != nil {
+		return nil, err
+	}
+	arr := make([]*models.ThsaFare, 0, len(row))
 	for _, temp := range row {
 		arr = append(arr, &models.ThsaFare{
-			CabinClas:  int32(temp.CabinClass), // A3 fix: exported fields
+			CabinClas:  int32(temp.CabinClass),
 			TicketType: int32(temp.TicketType),
 			FareClass:  int32(temp.FareClass),
 			Price:      temp.Price,
 		})
 	}
-	bytes, err := proto.Marshal(&models.ThsaFares{Items: arr})
-	if err != nil {
-		log.Printf("proto marshal error: %v", err)
-		return
-	}
-	if err = rc.Set(fmt.Sprintf("THSR_Fare:%s:%s", start, end), bytes, 1*time.Hour).Err(); err != nil {
-		log.Printf("redis set error: %v", err)
-	}
+	return arr, rows.Err()
 }
 func thsr_stoptimes(ctx context.Context, trainno string, date time.Time, client *resty.Client, db *pgxpool.Pool, rc *redis.Client) {
-	// A9 fix: WHERE clause uses train_date column, not updated_at.
 	const q = `SELECT stopsequence, stationid,stationname,arrivaltime,departuretime FROM thsr_timetable WHERE trainno = $1 AND train_date = $2;`
 	dateStr := date.Format(time.DateOnly)
 	rows, _ := db.Query(ctx, q, trainno, dateStr)
 	row, _ := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[thsrStopsRow])
 	rows.Close()
-	// A9 fix: check len(row)==0, not rows==nil.
 	if len(row) == 0 {
 		get_thsr_timetable(ctx, db, client, rc, dateStr)
 		rows, _ = db.Query(ctx, q, trainno, dateStr)
@@ -139,14 +163,13 @@ func thsr_stoptimes(ctx context.Context, trainno string, date time.Time, client 
 			DepartureTime: temp.Departuretime,
 		})
 	}
-	// A2 fix: pass arr to proto.Marshal, not an empty struct.
 	bytes, err := proto.Marshal(&models.ThsrStoptimes{Items: arr})
 	if err != nil {
-		log.Printf("proto marshal error: %v", err)
+		log.Infof("proto marshal error: %v", err)
 		return
 	}
 	if err = rc.Set(fmt.Sprintf("THSR_Stoptimes:%s:%s", dateStr, trainno), bytes, 1*time.Hour).Err(); err != nil {
-		log.Printf("redis set error: %v", err)
+		log.Infof("redis set error: %v", err)
 	}
 }
 func thsr_timetable(ctx context.Context, start, end string, date time.Time, client *resty.Client, db *pgxpool.Pool, rc *redis.Client) {
@@ -164,7 +187,7 @@ func thsr_timetable(ctx context.Context, start, end string, date time.Time, clie
 		rows.Close()
 	}
 	if err != nil {
-		log.Println(err.Error())
+		log.Infoln(err.Error())
 	}
 	for _, temp := range row {
 		if temp.Stationid != start {
@@ -193,12 +216,12 @@ func thsr_timetable(ctx context.Context, start, end string, date time.Time, clie
 		}
 		w, err := time.Parse(time.TimeOnly, seed.Starting_Time)
 		if err != nil {
-			log.Printf("parse time error: %v", err)
+			log.Infof("parse time error: %v", err)
 			continue
 		}
 		t, err := time.Parse(time.TimeOnly, temp.Arrivaltime)
 		if err != nil {
-			log.Printf("parse time error: %v", err)
+			log.Infof("parse time error: %v", err)
 			continue
 		}
 		duration := t.Sub(w)
@@ -211,23 +234,23 @@ func thsr_timetable(ctx context.Context, start, end string, date time.Time, clie
 	}
 	bytes, err := proto.Marshal(&models.ThsrTimetables{Items: arr})
 	if err != nil {
-		log.Printf("proto marshal error: %v", err)
+		log.Infof("proto marshal error: %v", err)
 	} else {
 		if err = rc.Set(fmt.Sprintf("THSR_timetable:%s:%s:%s", date.Format(time.DateOnly), start, end), bytes, 1*time.Hour).Err(); err != nil {
-			log.Printf("redis set error: %v", err)
+			log.Infof("redis set error: %v", err)
 		}
 	}
 }
 func get_thsr_timetable(ctx context.Context, db *pgxpool.Pool, client *resty.Client, rc *redis.Client, Date string) {
-	log.Printf("[RAIL] action=thsr_timetable event=start")
+	log.Infof("[RAIL] action=thsr_timetable event=start")
 	dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Rail/THSR/DailyTimetable/TrainDate/%s", Date), "thsr_traindate")
 	if err != nil || !comp {
-		log.Printf("[RAIL] action=thsr_timetable event=skip reason=api_error")
+		log.Infof("[RAIL] action=thsr_timetable event=skip reason=api_error")
 		return
 	}
 	defer flipopen()
 	if _, err := dec.Token(); err != nil {
-		log.Printf("[RAIL] action=thsr_timetable event=decode_error error=%v", err)
+		log.Infof("[RAIL] action=thsr_timetable event=decode_error error=%v", err)
 		return
 	}
 	var row [][]interface{}
@@ -293,45 +316,45 @@ func get_thsr_timetable(ctx context.Context, db *pgxpool.Pool, client *resty.Cli
 			ON CONFLICT (train_date,trainno,stationid) DO UPDATE SET direction = EXCLUDED.direction, starting_station_id = EXCLUDED.starting_station_id,starting_station_name = excluded.starting_station_name,ending_station_name = excluded.ending_station_name, ending_station_id = EXCLUDED.ending_station_id,stopsequence = excluded.stopsequence, stationname = excluded.stationname, arrivaltime = excluded.arrivaltime, departuretime = excluded.departuretime,note = excluded.note, overnight = excluded.overnight, updated_at = NOW();`
 		b, err := db.Begin(ctx)
 		if err != nil {
-			log.Printf("[RAIL] action=thsr_timetable event=tx_error error=%v", err)
+			log.Infof("[RAIL] action=thsr_timetable event=tx_error error=%v", err)
 			return
 		}
 		defer func(b pgx.Tx, ctx context.Context) {
 			_ = b.Rollback(ctx)
 		}(b, ctx)
 		if _, err := b.Exec(ctx, c1); err != nil {
-			log.Printf("[RAIL] action=timetable event=create_temp_error error=%v", err)
+			log.Infof("[RAIL] action=timetable event=create_temp_error error=%v", err)
 			return
 		}
 		_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_thsr"}, []string{"train_date", "trainno", "direction", "starting_station_id", "starting_station_name", "ending_station_id", "ending_station_name", "stopsequence", "stationid", "stationname", "arrivaltime", "departuretime", "note", "overnight"}, pgx.CopyFromRows(row))
 		if err == nil {
 			if _, err = b.Exec(ctx, c2); err != nil {
-				log.Printf("[RAIL] action=thsr_timetable event=exec_error error=%v", err)
+				log.Infof("[RAIL] action=thsr_timetable event=exec_error error=%v", err)
 				return
 			}
 			if err = b.Commit(ctx); err != nil {
-				log.Printf("[RAIL] action=thsr_timetable event=commit_error error=%v", err)
+				log.Infof("[RAIL] action=thsr_timetable event=commit_error error=%v", err)
 			} else {
-				log.Printf("[RAIL] action=thsr_timetable event=success timetable_count=%d", len(row))
+				log.Infof("[RAIL] action=thsr_timetable event=success timetable_count=%d", len(row))
 			}
 		} else {
-			log.Printf("[RAIL] action=thsr_timetable event=copyfrom_error error=%v", err)
+			log.Infof("[RAIL] action=thsr_timetable event=copyfrom_error error=%v", err)
 		}
 	} else {
-		log.Printf("[RAIL] action=thsr_timetable event=complete reason=no_data")
+		log.Infof("[RAIL] action=thsr_timetable event=complete reason=no_data")
 	}
-	log.Printf("[RAIL] action=thsr_timetable event=complete")
+	log.Infof("[RAIL] action=thsr_timetable event=complete")
 }
 func get_thsr_availableseatstatus(client *resty.Client, rc *redis.Client, Date string) {
-	log.Printf("[RAIL] action=thsr_AvailableSeatStatus event=start")
+	log.Infof("[RAIL] action=thsr_AvailableSeatStatus event=start")
 	dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Rail/THSR/AvailableSeatStatus/Train/OD/TrainDate/%s", Date), "thsr_traindate")
 	if err != nil || !comp {
-		log.Printf("[RAIL] action=thsr_AvailableSeatStatus event=skip reason=api_error")
+		log.Infof("[RAIL] action=thsr_AvailableSeatStatus event=skip reason=api_error")
 		return
 	}
 	defer flipopen()
 	if _, err := dec.Token(); err != nil {
-		log.Printf("[RAIL] action=thsr_AvailableSeatStatus event=decode_error error=%v", err)
+		log.Infof("[RAIL] action=thsr_AvailableSeatStatus event=decode_error error=%v", err)
 		return
 	}
 	row := make(map[string]*models.ThsrAvailableSeats)
@@ -339,7 +362,6 @@ func get_thsr_availableseatstatus(client *resty.Client, rc *redis.Client, Date s
 		var temp raw_thsr_availableseatstatus
 		if err := dec.Decode(&temp); err == nil {
 			for _, stop := range temp.Items {
-				// A1 fix: initialise map entry before appending to avoid nil deref.
 				if row[stop.TrainNo] == nil {
 					row[stop.TrainNo] = &models.ThsrAvailableSeats{}
 				}
@@ -365,23 +387,22 @@ func get_thsr_availableseatstatus(client *resty.Client, rc *redis.Client, Date s
 		count++
 	}
 	if _, err = pipe.Exec(); err != nil {
-		log.Printf("[THSR_SEATS] action=thsr_AvailableSeatStatus event=redis_error error=%v", err)
+		log.Infof("[THSR_SEATS] action=thsr_AvailableSeatStatus event=redis_error error=%v", err)
 	} else {
-		log.Printf("[THSR_SEATS] action=thsr_AvailableSeatStatus event=success train_count=%d", count)
+		log.Infof("[THSR_SEATS] action=thsr_AvailableSeatStatus event=success train_count=%d", count)
 	}
 }
 func getthsrfares(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
-	log.Printf("[RAIL] action=get_thsr_fare event=start")
+	log.Infof("[RAIL] action=get_thsr_fare event=start")
 	dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Rail/THSR/ODFare"), "thsr_fare")
 	if err != nil || !comp {
-		// A7 fix: return here; flipopen is nil when !comp, so defer flipopen() panics.
-		log.Printf("[RAIL] action=get_thsr_fare event=skip reason=api_error")
+		log.Infof("[RAIL] action=get_thsr_fare event=skip reason=api_error")
 		return
 	}
 	func() {
 		defer flipopen()
 		if _, err := dec.Token(); err != nil {
-			log.Printf("[RAIL] action=get_thsr_fare event=decode_error error=%v", err)
+			log.Infof("[RAIL] action=get_thsr_fare event=decode_error error=%v", err)
 			return
 		}
 		var row [][]interface{}
@@ -420,28 +441,31 @@ func getthsrfares(ctx context.Context, client *resty.Client, rc *redis.Client, d
 				ON CONFLICT (origin_station_id,destination_station_id,ticket_type,fare_class,cabin_class) DO UPDATE SET price = EXCLUDED.price,updated_at = NOW();`
 			b, err := db.Begin(ctx)
 			if err != nil {
-				log.Printf("[rail] action=get_tra_fare event=begin_error error=%v", err)
+				log.Infof("[rail] action=get_tra_fare event=begin_error error=%v", err)
 				return
 			}
 			defer func(b pgx.Tx, ctx context.Context) {
 				_ = b.Rollback(ctx)
 			}(b, ctx)
-			_, _ = b.Exec(ctx, c1)
+			if _, err := b.Exec(ctx, c1); err != nil {
+				log.Infof("[RAIL] action=get_thsr_fare event=create_temp_error error=%v", err)
+				return
+			}
 			_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_thsr"}, []string{"osi", "dsi", "ty", "fare", "cabin", "p"}, pgx.CopyFromRows(row))
 			if err == nil {
 				if _, execErr := b.Exec(ctx, c2); execErr != nil {
-					log.Printf("[RAIL] action=get_thsr_fare event=exec_error error=%v", execErr)
+					log.Infof("[RAIL] action=get_thsr_fare event=exec_error error=%v", execErr)
 				}
 				if commitErr := b.Commit(ctx); commitErr != nil {
-					log.Printf("[rail] action=get_thsr_fare event=commit_error error=%v", commitErr)
+					log.Infof("[rail] action=get_thsr_fare event=commit_error error=%v", commitErr)
 				} else {
-					log.Printf("[rail] action=get_thsr_fare event=success station_count=%d", len(row))
+					log.Infof("[rail] action=get_thsr_fare event=success station_count=%d", len(row))
 				}
 			} else {
-				log.Printf("[rail] action=get_thsr_fare event=copyfrom_error error=%v", err)
+				log.Infof("[rail] action=get_thsr_fare event=copyfrom_error error=%v", err)
 				_ = b.Rollback(ctx)
 			}
 		}
 	}()
-	log.Printf("[rail] action=get_thsr_fare event=complete")
+	log.Infof("[rail] action=get_thsr_fare event=complete")
 }

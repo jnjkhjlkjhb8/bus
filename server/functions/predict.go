@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -13,11 +12,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// routeDirKey identifies one subroute direction, used as a map key when batching
+// next-departure and travel-average lookups.
 type routeDirKey struct {
 	subRouteUID string
 	direction   int32
 }
 
+// travelAvgKey identifies a per-stop, time-bucketed travel-average sample:
+// subroute, direction, stop, hour of day, and day of week.
 type travelAvgKey struct {
 	subRouteUID string
 	direction   int32
@@ -26,6 +29,8 @@ type travelAvgKey struct {
 	dayOfWeek   int
 }
 
+// dedupRouteDirPairs removes duplicate route/direction keys while preserving
+// first-seen order, so the batched departure query does not repeat pairs.
 func dedupRouteDirPairs(keys []routeDirKey) []routeDirKey {
 	seen := make(map[routeDirKey]bool, len(keys))
 	out := make([]routeDirKey, 0, len(keys))
@@ -38,6 +43,10 @@ func dedupRouteDirPairs(keys []routeDirKey) []routeDirKey {
 	return out
 }
 
+// batchNextDepartures returns, per route/direction, the earliest scheduled
+// origin-stop departure at or after todTime (today's local time-of-day). It is a
+// single query over all keys, feeding ETA prediction the "next scheduled bus"
+// baseline. An empty key set or a query error yields an empty map.
 func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirKey, todTime string) map[routeDirKey]time.Time {
 	out := make(map[routeDirKey]time.Time, len(keys))
 	if len(keys) == 0 {
@@ -60,7 +69,7 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 		GROUP BY sub_route_uid, direction`,
 		uids, dirs, todTime)
 	if err != nil {
-		log.Printf("[MODEL] batchNextDepartures error: %v", err)
+		log.Infof("[MODEL] batchNextDepartures error: %v", err)
 		return out
 	}
 	defer rows.Close()
@@ -75,6 +84,10 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 	return out
 }
 
+// batchTravelAvg loads precomputed average travel seconds (origin to each stop)
+// for the given subroutes at a specific hour and day of week, in one query. The
+// result feeds ETA prediction the expected time from departure to a stop. An
+// empty uid set or a query error yields an empty map.
 func batchTravelAvg(ctx context.Context, db *pgxpool.Pool, uids []string, hour, dayOfWeek int) map[travelAvgKey]int {
 	out := make(map[travelAvgKey]int)
 	if len(uids) == 0 {
@@ -87,7 +100,7 @@ func batchTravelAvg(ctx context.Context, db *pgxpool.Pool, uids []string, hour, 
 		  AND sub_route_uid = ANY($1::text[])`,
 		uids, hour, dayOfWeek)
 	if err != nil {
-		log.Printf("[MODEL] batchTravelAvg error: %v", err)
+		log.Infof("[MODEL] batchTravelAvg error: %v", err)
 		return out
 	}
 	defer rows.Close()
@@ -102,13 +115,23 @@ func batchTravelAvg(ctx context.Context, db *pgxpool.Pool, uids []string, hour, 
 	return out
 }
 
+// etaModel is the loaded XGBoost ensemble that predicts a residual correction on
+// the schedule+travel-average ETA. It stays nil when no model file is present,
+// which disables prediction (predictNextBusTime returns "").
 var etaModel *leaves.Ensemble
 
+// modelEncoders holds the categorical-to-integer encodings the model was trained
+// with, so runtime features match training. Only City is currently applied;
+// PlateNumb is loaded but unused at prediction time.
 var modelEncoders struct {
 	City      map[string]int `json:"city"`
 	PlateNumb map[string]int `json:"plate_numb"`
 }
 
+// loadModel loads the XGBoost ETA model and its encoders from BUS_ETA_MODEL_PATH
+// (default ./model/bus_eta.json, encoders at <path>_encoders.json). A missing or
+// unreadable model leaves etaModel nil and disables prediction — this is a
+// tolerated state, not a fatal error, so the service runs without the model.
 func loadModel() {
 	path := os.Getenv("BUS_ETA_MODEL_PATH")
 	if path == "" {
@@ -116,20 +139,22 @@ func loadModel() {
 	}
 	m, err := leaves.XGEnsembleFromFile(path, true)
 	if err != nil {
-		log.Printf("[MODEL] not loaded (file: %s): %v", path, err)
+		log.Infof("[MODEL] not loaded (file: %s): %v", path, err)
 		return
 	}
 	encPath := strings.TrimSuffix(path, ".json") + "_encoders.json"
 	encData, err := os.ReadFile(encPath)
 	if err != nil {
-		log.Printf("[MODEL] encoders not found at %s: %v", encPath, err)
+		log.Infof("[MODEL] encoders not found at %s: %v", encPath, err)
 	} else {
 		json.Unmarshal(encData, &modelEncoders)
 	}
 	etaModel = m
-	log.Printf("[MODEL] loaded from %s", path)
+	log.Infof("[MODEL] loaded from %s", path)
 }
 
+// busStopCtx describes the stop being predicted: its subroute/direction, the
+// stop's position in the route (sequence out of total), and city.
 type busStopCtx struct {
 	subRouteUID  string
 	direction    int32
@@ -139,6 +164,9 @@ type busStopCtx struct {
 	totalStops   int
 }
 
+// predictionInputs carries the per-call inputs to prediction: the current time,
+// the next scheduled departure, and the travel-average signal (its value, whether
+// one exists for this exact stop, and the route's max as a fallback basis).
 type predictionInputs struct {
 	now          time.Time
 	nextDep      time.Time
@@ -147,6 +175,13 @@ type predictionInputs struct {
 	maxTravelAvg int
 }
 
+// predictNextBusTime estimates a NextBusTime for a stop TDX left blank. It bases
+// the estimate on the next scheduled departure plus expected travel time, then
+// adds the XGBoost residual correction. When no per-stop travel average exists it
+// interpolates from the route's max average by stop-sequence ratio; if even that
+// is unavailable it falls back to the bare departure time. Returns "" when the
+// model is not loaded or there is no upcoming scheduled departure. Result is an
+// RFC3339 timestamp.
 func predictNextBusTime(rc *redis.Client, stop busStopCtx, inputs predictionInputs) string {
 	if etaModel == nil || inputs.nextDep.IsZero() {
 		return ""
@@ -195,6 +230,8 @@ func predictNextBusTime(rc *redis.Client, stop busStopCtx, inputs predictionInpu
 	return eta.Format(time.RFC3339)
 }
 
+// boolToFloat64 maps true to 1 and false to 0 for encoding a boolean feature
+// (the holiday flag) into the model's float feature vector.
 func boolToFloat64(b bool) float64 {
 	if b {
 		return 1

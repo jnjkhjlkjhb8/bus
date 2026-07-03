@@ -2,24 +2,38 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/server/obs"
 )
 
-func cleanupBusHistory(ctx context.Context, db *pgxpool.Pool) {
+// cleanupBusHistory deletes bus_eta_history rows older than 30 days (the
+// retention window). A failure is wrapped as transient so runDaily retries it.
+func cleanupBusHistory(ctx context.Context, db *pgxpool.Pool) error {
 	tag, err := db.Exec(ctx, `DELETE FROM bus_eta_history WHERE recorded_at < NOW() - INTERVAL '30 days'`)
 	if err != nil {
-		log.Printf("[ETA_HISTORY] cleanup error: %v", err)
+		log.Infof("[ETA_HISTORY] cleanup error: %v", err)
+		return obs.Transient(fmt.Errorf("cleanup bus history: %w", err))
 	} else {
-		log.Printf("[ETA_HISTORY] cleanup deleted %d rows", tag.RowsAffected())
+		log.Infof("[ETA_HISTORY] cleanup deleted %d rows", tag.RowsAffected())
 	}
+	return nil
 }
 
-func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) {
-	log.Printf("[TRAVEL_AVG] start")
+// computeTravelAvg rebuilds bus_travel_avg from the last 7 days of ETA history.
+// It detects each arrival by finding where a stop's estimate crosses from
+// positive to non-positive between consecutive samples and linearly interpolates
+// the crossing instant (the SQL query). Each crossing is matched to the latest
+// scheduled origin departure at or before it to derive an origin-to-stop travel
+// time; samples outside 0..7200s are discarded as noise. Per (subroute,
+// direction, stop, hour, day-of-week) bucket with at least 10 samples, it upserts
+// the median, and only overwrites an existing average when this run has more
+// samples. Query/upsert failures are wrapped transient so runDaily retries.
+func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
+	log.Infof("[TRAVEL_AVG] start")
 
 	type crossingRow struct {
 		subRouteUID string
@@ -48,8 +62,8 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) {
 		WHERE prev_est > 0 AND estimate <= 0
 		  AND EXTRACT(EPOCH FROM recorded_at - prev_at) < 300`)
 	if err != nil {
-		log.Printf("[TRAVEL_AVG] crossing query error: %v", err)
-		return
+		log.Infof("[TRAVEL_AVG] crossing query error: %v", err)
+		return obs.Transient(fmt.Errorf("query travel crossings: %w", err))
 	}
 
 	var crossings []crossingRow
@@ -57,13 +71,17 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) {
 		var c crossingRow
 		if err := rows.Scan(&c.subRouteUID, &c.direction, &c.stopUID,
 			&c.hour, &c.dayOfWeek, &c.crossingAt); err != nil {
-			log.Printf("[TRAVEL_AVG] scan error: %v", err)
+			log.Infof("[TRAVEL_AVG] scan error: %v", err)
 		} else {
 			crossings = append(crossings, c)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return obs.Transient(fmt.Errorf("scan travel crossings: %w", err))
+	}
 	rows.Close()
-	log.Printf("[TRAVEL_AVG] detected %d arrival events", len(crossings))
+	log.Infof("[TRAVEL_AVG] detected %d arrival events", len(crossings))
 	type depKey struct {
 		subRouteUID string
 		direction   int16
@@ -81,7 +99,7 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) {
 			ORDER BY "arrival_time/StartTime"`,
 			key.subRouteUID, key.direction)
 		if err != nil {
-			log.Printf("[TRAVEL_AVG] dep query error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
+			log.Infof("[TRAVEL_AVG] dep query error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
 			depCache[key] = []time.Time{}
 			return nil
 		}
@@ -155,10 +173,12 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) {
 			key.subRouteUID, key.direction, key.stopUID,
 			key.hour, key.dayOfWeek, median, len(vals))
 		if err != nil {
-			log.Printf("[TRAVEL_AVG] upsert error: %v", err)
+			log.Infof("[TRAVEL_AVG] upsert error: %v", err)
+			return obs.Transient(fmt.Errorf("upsert travel average: %w", err))
 		} else {
 			upserted++
 		}
 	}
-	log.Printf("[TRAVEL_AVG] complete crossings=%d upserted=%d", len(crossings), upserted)
+	log.Infof("[TRAVEL_AVG] complete crossings=%d upserted=%d", len(crossings), upserted)
+	return nil
 }

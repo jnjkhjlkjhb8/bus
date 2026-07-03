@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,18 +73,19 @@ func walkAndDist(o osrm, ready bool, idx int, hasIdx bool, geodesic float64) (wa
 func findnearstation(lat, lon float64, size int, ctx context.Context, db *pgxpool.Pool, osrmClient *resty.Client) (*models.RespNear, error) {
 	res := models.RespNear{}
 	if size <= 0 {
-		size = 5
+		size = 670
 	}
+	const limit = 80
 	var wg sync.WaitGroup
 	wg.Add(5)
 	go func() {
 		defer wg.Done()
-		rows, _ := db.Query(ctx, `SELECT group_uid AS station_uid, group_name AS station_name, city, position <-> ST_MakePoint($1,$2)::geography AS distance, ST_X(position) AS lon, ST_Y(position) AS lat FROM bus_station_groups ORDER BY position <-> ST_MakePoint($1,$2)::geography LIMIT $3;`, lon, lat, size*5)
+		rows, _ := db.Query(ctx, `SELECT group_uid AS station_uid, group_name AS station_name, city, ST_Distance(position::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography) AS distance, ST_X(position) AS lon, ST_Y(position) AS lat FROM bus_station_groups g WHERE ST_DWithin(position::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography, $3) AND EXISTS (SELECT 1 FROM bus_station_group_members m WHERE m.group_uid = g.group_uid) ORDER BY distance LIMIT $4;`, lon, lat, size, limit)
 		defer rows.Close()
 		row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[busStations])
 		if err != nil {
 			rows.Close()
-			log.Println(err.Error())
+			log.Infoln(err.Error())
 		}
 		cnt := 1
 		arr := []string{fmt.Sprintf("%f,%f", lon, lat)}
@@ -136,12 +136,12 @@ func findnearstation(lat, lon float64, size int, ctx context.Context, db *pgxpoo
 	}()
 	go func() {
 		defer wg.Done()
-		rows, _ := db.Query(ctx, `SELECT station_uid, name, city, geom <-> ST_MakePoint($1,$2)::geography AS distance,ST_X(geom) AS lon ,ST_Y(geom) AS lat FROM bike_stations ORDER BY geom <-> ST_MakePoint($1,$2)::geography LIMIT $3;`, lon, lat, size*5)
+		rows, _ := db.Query(ctx, `SELECT station_uid, name, city, ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography) AS distance,ST_X(geom) AS lon ,ST_Y(geom) AS lat FROM bike_stations WHERE ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography, $3) ORDER BY distance LIMIT $4;`, lon, lat, size, limit)
 		defer rows.Close()
 		row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[bikeSations])
 		if err != nil {
 			rows.Close()
-			log.Println(err.Error())
+			log.Infoln(err.Error())
 		}
 		cnt := 1
 		arr := []string{fmt.Sprintf("%f,%f", lon, lat)}
@@ -186,12 +186,12 @@ func findnearstation(lat, lon float64, size int, ctx context.Context, db *pgxpoo
 	}()
 	go func() {
 		defer wg.Done()
-		rows, _ := db.Query(ctx, `SELECT station_id, name, city, stationposition <-> ST_MakePoint($1,$2)::geography AS distance,ST_X(stationposition) AS lon ,ST_Y(stationposition) AS lat FROM mrt_station ORDER BY stationposition <-> ST_MakePoint($1,$2)::geography LIMIT $3;`, lon, lat, size*5)
+		rows, _ := db.Query(ctx, `SELECT station_id, name, city, ST_Distance(stationposition::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography) AS distance,ST_X(stationposition) AS lon ,ST_Y(stationposition) AS lat FROM mrt_station WHERE ST_DWithin(stationposition::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography, $3) ORDER BY distance LIMIT $4;`, lon, lat, size, limit)
 		defer rows.Close()
 		row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[mrtSations])
 		if err != nil {
 			rows.Close()
-			log.Println(err.Error())
+			log.Infoln(err.Error())
 		}
 		cnt := 1
 		arr := []string{fmt.Sprintf("%f,%f", lon, lat)}
@@ -236,12 +236,12 @@ func findnearstation(lat, lon float64, size int, ctx context.Context, db *pgxpoo
 	}()
 	go func() {
 		defer wg.Done()
-		rows, _ := db.Query(ctx, `SELECT station_id, name, city, geom <-> ST_MakePoint($1,$2)::geography AS distance,ST_X(geom) AS lon ,ST_Y(geom) AS lat FROM tra_stations ORDER BY geom <-> ST_MakePoint($1,$2)::geography LIMIT $3;`, lon, lat, size*5)
+		rows, _ := db.Query(ctx, `SELECT station_id, name, city, ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography) AS distance,ST_X(geom) AS lon ,ST_Y(geom) AS lat FROM tra_stations WHERE ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography, $3) ORDER BY distance LIMIT $4;`, lon, lat, size, limit)
 		defer rows.Close()
 		row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[traStations])
 		if err != nil {
 			rows.Close()
-			log.Println(err.Error())
+			log.Infoln(err.Error())
 		}
 		cnt := 1
 		arr := []string{fmt.Sprintf("%f,%f", lon, lat)}
@@ -286,12 +286,12 @@ func findnearstation(lat, lon float64, size int, ctx context.Context, db *pgxpoo
 	}()
 	go func() {
 		defer wg.Done()
-		rows, _ := db.Query(ctx, `SELECT station_id, name, city, geom <-> ST_MakePoint($1,$2)::geography AS distance,ST_X(geom) AS lon ,ST_Y(geom) AS lat FROM thsr_stations ORDER BY geom <-> ST_MakePoint($1,$2)::geography LIMIT $3;`, lon, lat, size*2)
+		rows, _ := db.Query(ctx, `SELECT station_id, name, city, ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography) AS distance,ST_X(geom) AS lon ,ST_Y(geom) AS lat FROM thsr_stations WHERE ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography, $3) ORDER BY distance LIMIT $4;`, lon, lat, size, limit)
 		defer rows.Close()
 		row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[thsrStations])
 		if err != nil {
 			rows.Close()
-			log.Println(err.Error())
+			log.Infoln(err.Error())
 		}
 		cnt := 1
 		arr := []string{fmt.Sprintf("%f,%f", lon, lat)}

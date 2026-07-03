@@ -36,12 +36,22 @@ type firebasePersistence interface {
 	ListDeviceState(context.Context, string) (*pb.DeviceState, error)
 }
 
+// FirebaseServer implements the device-registration and arrival-reminder RPCs.
+// It authenticates each caller against a per-installation secret hash carried in
+// gRPC metadata (see installationSecretHash) rather than any Firebase identity.
+// now is injectable so tests can control reminder expiry checks; it defaults to
+// time.Now when nil.
 type FirebaseServer struct {
 	pb.UnimplementedFirebase_ServiceServer
 	store firebasePersistence
 	now   func() time.Time
 }
 
+// UpsertDevice registers or updates a device installation and its notification
+// preferences. It requires android/ios platform and an fcm_token whenever push
+// is enabled. The install secret from metadata must match any existing row, or
+// the store reports the row as unauthorized and PermissionDenied is returned.
+// The fcm_token is cleared from the response so it is never echoed back.
 func (s *FirebaseServer) UpsertDevice(ctx context.Context, request *pb.UpsertDeviceRequest) (*pb.DeviceState, error) {
 	identity, prefs := request.GetIdentity(), request.GetPrefs()
 	if identity == nil || prefs == nil || !validText(identity.GetInstallId(), 128) || !validText(identity.GetPlatform(), 16) {
@@ -68,6 +78,9 @@ func (s *FirebaseServer) UpsertDevice(ctx context.Context, request *pb.UpsertDev
 	return state, nil
 }
 
+// SetRouteSubscription enables or disables push subscription for one route.
+// Only bus routes are accepted; any other route_type returns FailedPrecondition.
+// The caller is authorized against its install secret before the store is touched.
 func (s *FirebaseServer) SetRouteSubscription(ctx context.Context, request *pb.RouteSubscriptionRequest) (*pb.Ack, error) {
 	if !validText(request.GetInstallId(), 128) || !validRoute(request.GetRouteType()) || !validText(request.GetRouteKey(), 256) {
 		return nil, status.Error(codes.InvalidArgument, "install_id, route_type, and route_key are required")
@@ -84,6 +97,10 @@ func (s *FirebaseServer) SetRouteSubscription(ctx context.Context, request *pb.R
 	return &pb.Ack{Ok: true}, nil
 }
 
+// CreateArrivalReminder registers a one-shot arrival reminder for a bus stop.
+// It rejects non-bus routes, directions other than "0"/"1", lead times outside
+// 1..120 minutes, and expiry timestamps not in the future (measured against
+// s.now). It generates a UUIDv4 reminder ID and persists the reminder as pending.
 func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.CreateArrivalReminderRequest) (*pb.ArrivalReminder, error) {
 	if !validText(request.GetInstallId(), 128) || !validRoute(request.GetRouteType()) ||
 		!validText(request.GetRouteKey(), 256) || !validText(request.GetStopKey(), 256) || !validText(request.GetDirection(), 32) {
@@ -127,6 +144,9 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	}, nil
 }
 
+// CancelArrivalReminder cancels a caller's pending reminder. It returns NotFound
+// when no matching pending reminder exists (already fired, already cancelled, or
+// owned by a different install). The caller is authorized first.
 func (s *FirebaseServer) CancelArrivalReminder(ctx context.Context, request *pb.CancelArrivalReminderRequest) (*pb.Ack, error) {
 	if !validText(request.GetReminderId(), 64) || !validText(request.GetInstallId(), 128) {
 		return nil, status.Error(codes.InvalidArgument, "reminder_id and install_id are required")
@@ -144,6 +164,9 @@ func (s *FirebaseServer) CancelArrivalReminder(ctx context.Context, request *pb.
 	return &pb.Ack{Ok: true}, nil
 }
 
+// ListDeviceState returns the stored preferences for a device. It returns
+// NotFound when the install has no row. As with UpsertDevice, the fcm_token is
+// stripped from the response.
 func (s *FirebaseServer) ListDeviceState(ctx context.Context, request *pb.DeviceRequest) (*pb.DeviceState, error) {
 	if !validText(request.GetInstallId(), 128) {
 		return nil, status.Error(codes.InvalidArgument, "install_id is required")
@@ -216,6 +239,9 @@ type appCheckVerifier interface {
 
 type firebaseAppCheckVerifier struct{ client *appcheck.Client }
 
+// VerifyToken checks a Firebase App Check token via the Admin SDK. The context
+// is unused because the underlying appcheck client verifies offline against
+// cached public keys.
 func (v firebaseAppCheckVerifier) VerifyToken(_ context.Context, token string) error {
 	_, err := v.client.VerifyToken(token)
 	return err

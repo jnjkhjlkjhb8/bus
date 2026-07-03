@@ -9,7 +9,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"log"
 	"math/big"
 	"os"
 	"time"
@@ -24,7 +23,7 @@ func startHTTPServer(db *pgxpool.Pool) {
 	if err != nil {
 		log.Fatalf("[HTTP] failed to load/generate RSA key: %v", err)
 	}
-	log.Printf("[HTTP] RS256 key ready")
+	log.Infof("[HTTP] RS256 key ready")
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
@@ -32,7 +31,7 @@ func startHTTPServer(db *pgxpool.Pool) {
 	r.GET("/api/token/powersync", handleToken(key))
 	r.GET("/api/.well-known/jwks.json", handleJWKS(key))
 	r.GET("/api/search", handleSearch(db))
-	log.Printf("[HTTP] server running on 0.0.0.0:8080")
+	log.Infof("[HTTP] server running on 0.0.0.0:8080")
 	if err := r.Run("0.0.0.0:8080"); err != nil {
 		log.Fatalf("[HTTP] server failed: %v", err)
 	}
@@ -90,7 +89,7 @@ func loadOrGenerateKey() (*rsa.PrivateKey, error) {
 		if block != nil {
 			key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 			if err == nil {
-				log.Printf("[HTTP] loaded persisted RSA key from %s", keyFile)
+				log.Infof("[HTTP] loaded persisted RSA key from %s", keyFile)
 				return key, nil
 			}
 		}
@@ -104,6 +103,6 @@ func loadOrGenerateKey() (*rsa.PrivateKey, error) {
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
 	_ = os.WriteFile(keyFile, data, 0600)
-	log.Printf("[HTTP] generated new RSA key and persisted to %s", keyFile)
+	log.Infof("[HTTP] generated new RSA key and persisted to %s", keyFile)
 	return key, nil
 }

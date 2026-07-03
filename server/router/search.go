@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
@@ -33,19 +33,27 @@ func toVecLiteral(v []float32) string {
 	return "[" + strings.Join(parts, ",") + "]"
 }
 
+func embeddingURL() string {
+	return strings.TrimSpace(os.Getenv("EMBED_URL"))
+}
+
 func embedQuery(text string) ([]float32, error) {
+	url := embeddingURL()
+	if url == "" {
+		return nil, fmt.Errorf("embedding disabled")
+	}
 	client := resty.New().SetHeader("Content-Type", "application/json")
 	resp, err := client.R().
 		SetBody(map[string]interface{}{
 			"model": "qwen3-embedding:0.6b",
 			"input": []string{text},
 		}).
-		Post("http://ollama:11434/api/embed")
+		Post(url)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("ollama %d: %s", resp.StatusCode(), resp.Body())
+		return nil, fmt.Errorf("embed %d: %s", resp.StatusCode(), resp.Body())
 	}
 	var result struct {
 		Embeddings [][]float32 `json:"embeddings"`
@@ -57,6 +65,9 @@ func embedQuery(text string) ([]float32, error) {
 }
 
 func vectorSearch(ctx context.Context, q string, limit int, db *pgxpool.Pool) ([]searchResult, error) {
+	if embeddingURL() == "" {
+		return nil, nil
+	}
 	vec, embedErr := embedQuery(q)
 	if embedErr != nil {
 		return nil, embedErr
@@ -173,7 +184,7 @@ func expandStationRoutes(ctx context.Context, primary []searchResult, db *pgxpoo
 		groupUIDs,
 	)
 	if err != nil {
-		log.Printf("[SEARCH] route expansion error: %v", err)
+		log.Infof("[SEARCH] route expansion error: %v", err)
 		return primary
 	}
 	defer rows.Close()
@@ -216,7 +227,7 @@ func trainNumberSearch(ctx context.Context, q string, db *pgxpool.Pool) []search
 		q,
 	)
 	if err != nil {
-		log.Printf("[SEARCH] train number search error: %v", err)
+		log.Infof("[SEARCH] train number search error: %v", err)
 		return nil
 	}
 	defer rows.Close()
@@ -248,7 +259,7 @@ func handleSearch(db *pgxpool.Pool) gin.HandlerFunc {
 		}
 		textResults, err := textSearch(ctx, q, limit, db)
 		if err != nil {
-			log.Printf("[SEARCH] error: %v", err)
+			log.Infof("[SEARCH] error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
 			return
 		}
@@ -256,7 +267,7 @@ func handleSearch(db *pgxpool.Pool) gin.HandlerFunc {
 		if len(results) < limit && shouldUseVector(q) {
 			vectorResults, err := vectorSearch(ctx, q, limit, db)
 			if err != nil {
-				log.Printf("[SEARCH] vector supplement skipped: %v", err)
+				log.Infof("[SEARCH] vector supplement skipped: %v", err)
 			} else {
 				results = mergeSearchResults(limit, results, vectorResults)
 			}

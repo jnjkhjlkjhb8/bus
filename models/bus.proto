@@ -4,7 +4,6 @@ service Bus_Route_Service{
   rpc static(Bus_Ask_Route) returns (Resp_Bus_static) {}
   rpc daily(Bus_Ask_Route) returns (Resp_Bus_daily_timetable) {}
   rpc eta(Bus_Ask_Route) returns (stream Resp_Bus_eta) {}
-  rpc fare(Bus_Ask_Route) returns (Bus_Fare) {}
 }
 service Bus_Station_Service{
   rpc eta(Bus_Ask_Route) returns (stream Resp_Bus_eta) {}
@@ -42,6 +41,7 @@ message Bus_subroute{
   string city = 7;
   map<int32,Direction> Directions = 8;
   repeated BusOperator operators = 9;
+  Bus_Fare fare = 10;
 }
 
 message Direction{
@@ -176,4 +176,6 @@ message Bus_Fare {
   int32 fare_pricing_type = 2;
   bool is_free_bus = 3;
   bytes section_fares_json = 4;
+  bytes stage_fares_json = 5;
+  bytes od_fares_json = 6;
 }

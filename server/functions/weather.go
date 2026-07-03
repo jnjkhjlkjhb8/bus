@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"math"
 	"os"
 	"strconv"
@@ -14,8 +13,12 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
+// cwaBase is the base URL of the CWA (Central Weather Administration) open-data
+// datastore API. Docs: https://opendata.cwa.gov.tw/
 const cwaBase = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
 
+// weatherData is the per-city weather snapshot cached in Redis and used as ETA
+// prediction features.
 type weatherData struct {
 	Temperature   float64 `json:"temperature"`
 	Precipitation float64 `json:"precipitation"`
@@ -23,6 +26,8 @@ type weatherData struct {
 	Humidity      float64 `json:"humidity"`
 }
 
+// cityCoords maps a city to a representative {lat, lon} used to sample the
+// precipitation grid at that city's location.
 var cityCoords = map[string][2]float64{
 	"Taipei":         {25.04, 121.55},
 	"NewTaipei":      {24.99, 121.46},
@@ -45,6 +50,9 @@ var cityCoords = map[string][2]float64{
 	"TaitungCounty":  {22.75, 121.11},
 }
 
+// countyToCity maps the CWA station's Chinese county name to the internal city
+// code, so observation records can be bucketed per city. Stations in counties
+// not listed here are ignored.
 var countyToCity = map[string]string{
 	"臺北市": "Taipei", "新北市": "NewTaipei", "桃園市": "Taoyuan",
 	"臺中市": "Taichung", "臺南市": "Tainan", "高雄市": "Kaohsiung",
@@ -55,6 +63,10 @@ var countyToCity = map[string]string{
 	"臺東縣": "TaitungCounty",
 }
 
+// gridPrecipitation samples the CWA precipitation grid at (lon, lat) by rounding
+// to the nearest grid cell. It returns nil when the point falls outside the grid
+// or the cell holds the CWA no-data sentinel (<= -90), so callers leave
+// precipitation unset rather than recording a bogus value.
 func gridPrecipitation(vals []float64, dimX int, startLon, startLat, res, lon, lat float64) *float64 {
 	x := int(math.Round((lon - startLon) / res))
 	y := int(math.Round((lat - startLat) / res))
@@ -68,10 +80,16 @@ func gridPrecipitation(vals []float64, dimX int, startLon, startLat, res, lon, l
 	return &v
 }
 
+// weatherSync fetches current weather from two CWA datasets and caches a merged
+// per-city snapshot in Redis (weather:<city>, 15-minute TTL) for ETA prediction.
+// O-A0003-001 supplies station observations (temperature, wind, humidity), taking
+// the most recent station per city; F-B0046-001 supplies a precipitation grid
+// sampled per city. No-op when CWA_API_KEY is unset; a failure of either dataset
+// is logged and the other's data is still cached.
 func weatherSync(rc *redis.Client) {
 	cwaKey := os.Getenv("CWA_API_KEY")
 	if cwaKey == "" {
-		log.Printf("[WEATHER] CWA_API_KEY not set, skipping")
+		log.Infof("[WEATHER] CWA_API_KEY not set, skipping")
 		return
 	}
 	client := resty.New()
@@ -130,9 +148,9 @@ func weatherSync(rc *redis.Client) {
 			merged[city] = b.data
 		}
 	} else if err != nil {
-		log.Printf("[WEATHER] O-A0003-001 fetch error: %v", err)
+		log.Infof("[WEATHER] O-A0003-001 fetch error: %v", err)
 	} else {
-		log.Printf("[WEATHER] O-A0003-001 error status=%d", resp.StatusCode())
+		log.Infof("[WEATHER] O-A0003-001 error status=%d", resp.StatusCode())
 	}
 
 	var grid struct {
@@ -162,12 +180,18 @@ func weatherSync(rc *redis.Client) {
 			res, _ := strconv.ParseFloat(ps.GridResolution, 64)
 			dimX, _ := strconv.Atoi(ps.GridDimensionX)
 			if res <= 0 || dimX <= 0 {
-				log.Printf("[WEATHER] F-B0046-001 invalid grid params, skipping")
+				log.Infof("[WEATHER] F-B0046-001 invalid grid params, skipping")
 			} else {
 				parts := strings.Split(grid.Cwaopendata.Dataset.Contents.Content, ",")
 				vals := make([]float64, len(parts))
 				for i, p := range parts {
-					vals[i], _ = strconv.ParseFloat(strings.TrimSpace(p), 64)
+					raw := strings.TrimSpace(p)
+					v, err := strconv.ParseFloat(raw, 64)
+					if err != nil {
+						log.Infof("[WEATHER] F-B0046-001 parse skipped raw=%s error=%v", raw, err)
+						continue
+					}
+					vals[i] = v
 				}
 				for city, coords := range cityCoords {
 					p := gridPrecipitation(vals, dimX, startLon, startLat, res, coords[1], coords[0])
@@ -180,14 +204,14 @@ func weatherSync(rc *redis.Client) {
 			}
 		}
 	} else if err2 != nil {
-		log.Printf("[WEATHER] F-B0046-001 fetch error: %v", err2)
+		log.Infof("[WEATHER] F-B0046-001 fetch error: %v", err2)
 	} else {
-		log.Printf("[WEATHER] F-B0046-001 error status=%d", resp2.StatusCode())
+		log.Infof("[WEATHER] F-B0046-001 error status=%d", resp2.StatusCode())
 	}
 
 	for city, d := range merged {
 		b, _ := json.Marshal(d)
 		rc.Set(fmt.Sprintf("weather:%s", city), string(b), 15*time.Minute)
 	}
-	log.Printf("[WEATHER] synced %d cities", len(merged))
+	log.Infof("[WEATHER] synced %d cities", len(merged))
 }

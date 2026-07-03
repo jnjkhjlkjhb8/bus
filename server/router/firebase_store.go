@@ -45,6 +45,11 @@ type firebaseStore struct{ db firebaseDB }
 
 func newFirebaseStore(db *pgxpool.Pool) *firebaseStore { return &firebaseStore{db: db} }
 
+// UpsertDevice inserts or updates a device row. The ON CONFLICT update is gated
+// on the stored install_secret_hash matching secretHash, so an existing row is
+// only mutated by its original installer. The returned bool reports whether a
+// row was actually written (RowsAffected == 1), i.e. whether the caller was
+// authorized; a new install always writes and is authorized.
 func (s *firebaseStore) UpsertDevice(ctx context.Context, identity *pb.DeviceIdentity, prefs *pb.DevicePrefs, secretHash []byte) (*pb.DeviceState, bool, error) {
 	result, err := s.db.Exec(ctx, `
 		INSERT INTO firebase_device
@@ -72,6 +77,9 @@ func (s *firebaseStore) UpsertDevice(ctx context.Context, identity *pb.DeviceIde
 	return state, result.RowsAffected() == 1, nil
 }
 
+// AuthorizeInstall reports whether secretHash matches the hash stored for the
+// install. An unknown install returns (false, nil), not an error. The comparison
+// is constant-time to avoid leaking the hash through timing.
 func (s *firebaseStore) AuthorizeInstall(ctx context.Context, installID string, secretHash []byte) (bool, error) {
 	var storedHash []byte
 	err := s.db.QueryRow(ctx, `SELECT install_secret_hash FROM firebase_device WHERE install_id = $1`, installID).Scan(&storedHash)
@@ -84,6 +92,9 @@ func (s *firebaseStore) AuthorizeInstall(ctx context.Context, installID string, 
 	return len(storedHash) == len(secretHash) && subtle.ConstantTimeCompare(storedHash, secretHash) == 1, nil
 }
 
+// SetRouteSubscription toggles a device's push subscription for a route.
+// enabled=false deletes the row; enabled=true upserts it (touching updated_at on
+// conflict).
 func (s *firebaseStore) SetRouteSubscription(ctx context.Context, installID, routeType, routeKey string, enabled bool) error {
 	if !enabled {
 		_, err := s.db.Exec(ctx, `
@@ -99,6 +110,8 @@ func (s *firebaseStore) SetRouteSubscription(ctx context.Context, installID, rou
 	return err
 }
 
+// CreateArrivalReminder inserts a reminder row. Token is not persisted here; it
+// is joined from the device row when reminders are later listed for dispatch.
 func (s *firebaseStore) CreateArrivalReminder(ctx context.Context, reminder firebaseArrivalReminder) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO firebase_arrival_reminder
@@ -109,6 +122,9 @@ func (s *firebaseStore) CreateArrivalReminder(ctx context.Context, reminder fire
 	return err
 }
 
+// CancelArrivalReminder marks a caller-owned pending reminder as cancelled. The
+// returned bool is true only when exactly one pending row was updated, so an
+// already-fired, already-cancelled, or foreign reminder yields false.
 func (s *firebaseStore) CancelArrivalReminder(ctx context.Context, reminderID, installID string) (bool, error) {
 	result, err := s.db.Exec(ctx, `
 		UPDATE firebase_arrival_reminder
@@ -117,6 +133,9 @@ func (s *firebaseStore) CancelArrivalReminder(ctx context.Context, reminderID, i
 	return result.RowsAffected() == 1, err
 }
 
+// ListDeviceState loads a device's platform, version, and preference flags. It
+// returns errFirebaseNotFound (which the service layer maps to gRPC NotFound)
+// when no row exists.
 func (s *firebaseStore) ListDeviceState(ctx context.Context, installID string) (*pb.DeviceState, error) {
 	state := &pb.DeviceState{Identity: &pb.DeviceIdentity{InstallId: installID}, Prefs: &pb.DevicePrefs{}}
 	err := s.db.QueryRow(ctx, `
@@ -131,6 +150,9 @@ func (s *firebaseStore) ListDeviceState(ctx context.Context, installID string) (
 	return state, err
 }
 
+// ListSubscribedDevices returns the FCM tokens of devices subscribed to a route
+// that still have push enabled and a non-empty token. Used by the push-dispatch
+// path in the functions binary.
 func (s *firebaseStore) ListSubscribedDevices(ctx context.Context, routeType, routeKey string) ([]firebaseDeviceToken, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT d.install_id, d.fcm_token
@@ -152,6 +174,10 @@ func (s *firebaseStore) ListSubscribedDevices(ctx context.Context, routeType, ro
 	return devices, rows.Err()
 }
 
+// ListActiveArrivalReminders returns pending, unexpired reminders for a specific
+// route/stop/direction, joined to each device's FCM token. Only devices with
+// push enabled and a non-empty token are included. It is the dispatcher's query
+// for candidates to fire.
 func (s *firebaseStore) ListActiveArrivalReminders(ctx context.Context, routeType, routeKey, stopKey, direction string, now time.Time) ([]firebaseArrivalReminder, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT r.reminder_id, r.install_id, d.fcm_token, r.route_type, r.route_key, r.stop_key,
@@ -178,6 +204,10 @@ func (s *firebaseStore) ListActiveArrivalReminders(ctx context.Context, routeTyp
 	return reminders, rows.Err()
 }
 
+// ClaimArrivalReminder atomically transitions a reminder from pending to sending
+// so only one dispatcher sends it. The returned bool is true only when this call
+// won the claim (a pending, unexpired row was updated); a concurrent claimer or
+// an expired/fired reminder yields false.
 func (s *firebaseStore) ClaimArrivalReminder(ctx context.Context, reminderID string, now time.Time) (bool, error) {
 	result, err := s.db.Exec(ctx, `
 		UPDATE firebase_arrival_reminder SET status = 'sending', updated_at = NOW()
@@ -185,6 +215,9 @@ func (s *firebaseStore) ClaimArrivalReminder(ctx context.Context, reminderID str
 	return result.RowsAffected() == 1, err
 }
 
+// ReleaseArrivalReminder returns a claimed reminder from sending back to pending
+// so it can be retried after a send failure. The bool is true when a sending row
+// was reset.
 func (s *firebaseStore) ReleaseArrivalReminder(ctx context.Context, reminderID string) (bool, error) {
 	result, err := s.db.Exec(ctx, `
 		UPDATE firebase_arrival_reminder SET status = 'pending', updated_at = NOW()
@@ -192,6 +225,9 @@ func (s *firebaseStore) ReleaseArrivalReminder(ctx context.Context, reminderID s
 	return result.RowsAffected() == 1, err
 }
 
+// MarkReminderFired finalizes a claimed reminder as fired after a successful
+// send. It only transitions rows currently in sending; the bool is true when one
+// was updated.
 func (s *firebaseStore) MarkReminderFired(ctx context.Context, reminderID string, firedAt time.Time) (bool, error) {
 	result, err := s.db.Exec(ctx, `
 		UPDATE firebase_arrival_reminder SET status = 'fired', fired_at = $2, updated_at = NOW()
@@ -199,6 +235,9 @@ func (s *firebaseStore) MarkReminderFired(ctx context.Context, reminderID string
 	return result.RowsAffected() == 1, err
 }
 
+// DeleteInvalidToken clears a device's FCM token and disables push after FCM
+// reports the token as unregistered. The row is kept (token blanked, push off)
+// rather than deleted. The bool is true when any device carried that token.
 func (s *firebaseStore) DeleteInvalidToken(ctx context.Context, token string) (bool, error) {
 	result, err := s.db.Exec(ctx, `
 		UPDATE firebase_device SET fcm_token = '', push_enabled = FALSE, updated_at = NOW()

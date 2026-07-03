@@ -2,6 +2,7 @@ services:
   ollama:
     build:
       context: ./embed
+    profiles: ["gpu"]
     environment:
       OLLAMA_HOST: 0.0.0.0
       OLLAMA_KEEP_ALIVE: 30m
@@ -42,23 +43,21 @@ services:
     build:
       context: .
       dockerfile: server/router/Dockerfile
-    image: wheres_the_car-router
+    image: bus-router
     ports:
       - "50051:50051"
       - "8080:8080"
-    env_file: ./.env
+    env_file: ${BUS_ENV_FILE:-./.env}
     environment:
       TZ: Asia/Taipei
-      GOMEMLIMIT: 200MiB
+      GOMEMLIMIT: ${ROUTER_GOMEMLIMIT:-230MiB}
       REDIS_ADDR: redis:6379
     volumes:
       - router_keys:/data
       - ./secrets:/run/secrets:ro
-    mem_limit: 256m
+    mem_limit: ${ROUTER_MEM_LIMIT:-256m}
     depends_on:
       redis:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -71,19 +70,36 @@ services:
     build:
       context: .
       dockerfile: server/functions/Dockerfile
-    image: wheres_the_car-functions
-    env_file: ./.env
+    image: bus-functions
+    env_file: ${BUS_ENV_FILE:-./.env}
     environment:
       TZ: Asia/Taipei
-      GOMEMLIMIT: 296MiB
+      GOMEMLIMIT: ${FUNCTIONS_GOMEMLIMIT:-315MiB}
       REDIS_ADDR: redis:6379
     volumes:
       - ./secrets:/run/secrets:ro
-    mem_limit: 350m
+    mem_limit: ${FUNCTIONS_MEM_LIMIT:-350m}
     depends_on:
       redis:
         condition: service_healthy
-      ollama:
+    restart: unless-stopped
+  ingestor:
+    build:
+      context: .
+      dockerfile: server/functions/Dockerfile
+    image: bus-functions
+    env_file: ${BUS_ENV_FILE:-./.env}
+    environment:
+      TZ: Asia/Taipei
+      GOMEMLIMIT: ${INGESTOR_GOMEMLIMIT:-230MiB}
+      REDIS_ADDR: redis:6379
+      ROLE: ingestor
+      INGEST_ON_BOOT: "${INGEST_ON_BOOT:-false}"
+    volumes:
+      - ./secrets:/run/secrets:ro
+    mem_limit: ${INGESTOR_MEM_LIMIT:-256m}
+    depends_on:
+      redis:
         condition: service_healthy
     restart: unless-stopped
   powersync:
@@ -93,7 +109,7 @@ services:
     volumes:
       - ./powersync/config.yaml:/config/config.yaml:ro
       - ./powersync/sync-rules.yaml:/config/sync-rules.yaml:ro
-    env_file: ./.env
+    env_file: ${BUS_ENV_FILE:-./.env}
     environment:
       TZ: Asia/Taipei
       POWERSYNC_CONFIG_PATH: /config/config.yaml

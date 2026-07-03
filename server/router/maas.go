@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -19,6 +18,11 @@ import (
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 )
 
+// MaasServer answers multimodal route-planning requests by proxying the TDX
+// MaaS routing API. Responses are cached in Redis keyed by request parameters,
+// and sfGroup collapses concurrent identical requests into a single upstream
+// call. Bus sections are enriched with in-app notification identities looked up
+// in db.
 type MaasServer struct {
 	pb.UnimplementedMaasServiceServer
 	rc         *redis.Client
@@ -121,7 +125,7 @@ func (s *MaasServer) plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 		return s.get(ctx, req)
 	})
 	if err != nil {
-		log.Printf("[MAAS] plan error: %v", err)
+		log.Infof("[MAAS] plan error: %v", err)
 		return nil, status.Errorf(codes.Unavailable, "route planning unavailable: %v", err)
 	}
 

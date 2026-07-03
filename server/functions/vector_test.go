@@ -1,29 +1,55 @@
 package main
 
 import (
-	"encoding/binary"
-	"math"
+	"strings"
 	"testing"
 )
 
-func TestZip(t *testing.T) {
-	vec := []float32{1.0, -2.5, 0}
-	got := zip(vec)
-	if len(got) != len(vec)*4 {
-		t.Fatalf("zip() length = %d, want %d", len(got), len(vec)*4)
+func TestVectorQueriesSkipFreshEmbeddings(t *testing.T) {
+	queries := map[string]string{
+		"bus_route":    busSubroutesForVectorSQL,
+		"bus_station":  busStationsForVectorSQL,
+		"bike_station": bikeStationsForVectorSQL,
+		"mrt_station":  mrtStationsForVectorSQL,
+		"thsr_station": thsrStationsForVectorSQL,
+		"tra_station":  traStationsForVectorSQL,
 	}
-
-	first := math.Float32frombits(binary.LittleEndian.Uint32(got[0:4]))
-	second := math.Float32frombits(binary.LittleEndian.Uint32(got[4:8]))
-	third := math.Float32frombits(binary.LittleEndian.Uint32(got[8:12]))
-	if first != vec[0] || second != vec[1] || third != vec[2] {
-		t.Fatalf("zip() decoded = %v, want %v", []float32{first, second, third}, vec)
+	for vectorType, query := range queries {
+		for _, want := range []string{
+			"NOT EXISTS",
+			"sv.type = '" + vectorType + "'",
+			"sv.embedding IS NOT NULL",
+		} {
+			if !strings.Contains(query, want) {
+				t.Fatalf("%s query missing %q", vectorType, want)
+			}
+		}
+		if strings.Contains(query, "sv.updated_at >=") {
+			t.Fatalf("%s query still compares updated_at: %s", vectorType, query)
+		}
 	}
 }
 
-func TestZipEmpty(t *testing.T) {
-	got := zip(nil)
-	if len(got) != 0 {
-		t.Fatalf("zip() length = %d, want 0", len(got))
+func TestFreshVectorSkipSQLComparesContent(t *testing.T) {
+	got := freshVectorSkipSQL("bus_route", "bs.sub_route_uid", "sv.name = bs.sub_route_name AND sv.depart = bs.depart AND sv.destin = bs.destin")
+	if !strings.Contains(got, "sv.name = bs.sub_route_name") {
+		t.Fatalf("missing content predicate: %s", got)
+	}
+	if strings.Contains(got, "sv.updated_at >=") {
+		t.Fatalf("still compares updated_at: %s", got)
+	}
+}
+
+func TestEmbeddingURLUsesEnvAndTrimSpace(t *testing.T) {
+	t.Setenv("EMBED_URL", " http://embed:11434/api/embed ")
+	if got := embeddingURL(); got != "http://embed:11434/api/embed" {
+		t.Fatalf("embeddingURL() = %q", got)
+	}
+}
+
+func TestEmbeddingURLEmptyDisablesVectorUpdate(t *testing.T) {
+	t.Setenv("EMBED_URL", "")
+	if got := embeddingURL(); got != "" {
+		t.Fatalf("embeddingURL() = %q, want empty", got)
 	}
 }
