@@ -10,11 +10,11 @@ test-go:
 	go test ./...
 
 test-flutter: proto-dart
-	cd frontend && flutter analyze --no-fatal-infos && flutter test
+	cd app && flutter analyze --no-fatal-infos && flutter test
 
 proto-dart:
-	mkdir -p frontend/lib/data/generated
-	PATH="$$PATH:$$HOME/.pub-cache/bin" protoc --dart_out=grpc:frontend/lib/data/generated -I models models/*.proto
+	mkdir -p app/lib/data/generated
+	PATH="$$PATH:$$HOME/.pub-cache/bin" protoc --dart_out=grpc:app/lib/data/generated -I models models/*.proto
 
 up-test:
 	BUS_ENV_FILE=env/test.env $(COMPOSE) --env-file env/test.env -f docker-compose.yaml -f docker-compose.test.yaml up -d --build postgres redis router functions
@@ -38,10 +38,10 @@ migrate-force-staging:
 	$(MIGRATE) -path migrations -database "$${DATABASE_URL:?DATABASE_URL is required}" force "$${VERSION:?VERSION is required}"
 
 run-test:
-	cd frontend && flutter run --dart-define-from-file=env/test.json
+	cd app && flutter run --dart-define-from-file=env/test.json
 
 run-staging:
-	cd frontend && flutter run --dart-define-from-file=env/staging.json
+	cd app && flutter run --dart-define-from-file=env/staging.json
 
 build-prod:
-	cd frontend && flutter build ipa --dart-define-from-file=env/prod.json
+	cd app && flutter build ipa --dart-define-from-file=env/prod.json
