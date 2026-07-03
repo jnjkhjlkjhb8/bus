@@ -64,8 +64,8 @@ docs/requirements.md
 secrets/
 osrm-data/
 model/
-frontend/lib/generated/
-frontend/lib/data/generated/
+app/lib/generated/
+app/lib/data/generated/
 models/*.pb.go
 models/*_grpc.pb.go
 .ds-sync/
