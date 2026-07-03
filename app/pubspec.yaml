@@ -110,15 +110,10 @@ flutter:
     - assets/mrt/KRTC/
     - assets/mrt/KLRT/
   fonts:
-    - family: Inter
+    - family: IBMPlexSans
       fonts:
-        - asset: assets/fonts/Inter-Regular.ttf
-          weight: 400
-        - asset: assets/fonts/Inter-SemiBold.ttf
-          weight: 600
-        - asset: assets/fonts/Inter-Bold.ttf
-          weight: 700
-    - family: JetBrainsMono
+        - asset: assets/fonts/IBMPlexSans.ttf
+    - family: IBMPlexMono
       fonts:
-        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+        - asset: assets/fonts/IBMPlexMono-Regular.ttf
           weight: 400

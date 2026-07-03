@@ -17,7 +17,7 @@ class TokenRow extends StatelessWidget {
             child: Text(
               name,
               style: AppTextStyles.bodySmall.copyWith(
-                fontFamily: 'JetBrainsMono',
+                fontFamily: 'IBMPlexMono',
                 color: cs.onSurfaceVariant,
               ),
             ),

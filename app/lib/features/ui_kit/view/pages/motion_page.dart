@@ -61,7 +61,7 @@ class _TimingRow extends StatelessWidget {
             child: Text(
               name,
               style: AppTextStyles.bodySmall.copyWith(
-                fontFamily: 'JetBrainsMono',
+                fontFamily: 'IBMPlexMono',
               ),
             ),
           ),
@@ -132,7 +132,7 @@ class _EasingDemoState extends State<_EasingDemo>
             Text(
               widget.name,
               style: AppTextStyles.bodySmall.copyWith(
-                fontFamily: 'JetBrainsMono',
+                fontFamily: 'IBMPlexMono',
               ),
             ),
             const SizedBox(height: 4),

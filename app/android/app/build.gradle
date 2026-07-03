@@ -6,10 +6,18 @@ plugins {
     id("com.google.firebase.firebase-perf")
 }
 
+def googleMapsApiKey = project.hasProperty('GOOGLE_MAPS_API_KEY') ? GOOGLE_MAPS_API_KEY : ''
+def localPropertiesFile = rootProject.file('local.properties')
+if (!googleMapsApiKey && localPropertiesFile.exists()) {
+    localPropertiesFile.eachLine { line ->
+        if (line.startsWith('GOOGLE_MAPS_API_KEY=')) {
+            googleMapsApiKey = line.substring('GOOGLE_MAPS_API_KEY='.length()).trim()
+        }
+    }
+}
+
 def dartEnvironmentVariables = [
-    GOOGLE_MAPS_API_KEY: project.hasProperty('GOOGLE_MAPS_API_KEY')
-            ? GOOGLE_MAPS_API_KEY
-            : 'AIzaSyCE9AWacGQqtkw4wGc3S0JTdTFD9VFmFaw',
+    GOOGLE_MAPS_API_KEY: googleMapsApiKey,
 ]
 
 android {

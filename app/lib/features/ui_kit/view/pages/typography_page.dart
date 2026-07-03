@@ -14,7 +14,7 @@ class TypographyPage extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 32),
         children: const [
           ShowcaseSection(
-            title: 'Inter',
+            title: 'IBM Plex Sans',
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: 16),
               child: Column(
@@ -42,7 +42,7 @@ class TypographyPage extends StatelessWidget {
             ),
           ),
           ShowcaseSection(
-            title: 'JetBrainsMono',
+            title: 'IBM Plex Mono',
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: 16),
               child: Text(

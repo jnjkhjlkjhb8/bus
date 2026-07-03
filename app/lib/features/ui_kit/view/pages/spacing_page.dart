@@ -52,7 +52,7 @@ class SpacingPage extends StatelessWidget {
                             child: Text(
                               s.$1,
                               style: AppTextStyles.bodySmall.copyWith(
-                                fontFamily: 'JetBrainsMono',
+                                fontFamily: 'IBMPlexMono',
                               ),
                             ),
                           ),
