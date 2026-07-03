@@ -28,6 +28,14 @@ func TestDumpRawTDXIntegration(t *testing.T) {
 	defer func() { ingestDB = prev }()
 
 	ctx := context.Background()
+	var provisioned bool
+	if err := pool.QueryRow(ctx,
+		"SELECT to_regclass('raw_tdx.bus_route') IS NOT NULL").Scan(&provisioned); err != nil {
+		t.Fatalf("probe raw_tdx schema: %v", err)
+	}
+	if !provisioned {
+		t.Skip("raw_tdx schema not provisioned; skipping raw_tdx integration test")
+	}
 	const city = "ZZ_TEST_CITY"
 	cleanup := func() { _, _ = pool.Exec(ctx, "DELETE FROM raw_tdx.bus_route WHERE city=$1", city) }
 	cleanup()

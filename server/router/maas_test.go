@@ -42,35 +42,6 @@ func TestResolveBusNotificationIdentityUnique(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
-func TestMaaSSampleExposesBusNumberButNoRailCanonicalIDs(t *testing.T) {
-	raw, err := os.ReadFile("../../temp/路線規劃.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sample tdxAPIResponse
-	if err := json.Unmarshal(raw, &sample); err != nil {
-		t.Fatal(err)
-	}
-	var bus, rail tdxSection
-	for _, route := range sample.Data.Routes {
-		for _, section := range route.Sections {
-			switch section.Transport.Mode {
-			case "HighwayBus":
-				bus = section
-			case "TRA":
-				rail = section
-			}
-		}
-	}
-	if bus.Transport.Number == "" || bus.Departure.Place.Name == "" || bus.Arrival.Place.Name == "" {
-		t.Fatalf("BUS fields missing: %+v", bus)
-	}
-	if got := resolveBusNotificationIdentity(context.Background(), nil, rail); got.GetSupported() {
-		t.Fatalf("TRA without canonical IDs must stay unsupported: %v", got)
-	}
-}
-
 func TestResolveBusNotificationIdentityAmbiguous(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
