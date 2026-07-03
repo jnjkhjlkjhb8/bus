@@ -71,26 +71,26 @@ jobs:
       - run: dart pub global activate junitreport
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
-      - run: mkdir -p frontend/lib/data/generated
-      - run: protoc --dart_out=grpc:frontend/lib/data/generated -I models models/*.proto
+      - run: mkdir -p app/lib/data/generated
+      - run: protoc --dart_out=grpc:app/lib/data/generated -I models models/*.proto
       - run: flutter pub get
-        working-directory: frontend
+        working-directory: app
       - run: flutter analyze --no-fatal-infos
-        working-directory: frontend
+        working-directory: app
       - run: flutter test --coverage --file-reporter=json:test-results.json
-        working-directory: frontend
+        working-directory: app
       - run: tojunit --input test-results.json --output junit.xml
         if: ${{ !cancelled() }}
-        working-directory: frontend
+        working-directory: app
       - uses: codecov/codecov-action@v5
         if: ${{ !cancelled() }}
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: frontend/coverage/lcov.info
+          files: app/coverage/lcov.info
           flags: flutter
       - uses: codecov/test-results-action@v1
         if: ${{ !cancelled() }}
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: frontend/junit.xml
+          files: app/junit.xml
           flags: flutter
