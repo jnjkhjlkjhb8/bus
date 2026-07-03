@@ -1,0 +1,150 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
+import 'package:wheres_the_car/app/theme/app_shadows.dart';
+import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/core/haptics/haptic_service.dart';
+import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
+import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
+import 'package:wheres_the_car/features/go/widgets/route_option_card.dart';
+import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
+
+class NavMiniBar extends StatelessWidget {
+  const NavMiniBar({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocBuilder<PlanBloc, PlanState>(
+      buildWhen: (p, c) =>
+          p.activeLegIndex != c.activeLegIndex ||
+          p.selectedRouteIndex != c.selectedRouteIndex,
+      builder: (context, state) {
+        final route = _route(state);
+        final activeLeg = state.activeLegIndex;
+        if (route == null || activeLeg == null) {
+          return const SizedBox.shrink();
+        }
+        if (activeLeg < 0 || activeLeg >= route.sections.length) {
+          return const SizedBox.shrink();
+        }
+        return _MiniBar(route: route, activeLeg: activeLeg);
+      },
+    );
+  }
+
+  PlanRoute? _route(PlanState state) {
+    final routes = state.result?.routes;
+    if (routes == null || routes.isEmpty) return null;
+    final i = state.selectedRouteIndex ?? 0;
+    return i >= 0 && i < routes.length ? routes[i] : routes.first;
+  }
+}
+
+class _MiniBar extends StatelessWidget {
+  const _MiniBar({required this.route, required this.activeLeg});
+
+  final PlanRoute route;
+  final int activeLeg;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final section = route.sections[activeLeg];
+    final color = isWalk(section)
+        ? cs.onSurfaceVariant
+        : transitColor(section.transport, cs);
+    final dest = route.sections.last.arrival.name;
+    final arrival = formatClock(route.endTime);
+    final title = isWalk(section)
+        ? '步行前往${section.arrival.name}'
+        : '搭乘${sectionLabel(section)}';
+
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        child: Pressable(
+          onTap: () {
+            unawaited(HapticService.instance.lightTap());
+            unawaited(context.push('/go'));
+          },
+          semanticLabel: '返回導航，往$dest',
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: cs.brightness == Brightness.light
+                  ? Colors.white
+                  : cs.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(AppTheme.radiusCard),
+              boxShadow: AppShadows.floating,
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(AppTheme.radiusChip),
+                  ),
+                  child: Icon(
+                    transitIcon(section.transport.mode),
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyles.bodyRegular.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: cs.onSurface,
+                        ),
+                      ),
+                      Text(
+                        '往$dest',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppTextStyles.bodySmall.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                if (arrival.isNotEmpty)
+                  Text(
+                    arrival,
+                    style: AppTextStyles.bodyLarge.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: cs.onSurface,
+                      fontFeatures: AppTextStyles.tabularFigures,
+                    ),
+                  ),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 20,
+                  color: cs.outline,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

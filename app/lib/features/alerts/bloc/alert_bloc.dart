@@ -1,0 +1,130 @@
+import 'dart:async';
+
+import 'package:flutter_bloc/flutter_bloc.dart';
+
+import 'package:wheres_the_car/core/grpc/resilient_stream.dart';
+import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'package:wheres_the_car/data/decoders/alert_decoder.dart';
+import 'package:wheres_the_car/data/generated/alert.pb.dart';
+import 'package:wheres_the_car/data/models/alert_models.dart';
+import 'package:wheres_the_car/data/repositories/alert_repository.dart';
+import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
+import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
+
+const _kReadKey = 'read_alerts';
+
+class AlertBloc extends Bloc<AlertEvent, AlertState> {
+  AlertBloc() : super(AlertState(readMessages: _loadRead())) {
+    on<AlertStarted>(_onStarted);
+    on<AlertReceived>(_onReceived);
+    on<AlertDismissed>(_onDismissed);
+    on<AlertAllDismissed>(_onAllDismissed);
+    on<AlertRestored>(_onRestored);
+    on<AlertAllRead>(_onAllRead);
+    on<AlertMarkedRead>(_onMarkedRead);
+    on<AlertStreamFailed>(_onStreamFailed);
+    on<AlertStreamRecovered>(_onStreamRecovered);
+  }
+
+  static Set<String> _loadRead() {
+    if (!HiveStore.settingsReady) return {};
+    final list = HiveStore.settings.get(_kReadKey, defaultValue: <String>[]);
+    return {...(list as List).cast<String>()};
+  }
+
+  void _persistRead(Set<String> read) {
+    if (!HiveStore.settingsReady) return;
+    unawaited(HiveStore.settings.put(_kReadKey, read.toList()));
+  }
+
+  final List<ResilientSubscription<Alert_Msg>> _subs = [];
+
+  bool get hasActiveSubscriptions => _subs.isNotEmpty;
+
+  Future<void> _onStarted(AlertStarted _, Emitter<AlertState> emit) async {
+    for (final sub in _subs) {
+      await sub.cancel();
+    }
+    _subs.clear();
+
+    void listen(Stream<Alert_Msg> Function() source) {
+      _subs.add(
+        ResilientSubscription<Alert_Msg>(
+          source: source,
+          onData: (msg) {
+            final vm = AlertDecoder.instance.decode(msg.data);
+            if (vm != null) add(AlertReceived(vm));
+          },
+          onFailure: (e) => add(AlertStreamFailed(e)),
+          onRecovered: () => add(const AlertStreamRecovered()),
+        ),
+      );
+    }
+
+    listen(() => AlertRepository.instance.traAlert());
+    listen(() => AlertRepository.instance.thsrAlert());
+    listen(() => AlertRepository.instance.metroAlert('TRTC'));
+    listen(() => AlertRepository.instance.busNews('Taipei'));
+  }
+
+  void _onReceived(AlertReceived event, Emitter<AlertState> emit) {
+    final updated = List<AlertViewModel>.from(state.activeAlerts)
+      ..removeWhere((a) => a.message == event.alert.message);
+    if (event.alert.level != AlertSeverity.green) {
+      updated.add(event.alert);
+    }
+    emit(state.copyWith(activeAlerts: updated));
+  }
+
+  void _onDismissed(AlertDismissed event, Emitter<AlertState> emit) {
+    emit(
+      state.copyWith(
+        dismissedMessages: {...state.dismissedMessages, event.message},
+      ),
+    );
+  }
+
+  void _onAllDismissed(AlertAllDismissed event, Emitter<AlertState> emit) {
+    emit(
+      state.copyWith(
+        dismissedMessages: {...state.dismissedMessages, ...event.messages},
+      ),
+    );
+  }
+
+  void _onRestored(AlertRestored event, Emitter<AlertState> emit) {
+    final next = {...state.dismissedMessages}..removeAll(event.messages);
+    emit(state.copyWith(dismissedMessages: next));
+  }
+
+  void _onAllRead(AlertAllRead _, Emitter<AlertState> emit) {
+    final read = {
+      ...state.readMessages,
+      for (final a in state.visibleAlerts) a.message,
+    };
+    _persistRead(read);
+    emit(state.copyWith(readMessages: read));
+  }
+
+  void _onMarkedRead(AlertMarkedRead event, Emitter<AlertState> emit) {
+    final read = {...state.readMessages, event.message};
+    _persistRead(read);
+    emit(state.copyWith(readMessages: read));
+  }
+
+  void _onStreamFailed(AlertStreamFailed event, Emitter<AlertState> emit) {
+    emit(state.copyWith(error: event.error));
+  }
+
+  void _onStreamRecovered(AlertStreamRecovered _, Emitter<AlertState> emit) {
+    emit(state.copyWith(clearError: true));
+  }
+
+  @override
+  Future<void> close() async {
+    for (final sub in _subs) {
+      await sub.cancel();
+    }
+    return super.close();
+  }
+}

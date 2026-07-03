@@ -1,0 +1,129 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_car/data/repositories/maas_repository.dart';
+import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
+import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
+import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
+
+void main() {
+  test('search success emits result', () async {
+    final result = PlanResult(routes: [_route()]);
+    final bloc = PlanBloc(repository: _FakeMaasRepository(result: result));
+    addTearDown(bloc.close);
+
+    final next = expectLater(
+      bloc.stream,
+      emitsThrough(
+        isA<PlanState>()
+            .having((s) => s.status, 'status', PlanStatus.success)
+            .having((s) => s.result, 'result', result),
+      ),
+    );
+
+    bloc.add(_search());
+    await next;
+  });
+
+  test('search failure emits error state', () async {
+    final bloc = PlanBloc(
+      repository: _FakeMaasRepository(error: StateError('boom')),
+    );
+    addTearDown(bloc.close);
+
+    final next = expectLater(
+      bloc.stream,
+      emitsThrough(
+        isA<PlanState>()
+            .having((s) => s.status, 'status', PlanStatus.failure)
+            .having((s) => s.error, 'error', contains('boom')),
+      ),
+    );
+
+    bloc.add(_search());
+    await next;
+  });
+
+  test('selecting a route updates selectedRouteIndex', () async {
+    final bloc = PlanBloc(repository: _FakeMaasRepository());
+    addTearDown(bloc.close);
+
+    final next = expectLater(
+      bloc.stream,
+      emits(
+        isA<PlanState>().having(
+          (s) => s.selectedRouteIndex,
+          'selectedRouteIndex',
+          2,
+        ),
+      ),
+    );
+
+    bloc.add(const RouteSelected(index: 2));
+    await next;
+  });
+
+  test('navigation events update and clear active indexes', () async {
+    final bloc = PlanBloc(repository: _FakeMaasRepository());
+    addTearDown(bloc.close);
+
+    bloc
+      ..add(const NavigationStarted())
+      ..add(const StopArrived(legIndex: 1, stopIndex: 3))
+      ..add(const NavigationEnded());
+
+    await expectLater(
+      bloc.stream,
+      emitsInOrder([
+        isA<PlanState>().having((s) => s.activeLegIndex, 'activeLegIndex', 0),
+        isA<PlanState>().having((s) => s.activeStopIndex, 'activeStopIndex', 3),
+        isA<PlanState>().having(
+          (s) => s.activeLegIndex,
+          'activeLegIndex',
+          null,
+        ),
+      ]),
+    );
+  });
+}
+
+PlanSearchRequested _search() => const PlanSearchRequested(
+  fromLat: 25,
+  fromLon: 121,
+  toLat: 25.1,
+  toLon: 121.1,
+  date: '2026-07-03',
+  time: '12:00',
+);
+
+PlanRoute _route() => const PlanRoute(
+  travelTime: 600,
+  startTime: '12:00',
+  endTime: '12:10',
+  transfers: 0,
+  sections: [],
+);
+
+class _FakeMaasRepository implements MaasRepository {
+  _FakeMaasRepository({PlanResult? result, this.error})
+    : result = result ?? const PlanResult(routes: []);
+
+  final PlanResult result;
+  final Error? error;
+
+  @override
+  Future<PlanResult> plan({
+    required double fromLat,
+    required double fromLon,
+    required double toLat,
+    required double toLon,
+    required String date,
+    required String time,
+    bool arriveBy = false,
+    double gc = 0.0,
+    List<int> transitModes = const [3, 4, 5, 6, 7, 8, 9],
+  }) async {
+    final error = this.error;
+    if (error != null) throw error;
+    return result;
+  }
+}

@@ -9,6 +9,9 @@
 .buildlog/
 .history
 .svn/
+.claude
+.codegraph
+.codex
 .swiftpm/
 migrate_working_dir/
 
@@ -16,6 +19,9 @@ migrate_working_dir/
 *.iml
 *.ipr
 *.iws
+.impeccable
+.superpowers
+openspec
 .idea/
 
 # The .vscode folder contains launch configuration and tasks you configure in
@@ -84,3 +90,9 @@ dump.rdb
 !pubspec.lock
 .firebaserc
 **/firebase_options.dart
+app/build/
+temp/
+**/google-services.json
+**/GoogleService-Info.plist
+.github/hooks/
+.github/skills/

@@ -1,0 +1,4 @@
+-keep class io.flutter.** { *; }
+-keep class com.google.android.gms.maps.** { *; }
+-keep class com.google.maps.** { *; }
+-dontwarn io.flutter.embedding.**

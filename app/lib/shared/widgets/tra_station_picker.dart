@@ -1,0 +1,284 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/data/models/tra_stations.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
+import 'package:wheres_the_car/shared/widgets/clock_dial.dart';
+
+Future<String?> showTRAStationPicker(BuildContext context) {
+  return showGeneralDialog<String>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: '選擇車站',
+    barrierColor: Colors.black54,
+    transitionDuration: AppMotion.sheet,
+    pageBuilder: (_, _, _) => const _TRAPickerDialog(),
+    transitionBuilder: (context, animation, _, child) {
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: AppMotion.easeOut,
+        reverseCurve: AppMotion.easeOut.flipped,
+      );
+      return FadeTransition(
+        opacity: curved,
+        child: ScaleTransition(
+          scale: Tween<double>(begin: 0.92, end: 1).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+}
+
+class _TRAPickerDialog extends StatefulWidget {
+  const _TRAPickerDialog();
+
+  @override
+  State<_TRAPickerDialog> createState() => _TRAPickerDialogState();
+}
+
+class _TRAPickerDialogState extends State<_TRAPickerDialog> {
+  String _hemisphere = '北部';
+  int _regionIndex = 0;
+  int _stationIndex = 0;
+  bool _stationTile = false;
+  Timer? _advanceTimer;
+
+  List<String> get _regions => TraStations.data[_hemisphere]!.keys.toList();
+
+  String get _region => _regions[_regionIndex.clamp(0, _regions.length - 1)];
+
+  List<String> get _stations => TraStations.data[_hemisphere]![_region]!;
+
+  String get _station =>
+      _stations[_stationIndex.clamp(0, _stations.length - 1)];
+
+  List<String> get _activeItems => _stationTile ? _stations : _regions;
+
+  int get _activeIndex => _stationTile ? _stationIndex : _regionIndex;
+
+  @override
+  void dispose() {
+    _advanceTimer?.cancel();
+    super.dispose();
+  }
+
+  void _onDialSelected(int idx) {
+    setState(() {
+      if (_stationTile) {
+        _stationIndex = idx;
+      } else {
+        _regionIndex = idx;
+        _stationIndex = 0;
+      }
+    });
+    if (!_stationTile) {
+      _advanceTimer?.cancel();
+      _advanceTimer = Timer(const Duration(milliseconds: 300), () {
+        if (mounted) setState(() => _stationTile = true);
+      });
+    }
+  }
+
+  void _selectTile(bool station) {
+    _advanceTimer?.cancel();
+    setState(() => _stationTile = station);
+  }
+
+  void _setHemisphere(String h) {
+    _advanceTimer?.cancel();
+    setState(() {
+      _hemisphere = h;
+      _regionIndex = 0;
+      _stationIndex = 0;
+      _stationTile = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final motion = !(MediaQuery.maybeOf(context)?.disableAnimations ?? false);
+
+    return Dialog(
+      backgroundColor: cs.surfaceContainerHigh,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '選擇車站',
+              style: AppTextStyles.bodyRegular.copyWith(
+                fontWeight: FontWeight.w600,
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 20),
+            _header(cs, motion),
+            const SizedBox(height: 24),
+            Center(
+              child: ClockDial(
+                items: _activeItems,
+                selectedIndex: _activeIndex,
+                onSelected: _onDialSelected,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text(
+                    '取消',
+                    style: TextStyle(
+                      color: cs.primary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(_station),
+                  child: Text(
+                    '確定',
+                    style: TextStyle(
+                      color: cs.primary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _header(ColorScheme cs, bool motion) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Row(
+          children: [
+            _tile(
+              cs,
+              _region,
+              motion,
+              active: !_stationTile,
+              onTap: () => _selectTile(false),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6),
+              child: Text(
+                ':',
+                style: TextStyle(
+                  fontSize: 36,
+                  fontWeight: FontWeight.w400,
+                  color: cs.onSurface,
+                ),
+              ),
+            ),
+            _tile(
+              cs,
+              _station,
+              motion,
+              active: _stationTile,
+              onTap: () => _selectTile(true),
+            ),
+          ],
+        ),
+        _hemisphereToggle(cs, motion),
+      ],
+    );
+  }
+
+  Widget _tile(
+    ColorScheme cs,
+    String text,
+    bool motion, {
+    required bool active,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: Duration(milliseconds: motion ? 150 : 0),
+        curve: Curves.easeOut,
+        width: 76,
+        height: 64,
+        decoration: BoxDecoration(
+          color: active ? cs.primaryContainer : cs.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        alignment: Alignment.center,
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: AnimatedDefaultTextStyle(
+              duration: Duration(milliseconds: motion ? 150 : 0),
+              style: TextStyle(
+                fontSize: 30,
+                fontWeight: FontWeight.w400,
+                color: active ? cs.onPrimaryContainer : cs.onSurface,
+              ),
+              child: Text(text),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _hemisphereToggle(ColorScheme cs, bool motion) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: cs.outline),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: ['北部', '南部'].asMap().entries.map((e) {
+          final h = e.value;
+          final active = h == _hemisphere;
+          return AnimatedContainer(
+            duration: Duration(milliseconds: motion ? 150 : 0),
+            curve: Curves.easeOut,
+            decoration: BoxDecoration(
+              color: active ? cs.tertiaryContainer : null,
+              border: e.key == 0
+                  ? Border(bottom: BorderSide(color: cs.outline))
+                  : null,
+            ),
+            child: InkWell(
+              onTap: () => _setHemisphere(h),
+              child: SizedBox(
+                width: 48,
+                height: 32,
+                child: Center(
+                  child: Text(
+                    h,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: active
+                          ? cs.onTertiaryContainer
+                          : cs.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+}

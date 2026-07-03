@@ -1,0 +1,106 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:hive_ce_flutter/adapters.dart';
+import 'package:wheres_the_car/app/router/app_router.dart';
+import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
+import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
+import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
+import 'package:wheres_the_car/features/alerts/view/notification_toast.dart';
+import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
+import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
+
+class App extends StatefulWidget {
+  const App({super.key});
+
+  /// Tracks background initialization completion
+  static final isInitialized = ValueNotifier<bool>(false);
+
+  @override
+  State<App> createState() => _AppState();
+}
+
+class _AppState extends State<App> {
+  @override
+  Widget build(BuildContext context) {
+    return MultiBlocProvider(
+      providers: [
+        BlocProvider(create: (_) => AlertBloc()),
+        BlocProvider(create: (_) => PlanBloc()),
+        BlocProvider(
+          create: (_) =>
+              FavoritesBloc(FavoritesRepository.instance, App.isInitialized),
+        ),
+      ],
+      child: const _AppView(),
+    );
+  }
+}
+
+class _AppView extends StatefulWidget {
+  const _AppView();
+
+  @override
+  State<_AppView> createState() => _AppViewState();
+}
+
+class _AppViewState extends State<_AppView> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.read<AlertBloc>().add(const AlertStarted());
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: App.isInitialized,
+      builder: (context, initialized, _) {
+        if (!initialized) {
+          return MaterialApp.router(
+            title: '我車呢？',
+            theme: AppTheme.light,
+            darkTheme: AppTheme.dark,
+            routerConfig: AppRouter.router,
+            debugShowCheckedModeBanner: false,
+            builder: (context, child) =>
+                NotificationToastHost(child: child!),
+          );
+        }
+
+        return ValueListenableBuilder<Box<dynamic>>(
+          valueListenable: HiveStore.settings.listenable(
+            keys: const ['large_text'],
+          ),
+          builder: (context, _, child) => MaterialApp.router(
+            title: '我車呢？',
+            theme: AppTheme.light,
+            darkTheme: AppTheme.dark,
+            routerConfig: AppRouter.router,
+            debugShowCheckedModeBanner: false,
+            builder: (context, child) {
+              var base = child!;
+              if (HiveStore.largeText) {
+                final mq = MediaQuery.of(context);
+                base = MediaQuery(
+                  data: mq.copyWith(
+                    textScaler: mq.textScaler.clamp(
+                      minScaleFactor: 1.3,
+                      maxScaleFactor: 1.6,
+                    ),
+                  ),
+                  child: base,
+                );
+              }
+              return NotificationToastHost(child: base);
+            },
+          ),
+        );
+      },
+    );
+  }
+}
