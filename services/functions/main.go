@@ -25,8 +25,8 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/server/obs"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/server/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"github.com/robfig/cron/v3"
 )
 

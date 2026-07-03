@@ -13,7 +13,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/server/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 )
 
 // ConnectRedis dials REDIS_ADDR with a fixed pool (no auth, DB 0) and verifies

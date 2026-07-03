@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/server/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

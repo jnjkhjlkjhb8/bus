@@ -42,7 +42,7 @@ services:
   router:
     build:
       context: .
-      dockerfile: server/router/Dockerfile
+      dockerfile: services/router/Dockerfile
     image: bus-router
     ports:
       - "50051:50051"
@@ -69,7 +69,7 @@ services:
   functions:
     build:
       context: .
-      dockerfile: server/functions/Dockerfile
+      dockerfile: services/functions/Dockerfile
     image: bus-functions
     env_file: ${BUS_ENV_FILE:-./.env}
     environment:
@@ -86,7 +86,7 @@ services:
   ingestor:
     build:
       context: .
-      dockerfile: server/functions/Dockerfile
+      dockerfile: services/functions/Dockerfile
     image: bus-functions
     env_file: ${BUS_ENV_FILE:-./.env}
     environment:

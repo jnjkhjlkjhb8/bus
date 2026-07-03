@@ -50,7 +50,7 @@ token.env
 android/app/build.gradle.kts
 .gitignore
 android/app/src/main/AndroidManifest.xml
-server/router/server.go
+services/router/server.go
 docs/requirements.md
 .env
 /functions

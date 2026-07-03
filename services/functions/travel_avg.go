@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/server/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 )
 
 // cleanupBusHistory deletes bus_eta_history rows older than 30 days (the
