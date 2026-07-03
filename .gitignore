@@ -63,7 +63,7 @@ docs/requirements.md
 /router
 secrets/
 osrm-data/
-model/
+/model/
 app/lib/generated/
 app/lib/data/generated/
 models/*.pb.go
@@ -89,7 +89,6 @@ dump.rdb
 *.lock
 !pubspec.lock
 .firebaserc
-**/firebase_options.dart
 app/build/
 temp/
 **/google-services.json
