@@ -38,12 +38,13 @@ func (s *BusRouteserver) Eta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_Service_E
 }
 
 // BusRouteStatic returns the pre-serialized static payload for a bus route.
-// The requested sub-route UID is normalized with makethatsame so THB direction
-// variants collapse to one row. Results are memoized in the in-process cache for
-// an hour; a missing row maps to NotFound via grpcStatusFor.
+// The requested sub-route UID is used as-is: canonical subroute identity is
+// produced at the 03:30 load (ADR-0006), so requests arrive already canonical
+// and the router does no normalization. Results are memoized in the in-process
+// cache for an hour; a missing row maps to NotFound via grpcStatusFor.
 func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.Resp_BusStatic, error) {
 	log.Infof("call bus_static %s", in.SubRouteUID)
-	route := makethatsame(in.SubRouteUID)
+	route := in.SubRouteUID
 	if s.cache != nil {
 		if data, ok := s.cache.get("bus_static:" + route); ok {
 			return &pb.Resp_BusStatic{Data: data}, nil
@@ -111,11 +112,12 @@ func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_Route, stream pb.Bus_Stati
 }
 
 // BusDailytable returns the daily timetable payload cached in Redis for a route.
-// The sub-route UID is normalized with makethatsame; a missing key maps to
-// NotFound via grpcStatusFor.
+// The sub-route UID is used as-is: canonical subroute identity is produced at
+// the 03:30 load (ADR-0006), so requests arrive already canonical. A missing key
+// maps to NotFound via grpcStatusFor.
 func (s *BusRouteserver) BusDailytable(in *pb.Bus_Ask_Route) (*pb.Resp_BusEta, error) {
 	log.Infof("call Bus_route_eta %s", in.SubRouteUID)
-	route := makethatsame(in.SubRouteUID)
+	route := in.SubRouteUID
 	val, err := s.rc.Get(fmt.Sprintf("bus_daily_timetable:%s", route)).Result()
 	if err != nil {
 		log.Infof("[gRPC] action=bus_dailytable event=query_failed error=%v", err)

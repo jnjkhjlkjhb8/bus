@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -12,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -57,6 +60,11 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 	opMap := loadBusOperatorMap(ctx, src, db, city)
 	subRoutemap := make(map[string]*models.BusSubroute)
 	routeMap := make(map[string][]string)
+	// nameObs collects every distinct SubRouteName seen per canonical UID during
+	// Route assembly. subRoutemap keeps only the first-seen name, so this is the
+	// only place a name divergence between two TDX UIDs that canonicalize to the
+	// same identity is observable (busConvergenceCheck).
+	nameObs := make(map[string]map[string]struct{})
 	syncStart := time.Now()
 	if _, err := db.Exec(ctx, "DELETE FROM raw_bus_route WHERE destin = $1 OR depart = $1", city); err != nil {
 		log.Infof("[LOAD] action=bus city=%s event=cleanup_error error=%v", city, err)
@@ -81,7 +89,13 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 			}
 		}
 		for _, sub := range r.SubRoutes {
-			uid, dir := makethatsame(city, sub.SubRouteUID, sub.Direction)
+			uid, dir := shared.CanonicalSubroute(city, sub.SubRouteUID, sub.Direction)
+			if name := sub.SubRouteName.Zhtw; name != "" {
+				if nameObs[uid] == nil {
+					nameObs[uid] = make(map[string]struct{})
+				}
+				nameObs[uid][name] = struct{}{}
+			}
 			dep, dest := sub.DepartureStopNameZh, sub.DestinationStopNameZh
 			if dep == "" {
 				dep = r.DepartureStopNameZh
@@ -126,7 +140,7 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 		if err := json.Unmarshal(raw, &r); err != nil {
 			log.Infof("[LOAD] action=bus city=%s api=StopOfRoute event=unmarshal_error error=%v", city, err)
 		}
-		uid, dir := makethatsame(city, r.SubRouteUID, r.Direction)
+		uid, dir := shared.CanonicalSubroute(city, r.SubRouteUID, r.Direction)
 		if sr, ok := subRoutemap[uid]; ok {
 			if d, ok := sr.Directions[int32(dir)]; ok {
 				for _, stop := range r.Stops {
@@ -148,7 +162,7 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 			log.Infof("[LOAD] action=bus city=%s api=Shape event=unmarshal_error error=%v", city, err)
 		}
 		if r.SubRouteUID != "" {
-			uid, dir := makethatsame(city, r.SubRouteUID, r.Direction)
+			uid, dir := shared.CanonicalSubroute(city, r.SubRouteUID, r.Direction)
 			if sr, ok := subRoutemap[uid]; ok {
 				if d, ok := sr.Directions[int32(dir)]; ok {
 					d.Geometry = r.Geometry
@@ -169,7 +183,7 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 		if err := json.Unmarshal(raw, &r); err != nil {
 			log.Infof("[LOAD] action=bus city=%s api=Schedule event=unmarshal_error error=%v", city, err)
 		}
-		uid, dir := makethatsame(city, r.SubRouteUID, r.Direction)
+		uid, dir := shared.CanonicalSubroute(city, r.SubRouteUID, r.Direction)
 		if sr, ok := subRoutemap[uid]; ok {
 			if d, ok := sr.Directions[int32(dir)]; ok {
 				for _, t := range r.Timetables {
@@ -224,8 +238,61 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 		log.Infof("[LOAD] action=bus city=%s event=delete_stale_static_error error=%v", city, delErr)
 	}
 	invalidateBusStaticMap()
+	busConvergenceCheck(city, subRoutemap, nameObs)
 	log.Infof("[LOAD] action=bus event=city_complete city=%s subroute_count=%d", city, len(subRoutemap))
 	return nil
+}
+
+// convergenceViolation is one canonical UID that failed the ADR-0006 merge
+// invariant: issue is "too_many_directions" or "name_mismatch", detail carries
+// the offending value (direction count or the pipe-joined distinct names).
+type convergenceViolation struct {
+	canonical string
+	issue     string
+	detail    string
+}
+
+// busConvergenceCheck verifies the canonical-subroute merge (ADR-0006) over one
+// city's loaded subroutes and logs a structured warning per violation. It
+// delegates the decision to findConvergenceViolations so the rule is unit
+// testable. Violations are logged, not corrected — the recorded fallback
+// (ADR-0006) is the load-time mapping table.
+func busConvergenceCheck(city string, subRoutemap map[string]*models.BusSubroute, nameObs map[string]map[string]struct{}) {
+	for _, v := range findConvergenceViolations(subRoutemap, nameObs) {
+		log.Infof("[LOAD] action=convergence_check event=convergence_invalid city=%s canonical=%s issue=%s detail=%q", city, v.canonical, v.issue, v.detail)
+	}
+}
+
+// findConvergenceViolations returns every canonical UID that violates the
+// ADR-0006 invariant: at most two directions, and a single SubRouteName across
+// the TDX UIDs that canonicalized to it. subRoutemap supplies the direction
+// count; nameObs supplies the distinct names seen during Route assembly (before
+// subRoutemap collapsed them to the first-seen name). Results are ordered by
+// canonical UID for deterministic logging and testing.
+func findConvergenceViolations(subRoutemap map[string]*models.BusSubroute, nameObs map[string]map[string]struct{}) []convergenceViolation {
+	var out []convergenceViolation
+	for uid, sub := range subRoutemap {
+		if n := len(sub.Directions); n > 2 {
+			out = append(out, convergenceViolation{uid, "too_many_directions", strconv.Itoa(n)})
+		}
+	}
+	for uid, names := range nameObs {
+		if len(names) > 1 {
+			distinct := make([]string, 0, len(names))
+			for name := range names {
+				distinct = append(distinct, name)
+			}
+			sort.Strings(distinct)
+			out = append(out, convergenceViolation{uid, "name_mismatch", strings.Join(distinct, "|")})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].canonical != out[j].canonical {
+			return out[i].canonical < out[j].canonical
+		}
+		return out[i].issue < out[j].issue
+	})
+	return out
 }
 
 // loadBusOperatorMap returns a city's operators for the subroute assembly by
@@ -326,7 +393,7 @@ func loadBusStage(ctx context.Context, src loadSource, db *pgxpool.Pool, city, t
 				if dest == "" {
 					dest = r.DestinationStopNameZh
 				}
-				uid, dir := makethatsame(city, sub.SubRouteUID, sub.Direction)
+				uid, dir := shared.CanonicalSubroute(city, sub.SubRouteUID, sub.Direction)
 				rawRows = append(rawRows, []interface{}{
 					uid, dir, r.RouteUID, r.RouteName.Zhtw, sub.SubRouteName.Zhtw, dep, dest, api, raw,
 				})
@@ -336,7 +403,7 @@ func loadBusStage(ctx context.Context, src loadSource, db *pgxpool.Pool, city, t
 			if err := json.Unmarshal(raw, &s); err != nil {
 				log.Infof("[LOAD] action=bus city=%s api=%s event=unmarshal_error error=%v", city, api, err)
 			}
-			uid, dir := makethatsame(city, s.SubRouteUID, s.Direction)
+			uid, dir := shared.CanonicalSubroute(city, s.SubRouteUID, s.Direction)
 			rawRows = append(rawRows, []interface{}{
 				uid, dir, s.RouteUID, "", "", "", city, api, raw,
 			})
@@ -348,9 +415,9 @@ func loadBusStage(ctx context.Context, src loadSource, db *pgxpool.Pool, city, t
 			var uid string
 			var dir uint8
 			if s.SubRouteUID == "" {
-				uid, dir = makethatsame(city, s.RouteUID, s.Direction)
+				uid, dir = shared.CanonicalSubroute(city, s.RouteUID, s.Direction)
 			} else {
-				uid, dir = makethatsame(city, s.SubRouteUID, s.Direction)
+				uid, dir = shared.CanonicalSubroute(city, s.SubRouteUID, s.Direction)
 			}
 			rawRows = append(rawRows, []interface{}{
 				uid, dir, s.RouteUID, "", "", "", city, api, raw,
@@ -360,7 +427,7 @@ func loadBusStage(ctx context.Context, src loadSource, db *pgxpool.Pool, city, t
 			if err := json.Unmarshal(raw, &t); err != nil {
 				log.Infof("[LOAD] action=bus city=%s api=%s event=unmarshal_error error=%v", city, api, err)
 			}
-			uid, dir := makethatsame(city, t.SubRouteUID, t.Direction)
+			uid, dir := shared.CanonicalSubroute(city, t.SubRouteUID, t.Direction)
 			rawRows = append(rawRows, []interface{}{
 				uid, dir, t.RouteUID, "", "", "", city, api, raw,
 			})
@@ -481,7 +548,7 @@ func dailyRoute(ctx context.Context, rc *redis.Client, c *resty.Client, db *pgxp
 				}
 			}
 			for _, sub := range r.SubRoutes {
-				uid, dir := makethatsame(city, sub.SubRouteUID, sub.Direction)
+				uid, dir := shared.CanonicalSubroute(city, sub.SubRouteUID, sub.Direction)
 				dep, dest := sub.DepartureStopNameZh, sub.DestinationStopNameZh
 				if dep == "" {
 					dep = r.DepartureStopNameZh
@@ -527,7 +594,7 @@ func dailyRoute(ctx context.Context, rc *redis.Client, c *resty.Client, db *pgxp
 			if err != nil {
 				log.Infof("[BUS] action=dailyRoute city=%s api=StopOfRoute event=unmarshal_error error=%v", city, err)
 			}
-			uid, dir := makethatsame(city, r.SubRouteUID, r.Direction)
+			uid, dir := shared.CanonicalSubroute(city, r.SubRouteUID, r.Direction)
 			if sr, ok := subRoutemap[uid]; ok {
 				if d, ok := sr.Directions[int32(dir)]; ok {
 					for _, stop := range r.Stops {
@@ -550,7 +617,7 @@ func dailyRoute(ctx context.Context, rc *redis.Client, c *resty.Client, db *pgxp
 				log.Infof("[BUS] action=dailyRoute event=marshal_error error=%v\n", err)
 			}
 			if r.SubRouteUID != "" {
-				uid, dir := makethatsame(city, r.SubRouteUID, r.Direction)
+				uid, dir := shared.CanonicalSubroute(city, r.SubRouteUID, r.Direction)
 				if sr, ok := subRoutemap[uid]; ok {
 					if d, ok := sr.Directions[int32(dir)]; ok {
 						d.Geometry = r.Geometry
@@ -572,7 +639,7 @@ func dailyRoute(ctx context.Context, rc *redis.Client, c *resty.Client, db *pgxp
 			if err != nil {
 				log.Infof("[BUS] action=dailyRoute city=%s api=Schedule event=unmarshal_error error=%v", city, err)
 			}
-			uid, dir := makethatsame(city, r.SubRouteUID, r.Direction)
+			uid, dir := shared.CanonicalSubroute(city, r.SubRouteUID, r.Direction)
 			if sr, ok := subRoutemap[uid]; ok {
 				if d, ok := sr.Directions[int32(dir)]; ok {
 					for _, t := range r.Timetables {
@@ -918,7 +985,7 @@ func saveschedule(ctx context.Context, db *pgxpool.Pool, city string) {
 			log.Infof("[BUS] action=saveschedule city=%s event=unmarshal_error error=%v", city, err)
 			continue
 		}
-		uid, dir := makethatsame(city, temp.SubRouteUID, temp.Direction)
+		uid, dir := shared.CanonicalSubroute(city, temp.SubRouteUID, temp.Direction)
 		for _, t := range temp.Frequencys {
 			row = append(row, []interface{}{
 				uid, int16(dir), true, "", false, int16(-1), strconv.Itoa(int(t.MinHeadwayMins)), strconv.Itoa(int(t.MaxHeadwayMins)), t.StartTime, t.EndTime, int16(mask2(t.ServiceDay.Monday, t.ServiceDay.Tuesday, t.ServiceDay.Wednesday, t.ServiceDay.Thursday, t.ServiceDay.Friday, t.ServiceDay.Saturday, t.ServiceDay.Sunday)),

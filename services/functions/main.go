@@ -569,27 +569,6 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 	return list, nil
 }
 
-// makethatsame normalizes InterCity subroute UIDs so both travel directions map
-// to one canonical UID. InterCity TDX data encodes direction as a "01"/"02"
-// suffix on the SubRouteUID (and other UIDs carry a trailing digit); this strips
-// it and returns the derived direction. Non-InterCity cities are returned
-// unchanged. Keeping the two directions under one UID is what lets ETAs and
-// static rows join. The unusual name and string-slicing are legacy — do not rely
-// on the exact suffix format beyond what TDX emits.
-func makethatsame(city string, subRouteUID string, Direction uint8) (string, uint8) {
-	if city == "InterCity" {
-		temp := subRouteUID[len(subRouteUID)-2:]
-		if temp == "01" {
-			return subRouteUID[:len(subRouteUID)-2], 0
-		}
-		if temp == "02" {
-			return subRouteUID[:len(subRouteUID)-2], 1
-		}
-		return subRouteUID[:len(subRouteUID)-1], Direction
-	}
-	return subRouteUID, Direction
-}
-
 // getToken returns a TDX OAuth bearer token, preferring the cached value in
 // Redis (namespaced key, then legacy key). On a cache miss it does a
 // client_credentials exchange against the TDX auth server using TDX_CLIENT_ID /
@@ -689,7 +668,7 @@ func processStatic(ctx context.Context, client *resty.Client, rc *redis.Client, 
 				if dest == "" {
 					dest = r.DestinationStopNameZh
 				}
-				uid, dir := makethatsame(city, sub.SubRouteUID, sub.Direction)
+				uid, dir := shared.CanonicalSubroute(city, sub.SubRouteUID, sub.Direction)
 				rawRows = append(rawRows, []interface{}{
 					uid, dir, r.RouteUID, r.RouteName.Zhtw, sub.SubRouteName.Zhtw, dep, dest, api, raw,
 				})
@@ -700,7 +679,7 @@ func processStatic(ctx context.Context, client *resty.Client, rc *redis.Client, 
 			if err != nil {
 				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=unmarshal_error error=%v", city, api, err)
 			}
-			uid, dir := makethatsame(city, s.SubRouteUID, s.Direction)
+			uid, dir := shared.CanonicalSubroute(city, s.SubRouteUID, s.Direction)
 			rawRows = append(rawRows, []interface{}{
 				uid, dir, s.RouteUID, "", "", "", city, api, raw,
 			})
@@ -713,9 +692,9 @@ func processStatic(ctx context.Context, client *resty.Client, rc *redis.Client, 
 			var uid string
 			var dir uint8
 			if s.SubRouteUID == "" {
-				uid, dir = makethatsame(city, s.RouteUID, s.Direction)
+				uid, dir = shared.CanonicalSubroute(city, s.RouteUID, s.Direction)
 			} else {
-				uid, dir = makethatsame(city, s.SubRouteUID, s.Direction)
+				uid, dir = shared.CanonicalSubroute(city, s.SubRouteUID, s.Direction)
 			}
 			rawRows = append(rawRows, []interface{}{
 				uid, dir, s.RouteUID, "", "", "", city, api, raw,
@@ -726,7 +705,7 @@ func processStatic(ctx context.Context, client *resty.Client, rc *redis.Client, 
 			if err != nil {
 				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=unmarshal_error error=%v", city, api, err)
 			}
-			uid, dir := makethatsame(city, t.SubRouteUID, t.Direction)
+			uid, dir := shared.CanonicalSubroute(city, t.SubRouteUID, t.Direction)
 			rawRows = append(rawRows, []interface{}{
 				uid, dir, t.RouteUID, "", "", "", city, api, raw,
 			})

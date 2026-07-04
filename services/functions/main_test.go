@@ -21,25 +21,6 @@ func TestMask2(t *testing.T) {
 	}
 }
 
-func TestMakeThatSameInterCity(t *testing.T) {
-	uid, dir := makethatsame("InterCity", "THB123401", 9)
-	if uid != "THB1234" || dir != 0 {
-		t.Fatalf("makethatsame() = (%s, %d), want (THB1234, 0)", uid, dir)
-	}
-
-	uid, dir = makethatsame("InterCity", "THB123402", 9)
-	if uid != "THB1234" || dir != 1 {
-		t.Fatalf("makethatsame() = (%s, %d), want (THB1234, 1)", uid, dir)
-	}
-}
-
-func TestMakeThatSameCity(t *testing.T) {
-	uid, dir := makethatsame("Taipei", "TPE1234", 1)
-	if uid != "TPE1234" || dir != 1 {
-		t.Fatalf("makethatsame() = (%s, %d), want (TPE1234, 1)", uid, dir)
-	}
-}
-
 func TestBusRouteEtaKey(t *testing.T) {
 	got := busRouteEtaKey("THB1234")
 	want := "bus_eta_route:THB1234"

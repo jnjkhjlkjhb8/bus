@@ -27,20 +27,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func makethatsame(subRouteUID string) string {
-	if len(subRouteUID) >= 3 && subRouteUID[:3] == "THB" {
-		temp := subRouteUID[len(subRouteUID)-2:]
-		switch temp {
-		case "01", "02":
-			return subRouteUID[:len(subRouteUID)-2]
-		}
-		return subRouteUID[:len(subRouteUID)-1]
-	}
-	return subRouteUID
-}
-
+// busRouteEtaKey returns the Redis key holding (and channel publishing) a bus
+// route's live ETA. The UID is used as-is: canonical subroute identity is
+// produced at the 03:30 load (ADR-0006), so requests arrive already canonical
+// and the router does no normalization.
 func busRouteEtaKey(subRouteUID string) string {
-	return fmt.Sprintf("bus_eta_route:%s", makethatsame(subRouteUID))
+	return fmt.Sprintf("bus_eta_route:%s", subRouteUID)
 }
 
 func usableBusEtaPayload(data []byte) bool {

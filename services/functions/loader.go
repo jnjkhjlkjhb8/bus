@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -24,13 +25,26 @@ type loadSource interface {
 // loadSpec is one dataset's loader recipe: which raw_tdx table and partitions to
 // read, and the transform that consumes the reconstructed decoder. load's SQL
 // body is byte-identical to the legacy transform it was split from (ADR-0005:
-// transforms are reused, not rewritten).
+// transforms are reused, not rewritten). report, when set, names the env-schema
+// tables to emit a data-quality line for after a successful load; Redis-only
+// specs leave it nil.
 type loadSpec struct {
 	key        string
 	table      string
 	partCol    string
 	partitions func() []string
 	load       func(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, rc *redis.Client, part string) error
+	report     []qualityTarget
+}
+
+// qualityTarget describes one env-schema table's post-load quality probe: the
+// text columns whose empty-or-NULL ratio matters (names) and the columns whose
+// NULL ratio matters (coordinates, stored as PostGIS geometry, so empty-string
+// does not apply). reportQuality runs one aggregate query per target.
+type qualityTarget struct {
+	table    string
+	textCols []string
+	geoCols  []string
 }
 
 // errLoadStale marks a partition whose newest fetched_at is older than the
@@ -93,8 +107,53 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 			}
 			log.Infof("[LOAD] action=transform event=success dataset=%s partition=%s", spec.key, part)
 		}
+		reportQuality(ctx, db, spec)
 	}
 	return nil
+}
+
+// reportQuality logs one data-quality line per target table after a dataset
+// loads: the row count plus the empty-or-NULL ratio of key text columns and the
+// NULL ratio of key coordinate columns. It is a cheap post-load sanity signal,
+// not a stored report. A query error is logged and skipped so it never blocks a
+// load.
+func reportQuality(ctx context.Context, db *pgxpool.Pool, spec loadSpec) {
+	for _, t := range spec.report {
+		selects := []string{"COUNT(*) AS rows"}
+		var cols []string
+		for _, c := range t.textCols {
+			selects = append(selects, fmt.Sprintf(
+				"COUNT(*) FILTER (WHERE %q IS NULL OR %q = '') AS %s_empty", c, c, c))
+			cols = append(cols, c)
+		}
+		for _, c := range t.geoCols {
+			selects = append(selects, fmt.Sprintf(
+				"COUNT(*) FILTER (WHERE %q IS NULL) AS %s_empty", c, c))
+			cols = append(cols, c)
+		}
+		q := fmt.Sprintf("SELECT %s FROM %s", strings.Join(selects, ", "), t.table)
+		vals := make([]int64, 1+len(cols))
+		dest := make([]any, len(vals))
+		for i := range vals {
+			dest[i] = &vals[i]
+		}
+		if err := db.QueryRow(ctx, q).Scan(dest...); err != nil {
+			log.Infof("[LOAD] action=quality_report event=query_error dataset=%s table=%s error=%v", spec.key, t.table, err)
+			continue
+		}
+		rows := vals[0]
+		var b strings.Builder
+		fmt.Fprintf(&b, "[LOAD] action=quality_report dataset=%s table=%s rows=%d", spec.key, t.table, rows)
+		for i, c := range cols {
+			empty := vals[i+1]
+			ratio := 0.0
+			if rows > 0 {
+				ratio = float64(empty) / float64(rows)
+			}
+			fmt.Fprintf(&b, " %s_empty_ratio=%.3f", c, ratio)
+		}
+		log.Infof("%s", b.String())
+	}
 }
 
 // rawTDXSource reconstructs lowercased-JSON arrays from the shared raw_tdx
@@ -206,14 +265,23 @@ func loaderRegistry(src loadSource) []loadSpec {
 		{key: "bus", table: "bus_route", partCol: "city", partitions: allCities,
 			load: func(ctx context.Context, _ *json.Decoder, db *pgxpool.Pool, rc *redis.Client, part string) error {
 				return loadBus(ctx, src, db, rc, part)
+			},
+			report: []qualityTarget{
+				{table: "bus_subroutes", textCols: []string{"route_name", "sub_route_name", "depart", "destin"}},
+				{table: "bus_static", textCols: []string{"route_name", "sub_route_name"}},
+				{table: "bus_stations", textCols: []string{"station_name"}, geoCols: []string{"position"}},
 			}},
 		{key: "bus_dailytimetable", table: "bus_dailytimetable", partCol: "city", partitions: dailyTimetableCities, load: loadBusDailyTimetable},
-		{key: "bike", table: "bike_station", partCol: "city", partitions: bikeCities, load: loadBikeStations},
-		{key: "mrt_station", table: "metro_station", partCol: "system", partitions: func() []string { return ingestMetroStationSystems }, load: loadMrtStations},
+		{key: "bike", table: "bike_station", partCol: "city", partitions: bikeCities, load: loadBikeStations,
+			report: []qualityTarget{{table: "bike_stations", textCols: []string{"name", "address"}, geoCols: []string{"geom"}}}},
+		{key: "mrt_station", table: "metro_station", partCol: "system", partitions: func() []string { return ingestMetroStationSystems }, load: loadMrtStations,
+			report: []qualityTarget{{table: "mrt_station", textCols: []string{"name"}, geoCols: []string{"stationposition"}}}},
 		{key: "mrt_firstlast", table: "metro_schedule", partCol: "system", partitions: func() []string { return ingestMetroFirstLast }, load: loadMrtFirstlast},
 		{key: "mrt_odfare", table: "metro_odfare", partCol: "system", partitions: func() []string { return ingestMetroODFare }, load: loadMrtJourneyMatrix},
-		{key: "tra_station", table: "tra_station", partCol: "", partitions: single, load: loadTraStation},
-		{key: "thsr_station", table: "thsr_station", partCol: "", partitions: single, load: loadThsrStation},
+		{key: "tra_station", table: "tra_station", partCol: "", partitions: single, load: loadTraStation,
+			report: []qualityTarget{{table: "tra_stations", textCols: []string{"name"}, geoCols: []string{"geom"}}}},
+		{key: "thsr_station", table: "thsr_station", partCol: "", partitions: single, load: loadThsrStation,
+			report: []qualityTarget{{table: "thsr_stations", textCols: []string{"name"}, geoCols: []string{"geom"}}}},
 		{key: "tra_fare", table: "tra_odfare", partCol: "", partitions: single, load: loadTraFare},
 		{key: "thsr_fare", table: "thsr_odfare", partCol: "", partitions: single, load: loadThsrFare},
 		{key: "tra_timetable", table: "tra_dailytimetable", partCol: "traindate", partitions: func() []string { return railDateWindow(60) }, load: loadTraTimetable},

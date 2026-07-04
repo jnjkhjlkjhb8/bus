@@ -285,8 +285,8 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	// "Miaoli"), so any operator path routed through citymap[city] — like a
 	// busOperatorsFromDB read filtering on authority_code — returns zero rows and
 	// operator enrichment silently blanks. This fixture proves loadBus enriches
-	// County-suffixed cities via the in-memory raw_tdx decode. makethatsame is
-	// identity for non-InterCity, so the subroute UID is the raw SubRouteUID
+	// County-suffixed cities via the in-memory raw_tdx decode. CanonicalSubroute
+	// is identity for non-InterCity, so the subroute UID is the raw SubRouteUID
 	// "MIA100"; the fare prefix citymap["MiaoliCounty"] is "", so the fare's
 	// SubRouteID carries the full "MIA100".
 	const city = "MiaoliCounty"

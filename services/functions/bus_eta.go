@@ -13,6 +13,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -126,7 +127,7 @@ func processBusEtaCity(
 		etamap[eat.StopUID] = eat
 	}
 	for _, b := range posit {
-		uid, _ := makethatsame(city, b.SubRouteUID, b.Direction)
+		uid, _ := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
 		pb := &models.BusPosition{
 			PlateNumb:   b.PlateNumb,
 			PositionLon: b.BusPosition.PositionLon,
@@ -141,7 +142,7 @@ func processBusEtaCity(
 	}
 	totalStops := make(map[string]int)
 	for _, b := range mp {
-		uid, _ := makethatsame(city, b.SubRouteUID, b.Direction)
+		uid, _ := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
 		totalStops[uid]++
 	}
 	var weather *weatherData
@@ -157,8 +158,9 @@ func processBusEtaCity(
 	fillUIDs := make(map[string]bool)
 	for _, b := range mp {
 		if etaEnt, ok2 := etamap[b.StopUID]; ok2 && etaEnt.StopStatus == 1 && etaEnt.NextBusTime == "" {
-			fillKeys = append(fillKeys, routeDirKey{b.SubRouteUID, int32(b.Direction)})
-			fillUIDs[b.SubRouteUID] = true
+			uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
+			fillKeys = append(fillKeys, routeDirKey{uid, int32(dir)})
+			fillUIDs[uid] = true
 		}
 	}
 	todTime := now.Format("15:04:05")
@@ -181,7 +183,12 @@ func processBusEtaCity(
 		status := uint8(67)
 		var est int32
 		var stime string
-		uid, _ := makethatsame(city, b.SubRouteUID, b.Direction)
+		// Canonicalize before every downstream write: the Redis route key, the
+		// bus_eta_history row, dispatched notifications, and the app-facing protos
+		// all key on the canonical UID plus derived direction (ADR-0006), so the
+		// router (which no longer normalizes) and the training data see one
+		// identity space. For non-InterCity, this is identity.
+		uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
 		if ok {
 			if srcT, parseErr := time.Parse(time.RFC3339, eta.SrcUpdateTime); parseErr == nil {
 				est = eta.EstimatedTime - int32(now.Sub(srcT).Seconds())
@@ -192,8 +199,7 @@ func processBusEtaCity(
 			stime = eta.SrcUpdateTime
 		}
 		if status == 0 {
-			uid2, _ := makethatsame(city, b.SubRouteUID, b.Direction)
-			ts := totalStops[uid2]
+			ts := totalStops[uid]
 			var plateNumb *string
 			var busSpeed *int16
 			var busDist *int
@@ -235,7 +241,7 @@ func processBusEtaCity(
 				weatherHumid = weather.Humidity
 			}
 			historyRows = append(historyRows, []interface{}{
-				b.SubRouteUID, b.StopUID, int16(b.Direction),
+				uid, b.StopUID, int16(dir),
 				int16(b.StopSequence), int16(ts), est, nextBusTimePtr, srcTime,
 				city, int16(now.Hour()), int16(now.Weekday()), holiday,
 				weatherTemp, weatherPrecip, weatherWind, weatherHumid,
@@ -243,18 +249,17 @@ func processBusEtaCity(
 			})
 		}
 		if status == 1 && eta.NextBusTime == "" {
-			uid2, _ := makethatsame(city, b.SubRouteUID, b.Direction)
-			rk := routeDirKey{b.SubRouteUID, int32(b.Direction)}
-			avgKey := travelAvgKey{b.SubRouteUID, int32(b.Direction), b.StopUID, now.Hour(), int(now.Weekday())}
+			rk := routeDirKey{uid, int32(dir)}
+			avgKey := travelAvgKey{uid, int32(dir), b.StopUID, now.Hour(), int(now.Weekday())}
 			avgVal, hasAvg := travelAvgMap[avgKey]
 			eta.NextBusTime = predictNextBusTime(rc,
 				busStopCtx{
-					subRouteUID:  b.SubRouteUID,
-					direction:    int32(b.Direction),
+					subRouteUID:  uid,
+					direction:    int32(dir),
 					stopUID:      b.StopUID,
 					city:         city,
 					stopSequence: int(b.StopSequence),
-					totalStops:   totalStops[uid2],
+					totalStops:   totalStops[uid],
 				},
 				predictionInputs{
 					now:          now,
@@ -286,9 +291,9 @@ func processBusEtaCity(
 		}
 		station.Routes = append(station.Routes, &models.Bus_StopEstimate{
 			StopUid:       b.StationUID,
-			SubRouteUid:   b.SubRouteUID,
+			SubRouteUid:   uid,
 			RouteName:     b.SubRouteName,
-			Direction:     int32(b.Direction),
+			Direction:     int32(dir),
 			Estimate:      est,
 			NextBusTime:   eta.NextBusTime,
 			StopStatus:    int32(status),
@@ -296,17 +301,17 @@ func processBusEtaCity(
 			Buses:         busmap[uid],
 		})
 		if shouldDispatchBusArrival(ok, status, est) {
-			dispatcher.arrival(ctx, "bus", b.SubRouteUID, b.StopUID, strconv.Itoa(int(b.Direction)), est)
+			dispatcher.arrival(ctx, "bus", uid, b.StopUID, strconv.Itoa(int(dir)), est)
 		}
-		if _, ok = routes[b.SubRouteUID]; !ok {
-			routes[b.SubRouteUID] = &models.Bus_RouteArrival{
-				SubRouteUid: b.SubRouteUID,
+		if _, ok = routes[uid]; !ok {
+			routes[uid] = &models.Bus_RouteArrival{
+				SubRouteUid: uid,
 				Stops:       make([]*models.Bus_RouteEstimate, 0),
 			}
 		}
-		routes[b.SubRouteUID].Stops = append(routes[b.SubRouteUID].Stops, &models.Bus_RouteEstimate{
+		routes[uid].Stops = append(routes[uid].Stops, &models.Bus_RouteEstimate{
 			StopUid:       b.StopUID,
-			Direction:     int32(b.Direction),
+			Direction:     int32(dir),
 			Estimate:      est,
 			StopStatus:    int32(status),
 			NextBusTime:   eta.NextBusTime,

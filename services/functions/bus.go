@@ -12,6 +12,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -407,7 +408,7 @@ func loadBusDailyTimetable(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool
 	for dec.More() {
 		temp = rawBusDailytimetable{}
 		if err := dec.Decode(&temp); err == nil {
-			uid, dir := makethatsame(city, temp.SubRouteUID, temp.Direction)
+			uid, dir := shared.CanonicalSubroute(city, temp.SubRouteUID, temp.Direction)
 			if _, exists := mp[uid]; !exists {
 				mp[uid] = make(map[int32]*models.Temp, 4)
 			}
