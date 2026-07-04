@@ -333,8 +333,8 @@ func mrtEta(client *resty.Client, rc *redis.Client) {
 // mrtODFare decodes a TDX Rail/Metro/ODFare element: fares between an
 // origin/destination station pair, by ticket type.
 type mrtODFare struct {
-	FromStationID string `json:"FromStationID"`
-	ToStationID   string `json:"ToStationID"`
+	OriginStationID      string `json:"OriginStationID"`
+	DestinationStationID string `json:"DestinationStationID"`
 	Fares         []struct {
 		TicketType int `json:"TicketType"`
 		Price      int `json:"Price"`
@@ -365,14 +365,14 @@ func mrtJourneyMatrix(ctx context.Context, pool *pgxpool.Pool, client *resty.Cli
 					adultPrice = t.Price
 				}
 			}
-			id := fmt.Sprintf("%s-%s-%s", system, f.FromStationID, f.ToStationID)
+			id := fmt.Sprintf("%s-%s-%s", system, f.OriginStationID, f.DestinationStationID)
 			batch.Queue(`
 				INSERT INTO mrt_journey_matrix
 					(id, from_station_id, to_station_id, system, travel_time_min, fare_nt, updated_at)
 				VALUES ($1,$2,$3,$4,0,$5,NOW())
 				ON CONFLICT (from_station_id, to_station_id, system)
 				DO UPDATE SET fare_nt=EXCLUDED.fare_nt, updated_at=NOW()`,
-				id, f.FromStationID, f.ToStationID, system, adultPrice,
+				id, f.OriginStationID, f.DestinationStationID, system, adultPrice,
 			)
 		}
 		br := pool.SendBatch(ctx, batch)
