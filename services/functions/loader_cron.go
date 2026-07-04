@@ -50,6 +50,10 @@ func registerLoaderCrons(r *cron.Cron, db *pgxpool.Pool, rc *redis.Client) {
 	rawPool := rawSourcePool(db)
 	src := rawTDXSource{pool: rawPool}
 	_, _ = r.AddFunc("0 30 3 * * *", func() {
+		// runDaily's 3× retry never fires for the loader: runLoad returns nil
+		// unconditionally (per-partition failures are isolated and logged inside
+		// runLoadSpecs, by design), so there is no error to retry on. The wrapper
+		// is kept only for the shared timeout/observability plumbing.
 		runDaily("load", 20*time.Minute, func(ctx context.Context) error {
 			return runLoad(ctx, src, db, rc, nil)
 		})

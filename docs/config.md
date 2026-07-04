@@ -12,8 +12,9 @@ made by claude
 ## TDX
 - `TDX_CLIENT_ID`
 - `TDX_CLIENT_SECRET`
-  - ingestor 容器（`ROLE=ingestor`）每個環境都會啟動（只有 `make up-test` 不啟動），但 TDX 憑證只放在 prod；其他環境的 ingestor 沒有憑證、抓取不會發生。
+  - ingestor 容器（`ROLE=ingestor`）每個環境都會啟動（只有 `make up-test` 不啟動），但 TDX 憑證只放在 prod；缺任一憑證時 `ingestRaw` 直接跳過整趟落地、不發出任何請求（真正的 no-op）。
   - staging / test 留空即可（ADR-0005 Consequences）：loader 從 `raw_tdx` 載入，不呼叫 TDX。
+  - ⚠️ staging 與 prod 共用同一個 Azure 資料庫，切勿在 staging 設定 TDX 憑證：兩個 ingestor 會在共用的 `raw_tdx` 上競爭彼此的分割 `DELETE`/`INSERT`。若 staging 必須落地，請改用獨立資料庫。
 
 ## 資料載入（loader）
 - `LOAD_ON_BOOT`

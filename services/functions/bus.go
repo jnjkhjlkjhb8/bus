@@ -447,7 +447,7 @@ func loadBusDailyTimetable(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool
 		pipe.Set(fmt.Sprintf("bus_daily_timetable:%s", subRouteUID), pb, 23*time.Hour+30*time.Minute)
 	}
 	_, _ = pipe.Exec()
-	log.Infof("[bus] action= %s bus_dailyroute event=complete", city)
+	log.Infof("[BUS] action=bus_dailyroute event=complete city=%s", city)
 	return nil
 }
 

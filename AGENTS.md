@@ -92,7 +92,7 @@ Full reference: `docs/config.md` and `env/*.env.example`.
 | `DATABASE_URL` | PostgreSQL connection string |
 | `PG_SCHEMA` | Schema override (staging isolation) |
 | `REDIS_ADDR` | `redis:6379` (Docker internal — do not change) |
-| `TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` | TDX API credentials (prod ingestor only; other envs load from `raw_tdx` and may leave them empty) |
+| `TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` | TDX API credentials (prod ingestor only; other envs load from `raw_tdx` and leave them empty — empty ⇒ ingestor skips entirely, issuing zero requests). Never set on staging: it shares prod's DB, so a second writer would race `raw_tdx`. |
 | `CWA_API_KEY` | Weather data (bus ETA prediction) |
 | `HF_TOKEN` | HuggingFace embedding fallback |
 | `OSRM_FILE` | Pre-processed `.osrm` file in `osrm-data/` |
@@ -113,7 +113,7 @@ Services in `docker-compose.yaml`:
 | redis | redis:7-alpine | 127.0.0.1:6379 | ETA cache + Pub/Sub |
 | router | bus-router | 50051 (gRPC), 8080 (HTTP) | Request path |
 | functions | bus-functions | — | Realtime ETA + MQTT + 03:30 raw_tdx load (empty `ROLE`) |
-| ingestor | bus-functions | — | 03:00 raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`; runs in every env but only prod holds TDX credentials — no-op elsewhere) |
+| ingestor | bus-functions | — | 03:00 raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`; runs in every env but only prod holds TDX credentials — empty creds ⇒ skips entirely, zero requests) |
 | powersync | journeyapps/powersync-service | 8081 | Offline sync |
 | osrm | osrm/osrm-backend | 127.0.0.1:5000 | Routing engine |
 
@@ -125,7 +125,7 @@ PostgreSQL is on **Azure** (external). `functions` and `ingestor` share one imag
 
 | Schedule | Job |
 |---|---|
-| 03:00 daily | raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`; TDX credentials prod-only, no-op elsewhere) |
+| 03:00 daily | raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`; TDX credentials prod-only — empty creds ⇒ zero requests) |
 | 03:30 daily | load: `raw_tdx` → this env's `PG_SCHEMA` (every env's functions; no TDX calls) |
 | 03:45 daily | `changetovector` (vector update, after the load) |
 | 04:00 daily | `computeTravelAvg` (ETA prediction) |

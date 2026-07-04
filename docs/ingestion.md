@@ -1,13 +1,13 @@
 made by claude
 # 資料擷取與排程
 
-靜態資料採兩階段流程（ADR-0005）：**Stage 1** 由 `ROLE=ingestor` 容器把 TDX 原始 payload 落地到共用的 `raw_tdx` schema——ingestor 容器每個環境都會啟動，但 TDX 憑證只放在 prod，其他環境的 ingestor 沒有憑證、抓取不會發生；**Stage 2** 由每個環境的 `functions` 容器把 `raw_tdx` 轉換寫入各自的 `PG_SCHEMA`。即時（realtime）排程不受此拆分影響，仍在 `functions`（`ROLE=""`）中執行。
+靜態資料採兩階段流程（ADR-0005）：**Stage 1** 由 `ROLE=ingestor` 容器把 TDX 原始 payload 落地到共用的 `raw_tdx` schema——ingestor 容器每個環境都會啟動，但 TDX 憑證只放在 prod，其他環境沒有憑證時 ingestor 直接跳過、不會發出任何請求（真正的 no-op）；**Stage 2** 由每個環境的 `functions` 容器把 `raw_tdx` 轉換寫入各自的 `PG_SCHEMA`。即時（realtime）排程不受此拆分影響，仍在 `functions`（`ROLE=""`）中執行。
 
 ## 排程時間
 
 | 時間 | 角色 | 工作 |
 |---|---|---|
-| 每日 03:00 | ingestor（每環境都啟動；TDX 憑證僅 prod，其他環境為 no-op）| `ingestRaw`：抓取所有靜態 TDX 端點，落地 `raw_tdx` |
+| 每日 03:00 | ingestor（每環境都啟動；TDX 憑證僅 prod，無憑證時直接跳過、零請求）| `ingestRaw`：抓取所有靜態 TDX 端點，落地 `raw_tdx` |
 | 每日 03:30 | functions（每個環境）| `load`：`raw_tdx` → 該環境 `PG_SCHEMA` |
 | 每日 03:45 | functions | `changetovector`：向量更新（在 load 之後執行） |
 | 每日 04:00 | functions | `computeTravelAvg`：公車旅行時間統計 |
@@ -21,7 +21,9 @@ made by claude
 
 ## Stage 1 — 原始落地（ingestor，每日 03:00）
 
-`ROLE=ingestor` 容器每個環境都會啟動（base compose 定義它；只有 `make up-test` 不啟動），但 **TDX 憑證（`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET`）只放在 prod**；其他環境的 ingestor 沒有憑證，抓取不會發生。`ingestRaw` 逐一抓取每個靜態端點，把 TDX 回應原文（不解析）寫入 `raw_tdx.<table>`。落地寫入發生在 `callApi` 內：只有在成功 dump 之後才更新 Last-Modified / If-Modified-Since cache，避免某次 dump 失敗被後續 304 遮蔽而讓 `raw_tdx` 永久卡在舊資料。
+`ROLE=ingestor` 容器每個環境都會啟動（base compose 定義它；只有 `make up-test` 不啟動），但 **TDX 憑證（`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET`）只放在 prod**。`ingestRaw` 進入時先檢查憑證：**任一憑證為空時直接跳過整趟落地，不會發出任何請求**，只輸出一行 `[INGEST] action=raw event=idle reason=no_credentials`（cron 仍註冊，但是真正的 no-op）。有憑證時才逐一抓取每個靜態端點，把 TDX 回應原文（不解析）寫入 `raw_tdx.<table>`。落地寫入發生在 `callApi` 內：只有在成功 dump 之後才更新 Last-Modified / If-Modified-Since cache，避免某次 dump 失敗被後續 304 遮蔽而讓 `raw_tdx` 永久卡在舊資料。
+
+> ⚠️ **共用 `raw_tdx` 的單一寫入者不變式**：staging 與 prod 共用同一個 Azure 資料庫，`raw_tdx` 之所以只有一個寫入者，**完全是因為 staging 的 TDX 憑證為空**。切勿在 staging（或任何共用 prod 資料庫的環境）設定 TDX 憑證——兩個 ingestor 會在共用的 `raw_tdx` 上互相競爭彼此的分割 `DELETE`/`INSERT`，造成資料損毀。若 staging 必須自行落地，請改用獨立的資料庫。
 
 分割替換（partition-replace）策略：
 
@@ -35,7 +37,7 @@ made by claude
 | 公車（9 支 API × 23 城市）| `/v2/Bus/{Route,StopOfRoute,Shape,Schedule,Station,StationGroup,Operator,RouteFare,DailyTimeTable}/City/{City}`（InterCity 用 `/InterCity`）| `bus_route`, `bus_stopofroute`, `bus_shape`, `bus_schedule`, `bus_station`, `bus_stationgroup`, `bus_operator`, `bus_routefare`, `bus_dailytimetable` | `city` |
 | 自行車 | `/v2/Bike/Station/City/{City}`（跳過無 feed 的縣市）| `bike_station` | `city` |
 | 捷運（Metro）| `/v2/Rail/Metro/{Station,FirstLastTimetable,ODFare}/{System}` | `metro_station`, `metro_schedule`, `metro_odfare` | `system` |
-| 台鐵 / 高鐵 靜態 | `/v2/Rail/{TRA,THSR}/Station`、`/v2/Rail/{TRA,THSR}/ODFare`、`/v2/Rail/TRA/TrainType` | `tra_station`, `thsr_station`, `tra_odfare`, `thsr_odfare`, `tra_traintype` | 無 |
+| 台鐵 / 高鐵 靜態 | `/v2/Rail/{TRA,THSR}/Station`、`/v2/Rail/{TRA,THSR}/ODFare` | `tra_station`, `thsr_station`, `tra_odfare`, `thsr_odfare` | 無 |
 | 台鐵時刻表 | `/v2/Rail/TRA/DailyTimetable/TrainDate/{date}`（今日 +0..+60）| `tra_dailytimetable` | `traindate` |
 | 高鐵時刻表 | `/v2/Rail/THSR/DailyTimetable/TrainDate/{date}`（今日 +0..+45）| `thsr_dailytimetable` | `traindate` |
 
@@ -47,13 +49,13 @@ Metro 系統碼各端點不同（不是每個系統都發佈每種 feed）：
 
 時刻表以「每個日期一個 `traindate` 分割」方式落地（今日為 day 0），因此 Stage 2 loader 的取用視窗（台鐵 today..+60、高鐵 today..+45）每個日期都有對應分割；某日期中途重抓只替換該日期分割，不會 TRUNCATE 整表。
 
-> 落地但**不 load**：`tra_traintype` 有被 ingestor 抓取落地到 `raw_tdx`，但 Stage 2 loader 尚無對應的轉換 spec（見下方 registry）。`bus_stop` 在 `rawDumpTarget` 白名單中屬可落地目標，但 `Stop` 不在 `ingestBusAPIs`，因此目前並未實際被抓取。
+> 白名單保留但目前未使用：`tra_traintype` 與 `bus_stop` 都不再（或從未）被 ingestor 抓取——`tra_traintype` 沒有 loader 轉換 spec，且 train-type 資料本就內含於每日時刻表 payload；`bus_stop` 的 `Stop` 端點不在 `ingestBusAPIs`，`bus_stop` 也已從 `rawDumpTarget` 的 `busTables` 對照移除。兩者的白名單條目與 DDL 仍保留（Azure 上可能已建表，移除不值得），程式碼中以註解標明其為未使用。
 
 ## Stage 2 — 載入（loader，每個環境，每日 03:30）
 
 每個環境的 `functions` 容器在 03:30 執行 `runLoad`（`registerLoaderCrons`），把 `raw_tdx` 轉換寫入自己的 `PG_SCHEMA`。**loader 從不呼叫 TDX**。
 
-- **協調機制**：固定的 03:00 / 03:30 時間差，加上每個分割的 `fetched_at` 新鮮度檢查。若某分割最新的 `fetched_at` 早於 27 小時（`staleAfter`），loader 跳過該分割並輸出 `[LOAD] action=skip event=stale`，保留環境 schema 內既有的好資料，而不是用「其實沒發生的落地」覆寫。
+- **協調機制**：固定的 03:00 / 03:30 時間差，加上每個分割的 `fetched_at` 新鮮度檢查。若某分割最新的 `fetched_at` 早於 27 小時（`staleAfter`），loader 跳過該分割並輸出 `[LOAD] action=skip event=stale`，保留環境 schema 內既有的好資料，而不是用「其實沒發生的落地」覆寫。已接受的城市內 torn-read 風險：若落地超過 30 分鐘時間差，`loadBus` 可能讀到某城市今天的 `bus_route` 卻搭配昨天的 `bus_stopofroute`（各表各自為內部一致的快照，結果是降級而非損毀）；我們刻意不加逐階段新鮮度檢查——時間差固定、`bus_route` 已有 27h 閘門，且此情況罕見並在下次成功落地時自我修復。
 - **重建 payload**：`rawTDXSource.datasetJSON` 以 `to_jsonb` 重建每列的小寫 key JSON 陣列（去掉 `fetched_at` 與分割欄等 loader 記帳欄位），schema-qualified 讀取 `raw_tdx.<table>`，因此不受 sink pool 的 `search_path=PG_SCHEMA` 影響。重建出的 bytes 包成 `*json.Decoder` 餵給既有的轉換函式（轉換 SQL 與拆分前的 legacy 版本 byte-identical，ADR-0005：transforms 重用不重寫）。
 - **環境路由**：`shared.ConnectDB` 把 sink pool 的 `search_path` 釘在 `PG_SCHEMA`，因此 loader 未加 schema 前綴的 upsert 落在該環境 schema；`raw_tdx.*` 讀取則永遠 schema-qualified。
 - **獨立的 raw 讀取 DSN**：`RAW_DATABASE_URL` 若設定，loader 會另開一個 pool 讀共用的 Azure `raw_tdx`（唯讀），同時把轉換結果 sink 到自己的本地 schema（`db`）；未設定時退回用 `db`（單一 cluster 部署零行為改變）。

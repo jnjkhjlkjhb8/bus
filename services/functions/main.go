@@ -388,10 +388,12 @@ func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
 	}
 	switch {
 	case seg[1] == "Bus":
+		// Bus/Stop is intentionally absent: it is never fetched by the ingestor
+		// (raw_tdx.bus_stop stays unused; whitelist + DDL are kept — see rawTDXTables).
 		busTables := map[string]string{
 			"Route": "bus_route", "StopOfRoute": "bus_stopofroute", "Shape": "bus_shape",
 			"Schedule": "bus_schedule", "Station": "bus_station", "StationGroup": "bus_stationgroup",
-			"Stop": "bus_stop", "Operator": "bus_operator", "RouteFare": "bus_routefare",
+			"Operator": "bus_operator", "RouteFare": "bus_routefare",
 			"DailyTimeTable": "bus_dailytimetable",
 		}
 		if t, exists := busTables[seg[2]]; exists {
@@ -436,13 +438,18 @@ var errRawDump = errors.New("raw dump failed")
 // rawTDXTables is the whitelist of raw_tdx landing tables. Table and partition
 // names are interpolated into SQL, so they must never come from input — only
 // from this set (and rawDumpTarget, which produces a subset).
+//
+// bus_stop and tra_traintype are currently unused: neither is fetched by the
+// ingestor nor read by any loader (train-type data arrives inside the daily
+// timetables). Their whitelist entries and DDL are kept — the tables may already
+// exist on Azure and dropping them is not worth the migration.
 var rawTDXTables = map[string]bool{
 	"bus_route": true, "bus_stopofroute": true, "bus_shape": true,
 	"bus_schedule": true, "bus_station": true, "bus_stationgroup": true,
-	"bus_stop": true, "bus_operator": true, "bus_routefare": true,
+	"bus_stop": true, "bus_operator": true, "bus_routefare": true, // bus_stop: unused
 	"bus_dailytimetable": true, "bike_station": true, "metro_station": true,
 	"metro_schedule": true, "metro_odfare": true, "tra_odfare": true,
-	"tra_dailytimetable": true, "tra_traintype": true, "thsr_station": true,
+	"tra_dailytimetable": true, "tra_traintype": true, "thsr_station": true, // tra_traintype: unused
 	"thsr_dailytimetable": true, "tra_station": true, "thsr_odfare": true,
 }
 

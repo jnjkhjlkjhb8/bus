@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,6 +116,9 @@ func TestRawDumpTargetSkipsRealtimeAndUnmapped(t *testing.T) {
 }
 
 func TestIngestRaw_FetchesAllBusCityAPIs(t *testing.T) {
+	t.Setenv("TDX_CLIENT_ID", "test-id")
+	t.Setenv("TDX_CLIENT_SECRET", "test-secret")
+
 	var mu sync.Mutex
 	seen := map[string]int{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,5 +153,46 @@ func TestIngestRaw_FetchesAllBusCityAPIs(t *testing.T) {
 				t.Fatalf("%s fetched %d times, want 1", path, got)
 			}
 		}
+	}
+}
+
+// TestIngestRaw_NoOpWithoutCredentials proves the ingestor issues zero requests
+// when TDX credentials are absent, so staging/test (empty creds against the
+// shared database) neither storms TDX nor races prod's raw_tdx writes.
+func TestIngestRaw_NoOpWithoutCredentials(t *testing.T) {
+	for _, tc := range []struct {
+		name, id, secret string
+	}{
+		{"both_empty", "", ""},
+		{"id_only", "test-id", ""},
+		{"secret_only", "", "test-secret"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TDX_CLIENT_ID", tc.id)
+			t.Setenv("TDX_CLIENT_SECRET", tc.secret)
+
+			var calls int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				atomic.AddInt32(&calls, 1)
+				_, _ = w.Write([]byte("[]"))
+			}))
+			defer srv.Close()
+
+			c := resty.New().SetBaseURL(srv.URL).SetDoNotParseResponse(true)
+			rc := redis.NewClient(&redis.Options{
+				Addr:         "127.0.0.1:1",
+				DialTimeout:  1 * time.Millisecond,
+				ReadTimeout:  1 * time.Millisecond,
+				WriteTimeout: 1 * time.Millisecond,
+				MaxRetries:   0,
+			})
+			defer rc.Close()
+
+			ingestRaw(context.Background(), c, rc)
+
+			if got := atomic.LoadInt32(&calls); got != 0 {
+				t.Fatalf("ingestRaw made %d requests without credentials, want 0", got)
+			}
+		})
 	}
 }

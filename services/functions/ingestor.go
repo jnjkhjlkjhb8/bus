@@ -61,6 +61,17 @@ func registerIngestorCrons(r *cron.Cron, c *resty.Client, rc *redis.Client) {
 // today's date. Each fetch's raw_tdx write happens inside callApi; per-endpoint
 // failures are logged and do not abort the run.
 func ingestRaw(ctx context.Context, c *resty.Client, rc *redis.Client) {
+	// Without TDX credentials every fetch would 401, so the ingestor would fire
+	// ~300+ unauthenticated requests (each retried) daily to no effect. Gate the
+	// whole run on non-empty credentials: the cron stays registered but is a true
+	// no-op, emitting exactly one line and issuing zero requests. This is what
+	// keeps staging/test (which run with empty creds against the shared Azure
+	// database) from storming TDX and from racing prod's raw_tdx writes.
+	if os.Getenv("TDX_CLIENT_ID") == "" || os.Getenv("TDX_CLIENT_SECRET") == "" {
+		log.Infoln("[INGEST] action=raw event=idle reason=no_credentials")
+		return
+	}
+
 	log.Infoln("[INGEST] action=raw event=start")
 
 	sem := make(chan struct{}, 4)
@@ -103,7 +114,8 @@ func ingestRaw(ctx context.Context, c *resty.Client, rc *redis.Client) {
 	}
 
 	fetchRaw(c, rc, "/v2/Rail/TRA/ODFare", "tra_odfare")
-	fetchRaw(c, rc, "/v2/Rail/TRA/TrainType", "tra_traintype")
+	// TRA/TrainType is intentionally not landed: nothing loads raw_tdx.tra_traintype,
+	// and train-type data arrives inside the daily-timetable payloads below.
 	fetchRaw(c, rc, "/v2/Rail/TRA/Station", "tra_station")
 	fetchRaw(c, rc, "/v2/Rail/THSR/Station", "thsr_station")
 	fetchRaw(c, rc, "/v2/Rail/THSR/ODFare", "thsr_odfare")

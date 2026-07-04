@@ -21,7 +21,6 @@ import (
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
-	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
@@ -42,15 +41,6 @@ func makethatsame(subRouteUID string) string {
 
 func busRouteEtaKey(subRouteUID string) string {
 	return fmt.Sprintf("bus_eta_route:%s", makethatsame(subRouteUID))
-}
-
-var fetchGroup singleflight.Group
-
-func fetchOnce(key string, fetch func()) {
-	_, _, _ = fetchGroup.Do(key, func() (interface{}, error) {
-		fetch()
-		return nil, nil
-	})
 }
 
 func usableBusEtaPayload(data []byte) bool {

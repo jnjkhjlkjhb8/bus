@@ -39,6 +39,15 @@ func busStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *
 // — the standalone bus_operator loadSpec is the only bus_operators upserter) and
 // used inside the Route closure; fares (raw_tdx.bus_routefare via loadBusFares)
 // are applied after the StationGroup stage, before changetodbformat.
+//
+// Accepted intra-city torn-read risk: if a landing overruns the fixed 30-minute
+// offset (03:00 land, 03:30 load) this run can read today's bus_route while
+// bus_stopofroute still holds yesterday's landing for the same city. Each table
+// is an internally consistent per-partition snapshot, so the result is degraded
+// (a route may reference a stop set from the prior day) but never corrupt. We do
+// not add per-stage staleness: the 27h gate on bus_route already blocks a whole
+// stale landing, the offset is fixed, and the mixed-day window is rare and
+// self-heals on the next successful run.
 func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, city string) error {
 	if city == "LienchiangCounty" {
 		return nil
@@ -635,9 +644,14 @@ func changetodbformat(ctx context.Context, db *pgxpool.Pool, raw *map[string]*mo
 	for _, sub := range *raw {
 		for dir, d := range sub.Directions {
 			stops, err := json.Marshal(d.Stops)
+			if err != nil {
+				log.Infof("[BUS] action=changetodbformat event=marshal_error field=stops error=%v", err)
+				continue
+			}
 			schedules, err := json.Marshal(d.Schedules)
 			if err != nil {
-				log.Infof("[BUS] action=changetodbformat event=marshal_error error=%v", err)
+				log.Infof("[BUS] action=changetodbformat event=marshal_error field=schedules error=%v", err)
+				continue
 			}
 			var opJSON []busOperatorJSON
 			for _, op := range sub.Operators {
