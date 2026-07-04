@@ -2,10 +2,8 @@ import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import 'package:wheres_the_car/core/grpc/resilient_stream.dart';
+import 'package:wheres_the_car/core/grpc/live_data.dart';
 import 'package:wheres_the_car/core/storage/hive_store.dart';
-import 'package:wheres_the_car/data/decoders/alert_decoder.dart';
-import 'package:wheres_the_car/data/generated/alert.pb.dart';
 import 'package:wheres_the_car/data/models/alert_models.dart';
 import 'package:wheres_the_car/data/repositories/alert_repository.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
@@ -37,7 +35,7 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
     unawaited(HiveStore.settings.put(_kReadKey, read.toList()));
   }
 
-  final List<ResilientSubscription<Alert_Msg>> _subs = [];
+  final List<LiveData<AlertViewModel>> _subs = [];
 
   bool get hasActiveSubscriptions => _subs.isNotEmpty;
 
@@ -47,22 +45,19 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
     }
     _subs.clear();
 
-    void listen(Stream<Alert_Msg> Function() source) {
+    void listen(Stream<AlertViewModel> Function() source) {
       _subs.add(
-        ResilientSubscription<Alert_Msg>(
+        LiveData<AlertViewModel>.watch(
           source: source,
-          onData: (msg) {
-            final vm = AlertDecoder.instance.decode(msg.data);
-            if (vm != null) add(AlertReceived(vm));
-          },
+          onData: (vm) => add(AlertReceived(vm)),
           onFailure: (e) => add(AlertStreamFailed(e)),
           onRecovered: () => add(const AlertStreamRecovered()),
         ),
       );
     }
 
-    listen(() => AlertRepository.instance.traAlert());
-    listen(() => AlertRepository.instance.thsrAlert());
+    listen(AlertRepository.instance.traAlert);
+    listen(AlertRepository.instance.thsrAlert);
     listen(() => AlertRepository.instance.metroAlert('TRTC'));
     listen(() => AlertRepository.instance.busNews('Taipei'));
   }

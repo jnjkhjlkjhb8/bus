@@ -4,7 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/grpc/resilient_stream.dart';
+import 'package:wheres_the_car/core/grpc/live_data.dart';
 import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
@@ -26,7 +26,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   }
 
   final String subRouteUid;
-  ResilientSubscription<List<BusStopEtaViewModel>>? _etaSub;
+  LiveData<List<BusStopEtaViewModel>>? _etaSub;
 
   static String etaKey(BusStopEtaViewModel eta) => eta.sequence > 0
       ? 'seq:${eta.direction}:${eta.sequence}'
@@ -50,7 +50,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
         ),
       );
 
-      _etaSub = ResilientSubscription<List<BusStopEtaViewModel>>(
+      _etaSub = LiveData<List<BusStopEtaViewModel>>.watch(
         source: () => BusRepository.instance.routeEta(subRouteUid),
         onData: (etaList) {
           final map = {for (final e in etaList) etaKey(e): e};
