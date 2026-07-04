@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 
@@ -206,9 +207,20 @@ func fetchTraTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Clie
 		return
 	}
 	defer flipopen()
+	if err := loadTraTimetable(ctx, dec, db, rc, date); err != nil {
+		log.Infof("[RAIL] action=tra_prefetch event=error date=%s error=%v", date, err)
+	}
+}
+
+// loadTraTimetable upserts one day's TRA daily timetable stop rows into
+// tra_timetable via a temp-table COPY. Stop times parse as "15:04"; unparseable
+// times become the zero time. It consumes an already-opened decoder; the
+// temp_tra_timetable COPY and ON CONFLICT (train_date,trainno,stationid) upsert
+// (and railMask/railTrainFlags) are byte-identical to the legacy transform.
+func loadTraTimetable(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, date string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[RAIL] action=tra_prefetch event=decode_error date=%s error=%v", date, err)
-		return
+		return err
 	}
 	row := [][]interface{}{}
 	for dec.More() {
@@ -251,7 +263,7 @@ func fetchTraTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Clie
 	}
 	if len(row) == 0 {
 		log.Infof("[RAIL] action=tra_prefetch event=complete date=%s reason=no_data", date)
-		return
+		return nil
 	}
 	c1 := `CREATE TEMP TABLE temp_tra_timetable (
 				train_date            date not null,
@@ -294,12 +306,12 @@ func fetchTraTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Clie
 	b, err := db.Begin(ctx)
 	if err != nil {
 		log.Infof("[RAIL] action=tra_prefetch event=tx_error date=%s error=%v", date, err)
-		return
+		return err
 	}
 	defer func(b pgx.Tx, ctx context.Context) { _ = b.Rollback(ctx) }(b, ctx)
 	if _, err := b.Exec(ctx, c1); err != nil {
 		log.Infof("[RAIL] action=tra_prefetch event=create_temp_error date=%s error=%v", date, err)
-		return
+		return err
 	}
 	_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_tra_timetable"}, []string{
 		"train_date", "trainno", "direction", "starting_station_id", "starting_station_name",
@@ -309,16 +321,18 @@ func fetchTraTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Clie
 	if err == nil {
 		if _, err = b.Exec(ctx, c2); err != nil {
 			log.Infof("[RAIL] action=tra_prefetch event=exec_error date=%s error=%v", date, err)
-			return
+			return err
 		}
 		if err = b.Commit(ctx); err != nil {
 			log.Infof("[RAIL] action=tra_prefetch event=commit_error date=%s error=%v", date, err)
-		} else {
-			log.Infof("[RAIL] action=tra_prefetch event=success date=%s rows=%d", date, len(row))
+			return err
 		}
+		log.Infof("[RAIL] action=tra_prefetch event=success date=%s rows=%d", date, len(row))
 	} else {
 		log.Infof("[RAIL] action=tra_prefetch event=copyfrom_error date=%s error=%v", date, err)
+		return err
 	}
+	return nil
 }
 
 // fetchThsrTimetable fetches one day's THSR daily timetable and upserts its stop
@@ -332,9 +346,19 @@ func fetchThsrTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Cli
 		return
 	}
 	defer flipopen()
+	if err := loadThsrTimetable(ctx, dec, db, rc, date); err != nil {
+		log.Infof("[RAIL] action=thsr_prefetch event=error date=%s error=%v", date, err)
+	}
+}
+
+// loadThsrTimetable upserts one day's THSR daily timetable stop rows into
+// thsr_timetable via a temp-table COPY. It consumes an already-opened decoder;
+// the temp_thsr_timetable COPY and ON CONFLICT (train_date,trainno,stationid)
+// upsert are byte-identical to the legacy transform.
+func loadThsrTimetable(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, date string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[RAIL] action=thsr_prefetch event=decode_error date=%s error=%v", date, err)
-		return
+		return err
 	}
 	row := [][]interface{}{}
 	for dec.More() {
@@ -362,7 +386,7 @@ func fetchThsrTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Cli
 	}
 	if len(row) == 0 {
 		log.Infof("[RAIL] action=thsr_prefetch event=complete date=%s reason=no_data", date)
-		return
+		return nil
 	}
 	c1 := `CREATE TEMP TABLE temp_thsr_timetable (
 				train_date            date not null,
@@ -399,12 +423,12 @@ func fetchThsrTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Cli
 	b, err := db.Begin(ctx)
 	if err != nil {
 		log.Infof("[RAIL] action=thsr_prefetch event=tx_error date=%s error=%v", date, err)
-		return
+		return err
 	}
 	defer func(b pgx.Tx, ctx context.Context) { _ = b.Rollback(ctx) }(b, ctx)
 	if _, err := b.Exec(ctx, c1); err != nil {
 		log.Infof("[RAIL] action=thsr_prefetch event=create_temp_error date=%s error=%v", date, err)
-		return
+		return err
 	}
 	_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_thsr_timetable"}, []string{
 		"train_date", "trainno", "direction", "starting_station_id", "starting_station_name",
@@ -414,16 +438,18 @@ func fetchThsrTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Cli
 	if err == nil {
 		if _, err = b.Exec(ctx, c2); err != nil {
 			log.Infof("[RAIL] action=thsr_prefetch event=exec_error date=%s error=%v", date, err)
-			return
+			return err
 		}
 		if err = b.Commit(ctx); err != nil {
 			log.Infof("[RAIL] action=thsr_prefetch event=commit_error date=%s error=%v", date, err)
-		} else {
-			log.Infof("[RAIL] action=thsr_prefetch event=success date=%s rows=%d", date, len(row))
+			return err
 		}
+		log.Infof("[RAIL] action=thsr_prefetch event=success date=%s rows=%d", date, len(row))
 	} else {
 		log.Infof("[RAIL] action=thsr_prefetch event=copyfrom_error date=%s error=%v", date, err)
+		return err
 	}
+	return nil
 }
 
 // railPreFetch warms the timetable tables for upcoming dates: the next 60 days
@@ -469,9 +495,9 @@ func railStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db 
 	return nil
 }
 
-// traStation upserts TRA stations into tra_stations via a temp-table COPY,
-// resolving the city from the station's LocationCityCode prefix. On error or no
-// data it logs and returns.
+// traStation is the legacy fetch wrapper: it opens the TDX feed and delegates
+// the transform to loadTraStation. It is no longer cron-wired (the loader reads
+// raw_tdx), but is kept for the legacy call site and returns nothing.
 func traStation(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
 	log.Infof("[RAIL] action=tra_station event=start")
 	dec, comp, err, flipopen := callApi(client, rc, "/v2/Rail/TRA/Station", "tra_stations")
@@ -480,9 +506,20 @@ func traStation(ctx context.Context, client *resty.Client, rc *redis.Client, db 
 		return
 	}
 	defer flipopen()
+	if err := loadTraStation(ctx, dec, db, rc, ""); err != nil {
+		log.Infof("[RAIL] action=tra_station event=error error=%v", err)
+	}
+}
+
+// loadTraStation upserts TRA stations into tra_stations via a temp-table COPY,
+// resolving the city from the station's LocationCityCode prefix. It consumes an
+// already-opened decoder (from callApi or the raw_tdx loader); the temp-table
+// COPY and ON CONFLICT (station_id) upsert are byte-identical to the legacy
+// transform. It returns the first hard error instead of logging-and-returning.
+func loadTraStation(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, _ string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[RAIL] action=tra_station event=decode_error error=%v", err)
-		return
+		return err
 	}
 	row := [][]interface{}{}
 	for dec.More() {
@@ -517,33 +554,35 @@ func traStation(ctx context.Context, client *resty.Client, rc *redis.Client, db 
 		b, err := db.Begin(ctx)
 		if err != nil {
 			log.Infof("[RAIL] action=tra_station event=tx_error error=%v", err)
-			return
+			return err
 		}
 		defer func(b pgx.Tx, ctx context.Context) {
 			_ = b.Rollback(ctx)
 		}(b, ctx)
 		if _, err := b.Exec(ctx, c1); err != nil {
 			log.Infof("[RAIL] action=tra_station event=create_temp_error error=%v", err)
-			return
+			return err
 		}
 		_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_tra"}, []string{"station_id", "name", "city", "geom"}, pgx.CopyFromRows(row))
 		if err == nil {
 			if _, err = b.Exec(ctx, c2); err != nil {
 				log.Infof("[RAIL] action=tra_station event=exec_error error=%v", err)
-				return
+				return err
 			}
 			if err = b.Commit(ctx); err != nil {
 				log.Infof("[RAIL] action=tra_station event=commit_error error=%v", err)
-			} else {
-				log.Infof("[RAIL] action=tra_station event=success station_count=%d", len(row))
+				return err
 			}
+			log.Infof("[RAIL] action=tra_station event=success station_count=%d", len(row))
 		} else {
 			log.Infof("[RAIL] action=tra_station event=copyfrom_error error=%v", err)
+			return err
 		}
 	} else {
 		log.Infof("[RAIL] action=tra_station event=complete reason=no_data")
 	}
 	log.Infof("[RAIL] action=tra_station event=complete")
+	return nil
 }
 
 // thsrStation upserts THSR stations into thsr_stations using a batched
@@ -557,9 +596,19 @@ func thsrStation(ctx context.Context, client *resty.Client, rc *redis.Client, db
 		return
 	}
 	defer flipopen()
+	if err := loadThsrStation(ctx, dec, db, rc, ""); err != nil {
+		log.Infof("[RAIL] action=thsr_station event=error error=%v", err)
+	}
+}
+
+// loadThsrStation upserts THSR stations into thsr_stations using a batched
+// per-station INSERT (there are few HSR stations, so no temp table). It consumes
+// an already-opened decoder; the INSERT ... ON CONFLICT (station_id) and
+// db.SendBatch are byte-identical to the legacy transform.
+func loadThsrStation(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, _ string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[RAIL] action=thsr_station event=decode_error error=%v", err)
-		return
+		return err
 	}
 	c1 := `INSERT INTO thsr_stations (
                           station_id,
@@ -582,6 +631,7 @@ func thsrStation(ctx context.Context, client *resty.Client, rc *redis.Client, db
 	b := db.SendBatch(ctx, batch)
 	_ = b.Close()
 	log.Infof("[RAIL] action=thsr_station event=complete")
+	return nil
 }
 
 // traFare upserts the TRA OD fare table into tra_fares via a temp-table COPY,
@@ -595,9 +645,20 @@ func traFare(ctx context.Context, client *resty.Client, rc *redis.Client, db *pg
 		return
 	}
 	defer flipopen()
+	if err := loadTraFare(ctx, dec, db, rc, ""); err != nil {
+		log.Infof("[RAIL] action=tra_fare event=error error=%v", err)
+	}
+}
+
+// loadTraFare upserts the TRA OD fare table into tra_fares via a temp-table COPY,
+// flattening each station pair's per-ticket-type fares into rows. It consumes an
+// already-opened decoder; the temp_tra_fare COPY and ON CONFLICT
+// (origin_station_id, destination_station_id, ticket_type) upsert are
+// byte-identical to the legacy transform.
+func loadTraFare(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, _ string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[RAIL] action=tra_fare event=decode_error error=%v", err)
-		return
+		return err
 	}
 	row := [][]interface{}{}
 	for dec.More() {
@@ -627,7 +688,7 @@ func traFare(ctx context.Context, client *resty.Client, rc *redis.Client, db *pg
 	b, err := db.Begin(ctx)
 	if err != nil {
 		log.Infof("[RAIL] action=tra_fare event=begin_error error=%v", err)
-		return
+		return err
 	}
 	defer func(b pgx.Tx, ctx context.Context) {
 		_ = b.Rollback(ctx)
@@ -635,22 +696,24 @@ func traFare(ctx context.Context, client *resty.Client, rc *redis.Client, db *pg
 	_, err = b.Exec(ctx, c1)
 	if err != nil {
 		log.Infof("[RAIL] action=tra_fare event=execute_error error=%v", err)
-		return
+		return err
 	}
 	_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_tra_fare"}, []string{"origin_station_id", "destination_station_id", "ticket_type", "price"}, pgx.CopyFromRows(row))
 	if err == nil {
 		if _, execErr := b.Exec(ctx, c2); execErr != nil {
 			log.Infof("[RAIL] action=tra_fare event=exec_error error=%v", execErr)
-			return
+			return execErr
 		}
 		if commitErr := b.Commit(ctx); commitErr != nil {
 			log.Infof("[RAIL] action=tra_fare event=commit_error error=%v", commitErr)
-		} else {
-			log.Infof("[RAIL] action=tra_fare event=complete row_count=%d", len(row))
+			return commitErr
 		}
+		log.Infof("[RAIL] action=tra_fare event=complete row_count=%d", len(row))
 	} else {
 		log.Infof("[RAIL] action=tra_fare event=copyfrom_error error=%v", err)
+		return err
 	}
+	return nil
 }
 
 // thsrFare upserts the THSR OD fare table into thsr_fares via a temp-table COPY,
@@ -664,9 +727,20 @@ func thsrFare(ctx context.Context, client *resty.Client, rc *redis.Client, db *p
 		return
 	}
 	defer flipopen()
+	if err := loadThsrFare(ctx, dec, db, rc, ""); err != nil {
+		log.Infof("[RAIL] action=thsr_fare event=error error=%v", err)
+	}
+}
+
+// loadThsrFare upserts the THSR OD fare table into thsr_fares via a temp-table
+// COPY, keyed by station pair plus ticket/fare/cabin class. It consumes an
+// already-opened decoder; the temp_thsr COPY and ON CONFLICT
+// (origin,destination,ticket_type,fare_class,cabin_class) upsert are
+// byte-identical to the legacy transform.
+func loadThsrFare(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, _ string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[RAIL] action=thsr_fare event=decode_error error=%v", err)
-		return
+		return err
 	}
 	row := [][]interface{}{}
 	for dec.More() {
@@ -700,7 +774,7 @@ func thsrFare(ctx context.Context, client *resty.Client, rc *redis.Client, db *p
 	b, err := db.Begin(ctx)
 	if err != nil {
 		log.Infof("[RAIL] action=thsr_fare event=begin_error error=%v", err)
-		return
+		return err
 	}
 	defer func(b pgx.Tx, ctx context.Context) {
 		_ = b.Rollback(ctx)
@@ -708,22 +782,24 @@ func thsrFare(ctx context.Context, client *resty.Client, rc *redis.Client, db *p
 	_, err = b.Exec(ctx, c1)
 	if err != nil {
 		log.Infof("[RAIL] action=thsr_fare event=execute_error error=%v", err)
-		return
+		return err
 	}
 	_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_thsr"}, []string{"origin_station_id", "destination_station_id", "ticket_type", "fare_class", "cabin_class", "price"}, pgx.CopyFromRows(row))
 	if err == nil {
 		if _, execErr := b.Exec(ctx, c2); execErr != nil {
 			log.Infof("[RAIL] action=thsr_fare event=exec_error error=%v", execErr)
-			return
+			return execErr
 		}
 		if commitErr := b.Commit(ctx); commitErr != nil {
 			log.Infof("[RAIL] action=thsr_fare event=commit_error error=%v", commitErr)
-		} else {
-			log.Infof("[RAIL] action=thsr_fare event=complete row_count=%d", len(row))
+			return commitErr
 		}
+		log.Infof("[RAIL] action=thsr_fare event=complete row_count=%d", len(row))
 	} else {
 		log.Infof("[RAIL] action=thsr_fare event=copyfrom_error error=%v", err)
+		return err
 	}
+	return nil
 }
 
 // traEta refreshes TRA realtime data into Redis on the 2-minute cron. It caches
