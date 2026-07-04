@@ -4,10 +4,7 @@ import 'package:flutter/material.dart' show TimeOfDay;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/decoders/thsr_decoder.dart';
-import 'package:wheres_the_car/data/decoders/tra_decoder.dart';
-import 'package:wheres_the_car/data/generated/tra.pb.dart'
-    show Resp_tra_delay, Resp_tra_live_board, tra_LiveBoards, tra_delays;
+import 'package:wheres_the_car/data/models/tra_models.dart';
 import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
 import 'package:wheres_the_car/data/repositories/tra_repository.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
@@ -86,11 +83,9 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     if (system != RailSystem.tra) return;
 
     final date = _dateFormat.format(DateTime.now());
-    await emit.forEach<Resp_tra_live_board>(
+    await emit.forEach<List<TraLiveBoardItem>>(
       TraRepository.instance.liveBoard(stationId, date),
-      onData: (response) {
-        final boards = tra_LiveBoards.fromBuffer(response.data);
-        final items = TraDecoder.instance.decodeLiveBoard(boards);
+      onData: (items) {
         final loaded = current is RailLiveBoardLoaded
             ? current.copyWith(traItems: items)
             : _defaultLoaded(system).copyWith(
@@ -151,12 +146,11 @@ class RailBloc extends Bloc<RailEvent, RailState> {
 
     try {
       if (system == RailSystem.tra) {
-        final result = await TraRepository.instance.timetable(
+        final items = await TraRepository.instance.timetable(
           event.date,
           event.originId,
           event.destId,
         );
-        final items = TraDecoder.instance.decodeTimetable(result);
         emit(
           RailTimetableLoaded(
             system: system,
@@ -166,31 +160,25 @@ class RailBloc extends Bloc<RailEvent, RailState> {
             traItems: items,
           ),
         );
-        await emit.forEach<Resp_tra_delay>(
+        await emit.forEach<Map<String, int>>(
           TraRepository.instance.delay(
             event.date,
             event.originId,
             event.destId,
           ),
-          onData: (response) {
+          onData: (delays) {
             final current = state;
             if (current is! RailTimetableLoaded) return state;
-            final parsed = tra_delays.fromBuffer(response.data);
-            return current.copyWith(
-              delays: Map<String, int>.from(
-                TraDecoder.instance.decodeDelayMap(parsed),
-              ),
-            );
+            return current.copyWith(delays: delays);
           },
           onError: (e, s) => state,
         );
       } else {
-        final result = await ThsrRepository.instance.timetable(
+        final items = await ThsrRepository.instance.timetable(
           event.date,
           event.originId,
           event.destId,
         );
-        final items = ThsrDecoder.instance.decodeTimetable(result);
         emit(
           RailTimetableLoaded(
             system: system,
@@ -222,11 +210,10 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           ? current.system
           : RailSystem.tra;
       if (system == RailSystem.tra) {
-        final result = await TraRepository.instance.stops(
+        final stops = await TraRepository.instance.stops(
           event.date,
           event.trainNo,
         );
-        final stops = TraDecoder.instance.decodeStops(result);
         emit(
           RailTrainStopsLoaded(
             system: system,
@@ -236,11 +223,10 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           ),
         );
       } else {
-        final result = await ThsrRepository.instance.stops(
+        final stops = await ThsrRepository.instance.stops(
           event.date,
           event.trainNo,
         );
-        final stops = ThsrDecoder.instance.decodeStopTimes(result);
         emit(
           RailTrainStopsLoaded(
             system: system,
