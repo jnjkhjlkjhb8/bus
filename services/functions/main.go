@@ -81,9 +81,10 @@ const (
 	modeIngestor
 )
 
-// resolveRole maps the ROLE env to a run mode. Unimplemented (eta/realtime, etl)
-// and unknown roles are errors, so they can never silently fall into the legacy
-// prod flow. Empty ROLE preserves current prod behavior.
+// resolveRole maps the ROLE env to a run mode. Unimplemented (eta/realtime) and
+// unknown roles are errors, so they can never silently fall into the legacy prod
+// flow. Empty ROLE preserves current prod behavior and now also owns the 03:30
+// loader cron (registerLoaderCrons); there is no separate etl role.
 func resolveRole(role string) (appMode, error) {
 	switch role {
 	case "":
@@ -92,8 +93,6 @@ func resolveRole(role string) (appMode, error) {
 		return modeIngestor, nil
 	case "eta", "realtime":
 		return modeInvalid, fmt.Errorf("ROLE=%s not implemented yet (Phase 2)", role)
-	case "etl":
-		return modeInvalid, fmt.Errorf("ROLE=etl not implemented yet (Phase 3)")
 	default:
 		return modeInvalid, fmt.Errorf("unknown ROLE: %q", role)
 	}
@@ -139,26 +138,18 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 	busDailyroute(c, rc)
 	loadHolidays()
 	loadModel()
-	_, _ = r.AddFunc("0 0 3 * * *", func() {
-		log.Infoln("[crontab] action=daily event=start")
-		runDaily("busStatic", 10*time.Minute, func(ctx context.Context) error {
-			return busStatic(ctx, c, rc, db)
-		})
-		runDaily("bikeStatic", 10*time.Minute, func(ctx context.Context) error {
-			return bikeStatic(ctx, c, rc, db)
-		})
-		runDaily("mrtStatic", 10*time.Minute, func(ctx context.Context) error {
-			return mrtStatic(ctx, c, rc, db)
-		})
-		runDaily("railStatic", 10*time.Minute, func(ctx context.Context) error {
-			return railStatic(ctx, c, rc, db)
-		})
+	// The four legacy direct-fetch static jobs (busStatic/bikeStatic/mrtStatic/
+	// railStatic) no longer run here: the ingestor lands raw_tdx at 03:00 and the
+	// 03:30 loader cron (registerLoaderCrons) transforms it into this env's schema.
+	// changetovector reads the tables the loader fills, so it moves to 03:45 to run
+	// after the 03:30 load rather than racing the retired 03:00 static writes.
+	_, _ = r.AddFunc("0 45 3 * * *", func() {
 		runDaily("changetovector", 10*time.Minute, func(ctx context.Context) error {
 			changetovector(ctx, rc, db)
 			return nil
 		})
-		log.Infoln("[crontab] action=daily event=end")
 	})
+	registerLoaderCrons(r, db, rc)
 	_, _ = r.AddFunc("@every 2m", func() {
 		log.Infoln("[crontab] action=tra event=start")
 		traEta(c, rc)
@@ -397,10 +388,12 @@ func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
 	}
 	switch {
 	case seg[1] == "Bus":
+		// Bus/Stop is intentionally absent: it is never fetched by the ingestor
+		// (raw_tdx.bus_stop stays unused; whitelist + DDL are kept — see rawTDXTables).
 		busTables := map[string]string{
 			"Route": "bus_route", "StopOfRoute": "bus_stopofroute", "Shape": "bus_shape",
 			"Schedule": "bus_schedule", "Station": "bus_station", "StationGroup": "bus_stationgroup",
-			"Stop": "bus_stop", "Operator": "bus_operator", "RouteFare": "bus_routefare",
+			"Operator": "bus_operator", "RouteFare": "bus_routefare",
 			"DailyTimeTable": "bus_dailytimetable",
 		}
 		if t, exists := busTables[seg[2]]; exists {
@@ -416,12 +409,22 @@ func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
 			return t, "system", seg[len(seg)-1], true
 		}
 	case seg[1] == "Rail" && len(seg) >= 4 && (seg[2] == "TRA" || seg[2] == "THSR"):
-		railTables := map[string]string{
-			"THSR/Station": "thsr_station", "TRA/ODFare": "tra_odfare", "THSR/ODFare": "",
-			"TRA/TrainType":      "tra_traintype",
-			"TRA/DailyTimetable": "tra_dailytimetable", "THSR/DailyTimetable": "thsr_dailytimetable",
+		// Timetable endpoints are landed per train date so the loader window
+		// (TRA today..+60, THSR today..+45) survives a mid-run partition swap
+		// instead of the whole table being TRUNCATE'd. The partition column is
+		// the existing traindate column landed from the TDX payload.
+		switch seg[2] + "/" + seg[3] {
+		case "TRA/DailyTimetable":
+			return "tra_dailytimetable", "traindate", seg[len(seg)-1], true
+		case "THSR/DailyTimetable":
+			return "thsr_dailytimetable", "traindate", seg[len(seg)-1], true
 		}
-		if t, exists := railTables[seg[2]+"/"+seg[3]]; exists && t != "" {
+		railTables := map[string]string{
+			"TRA/Station": "tra_station", "THSR/Station": "thsr_station",
+			"TRA/ODFare": "tra_odfare", "THSR/ODFare": "thsr_odfare",
+			"TRA/TrainType": "tra_traintype",
+		}
+		if t, exists := railTables[seg[2]+"/"+seg[3]]; exists {
 			return t, "", "", true
 		}
 	}
@@ -435,25 +438,31 @@ var errRawDump = errors.New("raw dump failed")
 // rawTDXTables is the whitelist of raw_tdx landing tables. Table and partition
 // names are interpolated into SQL, so they must never come from input — only
 // from this set (and rawDumpTarget, which produces a subset).
+//
+// bus_stop and tra_traintype are currently unused: neither is fetched by the
+// ingestor nor read by any loader (train-type data arrives inside the daily
+// timetables). Their whitelist entries and DDL are kept — the tables may already
+// exist on Azure and dropping them is not worth the migration.
 var rawTDXTables = map[string]bool{
 	"bus_route": true, "bus_stopofroute": true, "bus_shape": true,
 	"bus_schedule": true, "bus_station": true, "bus_stationgroup": true,
-	"bus_stop": true, "bus_operator": true, "bus_routefare": true,
+	"bus_stop": true, "bus_operator": true, "bus_routefare": true, // bus_stop: unused
 	"bus_dailytimetable": true, "bike_station": true, "metro_station": true,
 	"metro_schedule": true, "metro_odfare": true, "tra_odfare": true,
-	"tra_dailytimetable": true, "tra_traintype": true, "thsr_station": true,
-	"thsr_dailytimetable": true,
+	"tra_dailytimetable": true, "tra_traintype": true, "thsr_station": true, // tra_traintype: unused
+	"thsr_dailytimetable": true, "tra_station": true, "thsr_odfare": true,
 }
 
 // validateRawTarget guards the raw_tdx landing: it rejects any table not in the
 // rawTDXTables whitelist and any partition column other than "" / "city" /
-// "system". Table and partition names are interpolated into SQL, so this is the
-// injection barrier — never relax it to accept caller-supplied identifiers.
+// "system" / "traindate". Table and partition names are interpolated into SQL,
+// so this is the injection barrier — never relax it to accept caller-supplied
+// identifiers.
 func validateRawTarget(table, partCol string) error {
 	if !rawTDXTables[table] {
 		return fmt.Errorf("%w: table %q not whitelisted", errRawDump, table)
 	}
-	if partCol != "" && partCol != "city" && partCol != "system" {
+	if partCol != "" && partCol != "city" && partCol != "system" && partCol != "traindate" {
 		return fmt.Errorf("%w: partition column %q not allowed", errRawDump, partCol)
 	}
 	return nil

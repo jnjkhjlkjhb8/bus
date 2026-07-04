@@ -1,5 +1,7 @@
 import 'package:equatable/equatable.dart';
 import 'package:flutter/material.dart' show TimeOfDay;
+import 'package:wheres_the_car/core/errors/app_error.dart';
+import 'package:wheres_the_car/data/models/tra_models.dart';
 
 enum RailSystem { tra, thsr }
 
@@ -94,4 +96,21 @@ final class RailDelaysUpdated extends RailEvent {
   final Map<String, int> delays;
   @override
   List<Object?> get props => [delays];
+}
+
+/// Internal: a fresh live-board snapshot arrived on the resilient stream. The
+/// handler reads the current state rather than a captured value.
+final class RailLiveBoardItemsUpdated extends RailEvent {
+  const RailLiveBoardItemsUpdated(this.items);
+  final List<TraLiveBoardItem> items;
+  @override
+  List<Object?> get props => [items];
+}
+
+/// Internal: the live-board stream failed terminally after retries.
+final class RailLiveBoardFailed extends RailEvent {
+  const RailLiveBoardFailed(this.error);
+  final AppError error;
+  @override
+  List<Object?> get props => [error];
 }

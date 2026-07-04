@@ -1,8 +1,8 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/data/generated/bike.pb.dart';
+import 'package:wheres_the_car/core/grpc/live_data.dart';
+import 'package:wheres_the_car/data/models/bike_models.dart';
 import 'package:wheres_the_car/data/repositories/bike_repository.dart';
 import 'package:wheres_the_car/features/bike/bloc/bike_station_event.dart';
 import 'package:wheres_the_car/features/bike/bloc/bike_station_state.dart';
@@ -16,26 +16,35 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
   }
 
   final String stationUid;
-  StreamSubscription<Resp_Bike_eta>? _sub;
+
+  // Migrated from a bare StreamSubscription to LiveData in the Track-C
+  // refactor: the availability stream now retries with backoff instead of
+  // dying silently on a dropped connection. This is a deliberate behavior
+  // improvement over the previous unresilient subscription.
+  LiveData<BikeAvailability>? _sub;
 
   Future<void> _onStarted(
     BikeStationStarted _,
     Emitter<BikeStationState> emit,
   ) async {
     try {
-      final s = await BikeRepository.instance.stationStatic(stationUid);
-      emit(state.copyWith(name: s.name, capacity: s.capacity, loading: false));
-      _sub = BikeRepository.instance.stationEta(stationUid).listen((resp) {
-        final e = Bike_eta.fromBuffer(Uint8List.fromList(resp.data));
-        add(
+      final info = await BikeRepository.instance.stationStatic(stationUid);
+      emit(state.copyWith(
+        name: info.name,
+        capacity: info.capacity,
+        loading: false,
+      ));
+      _sub = LiveData<BikeAvailability>.watch(
+        source: () => BikeRepository.instance.stationEta(stationUid),
+        onData: (a) => add(
           BikeStationEtaUpdated(
-            available: e.generalBikes + e.electricBikes,
-            returnDocks: e.availableReturnBikes,
-            generalBikes: e.generalBikes,
-            electricBikes: e.electricBikes,
+            available: a.available,
+            returnDocks: a.returnDocks,
+            generalBikes: a.generalBikes,
+            electricBikes: a.electricBikes,
           ),
-        );
-      });
+        ),
+      );
     } on Object catch (e) {
       emit(state.copyWith(loading: false, error: e.toString()));
     }

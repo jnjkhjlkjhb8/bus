@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strconv"
@@ -22,6 +23,419 @@ func busStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *
 	dailyRoute(ctx, rc, client, db)
 	busDailyroute(client, rc)
 	return nil
+}
+
+// loadBus reproduces dailyRoute for one city from raw_tdx instead of live TDX.
+// It reads the six correlated bus datasets (Route, StopOfRoute, Shape, Schedule,
+// Station, StationGroup) for the city from src — a single decoder cannot feed a
+// multi-endpoint correlation, so the loadSpec hands loadBus the source rather
+// than one decoder. It stages raw_bus_route (the temp_bus->raw_bus_route
+// COPY/upsert byte-identical to processStatic) and drives the identical in-memory
+// assembly, then calls the dailyRoute-family upserts (changetodbformat,
+// savestations, saveStationGroups, saveschedule, savestatictodb) unchanged.
+//
+// Operator and fare enrichment mirrors dailyRoute's primary path: operators are
+// decoded in-memory from raw_tdx.bus_operator (loadBusOperatorMap, no SQL write
+// — the standalone bus_operator loadSpec is the only bus_operators upserter) and
+// used inside the Route closure; fares (raw_tdx.bus_routefare via loadBusFares)
+// are applied after the StationGroup stage, before changetodbformat.
+//
+// Accepted intra-city torn-read risk: if a landing overruns the fixed 30-minute
+// offset (03:00 land, 03:30 load) this run can read today's bus_route while
+// bus_stopofroute still holds yesterday's landing for the same city. Each table
+// is an internally consistent per-partition snapshot, so the result is degraded
+// (a route may reference a stop set from the prior day) but never corrupt. We do
+// not add per-stage staleness: the 27h gate on bus_route already blocks a whole
+// stale landing, the offset is fixed, and the mixed-day window is rare and
+// self-heals on the next successful run.
+func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, city string) error {
+	if city == "LienchiangCounty" {
+		return nil
+	}
+	log.Infof("[LOAD] action=bus event=city_start city=%s", city)
+	clearBusStaticCache(rc, city)
+	opMap := loadBusOperatorMap(ctx, src, db, city)
+	subRoutemap := make(map[string]*models.BusSubroute)
+	routeMap := make(map[string][]string)
+	syncStart := time.Now()
+	if _, err := db.Exec(ctx, "DELETE FROM raw_bus_route WHERE destin = $1 OR depart = $1", city); err != nil {
+		log.Infof("[LOAD] action=bus city=%s event=cleanup_error error=%v", city, err)
+	}
+
+	// Route assembly + staging. If no Route data landed, skip the city (matches
+	// dailyRoute's no_route_data guard).
+	routeFetched := loadBusStage(ctx, src, db, city, "bus_route", "Route", func(raw []byte) {
+		var r rawBusRoute
+		if err := json.Unmarshal(raw, &r); err != nil {
+			log.Infof("[LOAD] action=bus city=%s api=Route event=unmarshal_error error=%v", city, err)
+		}
+		var ops []*models.BusOperator
+		for _, op := range r.Operators {
+			if detail, ok := opMap[op.OperatorID]; ok {
+				ops = append(ops, &models.BusOperator{
+					OperatorId:    detail.OperatorID,
+					OperatorName:  detail.OperatorName.Zhtw,
+					OperatorPhone: detail.OperatorPhone,
+					OperatorUrl:   detail.OperatorUrl,
+				})
+			}
+		}
+		for _, sub := range r.SubRoutes {
+			uid, dir := makethatsame(city, sub.SubRouteUID, sub.Direction)
+			dep, dest := sub.DepartureStopNameZh, sub.DestinationStopNameZh
+			if dep == "" {
+				dep = r.DepartureStopNameZh
+			}
+			if dest == "" {
+				dest = r.DestinationStopNameZh
+			}
+			if sub.Direction == 1 {
+				dep, dest = dest, dep
+			}
+			if _, ok := subRoutemap[uid]; !ok {
+				subRoutemap[uid] = &models.BusSubroute{
+					RouteUID:            r.RouteUID,
+					RouteName:           r.RouteName.Zhtw,
+					SubRouteUID:         uid,
+					SubRouteName:        sub.SubRouteName.Zhtw,
+					City:                city,
+					DepartureStopName:   dep,
+					DestinationStopName: dest,
+					Directions:          make(map[int32]*models.Direction),
+					Operators:           ops,
+				}
+			}
+			subRoutemap[uid].Directions[int32(dir)] = &models.Direction{
+				DepartureStopName:   dep,
+				DestinationStopName: dest,
+				FirstBusTime:        sub.FirstBusTime,
+				LastBusTime:         sub.LastBusTime,
+				HolidayFirstBusTime: sub.HolidayFirstBusTime,
+				HolidayLastBusTime:  sub.HolidayLastBusTime,
+			}
+			routeMap[r.RouteUID] = append(routeMap[r.RouteUID], uid)
+		}
+	})
+	if !routeFetched {
+		log.Infof("[LOAD] action=bus city=%s event=city_skip reason=no_route_data", city)
+		return nil
+	}
+
+	loadBusStage(ctx, src, db, city, "bus_stopofroute", "StopOfRoute", func(raw []byte) {
+		var r rawStopofroute
+		if err := json.Unmarshal(raw, &r); err != nil {
+			log.Infof("[LOAD] action=bus city=%s api=StopOfRoute event=unmarshal_error error=%v", city, err)
+		}
+		uid, dir := makethatsame(city, r.SubRouteUID, r.Direction)
+		if sr, ok := subRoutemap[uid]; ok {
+			if d, ok := sr.Directions[int32(dir)]; ok {
+				for _, stop := range r.Stops {
+					d.Stops = append(d.Stops, &models.BusStop{
+						StopName:     stop.StopName.Zhtw,
+						StopSequence: int32(stop.StopSequence),
+						PositionLat:  stop.StopPosition.PositionLat,
+						PositionLon:  stop.StopPosition.PositionLon,
+						StationID:    stop.StationID,
+						StopUID:      stop.StopUID,
+					})
+				}
+			}
+		}
+	})
+	loadBusStage(ctx, src, db, city, "bus_shape", "Shape", func(raw []byte) {
+		var r rawBusShape
+		if err := json.Unmarshal(raw, &r); err != nil {
+			log.Infof("[LOAD] action=bus city=%s api=Shape event=unmarshal_error error=%v", city, err)
+		}
+		if r.SubRouteUID != "" {
+			uid, dir := makethatsame(city, r.SubRouteUID, r.Direction)
+			if sr, ok := subRoutemap[uid]; ok {
+				if d, ok := sr.Directions[int32(dir)]; ok {
+					d.Geometry = r.Geometry
+				}
+			}
+		} else if subUIDs, exists := routeMap[r.RouteUID]; exists {
+			for _, uid := range subUIDs {
+				if sr, ok := subRoutemap[uid]; ok {
+					if d, ok := sr.Directions[int32(r.Direction)]; ok {
+						d.Geometry = r.Geometry
+					}
+				}
+			}
+		}
+	})
+	loadBusStage(ctx, src, db, city, "bus_schedule", "Schedule", func(raw []byte) {
+		var r rawBusSchedule
+		if err := json.Unmarshal(raw, &r); err != nil {
+			log.Infof("[LOAD] action=bus city=%s api=Schedule event=unmarshal_error error=%v", city, err)
+		}
+		uid, dir := makethatsame(city, r.SubRouteUID, r.Direction)
+		if sr, ok := subRoutemap[uid]; ok {
+			if d, ok := sr.Directions[int32(dir)]; ok {
+				for _, t := range r.Timetables {
+					m := mask2(t.ServiceDay.Monday, t.ServiceDay.Tuesday, t.ServiceDay.Wednesday, t.ServiceDay.Thursday, t.ServiceDay.Friday, t.ServiceDay.Saturday, t.ServiceDay.Sunday)
+					for _, temp := range t.StopTimes {
+						d.Schedules = append(d.Schedules, &models.Bus_Schedule{
+							Type:                        true,
+							Tripid:                      t.TripID,
+							Islowfloor:                  t.IsLowFloor,
+							MinHeadwayMinsArrivalTime:   temp.ArrivalTime,
+							MaxHeadwayMinsDepartureTime: temp.DepartureTime,
+							ServiceDay:                  int32(m),
+						})
+					}
+				}
+				for _, t := range r.Frequencys {
+					m := mask2(t.ServiceDay.Monday, t.ServiceDay.Tuesday, t.ServiceDay.Wednesday, t.ServiceDay.Thursday, t.ServiceDay.Friday, t.ServiceDay.Saturday, t.ServiceDay.Sunday)
+					d.Schedules = append(d.Schedules, &models.Bus_Schedule{
+						Type:                        false,
+						Start_Time:                  t.StartTime,
+						End_Time:                    t.EndTime,
+						MinHeadwayMinsArrivalTime:   strconv.Itoa(int(t.MinHeadwayMins)),
+						MaxHeadwayMinsDepartureTime: strconv.Itoa(int(t.MaxHeadwayMins)),
+						ServiceDay:                  int32(m),
+					})
+				}
+			}
+		}
+	})
+	loadBusStage(ctx, src, db, city, "bus_station", "Station", func(raw []byte) {})
+	loadBusStage(ctx, src, db, city, "bus_stationgroup", "StationGroup", func(raw []byte) {})
+	fareBySub, fareByRoute := loadBusFareMaps(ctx, src, city)
+	for uid, sub := range subRoutemap {
+		if f, ok := fareBySub[uid]; ok {
+			sub.Fare = cloneBusFare(f, uid)
+		} else if f, ok := fareByRoute[sub.RouteUID]; ok {
+			sub.Fare = cloneBusFare(f, uid)
+		}
+	}
+	changetodbformat(ctx, db, &subRoutemap)
+	savestations(ctx, db, city)
+	saveStationGroups(ctx, db, city, syncStart)
+	saveschedule(ctx, db, city)
+	if _, delErr := db.Exec(ctx, `DELETE FROM bus_station_stop_map WHERE sub_route_uid LIKE $1`, citymap[city]+"%"); delErr != nil {
+		log.Infof("[LOAD] action=bus city=%s event=delete_stop_map_error error=%v", city, delErr)
+	}
+	savestatictodb(ctx, db, &subRoutemap)
+	if _, delErr := db.Exec(ctx, `DELETE FROM bus_subroutes WHERE city = $1 AND updated_at < $2`, city, syncStart); delErr != nil {
+		log.Infof("[LOAD] action=bus city=%s event=delete_stale_subroutes_error error=%v", city, delErr)
+	}
+	if _, delErr := db.Exec(ctx, `DELETE FROM bus_static WHERE city = $1 AND updated_at < $2`, city, syncStart); delErr != nil {
+		log.Infof("[LOAD] action=bus city=%s event=delete_stale_static_error error=%v", city, delErr)
+	}
+	invalidateBusStaticMap()
+	log.Infof("[LOAD] action=bus event=city_complete city=%s subroute_count=%d", city, len(subRoutemap))
+	return nil
+}
+
+// loadBusOperatorMap returns a city's operators for the subroute assembly by
+// decoding raw_tdx.bus_operator's payload in-memory, keyed by OperatorID —
+// exactly the map legacy dailyRoute's primary path built. It performs NO SQL
+// write: the standalone bus_operator loadSpec (which precedes the bus spec in
+// the registry — see loaderRegistry's ordering invariant) is the only
+// bus_operators upserter. A stale partition is logged but still used, the same
+// policy as loadBusFareMaps: stale operator detail beats blanking Operators on
+// every subroute.
+//
+// Only when the raw read or decode itself fails does it fall back to the
+// stored bus_operators rows, mirroring legacy's TDX-failure fallback. That
+// fallback is citymap-limited: busOperatorsFromDB filters on authority_code =
+// citymap[city], and citymap lacks the County-suffixed city keys, so for those
+// cities the fallback returns empty — pre-existing legacy behavior, and the
+// reason the primary path here must not route through citymap or the DB.
+func loadBusOperatorMap(ctx context.Context, src loadSource, db *pgxpool.Pool, city string) map[string]rawBusOperator {
+	body, fetchedAt, err := src.datasetJSON(ctx, "bus_operator", "city", city)
+	if err != nil {
+		log.Infof("[LOAD] action=bus city=%s api=Operator event=read_error error=%v", city, err)
+		return busOperatorsFromDB(ctx, db, city)
+	}
+	if isStale(fetchedAt) {
+		log.Infof("[LOAD] action=bus_operators event=stale city=%s fetched_at=%s error=%v", city, fetchedAt.Format(time.RFC3339), errLoadStale)
+	}
+	var ops []rawBusOperator
+	if err := json.Unmarshal(body, &ops); err != nil {
+		log.Infof("[LOAD] action=bus city=%s api=Operator event=decode_error error=%v", city, err)
+		return busOperatorsFromDB(ctx, db, city)
+	}
+	result := make(map[string]rawBusOperator, len(ops))
+	for _, op := range ops {
+		result[op.OperatorID] = op
+	}
+	return result
+}
+
+// loadBusFareMaps reads a city's route fares from raw_tdx.bus_routefare and
+// parses them with loadBusFares into the same two lookups cityFares returns.
+// On a read or decode failure it returns nil, nil — the same shape the legacy
+// cityFares yields on a fetch failure (subroutes then load without fares).
+//
+// Unlike the staleness-gated loadSpecs, a stale fare partition is logged but
+// still used: fare data changes rarely and stale fares beat missing fares
+// (blanking Fare on every subroute the moment a landing is skipped is a worse
+// user-facing outcome than showing yesterday's price), so this reader keeps the
+// last landed fares in place until a fresh landing replaces them.
+func loadBusFareMaps(ctx context.Context, src loadSource, city string) (map[string]*models.Bus_Fare, map[string]*models.Bus_Fare) {
+	body, fetchedAt, err := src.datasetJSON(ctx, "bus_routefare", "city", city)
+	if err != nil {
+		log.Infof("[LOAD] action=bus city=%s api=RouteFare event=read_error error=%v", city, err)
+		return nil, nil
+	}
+	if isStale(fetchedAt) {
+		log.Infof("[LOAD] action=bus_fares event=stale city=%s fetched_at=%s error=%v", city, fetchedAt.Format(time.RFC3339), errLoadStale)
+	}
+	bySub, byRoute, loadErr := loadBusFares(json.NewDecoder(bytes.NewReader(body)), city)
+	if loadErr != nil {
+		return nil, nil
+	}
+	return bySub, byRoute
+}
+
+// loadBusStage reads one bus dataset for a city from raw_tdx, invokes processer
+// on each element for in-memory accumulation, and stages the route-shaped rows
+// into raw_bus_route. It mirrors processStatic's per-api row layout and the
+// temp_bus->raw_bus_route COPY/upsert byte-identical, but reads from src instead
+// of TDX. It returns true when any element was processed.
+func loadBusStage(ctx context.Context, src loadSource, db *pgxpool.Pool, city, table, api string, processer func([]byte)) bool {
+	body, _, err := src.datasetJSON(ctx, table, "city", city)
+	if err != nil {
+		log.Infof("[LOAD] action=bus city=%s api=%s event=read_error error=%v", city, api, err)
+		return false
+	}
+	var elems []json.RawMessage
+	if err := json.Unmarshal(body, &elems); err != nil {
+		log.Infof("[LOAD] action=bus city=%s api=%s event=decode_error error=%v", city, api, err)
+		return false
+	}
+	if len(elems) == 0 {
+		return false
+	}
+	var rawRows [][]interface{}
+	for _, raw := range elems {
+		processer(raw)
+		switch api {
+		case "Route":
+			var r rawBusRoute
+			if err := json.Unmarshal(raw, &r); err != nil {
+				log.Infof("[LOAD] action=bus city=%s api=%s event=unmarshal_error error=%v", city, api, err)
+			}
+			for _, sub := range r.SubRoutes {
+				dep, dest := sub.DepartureStopNameZh, sub.DestinationStopNameZh
+				if dep == "" {
+					dep = r.DepartureStopNameZh
+				}
+				if dest == "" {
+					dest = r.DestinationStopNameZh
+				}
+				uid, dir := makethatsame(city, sub.SubRouteUID, sub.Direction)
+				rawRows = append(rawRows, []interface{}{
+					uid, dir, r.RouteUID, r.RouteName.Zhtw, sub.SubRouteName.Zhtw, dep, dest, api, raw,
+				})
+			}
+		case "StopOfRoute":
+			var s rawStopofroute
+			if err := json.Unmarshal(raw, &s); err != nil {
+				log.Infof("[LOAD] action=bus city=%s api=%s event=unmarshal_error error=%v", city, api, err)
+			}
+			uid, dir := makethatsame(city, s.SubRouteUID, s.Direction)
+			rawRows = append(rawRows, []interface{}{
+				uid, dir, s.RouteUID, "", "", "", city, api, raw,
+			})
+		case "Shape":
+			var s rawBusShape
+			if err := json.Unmarshal(raw, &s); err != nil {
+				log.Infof("[LOAD] action=bus city=%s api=%s event=unmarshal_error error=%v", city, api, err)
+			}
+			var uid string
+			var dir uint8
+			if s.SubRouteUID == "" {
+				uid, dir = makethatsame(city, s.RouteUID, s.Direction)
+			} else {
+				uid, dir = makethatsame(city, s.SubRouteUID, s.Direction)
+			}
+			rawRows = append(rawRows, []interface{}{
+				uid, dir, s.RouteUID, "", "", "", city, api, raw,
+			})
+		case "Schedule":
+			var t rawBusSchedule
+			if err := json.Unmarshal(raw, &t); err != nil {
+				log.Infof("[LOAD] action=bus city=%s api=%s event=unmarshal_error error=%v", city, api, err)
+			}
+			uid, dir := makethatsame(city, t.SubRouteUID, t.Direction)
+			rawRows = append(rawRows, []interface{}{
+				uid, dir, t.RouteUID, "", "", "", city, api, raw,
+			})
+		case "Station":
+			var t rawBusStation
+			if err := json.Unmarshal(raw, &t); err != nil {
+				log.Infof("[LOAD] action=bus city=%s api=%s event=unmarshal_error error=%v", city, api, err)
+			}
+			rawRows = append(rawRows, []interface{}{
+				t.StationUID, -1, t.StationID, t.StationName.Zhtw, "", city, "", api, raw,
+			})
+		case "StationGroup":
+			var t rawBusStationGroup
+			if err := json.Unmarshal(raw, &t); err != nil {
+				log.Infof("[LOAD] action=bus city=%s api=%s event=unmarshal_error error=%v", city, api, err)
+			}
+			rawRows = append(rawRows, []interface{}{
+				t.StationGroupUID, -1, t.StationGroupID, t.StationGroupName.Zhtw, "", city, "", api, raw,
+			})
+		}
+	}
+	if len(rawRows) > 0 {
+		c1 := `CREATE TEMP TABLE temp_bus (
+							sub_route_uid  text  not null,
+							direction      smallint not null,
+							route_uid      text  not null,
+							route_name     text,
+							sub_route_name text,
+							depart         text,
+							destin         text,
+							type           text  not null,
+							content        jsonb not null
+				) ON COMMIT DROP;`
+		c2 := `INSERT INTO raw_bus_route (
+							sub_route_uid,
+							direction,
+							route_uid,
+							route_name,
+							sub_route_name,
+							depart,
+							destin,
+							type,
+							content,
+							created_at
+						)
+						SELECT DISTINCT ON (sub_route_uid,direction,type) sub_route_uid, direction, route_uid, route_name,sub_route_name, depart,destin,type,content,NOW() FROM temp_bus
+						ON CONFLICT (sub_route_uid,direction,type) DO UPDATE SET route_uid = EXCLUDED.route_uid,route_name = excluded.route_name,sub_route_name = EXCLUDED.sub_route_name,depart = excluded.depart,destin = excluded.destin,type = excluded.type,content = excluded.content,created_at = NOW();`
+		b, err := db.Begin(ctx)
+		if err != nil {
+			log.Infof("[LOAD] action=bus city=%s api=%s event=begin_error error=%v", city, api, err)
+			return false
+		}
+		defer func(b pgx.Tx, ctx context.Context) {
+			_ = b.Rollback(ctx)
+		}(b, ctx)
+		if _, err := b.Exec(ctx, c1); err != nil {
+			log.Infof("[LOAD] action=bus city=%s api=%s event=create_temp_error error=%v", city, api, err)
+			return false
+		}
+		from, err := b.CopyFrom(ctx, pgx.Identifier{"temp_bus"}, []string{"sub_route_uid", "direction", "route_uid", "route_name", "sub_route_name", "depart", "destin", "type", "content"}, pgx.CopyFromRows(rawRows))
+		if err == nil {
+			if _, execErr := b.Exec(ctx, c2); execErr != nil {
+				log.Infof("[LOAD] action=bus city=%s api=%s event=exec_error error=%v", city, api, execErr)
+			}
+			if commitErr := b.Commit(ctx); commitErr != nil {
+				log.Infof("[LOAD] action=bus city=%s api=%s event=commit_error error=%v", city, api, commitErr)
+			} else {
+				log.Infof("[LOAD] action=bus city=%s api=%s event=success station_count=%d", city, api, from)
+			}
+		} else {
+			log.Infof("[LOAD] action=bus city=%s api=%s event=copyfrom_error error=%v", city, api, err)
+			_ = b.Rollback(ctx)
+		}
+	}
+	return true
 }
 
 // dailyRoute rebuilds all bus static data city by city: routes, stops, shapes,
@@ -230,9 +644,14 @@ func changetodbformat(ctx context.Context, db *pgxpool.Pool, raw *map[string]*mo
 	for _, sub := range *raw {
 		for dir, d := range sub.Directions {
 			stops, err := json.Marshal(d.Stops)
+			if err != nil {
+				log.Infof("[BUS] action=changetodbformat event=marshal_error field=stops error=%v", err)
+				continue
+			}
 			schedules, err := json.Marshal(d.Schedules)
 			if err != nil {
-				log.Infof("[BUS] action=changetodbformat event=marshal_error error=%v", err)
+				log.Infof("[BUS] action=changetodbformat event=marshal_error field=schedules error=%v", err)
+				continue
 			}
 			var opJSON []busOperatorJSON
 			for _, op := range sub.Operators {

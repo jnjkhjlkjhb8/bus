@@ -21,7 +21,6 @@ import (
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
-	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
@@ -42,15 +41,6 @@ func makethatsame(subRouteUID string) string {
 
 func busRouteEtaKey(subRouteUID string) string {
 	return fmt.Sprintf("bus_eta_route:%s", makethatsame(subRouteUID))
-}
-
-var fetchGroup singleflight.Group
-
-func fetchOnce(key string, fetch func()) {
-	_, _, _ = fetchGroup.Do(key, func() (interface{}, error) {
-		fetch()
-		return nil, nil
-	})
 }
 
 func usableBusEtaPayload(data []byte) bool {
@@ -112,8 +102,9 @@ type MrtServer struct {
 }
 
 // ThsrServer serves high-speed-rail fares, timetables, and available-seat
-// streams. Fare/timetable results are cached in Redis; on a cache miss the
-// resty client fetches from the TDX API on demand.
+// streams. Fare/timetable results are cached in Redis and, on a miss, read from
+// the loaded env schema (no TDX fetch, ADR-0005). The resty client remains only
+// for the realtime AvailableSeats refresh.
 type ThsrServer struct {
 	pb.UnimplementedThsrTimetableServiceServer
 	mu     sync.Mutex
@@ -132,34 +123,33 @@ type Tra_StationServer struct {
 }
 
 // Tra_TimetableServer serves TRA fares and timetables and streams system-wide
-// delays. Fare/timetable lookups are Redis-cached and fetched from TDX on a
-// miss via the resty client.
+// delays. Fare/timetable lookups are Redis-cached and, on a miss, read from the
+// loaded env schema; empty results return NotFound (no TDX fetch, ADR-0005).
 type Tra_TimetableServer struct {
 	pb.UnimplementedTRATimetableServiceServer
-	mu     sync.Mutex
-	db     *pgxpool.Pool
-	rc     *redis.Client
-	client *resty.Client
+	mu sync.Mutex
+	db *pgxpool.Pool
+	rc *redis.Client
 }
 
 // Tra_DetainServer serves per-train TRA stop times and streams per-train delay
-// updates. Stop times are Redis-cached and fetched from TDX on a miss.
+// updates. Stop times are Redis-cached and, on a miss, read from the loaded env
+// schema; empty results return NotFound (no TDX fetch, ADR-0005).
 type Tra_DetainServer struct {
 	pb.UnimplementedTRA_DetainServiceServer
-	mu     sync.Mutex
-	db     *pgxpool.Pool
-	rc     *redis.Client
-	client *resty.Client
+	mu sync.Mutex
+	db *pgxpool.Pool
+	rc *redis.Client
 }
 
-// Thsr_DetainServer serves per-train THSR stop times, Redis-cached and fetched
-// from TDX on a miss.
+// Thsr_DetainServer serves per-train THSR stop times. Stop times are Redis-cached
+// and, on a miss, read from the loaded env schema; empty results return NotFound
+// (no TDX fetch, ADR-0005).
 type Thsr_DetainServer struct {
 	pb.UnimplementedThsr_DetainServiceServer
-	mu     sync.Mutex
-	db     *pgxpool.Pool
-	rc     *redis.Client
-	client *resty.Client
+	mu sync.Mutex
+	db *pgxpool.Pool
+	rc *redis.Client
 }
 
 // Near_Server answers nearby-station queries. It runs PostGIS radius queries
@@ -299,9 +289,9 @@ func main() {
 	pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{db: db, rc: rc})
 	pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, client: c, rc: rc})
 	pb.RegisterTRAStationServiceServer(grpcServer, &Tra_StationServer{db: db, rc: rc})
-	pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, client: c, rc: rc})
-	pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, client: c, rc: rc})
-	pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, client: c, rc: rc})
+	pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc})
+	pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc})
+	pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, rc: rc})
 	pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{db: db, osrmClient: resty.New().SetTimeout(5 * time.Second)})
 	pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{rc: rc})
 	pb.RegisterMaasServiceServer(grpcServer, newMaasServer(rc, db, func() string { return getToken(rc) }))

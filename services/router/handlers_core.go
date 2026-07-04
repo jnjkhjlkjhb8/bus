@@ -64,38 +64,17 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 // BusRouteEta streams live ETA for a bus route. It subscribes to the route's
 // Redis channel first, then sends the current cached value (if any) so a new
 // client sees state immediately, and forwards each published update until the
-// client disconnects. Empty payloads are skipped rather than forwarded.
+// client disconnects. Payloads failing usableBusEtaPayload are skipped.
 func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_Service_EtaServer) error {
 	log.Infof("call Bus_route_eta %s", in.SubRouteUID)
 	key := busRouteEtaKey(in.SubRouteUID)
-	sub := s.rc.Subscribe(key)
-	if val, err := s.rc.Get(key).Bytes(); err == nil && usableBusEtaPayload(val) {
-		resp := &pb.Resp_BusEta{Data: val}
-		if err := stream.Send(resp); err != nil {
-			log.Infof("[gRPC] action=bus_route_eta event=send_failed error=%v", err)
-			return err
-		}
-	}
-	defer func(sub *redis.PubSub) {
-		_ = sub.Close()
-	}(sub)
-	ch := sub.Channel()
-	for {
-		select {
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		case val := <-ch:
-			data := []byte(val.Payload)
-			if !usableBusEtaPayload(data) {
-				continue
-			}
-			resp := &pb.Resp_BusEta{Data: data}
-			if err := stream.Send(resp); err != nil {
-				log.Infof("[gRPC] action=bus_route_eta event=send_failed error=%v", err)
-				return err
-			}
-		}
-	}
+	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+		channel:  key,
+		seedKeys: []string{key},
+		usable:   usableBusEtaPayload,
+	}, func(data []byte) error {
+		return stream.Send(&pb.Resp_BusEta{Data: data})
+	})
 }
 
 // BusStationEta streams live ETA for a station group. The request's SubRouteUID
@@ -122,34 +101,13 @@ func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_Route, stream pb.Bus_Stati
 		return status.Error(codes.InvalidArgument, "station eta key must include city or known group_uid")
 	}
 	key := fmt.Sprintf("bus_eta_station:%s:%s", city, groupUID)
-	sub := s.rc.Subscribe(key)
-	if val, err := s.rc.Get(key).Bytes(); err == nil && usableBusEtaPayload(val) {
-		resp := &pb.Resp_BusEta{Data: val}
-		if err := stream.Send(resp); err != nil {
-			log.Infof("[gRPC] action=bus_station_eta event=send_failed error=%v", err)
-			return err
-		}
-	}
-	defer func(sub *redis.PubSub) {
-		_ = sub.Close()
-	}(sub)
-	ch := sub.Channel()
-	for {
-		select {
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		case val := <-ch:
-			data := []byte(val.Payload)
-			if !usableBusEtaPayload(data) {
-				continue
-			}
-			resp := &pb.Resp_BusEta{Data: data}
-			if err := stream.Send(resp); err != nil {
-				log.Infof("[gRPC] action=bus_station_eta event=send_failed error=%v", err)
-				return err
-			}
-		}
-	}
+	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+		channel:  key,
+		seedKeys: []string{key},
+		usable:   usableBusEtaPayload,
+	}, func(data []byte) error {
+		return stream.Send(&pb.Resp_BusEta{Data: data})
+	})
 }
 
 // BusDailytable returns the daily timetable payload cached in Redis for a route.
@@ -257,33 +215,19 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 	return resp, nil
 }
 
+// bikeEta streams live availability for a bike station. It subscribes to the
+// station's Redis channel first, seeds a new client from the cached value, then
+// forwards published updates until the client disconnects. Empty payloads are
+// skipped, so a client with no cached value receives no seed frame.
 func (s *BikeServer) bikeEta(in *pb.BikeRequest, stream pb.Bike_Service_EtaServer) error {
 	log.Infof("call bike_eta %s", in.StationUID)
-	sub := s.rc.Subscribe(fmt.Sprintf("bike_availability:%s", in.StationUID))
-	val := s.rc.Get(fmt.Sprintf("bike_availability:%s", in.StationUID))
-	resp := &pb.Resp_BikeEta{
-		Data: []byte(val.Val()),
-	}
-	if err := stream.Send(resp); err != nil {
-		log.Infof("[gRPC] action=bike_eta event=send_failed error=%v", err)
-		return err
-	}
-	defer func(sub *redis.PubSub) {
-		_ = sub.Close()
-	}(sub)
-	ch := sub.Channel()
-	for {
-		select {
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		case val := <-ch:
-			resp := &pb.Resp_BikeEta{Data: []byte(val.Payload)}
-			if err := stream.Send(resp); err != nil {
-				log.Infof("[gRPC] action=bike_eta event=send_failed error=%v", err)
-				return err
-			}
-		}
-	}
+	key := fmt.Sprintf("bike_availability:%s", in.StationUID)
+	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+		channel:  key,
+		seedKeys: []string{key},
+	}, func(data []byte) error {
+		return stream.Send(&pb.Resp_BikeEta{Data: data})
+	})
 }
 
 // Eta implements the Mrt_Service Eta streaming RPC by delegating to MrtEta.
@@ -299,44 +243,12 @@ func (s *MrtServer) Eta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 func (s *MrtServer) MrtEta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 	log.Infof("call Mrt_eta %s %s", in.System, in.StationID)
 	channel := fmt.Sprintf("mrt_live:%s:%s", in.System, in.StationID)
-	sub := s.rc.Subscribe(channel)
-	defer func(sub *redis.PubSub) { _ = sub.Close() }(sub)
-	key := fmt.Sprintf("mrt_live:%s:%s:*", in.System, in.StationID)
-	var cursor uint64
-	for {
-		keys, next, err := s.rc.Scan(cursor, key, 20).Result()
-		if err != nil {
-			break
-		}
-		for _, i := range keys {
-			val := s.rc.Get(i)
-			if val.Err() != nil {
-				continue
-			}
-			resp := &pb.Resp_MrtEta{Data: []byte(val.Val())}
-			if err := stream.Send(resp); err != nil {
-				log.Infof("[gRPC] action=mrt_live event=send_failed error=%v", err)
-				return err
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			break
-		}
-	}
-	ch := sub.Channel()
-	for {
-		select {
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		case val := <-ch:
-			resp := &pb.Resp_MrtEta{Data: []byte(val.Payload)}
-			if err := stream.Send(resp); err != nil {
-				log.Infof("[gRPC] action=mrt_eta event=send_failed error=%v", err)
-				return err
-			}
-		}
-	}
+	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+		channel:  channel,
+		seedScan: channel + ":*",
+	}, func(data []byte) error {
+		return stream.Send(&pb.Resp_MrtEta{Data: data})
+	})
 }
 
 // LiveBoard implements the TRAStationService LiveBoard streaming RPC by
@@ -345,33 +257,19 @@ func (s *Tra_StationServer) LiveBoard(in *pb.AskStaiton, stream pb.TRAStationSer
 	return s.traLiveboard(in, stream)
 }
 
+// traLiveboard streams the TRA live board for a station. It subscribes to the
+// station's Redis channel first, seeds a new client from the cached value, then
+// forwards published updates until the client disconnects. An empty cached value
+// is skipped rather than sent as a seed frame.
 func (s *Tra_StationServer) traLiveboard(in *pb.AskStaiton, stream pb.TRAStationService_LiveBoardServer) error {
 	log.Infof("call tra_liveboard %s", in.StationId)
-	sub := s.rc.Subscribe(fmt.Sprintf("tra:liveboard:%s", in.StationId))
-	val := s.rc.Get(fmt.Sprintf("tra:liveboard:%s", in.StationId))
-	resp := &pb.RespTraLiveBoard{
-		Data: []byte(val.Val()),
-	}
-	if err := stream.Send(resp); err != nil {
-		log.Infof("[gRPC] action=tra_liveboard event=send_failed error=%v", err)
-		return err
-	}
-	defer func(sub *redis.PubSub) {
-		_ = sub.Close()
-	}(sub)
-	ch := sub.Channel()
-	for {
-		select {
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		case val := <-ch:
-			resp := &pb.RespTraLiveBoard{Data: []byte(val.Payload)}
-			if err := stream.Send(resp); err != nil {
-				log.Infof("[gRPC] action=tra_liveboard event=send_failed error=%v", err)
-				return err
-			}
-		}
-	}
+	key := fmt.Sprintf("tra:liveboard:%s", in.StationId)
+	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+		channel:  key,
+		seedKeys: []string{key},
+	}, func(data []byte) error {
+		return stream.Send(&pb.RespTraLiveBoard{Data: data})
+	})
 }
 
 // Delay implements the TRATimetableService Delay streaming RPC. The request
@@ -424,33 +322,18 @@ func (s *Tra_TimetableServer) Timetable(ctx context.Context, in *pb.AskRoute) (*
 	return items, nil
 }
 
+// traDelay streams the system-wide TRA delay board. It subscribes to the delay
+// channel first, seeds a new client from the cached value, then forwards
+// published updates until the client disconnects. An empty cached value is
+// skipped rather than sent as a seed frame.
 func (s *Tra_TimetableServer) traDelay(stream pb.TRATimetableService_DelayServer) error {
 	log.Infof("call tra_delay")
-	sub := s.rc.Subscribe("tra:delay:all")
-	val := s.rc.Get("tra:delay:all")
-	resp := &pb.RespTraDelay{
-		Data: []byte(val.Val()),
-	}
-	if err := stream.Send(resp); err != nil {
-		log.Infof("[gRPC] action=tra_delay event=send_failed error=%v", err)
-		return err
-	}
-	defer func(sub *redis.PubSub) {
-		_ = sub.Close()
-	}(sub)
-	ch := sub.Channel()
-	for {
-		select {
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		case val := <-ch:
-			resp := &pb.RespTraDelay{Data: []byte(val.Payload)}
-			if err := stream.Send(resp); err != nil {
-				log.Infof("[gRPC] action=tra_delay event=send_failed error=%v", err)
-				return err
-			}
-		}
-	}
+	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+		channel:  "tra:delay:all",
+		seedKeys: []string{"tra:delay:all"},
+	}, func(data []byte) error {
+		return stream.Send(&pb.RespTraDelay{Data: data})
+	})
 }
 
 // Delay implements the TRA_DetainService Delay streaming RPC, streaming delay
@@ -473,33 +356,19 @@ func (s *Tra_DetainServer) Stops(ctx context.Context, in *pb.AskDetain) (*pb.Tra
 	return items, nil
 }
 
+// traDdelay streams delay updates for the single train identified by in.Trainno.
+// It subscribes to the train's Redis channel first, seeds a new client from the
+// cached value, then forwards published updates until the client disconnects. An
+// empty cached value is skipped rather than sent as a seed frame.
 func (s *Tra_DetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainService_DelayServer) error {
 	log.Infof("call tra_delay %s", in.Trainno)
-	sub := s.rc.Subscribe(fmt.Sprintf("tra:delay:%s", in.Trainno))
-	val := s.rc.Get(fmt.Sprintf("tra:delay:%s", in.Trainno))
-	resp := &pb.RespTraDelay{
-		Data: []byte(val.Val()),
-	}
-	if err := stream.Send(resp); err != nil {
-		log.Infof("[gRPC] action=tra_delay event=send_failed error=%v", err)
-		return err
-	}
-	defer func(sub *redis.PubSub) {
-		_ = sub.Close()
-	}(sub)
-	ch := sub.Channel()
-	for {
-		select {
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		case val := <-ch:
-			resp := &pb.RespTraDelay{Data: []byte(val.Payload)}
-			if err := stream.Send(resp); err != nil {
-				log.Infof("[gRPC] action=tra_delay event=send_failed error=%v", err)
-				return err
-			}
-		}
-	}
+	key := fmt.Sprintf("tra:delay:%s", in.Trainno)
+	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+		channel:  key,
+		seedKeys: []string{key},
+	}, func(data []byte) error {
+		return stream.Send(&pb.RespTraDelay{Data: data})
+	})
 }
 
 // Fare returns the single lowest THSR fare item between two stations, decoding

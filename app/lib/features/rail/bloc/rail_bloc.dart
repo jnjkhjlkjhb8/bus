@@ -4,10 +4,8 @@ import 'package:flutter/material.dart' show TimeOfDay;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/decoders/thsr_decoder.dart';
-import 'package:wheres_the_car/data/decoders/tra_decoder.dart';
-import 'package:wheres_the_car/data/generated/tra.pb.dart'
-    show Resp_tra_delay, Resp_tra_live_board, tra_LiveBoards, tra_delays;
+import 'package:wheres_the_car/core/grpc/live_data.dart';
+import 'package:wheres_the_car/data/models/tra_models.dart';
 import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
 import 'package:wheres_the_car/data/repositories/tra_repository.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
@@ -23,9 +21,14 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     on<RailTimetableRequested>(_onTimetableRequested);
     on<RailTrainStopsRequested>(_onTrainStopsRequested);
     on<RailDelaysUpdated>(_onDelaysUpdated);
+    on<RailLiveBoardItemsUpdated>(_onLiveBoardItems);
+    on<RailLiveBoardFailed>(_onLiveBoardFailed);
   }
 
   static final _dateFormat = DateFormat('yyyy-MM-dd');
+
+  LiveData<List<TraLiveBoardItem>>? _liveBoardSub;
+  LiveData<Map<String, int>>? _delaySub;
 
   RailLiveBoardLoaded _defaultLoaded(RailSystem system) {
     final now = DateTime.now();
@@ -82,31 +85,43 @@ class RailBloc extends Bloc<RailEvent, RailState> {
         ? current.system
         : RailSystem.tra;
     final stationId = current is RailLiveBoardLoaded ? current.stationId : '';
-    if (stationId.isEmpty) return;
-    if (system != RailSystem.tra) return;
+    if (stationId.isEmpty || system != RailSystem.tra) return;
+    if (current is! RailLiveBoardLoaded) {
+      emit(_defaultLoaded(system).copyWith(stationId: stationId));
+    }
 
     final date = _dateFormat.format(DateTime.now());
-    await emit.forEach<Resp_tra_live_board>(
-      TraRepository.instance.liveBoard(stationId, date),
-      onData: (response) {
-        final boards = tra_LiveBoards.fromBuffer(response.data);
-        final items = TraDecoder.instance.decodeLiveBoard(boards);
-        final loaded = current is RailLiveBoardLoaded
-            ? current.copyWith(traItems: items)
-            : _defaultLoaded(system).copyWith(
-                stationId: stationId,
-                traItems: items,
-              );
-        return loaded;
-      },
-      onError: (e, _) => RailError(AppError.from(e)),
+    await _liveBoardSub?.cancel();
+    _liveBoardSub = LiveData<List<TraLiveBoardItem>>.watch(
+      source: () => TraRepository.instance.liveBoard(stationId, date),
+      onData: (items) => add(RailLiveBoardItemsUpdated(items)),
+      onFailure: (e) => add(RailLiveBoardFailed(e)),
     );
   }
 
-  void _onLiveBoardStopped(
+  void _onLiveBoardItems(
+    RailLiveBoardItemsUpdated event,
+    Emitter<RailState> emit,
+  ) {
+    final current = state;
+    if (current is RailLiveBoardLoaded) {
+      emit(current.copyWith(traItems: event.items));
+    }
+  }
+
+  void _onLiveBoardFailed(
+    RailLiveBoardFailed event,
+    Emitter<RailState> emit,
+  ) {
+    emit(RailError(event.error));
+  }
+
+  Future<void> _onLiveBoardStopped(
     RailLiveBoardStopped event,
     Emitter<RailState> emit,
-  ) {}
+  ) async {
+    await _liveBoardSub?.cancel();
+  }
 
   void _onQueryChanged(RailQueryChanged event, Emitter<RailState> emit) {
     final current = state;
@@ -151,12 +166,11 @@ class RailBloc extends Bloc<RailEvent, RailState> {
 
     try {
       if (system == RailSystem.tra) {
-        final result = await TraRepository.instance.timetable(
+        final items = await TraRepository.instance.timetable(
           event.date,
           event.originId,
           event.destId,
         );
-        final items = TraDecoder.instance.decodeTimetable(result);
         emit(
           RailTimetableLoaded(
             system: system,
@@ -166,31 +180,21 @@ class RailBloc extends Bloc<RailEvent, RailState> {
             traItems: items,
           ),
         );
-        await emit.forEach<Resp_tra_delay>(
-          TraRepository.instance.delay(
+        await _delaySub?.cancel();
+        _delaySub = LiveData<Map<String, int>>.watch(
+          source: () => TraRepository.instance.delay(
             event.date,
             event.originId,
             event.destId,
           ),
-          onData: (response) {
-            final current = state;
-            if (current is! RailTimetableLoaded) return state;
-            final parsed = tra_delays.fromBuffer(response.data);
-            return current.copyWith(
-              delays: Map<String, int>.from(
-                TraDecoder.instance.decodeDelayMap(parsed),
-              ),
-            );
-          },
-          onError: (e, s) => state,
+          onData: (delays) => add(RailDelaysUpdated(delays)),
         );
       } else {
-        final result = await ThsrRepository.instance.timetable(
+        final items = await ThsrRepository.instance.timetable(
           event.date,
           event.originId,
           event.destId,
         );
-        final items = ThsrDecoder.instance.decodeTimetable(result);
         emit(
           RailTimetableLoaded(
             system: system,
@@ -204,6 +208,13 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     } on Object catch (e) {
       emit(RailError(AppError.from(e)));
     }
+  }
+
+  @override
+  Future<void> close() async {
+    await _liveBoardSub?.cancel();
+    await _delaySub?.cancel();
+    return super.close();
   }
 
   void _onDelaysUpdated(RailDelaysUpdated event, Emitter<RailState> emit) {
@@ -222,11 +233,10 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           ? current.system
           : RailSystem.tra;
       if (system == RailSystem.tra) {
-        final result = await TraRepository.instance.stops(
+        final stops = await TraRepository.instance.stops(
           event.date,
           event.trainNo,
         );
-        final stops = TraDecoder.instance.decodeStops(result);
         emit(
           RailTrainStopsLoaded(
             system: system,
@@ -236,11 +246,10 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           ),
         );
       } else {
-        final result = await ThsrRepository.instance.stops(
+        final stops = await ThsrRepository.instance.stops(
           event.date,
           event.trainNo,
         );
-        final stops = ThsrDecoder.instance.decodeStopTimes(result);
         emit(
           RailTrainStopsLoaded(
             system: system,

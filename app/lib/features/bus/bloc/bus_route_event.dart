@@ -1,6 +1,7 @@
 import 'package:equatable/equatable.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/generated/bus.pb.dart';
+import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 
 sealed class BusRouteEvent extends Equatable {
   const BusRouteEvent();
@@ -21,15 +22,15 @@ class BusRouteDirectionToggled extends BusRouteEvent {
 
 class BusRouteEtaUpdated extends BusRouteEvent {
   const BusRouteEtaUpdated(this.etaMap);
-  final Map<String, dynamic> etaMap;
+  final Map<String, BusStopEtaViewModel> etaMap;
   @override
   List<Object?> get props => [etaMap];
 }
 
 class BusRouteDetailsUpdated extends BusRouteEvent {
   const BusRouteDetailsUpdated({this.daily, this.fare});
-  final Bus_DailyTimetables? daily;
-  final Bus_Fare? fare;
+  final BusDailyTimetable? daily;
+  final BusFareInfo? fare;
   @override
   List<Object?> get props => [daily, fare];
 }

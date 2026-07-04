@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:wheres_the_car/data/generated/bus.pb.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 
 /// 公車資料解碼
 class BusDecoder {
@@ -40,9 +41,17 @@ class BusDecoder {
       stopsReturn: dir1?.stops.map(_stop).toList() ?? [],
       geometryGo: dir0?.geometry ?? '',
       geometryReturn: dir1?.geometry ?? '',
-      fare: route.hasFare() ? route.fare : null,
+      fare: route.hasFare() ? _fare(route.fare) : null,
     );
   }
+
+  BusFareInfo _fare(Bus_Fare f) => BusFareInfo(
+    pricingType: f.farePricingType,
+    isFreeBus: f.isFreeBus,
+    sectionFaresJson: f.sectionFaresJson,
+    stageFaresJson: f.stageFaresJson,
+    odFaresJson: f.odFaresJson,
+  );
 
   BusStopModel _stop(Bus_stop s) => BusStopModel(
     stopUid: s.stopUID,
@@ -52,12 +61,27 @@ class BusDecoder {
     lon: s.positionLon,
   );
 
-  Bus_DailyTimetables decodeDaily(Uint8List data) {
-    return Bus_DailyTimetables.fromBuffer(data);
-  }
-
-  int? etaMinutes(int estimateSecs) {
-    if (estimateSecs <= 0) return null;
-    return (estimateSecs / 60).ceil();
+  BusDailyTimetable decodeDaily(Uint8List data) {
+    final proto = Bus_DailyTimetables.fromBuffer(data);
+    return BusDailyTimetable(
+      directions: {
+        for (final entry in proto.direction.entries)
+          entry.key: [
+            for (final t in entry.value.dailyTimetables)
+              BusDailyTrip(
+                tripId: t.tripID,
+                isLowFloor: t.isLowFloor,
+                stopTimes: [
+                  for (final s in t.stopTimes)
+                    BusStopTime(
+                      stopSequence: s.stopSequence,
+                      departureTime: s.departureTime,
+                      arrivalTime: s.arrivalTime,
+                    ),
+                ],
+              ),
+          ],
+      },
+    );
   }
 }
