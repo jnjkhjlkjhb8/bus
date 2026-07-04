@@ -171,6 +171,11 @@ func railDateWindow(n int) []string {
 // multi-endpoint correlation); every other spec ignores it and uses the decoder
 // runLoadSpecs hands its load func. Partition enumerators reuse the ingestor's
 // existing package vars so landed and loaded partitions always agree.
+//
+// Ordering invariant: the "bus_operator" spec MUST precede the "bus" spec.
+// runLoadSpecs iterates this slice sequentially, so the staleness-gated
+// bus_operator upsert has already written bus_operators before loadBus reads
+// them back via loadBusOperatorMap. Do not reorder these two.
 func loaderRegistry(src loadSource) []loadSpec {
 	allCities := func() []string { return cities }
 	bikeCities := func() []string {

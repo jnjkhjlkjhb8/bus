@@ -457,8 +457,9 @@ var rawTDXTables = map[string]bool{
 
 // validateRawTarget guards the raw_tdx landing: it rejects any table not in the
 // rawTDXTables whitelist and any partition column other than "" / "city" /
-// "system". Table and partition names are interpolated into SQL, so this is the
-// injection barrier — never relax it to accept caller-supplied identifiers.
+// "system" / "traindate". Table and partition names are interpolated into SQL,
+// so this is the injection barrier — never relax it to accept caller-supplied
+// identifiers.
 func validateRawTarget(table, partCol string) error {
 	if !rawTDXTables[table] {
 		return fmt.Errorf("%w: table %q not whitelisted", errRawDump, table)

@@ -34,19 +34,19 @@ func busStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *
 // assembly, then calls the dailyRoute-family upserts (changetodbformat,
 // savestations, saveStationGroups, saveschedule, savestatictodb) unchanged.
 //
-// Operator and fare enrichment mirrors dailyRoute exactly: operators are read
-// before the Route assembly (from raw_tdx.bus_operator via loadBusOperators,
-// falling back to the stored bus_operators rows like the legacy TDX-failure
-// path) and used inside the Route closure; fares (raw_tdx.bus_routefare via
-// loadBusFares) are applied after the StationGroup stage, before
-// changetodbformat.
+// Operator and fare enrichment mirrors dailyRoute's result: operators are read
+// back from the bus_operators table (loadBusOperatorMap) — the standalone
+// bus_operator loadSpec already upserted them this run under its staleness gate,
+// so loadBus does not re-fetch or re-upsert — and used inside the Route closure;
+// fares (raw_tdx.bus_routefare via loadBusFares) are applied after the
+// StationGroup stage, before changetodbformat.
 func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, city string) error {
 	if city == "LienchiangCounty" {
 		return nil
 	}
 	log.Infof("[LOAD] action=bus event=city_start city=%s", city)
 	clearBusStaticCache(rc, city)
-	opMap := loadBusOperatorMap(ctx, src, db, city)
+	opMap := loadBusOperatorMap(ctx, db, city)
 	subRoutemap := make(map[string]*models.BusSubroute)
 	routeMap := make(map[string][]string)
 	syncStart := time.Now()
@@ -220,33 +220,35 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 	return nil
 }
 
-// loadBusOperatorMap reads a city's operators from raw_tdx.bus_operator and
-// hands them to loadBusOperators (which also upserts bus_operators, SQL
-// byte-identical to the legacy body). When the raw read fails it falls back to
-// the previously stored bus_operators rows — the same degradation dailyRoute
-// gets when the TDX operator fetch fails.
-func loadBusOperatorMap(ctx context.Context, src loadSource, db *pgxpool.Pool, city string) map[string]rawBusOperator {
-	body, _, err := src.datasetJSON(ctx, "bus_operator", "city", city)
-	if err != nil {
-		log.Infof("[LOAD] action=bus city=%s api=Operator event=read_error error=%v", city, err)
-		return busOperatorsFromDB(ctx, db, city)
-	}
-	result, loadErr := loadBusOperators(ctx, json.NewDecoder(bytes.NewReader(body)), db, city)
-	if loadErr != nil && len(result) == 0 {
-		return busOperatorsFromDB(ctx, db, city)
-	}
-	return result
+// loadBusOperatorMap returns a city's operators for the subroute assembly by
+// reading them back from the bus_operators table (busOperatorsFromDB). It does
+// NOT re-upsert from raw_tdx.bus_operator: the standalone bus_operator loadSpec
+// runs before the bus spec in the registry (see loaderRegistry's ordering
+// invariant) and already staleness-gated and upserted this city's operators
+// this run, so reading the table avoids a redundant second upsert and inherits
+// that staleness gate for free.
+func loadBusOperatorMap(ctx context.Context, db *pgxpool.Pool, city string) map[string]rawBusOperator {
+	return busOperatorsFromDB(ctx, db, city)
 }
 
 // loadBusFareMaps reads a city's route fares from raw_tdx.bus_routefare and
 // parses them with loadBusFares into the same two lookups cityFares returns.
 // On a read or decode failure it returns nil, nil — the same shape the legacy
 // cityFares yields on a fetch failure (subroutes then load without fares).
+//
+// Unlike the staleness-gated loadSpecs, a stale fare partition is logged but
+// still used: fare data changes rarely and stale fares beat missing fares
+// (blanking Fare on every subroute the moment a landing is skipped is a worse
+// user-facing outcome than showing yesterday's price), so this reader keeps the
+// last landed fares in place until a fresh landing replaces them.
 func loadBusFareMaps(ctx context.Context, src loadSource, city string) (map[string]*models.Bus_Fare, map[string]*models.Bus_Fare) {
-	body, _, err := src.datasetJSON(ctx, "bus_routefare", "city", city)
+	body, fetchedAt, err := src.datasetJSON(ctx, "bus_routefare", "city", city)
 	if err != nil {
 		log.Infof("[LOAD] action=bus city=%s api=RouteFare event=read_error error=%v", city, err)
 		return nil, nil
+	}
+	if isStale(fetchedAt) {
+		log.Infof("[LOAD] action=bus_fares event=stale city=%s fetched_at=%s error=%v", city, fetchedAt.Format(time.RFC3339), errLoadStale)
 	}
 	bySub, byRoute, loadErr := loadBusFares(json.NewDecoder(bytes.NewReader(body)), city)
 	if loadErr != nil {
