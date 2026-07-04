@@ -26,11 +26,12 @@ func rawSourcePool(db *pgxpool.Pool) *pgxpool.Pool {
 	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
-		log.Infof("[LOAD] action=raw_pool event=connect_failed error=%v", err)
+		// event containing "fail" emits at Error level via obs.legacyLevel.
+		log.Infof("[LOAD] action=raw_pool event=connect_failed fallback=sink_pool error=%v", err)
 		return db
 	}
 	if err := pool.Ping(context.Background()); err != nil {
-		log.Infof("[LOAD] action=raw_pool event=ping_failed error=%v", err)
+		log.Infof("[LOAD] action=raw_pool event=ping_failed fallback=sink_pool error=%v", err)
 		pool.Close()
 		return db
 	}
