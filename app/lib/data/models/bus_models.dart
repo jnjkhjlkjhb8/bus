@@ -1,24 +1,8 @@
 import 'package:equatable/equatable.dart';
 import 'package:wheres_the_car/data/generated/bus.pb.dart';
+import 'package:wheres_the_car/data/models/eta_format.dart';
 
 enum BusArrivalStatus { arriving, approaching, minutes, unknown }
-
-String? _clockLabel(String value) {
-  if (value.isEmpty) return null;
-  final match = RegExp(r'(\d{1,2}):(\d{2})').firstMatch(value);
-  if (match != null) {
-    final h = match.group(1)!.padLeft(2, '0');
-    return '$h:${match.group(2)!}';
-  }
-  final parsed = DateTime.tryParse(value);
-  if (parsed != null) {
-    final local = parsed.toLocal();
-    final h = local.hour.toString().padLeft(2, '0');
-    final m = local.minute.toString().padLeft(2, '0');
-    return '$h:$m';
-  }
-  return null;
-}
 
 class BusStopEtaViewModel extends Equatable {
   const BusStopEtaViewModel({
@@ -39,21 +23,13 @@ class BusStopEtaViewModel extends Equatable {
   final int stopStatus;
   final List<String> vehiclePlates;
 
-  int get estimateMinutes =>
-      estimateSeconds > 0 ? (estimateSeconds / 60).ceil() : 0;
+  int get estimateMinutes => etaCeilMinutes(estimateSeconds);
 
-  String? get displayLabel {
-    if (estimateSeconds > 0) return '$estimateMinutes分';
-    if (stopStatus == 0 && estimateSeconds == 0) return '進站中';
-    return _clockLabel(nextBusTime) ??
-        switch (stopStatus) {
-          1 => '尚未發車',
-          2 => '交管不停靠',
-          3 => '末班已過',
-          4 => '今日未營運',
-          _ => null,
-        };
-  }
+  String? get displayLabel => busStopDisplayLabel(
+    estimateSeconds: estimateSeconds,
+    stopStatus: stopStatus,
+    nextBusTime: nextBusTime,
+  );
 
   BusArrivalStatus get status {
     if (stopStatus == 0 && estimateSeconds == 0) {

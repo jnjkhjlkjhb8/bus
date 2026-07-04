@@ -13,6 +13,7 @@ import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/generated/bus.pb.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_car/data/models/eta_format.dart';
 import 'package:wheres_the_car/data/models/timeline_stop.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';

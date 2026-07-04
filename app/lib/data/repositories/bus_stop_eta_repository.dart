@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:wheres_the_car/data/generated/bus.pb.dart';
+import 'package:wheres_the_car/data/models/eta_format.dart';
 import 'package:wheres_the_car/data/repositories/bus_repository.dart';
 
 enum BusArrivalState { arriving, scheduled, unknown }
@@ -70,7 +71,7 @@ class BusStopEtaRepository {
   List<BusStopArrival> _decode(Resp_Bus_eta resp) {
     final arrival = Bus_StationArrival.fromBuffer(resp.data);
     return arrival.routes.map((r) {
-      final minutes = r.estimate > 0 ? (r.estimate / 60).ceil() : null;
+      final minutes = r.estimate > 0 ? etaCeilMinutes(r.estimate) : null;
       final state = switch (r.stopStatus) {
         0 when minutes != null => BusArrivalState.scheduled,
         1 => BusArrivalState.arriving,

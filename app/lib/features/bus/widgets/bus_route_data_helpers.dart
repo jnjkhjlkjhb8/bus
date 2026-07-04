@@ -24,8 +24,11 @@ bool _approaching(BusStopEtaViewModel? eta) {
 String _markerEta(BusStopEtaViewModel? eta) {
   if (eta == null) return '–';
   if (eta.estimateSeconds > 0) return '${eta.estimateMinutes}';
-  if (eta.stopStatus == 0 && eta.estimateSeconds == 0) return '即';
-  return '–';
+  final status = busStopDisplayStatus(
+    estimateSeconds: eta.estimateSeconds,
+    stopStatus: eta.stopStatus,
+  );
+  return status == BusStopDisplayStatus.arriving ? '即' : '–';
 }
 
 LatLngBounds _boundsOf(List<LatLng> pts) {
