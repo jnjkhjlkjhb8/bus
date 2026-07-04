@@ -266,11 +266,10 @@ func provisionBusSinks(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 // route/stop/operator/fare fixtures for one city into raw_tdx, provisions the
 // env-schema sinks, then runs the bus_operator and bus specs together through
 // runLoad. It asserts (1) a bus_subroutes row exists carrying the operator
-// detail (proving loadBusOperatorMap read the standalone spec's upsert back from
-// bus_operators) and (2) the bus_static.pb proto carries the Fare (proving
-// loadBusFareMaps enrichment flowed through), and (3) bus_operators holds
-// exactly one row for the fixture operator (proving a single upsert path, not
-// the old double upsert).
+// detail (proving loadBusOperatorMap decoded raw_tdx.bus_operator in-memory)
+// and (2) the bus_static.pb proto carries the Fare (proving loadBusFareMaps
+// enrichment flowed through), and (3) the bus_operators row landed via the
+// standalone bus_operator spec, the only remaining upsert path in the loader.
 func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	pool := loaderTestPool(t)
 	defer pool.Close()
@@ -282,11 +281,16 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 
 	provisionBusSinks(t, ctx, pool)
 
-	// Keelung (prefix KEE) so citymap/makethatsame/fare-prefix logic resolves.
-	// makethatsame is identity for non-InterCity, so the subroute UID is the raw
-	// SubRouteUID "KEE100", and the fare's SubRouteID "100" resolves to KEE+100.
-	const city = "Keelung"
-	const subUID = "KEE100"
+	// MiaoliCounty deliberately: citymap has no "MiaoliCounty" key (only
+	// "Miaoli"), so any operator path routed through citymap[city] — like a
+	// busOperatorsFromDB read filtering on authority_code — returns zero rows and
+	// operator enrichment silently blanks. This fixture proves loadBus enriches
+	// County-suffixed cities via the in-memory raw_tdx decode. makethatsame is
+	// identity for non-InterCity, so the subroute UID is the raw SubRouteUID
+	// "MIA100"; the fare prefix citymap["MiaoliCounty"] is "", so the fare's
+	// SubRouteID carries the full "MIA100".
+	const city = "MiaoliCounty"
+	const subUID = "MIA100"
 	const opID = "ZZ_LOAD_OP"
 
 	cleanup := func() {
@@ -295,7 +299,7 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 		}
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_subroutes WHERE sub_route_uid=$1", subUID)
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_static WHERE sub_route_uid=$1", subUID)
-		_, _ = pool.Exec(ctx, "DELETE FROM raw_bus_route WHERE route_uid='KEE1'")
+		_, _ = pool.Exec(ctx, "DELETE FROM raw_bus_route WHERE route_uid='MIA1'")
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_operators WHERE operator_id=$1", opID)
 	}
 	cleanup()
@@ -309,14 +313,14 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 			t.Fatalf("land %s: %v", table, err)
 		}
 	}
-	land("bus_route", `[{"RouteUID":"KEE1","RouteName":{"Zh_tw":"1路"},"Operators":[{"OperatorID":"ZZ_LOAD_OP"}],"SubRoutes":[{"SubRouteUID":"KEE100","SubRouteName":{"Zh_tw":"1路"},"Direction":0}]}]`)
-	land("bus_stopofroute", `[{"RouteUID":"KEE1","SubRouteUID":"KEE100","Direction":0,"Stops":[{"StopUID":"KEE_S1","StopName":{"Zh_tw":"站一"},"StopSequence":1,"StationID":"KEE_ST1","StopPosition":{"PositionLon":121.7,"PositionLat":25.1}}]}]`)
+	land("bus_route", `[{"RouteUID":"MIA1","RouteName":{"Zh_tw":"1路"},"Operators":[{"OperatorID":"ZZ_LOAD_OP"}],"SubRoutes":[{"SubRouteUID":"MIA100","SubRouteName":{"Zh_tw":"1路"},"Direction":0}]}]`)
+	land("bus_stopofroute", `[{"RouteUID":"MIA1","SubRouteUID":"MIA100","Direction":0,"Stops":[{"StopUID":"MIA_S1","StopName":{"Zh_tw":"站一"},"StopSequence":1,"StationID":"MIA_ST1","StopPosition":{"PositionLon":120.8,"PositionLat":24.5}}]}]`)
 	land("bus_shape", `[]`)
 	land("bus_schedule", `[]`)
 	land("bus_station", `[]`)
 	land("bus_stationgroup", `[]`)
-	land("bus_operator", `[{"OperatorID":"ZZ_LOAD_OP","OperatorName":{"Zh_tw":"測運"},"OperatorPhone":"02-1234","OperatorUrl":"https://ex","AuthorityCode":"KEE"}]`)
-	land("bus_routefare", `[{"RouteID":"KEE1","SubRouteID":"100","FarePricingType":1,"IsFreeBus":0}]`)
+	land("bus_operator", `[{"OperatorID":"ZZ_LOAD_OP","OperatorName":{"Zh_tw":"測運"},"OperatorPhone":"02-1234","OperatorUrl":"https://ex","AuthorityCode":"MIA"}]`)
+	land("bus_routefare", `[{"RouteID":"MIA1","SubRouteID":"MIA100","FarePricingType":1,"IsFreeBus":0}]`)
 
 	// loadBus clears the legacy Redis static cache; point at an unreachable addr
 	// with tiny timeouts so the Del calls log-and-continue instead of blocking (no
@@ -361,8 +365,11 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 		t.Fatal("bus_static.pb subroute has no Operators; operator enrichment did not flow")
 	}
 
-	// (3) bus_operators has exactly one row for the fixture operator: the single
-	// upsert path (standalone bus_operator spec), not the old double upsert.
+	// (3) the operators row landed via the standalone bus_operator spec — the only
+	// upsert path left in the loader (loadBus no longer writes bus_operators).
+	// Row count alone cannot distinguish one upsert from two idempotent ones; the
+	// single-writer property is enforced structurally (loadBusOperatorMap performs
+	// no SQL write), this just confirms the standalone spec's write landed.
 	var opRows int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM bus_operators WHERE operator_id=$1", opID).Scan(&opRows); err != nil {
 		t.Fatalf("count bus_operators: %v", err)

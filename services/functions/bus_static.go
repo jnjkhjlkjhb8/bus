@@ -34,19 +34,18 @@ func busStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *
 // assembly, then calls the dailyRoute-family upserts (changetodbformat,
 // savestations, saveStationGroups, saveschedule, savestatictodb) unchanged.
 //
-// Operator and fare enrichment mirrors dailyRoute's result: operators are read
-// back from the bus_operators table (loadBusOperatorMap) — the standalone
-// bus_operator loadSpec already upserted them this run under its staleness gate,
-// so loadBus does not re-fetch or re-upsert — and used inside the Route closure;
-// fares (raw_tdx.bus_routefare via loadBusFares) are applied after the
-// StationGroup stage, before changetodbformat.
+// Operator and fare enrichment mirrors dailyRoute's primary path: operators are
+// decoded in-memory from raw_tdx.bus_operator (loadBusOperatorMap, no SQL write
+// — the standalone bus_operator loadSpec is the only bus_operators upserter) and
+// used inside the Route closure; fares (raw_tdx.bus_routefare via loadBusFares)
+// are applied after the StationGroup stage, before changetodbformat.
 func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, city string) error {
 	if city == "LienchiangCounty" {
 		return nil
 	}
 	log.Infof("[LOAD] action=bus event=city_start city=%s", city)
 	clearBusStaticCache(rc, city)
-	opMap := loadBusOperatorMap(ctx, db, city)
+	opMap := loadBusOperatorMap(ctx, src, db, city)
 	subRoutemap := make(map[string]*models.BusSubroute)
 	routeMap := make(map[string][]string)
 	syncStart := time.Now()
@@ -221,14 +220,39 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 }
 
 // loadBusOperatorMap returns a city's operators for the subroute assembly by
-// reading them back from the bus_operators table (busOperatorsFromDB). It does
-// NOT re-upsert from raw_tdx.bus_operator: the standalone bus_operator loadSpec
-// runs before the bus spec in the registry (see loaderRegistry's ordering
-// invariant) and already staleness-gated and upserted this city's operators
-// this run, so reading the table avoids a redundant second upsert and inherits
-// that staleness gate for free.
-func loadBusOperatorMap(ctx context.Context, db *pgxpool.Pool, city string) map[string]rawBusOperator {
-	return busOperatorsFromDB(ctx, db, city)
+// decoding raw_tdx.bus_operator's payload in-memory, keyed by OperatorID —
+// exactly the map legacy dailyRoute's primary path built. It performs NO SQL
+// write: the standalone bus_operator loadSpec (which precedes the bus spec in
+// the registry — see loaderRegistry's ordering invariant) is the only
+// bus_operators upserter. A stale partition is logged but still used, the same
+// policy as loadBusFareMaps: stale operator detail beats blanking Operators on
+// every subroute.
+//
+// Only when the raw read or decode itself fails does it fall back to the
+// stored bus_operators rows, mirroring legacy's TDX-failure fallback. That
+// fallback is citymap-limited: busOperatorsFromDB filters on authority_code =
+// citymap[city], and citymap lacks the County-suffixed city keys, so for those
+// cities the fallback returns empty — pre-existing legacy behavior, and the
+// reason the primary path here must not route through citymap or the DB.
+func loadBusOperatorMap(ctx context.Context, src loadSource, db *pgxpool.Pool, city string) map[string]rawBusOperator {
+	body, fetchedAt, err := src.datasetJSON(ctx, "bus_operator", "city", city)
+	if err != nil {
+		log.Infof("[LOAD] action=bus city=%s api=Operator event=read_error error=%v", city, err)
+		return busOperatorsFromDB(ctx, db, city)
+	}
+	if isStale(fetchedAt) {
+		log.Infof("[LOAD] action=bus_operators event=stale city=%s fetched_at=%s error=%v", city, fetchedAt.Format(time.RFC3339), errLoadStale)
+	}
+	var ops []rawBusOperator
+	if err := json.Unmarshal(body, &ops); err != nil {
+		log.Infof("[LOAD] action=bus city=%s api=Operator event=decode_error error=%v", city, err)
+		return busOperatorsFromDB(ctx, db, city)
+	}
+	result := make(map[string]rawBusOperator, len(ops))
+	for _, op := range ops {
+		result[op.OperatorID] = op
+	}
+	return result
 }
 
 // loadBusFareMaps reads a city's route fares from raw_tdx.bus_routefare and
