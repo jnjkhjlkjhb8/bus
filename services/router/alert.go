@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"sync"
 
 	"github.com/go-redis/redis"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
@@ -15,7 +14,6 @@ import (
 // state before live updates begin.
 type AlertServer struct {
 	pb.UnimplementedAlert_ServiceServer
-	mu sync.Mutex
 	rc *redis.Client
 }
 
@@ -46,31 +44,14 @@ func (s *AlertServer) ThsrAlert(_ *pb.Alert_Ask, stream grpc.ServerStreamingServ
 	return streamAlert(s.rc, "mqtt:v2:Rail:THSR:AlertInfo", stream)
 }
 
+// streamAlert bridges one alert channel to a gRPC stream: the mirrored
+// latest-payload key seeds new subscribers, then live updates follow. Unlike
+// the old loop, client disconnect is noticed while idle.
 func streamAlert(rc *redis.Client, key string, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	sub := rc.Subscribe(key)
-	defer func() { _ = sub.Close() }()
-
-	if val := rc.Get(key); val.Val() != "" {
-		if err := stream.Send(&pb.Alert_Msg{Data: []byte(val.Val())}); err != nil {
-			log.Infof("[gRPC] action=alert event=send_cached_failed key=%s err=%v", key, err)
-			return err
-		}
-	}
-
-	for {
-		select {
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		default:
-		}
-		msg, err := sub.ReceiveMessage()
-		if err != nil {
-			log.Infof("[gRPC] action=alert event=receive_failed key=%s err=%v", key, err)
-			return err
-		}
-		if err := stream.Send(&pb.Alert_Msg{Data: []byte(msg.Payload)}); err != nil {
-			log.Infof("[gRPC] action=alert event=send_failed key=%s err=%v", key, err)
-			return err
-		}
-	}
+	return streamLive(stream.Context(), redisLiveSource{rc}, liveStreamSpec{
+		channel:  key,
+		seedKeys: []string{key},
+	}, func(data []byte) error {
+		return stream.Send(&pb.Alert_Msg{Data: data})
+	})
 }
