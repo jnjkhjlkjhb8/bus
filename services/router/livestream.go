@@ -66,6 +66,7 @@ func streamLive(ctx context.Context, src liveSource, spec liveStreamSpec, send f
 			return ctx.Err()
 		case val, ok := <-ch:
 			if !ok {
+				log.Infof("[gRPC] action=live_stream event=source_closed channel=%s", spec.channel)
 				return errLiveSourceClosed
 			}
 			if !usable(val) {
