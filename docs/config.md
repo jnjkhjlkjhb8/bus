@@ -12,8 +12,8 @@ made by claude
 ## TDX
 - `TDX_CLIENT_ID`
 - `TDX_CLIENT_SECRET`
-  - 僅 prod 的 ingestor（`ROLE=ingestor`）需要，因為只有它做 Stage 1 原始落地。
-  - staging / test 可留空（ADR-0005 Consequences）：loader 從 `raw_tdx` 載入，不呼叫 TDX。
+  - ingestor 容器（`ROLE=ingestor`）每個環境都會啟動（只有 `make up-test` 不啟動），但 TDX 憑證只放在 prod；其他環境的 ingestor 沒有憑證、抓取不會發生。
+  - staging / test 留空即可（ADR-0005 Consequences）：loader 從 `raw_tdx` 載入，不呼叫 TDX。
 
 ## 資料載入（loader）
 - `LOAD_ON_BOOT`

@@ -1,13 +1,13 @@
 made by claude
 # 資料擷取與排程
 
-靜態資料採兩階段流程（ADR-0005）：**Stage 1** 由 prod 專屬的 `ROLE=ingestor` 容器把 TDX 原始 payload 落地到共用的 `raw_tdx` schema；**Stage 2** 由每個環境的 `functions` 容器把 `raw_tdx` 轉換寫入各自的 `PG_SCHEMA`。即時（realtime）排程不受此拆分影響，仍在 `functions`（`ROLE=""`）中執行。
+靜態資料採兩階段流程（ADR-0005）：**Stage 1** 由 `ROLE=ingestor` 容器把 TDX 原始 payload 落地到共用的 `raw_tdx` schema——ingestor 容器每個環境都會啟動，但 TDX 憑證只放在 prod，其他環境的 ingestor 沒有憑證、抓取不會發生；**Stage 2** 由每個環境的 `functions` 容器把 `raw_tdx` 轉換寫入各自的 `PG_SCHEMA`。即時（realtime）排程不受此拆分影響，仍在 `functions`（`ROLE=""`）中執行。
 
 ## 排程時間
 
 | 時間 | 角色 | 工作 |
 |---|---|---|
-| 每日 03:00 | ingestor（僅 prod）| `ingestRaw`：抓取所有靜態 TDX 端點，落地 `raw_tdx` |
+| 每日 03:00 | ingestor（每環境都啟動；TDX 憑證僅 prod，其他環境為 no-op）| `ingestRaw`：抓取所有靜態 TDX 端點，落地 `raw_tdx` |
 | 每日 03:30 | functions（每個環境）| `load`：`raw_tdx` → 該環境 `PG_SCHEMA` |
 | 每日 03:45 | functions | `changetovector`：向量更新（在 load 之後執行） |
 | 每日 04:00 | functions | `computeTravelAvg`：公車旅行時間統計 |
@@ -21,7 +21,7 @@ made by claude
 
 ## Stage 1 — 原始落地（ingestor，每日 03:00）
 
-`ROLE=ingestor` 是 prod 專屬容器，也是**唯一持有 TDX 憑證**（`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET`）的角色。`ingestRaw` 逐一抓取每個靜態端點，把 TDX 回應原文（不解析）寫入 `raw_tdx.<table>`。落地寫入發生在 `callApi` 內：只有在成功 dump 之後才更新 Last-Modified / If-Modified-Since cache，避免某次 dump 失敗被後續 304 遮蔽而讓 `raw_tdx` 永久卡在舊資料。
+`ROLE=ingestor` 容器每個環境都會啟動（base compose 定義它；只有 `make up-test` 不啟動），但 **TDX 憑證（`TDX_CLIENT_ID` / `TDX_CLIENT_SECRET`）只放在 prod**；其他環境的 ingestor 沒有憑證，抓取不會發生。`ingestRaw` 逐一抓取每個靜態端點，把 TDX 回應原文（不解析）寫入 `raw_tdx.<table>`。落地寫入發生在 `callApi` 內：只有在成功 dump 之後才更新 Last-Modified / If-Modified-Since cache，避免某次 dump 失敗被後續 304 遮蔽而讓 `raw_tdx` 永久卡在舊資料。
 
 分割替換（partition-replace）策略：
 
@@ -98,23 +98,24 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
 
 `busDailyroute` 在 `functions` 啟動時執行一次，把公車每日時刻表載入 Redis：
 
-- 寫入 Redis：`bus_daily_timetable:{sub_route_uid}`
+- 寫入 Redis：`bus_daily_timetable:{sub_route_uid}`（TTL 23 小時 30 分）
 
-（03:30 loader 的 `bus_dailytimetable` spec 也寫同一組 Redis key，資料來源改為 `raw_tdx`。）
+（03:30 loader 的 `bus_dailytimetable` spec 走同一個 `loadBusDailyTimetable`，寫同一組 Redis key 與 TTL，資料來源改為 `raw_tdx`。）
 
 ## bikeEta
 
 - 來源 API
   - `/v2/Bike/Availability/City/{City}`
 - 寫入 Redis
-  - `bike_availability:{station_uid}`
+  - `bike_availability:{station_uid}`（TTL 2 分鐘）
 
 ## mrtEta
 
 - 來源 API
   - `/v2/Rail/Metro/LiveBoard/{System}`
 - 寫入 Redis
-  - `mrt_live:{system}:{station_id}`
+  - `mrt_live:{system}:{station_id}:{line_id}`（TTL 2 分鐘）
+  - Pub/Sub 頻道：`mrt_live:{system}:{station_id}`
 
 ## traEta
 
@@ -122,8 +123,8 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
   - `/v2/Rail/TRA/LiveTrainDelay`
   - `/v2/Rail/TRA/LiveBoard`
 - 寫入 Redis
-  - `tra:delay` (hash)
-  - `tra:delay_all`
+  - `tra:delay`（hash，3 分鐘 expire）
+  - `tra:delay:all`（TTL 3 分鐘，同名頻道發 Pub/Sub）
   - `tra:liveboard:{station_id}`
 
 ## 鐵路時刻表查詢（router 讀取路徑）
@@ -206,10 +207,8 @@ DATABASE_URL=... python3 scripts/gtfs_seed.py
 
 在 03:30 load 之後執行（因此讀到的是 loader 剛寫好的表，而非已退役的 03:00 直抓寫入）。
 
-- 來源
-  - `bus_static`, `bus_stations`, `bike_stations`, `mrt_station`, `tra_stations`, `thsr_stations`
-  - `tra_timetable`（DISTINCT ON trainno，只取未來日期）→ type `tra_train`
-  - `thsr_timetable`（DISTINCT ON trainno，只取未來日期）→ type `thsr_train`
+- 來源（`vector.go` 的六張表）
+  - `bus_subroutes`, `bus_station_groups`, `bike_stations`, `mrt_station`, `tra_stations`, `thsr_stations`
 - 目的表
   - `search_vector`
 - 向量模型

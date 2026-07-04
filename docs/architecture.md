@@ -25,7 +25,7 @@ router / functions / powersync / osrm / redis
 | redis | redis:7-alpine | 127.0.0.1:6379 | 512 MB |
 | router | bus-router (Go) | 50051, 8080 | 256 MB |
 | functions | bus-functions (Go) | — | 192 MB |
-| ingestor | bus-functions (Go, `ROLE=ingestor`, 僅 prod) | — | 256 MB |
+| ingestor | bus-functions (Go, `ROLE=ingestor`；TDX 憑證僅 prod，其他環境為 no-op) | — | 256 MB |
 | powersync | journeyapps/powersync-service | 8081 | 512 MB |
 | osrm | osrm/osrm-backend | 127.0.0.1:5000 | 1536 MB |
 | ollama | ollama/ollama (custom) | 127.0.0.1:11434 | 800 MB |
@@ -36,7 +36,7 @@ Redis 與 OSRM 僅對 localhost 開放，不對外暴露。
 
 - `services/functions`
   - 排程執行器；一個映像以 `ROLE` 環境變數分兩種模式：
-    - `ROLE=ingestor`（僅 prod）：Stage 1，03:00 把 TDX 原始 payload 落地共用 `raw_tdx` schema。
+    - `ROLE=ingestor`：Stage 1，03:00 把 TDX 原始 payload 落地共用 `raw_tdx` schema。容器每個環境都會啟動（只有 `make up-test` 不啟動），但 TDX 憑證只放在 prod；其他環境的 ingestor 沒有憑證，抓取不會發生。
     - `ROLE=""`（每個環境）：Stage 2 loader（03:30 `raw_tdx` → 該環境 `PG_SCHEMA`）＋ 即時 ETA ＋ MQTT ＋ 通知。
   - TDX MQTT 訂閱（`mqtt.go`），接收即時告警並推送至 Redis Pub/Sub
   - 使用 `robfig/cron` 設定排程（見 `docs/ingestion.md`）
@@ -65,7 +65,7 @@ Redis 與 OSRM 僅對 localhost 開放，不對外暴露。
 
 ```
 # 靜態資料採兩階段（ADR-0005）
-TDX REST API ──03:00（僅 prod ingestor）──→ raw_tdx（共用 schema）
+TDX REST API ──03:00 ingestor（TDX 憑證僅 prod，其他環境為 no-op）──→ raw_tdx（共用 schema）
 raw_tdx ──03:30（每個環境 functions）──→ PostgreSQL（該環境 PG_SCHEMA 靜態）
 
 TDX REST API ──即時排程──→ functions ──→ Redis（ETA 快取 + Pub/Sub）

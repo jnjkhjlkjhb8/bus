@@ -113,7 +113,7 @@ Services in `docker-compose.yaml`:
 | redis | redis:7-alpine | 127.0.0.1:6379 | ETA cache + Pub/Sub |
 | router | bus-router | 50051 (gRPC), 8080 (HTTP) | Request path |
 | functions | bus-functions | — | Realtime ETA + MQTT + 03:30 raw_tdx load (empty `ROLE`) |
-| ingestor | bus-functions | — | 03:00 raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`; only prod holds TDX credentials) |
+| ingestor | bus-functions | — | 03:00 raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`; runs in every env but only prod holds TDX credentials — no-op elsewhere) |
 | powersync | journeyapps/powersync-service | 8081 | Offline sync |
 | osrm | osrm/osrm-backend | 127.0.0.1:5000 | Routing engine |
 
@@ -125,7 +125,7 @@ PostgreSQL is on **Azure** (external). `functions` and `ingestor` share one imag
 
 | Schedule | Job |
 |---|---|
-| 03:00 daily | raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`, prod only) |
+| 03:00 daily | raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`; TDX credentials prod-only, no-op elsewhere) |
 | 03:30 daily | load: `raw_tdx` → this env's `PG_SCHEMA` (every env's functions; no TDX calls) |
 | 03:45 daily | `changetovector` (vector update, after the load) |
 | 04:00 daily | `computeTravelAvg` (ETA prediction) |
@@ -147,7 +147,7 @@ MQTT (`mqtt.go`): subscribes to `mqtt.transportdata.tw:8883`, publishes alerts t
 ### Data flow
 
 ```
-TDX REST API ──03:00 (prod ingestor)──→ raw_tdx (shared schema)
+TDX REST API ──03:00 (ingestor; TDX creds prod-only)──→ raw_tdx (shared schema)
 raw_tdx ──03:30 (each env's functions)──→ PostgreSQL (env PG_SCHEMA static)
 
 TDX REST API ──realtime crons──→ functions ──→ Redis (ETA cache + Pub/Sub)
