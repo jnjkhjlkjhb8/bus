@@ -83,7 +83,7 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 				continue
 			}
 			if isStale(fetchedAt) {
-				log.Infof("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s", spec.key, part, fetchedAt.Format(time.RFC3339))
+				log.Infof("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s error=%v", spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale)
 				continue
 			}
 			dec := json.NewDecoder(bytes.NewReader(body))
@@ -184,6 +184,11 @@ func loaderRegistry(src loadSource) []loadSpec {
 	}
 	single := func() []string { return []string{""} }
 	return []loadSpec{
+		{key: "bus_operator", table: "bus_operator", partCol: "city", partitions: allCities,
+			load: func(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, part string) error {
+				_, err := loadBusOperators(ctx, dec, db, part)
+				return err
+			}},
 		{key: "bus", table: "bus_route", partCol: "city", partitions: allCities,
 			load: func(ctx context.Context, _ *json.Decoder, db *pgxpool.Pool, rc *redis.Client, part string) error {
 				return loadBus(ctx, src, db, rc, part)
