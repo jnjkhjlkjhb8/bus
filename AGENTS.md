@@ -92,7 +92,7 @@ Full reference: `docs/config.md` and `env/*.env.example`.
 | `DATABASE_URL` | PostgreSQL connection string |
 | `PG_SCHEMA` | Schema override (staging isolation) |
 | `REDIS_ADDR` | `redis:6379` (Docker internal — do not change) |
-| `TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` | TDX API credentials |
+| `TDX_CLIENT_ID` / `TDX_CLIENT_SECRET` | TDX API credentials (prod ingestor only; other envs load from `raw_tdx` and may leave them empty) |
 | `CWA_API_KEY` | Weather data (bus ETA prediction) |
 | `HF_TOKEN` | HuggingFace embedding fallback |
 | `OSRM_FILE` | Pre-processed `.osrm` file in `osrm-data/` |
@@ -112,8 +112,8 @@ Services in `docker-compose.yaml`:
 | ollama | ollama | 127.0.0.1:11434 | Embeddings; `gpu` profile, optional |
 | redis | redis:7-alpine | 127.0.0.1:6379 | ETA cache + Pub/Sub |
 | router | bus-router | 50051 (gRPC), 8080 (HTTP) | Request path |
-| functions | bus-functions | — | Realtime ETA + MQTT (`ROLE=functions`) |
-| ingestor | bus-functions | — | Daily static ingestion (`ROLE=ingestor`) |
+| functions | bus-functions | — | Realtime ETA + MQTT + 03:30 raw_tdx load (empty `ROLE`) |
+| ingestor | bus-functions | — | 03:00 raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`; only prod holds TDX credentials) |
 | powersync | journeyapps/powersync-service | 8081 | Offline sync |
 | osrm | osrm/osrm-backend | 127.0.0.1:5000 | Routing engine |
 
@@ -125,7 +125,9 @@ PostgreSQL is on **Azure** (external). `functions` and `ingestor` share one imag
 
 | Schedule | Job |
 |---|---|
-| 03:00 daily | `busStatic`, `bikeStatic`, `mrtStatic`, `railStatic`, vector update |
+| 03:00 daily | raw TDX landing into shared `raw_tdx` (`ROLE=ingestor`, prod only) |
+| 03:30 daily | load: `raw_tdx` → this env's `PG_SCHEMA` (every env's functions; no TDX calls) |
+| 03:45 daily | `changetovector` (vector update, after the load) |
 | 04:00 daily | `computeTravelAvg` (ETA prediction) |
 | 04:30 daily | `cleanupBusHistory` (30-day retention) |
 | every 10 s | `mrtEta` |
@@ -137,6 +139,7 @@ MQTT (`mqtt.go`): subscribes to `mqtt.transportdata.tw:8883`, publishes alerts t
 
 **`services/router/`** — gRPC on `:50051` + HTTP on `:8080`.
 - gRPC: static queries → PostgreSQL; realtime streams → Redis Pub/Sub.
+- Rail (TRA/THSR) is a pure read path: a miss (e.g. a date beyond the landed timetable window) returns `NotFound` — the router never fetches TDX on miss (ADR-0005).
 - HTTP: `GET /api/token/powersync` (JWT), `GET /api/.well-known/jwks.json`, `POST /api/embed` (embedding proxy).
 
 **`models/*.proto`** — source of truth for the API.
@@ -144,8 +147,10 @@ MQTT (`mqtt.go`): subscribes to `mqtt.transportdata.tw:8883`, publishes alerts t
 ### Data flow
 
 ```
-TDX REST API ──cron──→ functions/ingestor ──→ PostgreSQL (static)
-                                          └──→ Redis (ETA cache + Pub/Sub)
+TDX REST API ──03:00 (prod ingestor)──→ raw_tdx (shared schema)
+raw_tdx ──03:30 (each env's functions)──→ PostgreSQL (env PG_SCHEMA static)
+
+TDX REST API ──realtime crons──→ functions ──→ Redis (ETA cache + Pub/Sub)
 
 TDX MQTT ──push──→ functions ──→ Redis (alert cache + Pub/Sub)
 
