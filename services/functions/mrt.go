@@ -335,7 +335,7 @@ func mrtEta(client *resty.Client, rc *redis.Client) {
 type mrtODFare struct {
 	OriginStationID      string `json:"OriginStationID"`
 	DestinationStationID string `json:"DestinationStationID"`
-	Fares         []struct {
+	Fares                []struct {
 		TicketType int `json:"TicketType"`
 		Price      int `json:"Price"`
 	} `json:"Fares"`

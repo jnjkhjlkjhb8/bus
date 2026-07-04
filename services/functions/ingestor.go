@@ -102,12 +102,26 @@ func ingestRaw(ctx context.Context, c *resty.Client, rc *redis.Client) {
 		fetchRaw(c, rc, "/v2/Rail/Metro/ODFare/"+s, "metro_od_"+s)
 	}
 
-	today := time.Now().Format("2006-01-02")
 	fetchRaw(c, rc, "/v2/Rail/TRA/ODFare", "tra_odfare")
 	fetchRaw(c, rc, "/v2/Rail/TRA/TrainType", "tra_traintype")
-	fetchRaw(c, rc, "/v2/Rail/TRA/DailyTimetable/TrainDate/"+today, "tra_daily_"+today)
+	fetchRaw(c, rc, "/v2/Rail/TRA/Station", "tra_station")
 	fetchRaw(c, rc, "/v2/Rail/THSR/Station", "thsr_station")
-	fetchRaw(c, rc, "/v2/Rail/THSR/DailyTimetable/TrainDate/"+today, "thsr_daily_"+today)
+	fetchRaw(c, rc, "/v2/Rail/THSR/ODFare", "thsr_odfare")
+
+	// Land the full timetable window (TRA today..+60, THSR today..+45),
+	// mirroring railPreFetch's horizons. Day 0 is today so the current day is
+	// landed; the per-date IMS cache key isolates each date's If-Modified-Since
+	// state, and rawDumpTarget partitions each date by its traindate column so a
+	// mid-run refresh replaces only that date rather than TRUNCATE'ing the table.
+	today := time.Now()
+	for i := 0; i <= 60; i++ {
+		d := today.AddDate(0, 0, i).Format(time.DateOnly)
+		fetchRaw(c, rc, "/v2/Rail/TRA/DailyTimetable/TrainDate/"+d, "tra_daily_"+d)
+	}
+	for i := 0; i <= 45; i++ {
+		d := today.AddDate(0, 0, i).Format(time.DateOnly)
+		fetchRaw(c, rc, "/v2/Rail/THSR/DailyTimetable/TrainDate/"+d, "thsr_daily_"+d)
+	}
 
 	log.Infoln("[INGEST] action=raw event=end")
 }

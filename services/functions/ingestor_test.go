@@ -17,6 +17,7 @@ func TestValidateRawTarget(t *testing.T) {
 	valid := []struct{ table, part string }{
 		{"bus_route", "city"}, {"metro_station", "system"},
 		{"tra_odfare", ""}, {"thsr_dailytimetable", ""},
+		{"tra_station", ""}, {"tra_dailytimetable", "traindate"},
 	}
 	for _, v := range valid {
 		if err := validateRawTarget(v.table, v.part); err != nil {
@@ -75,9 +76,11 @@ func TestRawDumpTargetStatic(t *testing.T) {
 		{"/v2/Rail/Metro/ODFare/TRTC", "metro_odfare", "system", "TRTC"},
 		{"/v2/Rail/TRA/ODFare", "tra_odfare", "", ""},
 		{"/v2/Rail/TRA/TrainType", "tra_traintype", "", ""},
-		{"/v2/Rail/TRA/DailyTimetable/TrainDate/2026-07-02", "tra_dailytimetable", "", ""},
+		{"/v2/Rail/TRA/Station", "tra_station", "", ""},
 		{"/v2/Rail/THSR/Station", "thsr_station", "", ""},
-		{"/v2/Rail/THSR/DailyTimetable/TrainDate/2026-07-02", "thsr_dailytimetable", "", ""},
+		{"/v2/Rail/THSR/ODFare", "thsr_odfare", "", ""},
+		{"/v2/Rail/TRA/DailyTimetable/TrainDate/2026-07-02", "tra_dailytimetable", "traindate", "2026-07-02"},
+		{"/v2/Rail/THSR/DailyTimetable/TrainDate/2026-07-02", "thsr_dailytimetable", "traindate", "2026-07-02"},
 	}
 	for _, c := range cases {
 		table, partCol, partVal, ok := rawDumpTarget(c.url)
@@ -101,7 +104,6 @@ func TestRawDumpTargetSkipsRealtimeAndUnmapped(t *testing.T) {
 		"/v2/Rail/Metro/LiveBoard/TRTC",
 		"/v2/Rail/TRA/LiveBoard",
 		"/v2/Rail/TRA/LiveTrainDelay",
-		"/v2/Rail/TRA/Station", // no raw_tdx table
 		"/v2/Bus/Unknown/City/Taipei",
 		"/notv2/Bus/Route/City/Taipei",
 	}

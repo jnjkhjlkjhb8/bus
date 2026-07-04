@@ -416,12 +416,22 @@ func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
 			return t, "system", seg[len(seg)-1], true
 		}
 	case seg[1] == "Rail" && len(seg) >= 4 && (seg[2] == "TRA" || seg[2] == "THSR"):
-		railTables := map[string]string{
-			"THSR/Station": "thsr_station", "TRA/ODFare": "tra_odfare", "THSR/ODFare": "",
-			"TRA/TrainType":      "tra_traintype",
-			"TRA/DailyTimetable": "tra_dailytimetable", "THSR/DailyTimetable": "thsr_dailytimetable",
+		// Timetable endpoints are landed per train date so the loader window
+		// (TRA today..+60, THSR today..+45) survives a mid-run partition swap
+		// instead of the whole table being TRUNCATE'd. The partition column is
+		// the existing traindate column landed from the TDX payload.
+		switch seg[2] + "/" + seg[3] {
+		case "TRA/DailyTimetable":
+			return "tra_dailytimetable", "traindate", seg[len(seg)-1], true
+		case "THSR/DailyTimetable":
+			return "thsr_dailytimetable", "traindate", seg[len(seg)-1], true
 		}
-		if t, exists := railTables[seg[2]+"/"+seg[3]]; exists && t != "" {
+		railTables := map[string]string{
+			"TRA/Station": "tra_station", "THSR/Station": "thsr_station",
+			"TRA/ODFare": "tra_odfare", "THSR/ODFare": "thsr_odfare",
+			"TRA/TrainType": "tra_traintype",
+		}
+		if t, exists := railTables[seg[2]+"/"+seg[3]]; exists {
 			return t, "", "", true
 		}
 	}
@@ -442,7 +452,7 @@ var rawTDXTables = map[string]bool{
 	"bus_dailytimetable": true, "bike_station": true, "metro_station": true,
 	"metro_schedule": true, "metro_odfare": true, "tra_odfare": true,
 	"tra_dailytimetable": true, "tra_traintype": true, "thsr_station": true,
-	"thsr_dailytimetable": true,
+	"thsr_dailytimetable": true, "tra_station": true, "thsr_odfare": true,
 }
 
 // validateRawTarget guards the raw_tdx landing: it rejects any table not in the
@@ -453,7 +463,7 @@ func validateRawTarget(table, partCol string) error {
 	if !rawTDXTables[table] {
 		return fmt.Errorf("%w: table %q not whitelisted", errRawDump, table)
 	}
-	if partCol != "" && partCol != "city" && partCol != "system" {
+	if partCol != "" && partCol != "city" && partCol != "system" && partCol != "traindate" {
 		return fmt.Errorf("%w: partition column %q not allowed", errRawDump, partCol)
 	}
 	return nil
