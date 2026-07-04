@@ -341,15 +341,25 @@ type busOperatorJSON struct {
 	URL   string `json:"url"`
 }
 
+// busDailyTimetableSkip lists cities whose daily-timetable feed TDX does not
+// serve; both the legacy fetch path (busDailyroute) and the loader path
+// (loadBusDailyTimetable partitions) skip them so landed and loaded partitions
+// agree.
+func busDailyTimetableSkip(city string) bool {
+	return city == "Taipei" || city == "NewTaipei" || city == "Tainan" ||
+		city == "KinmenCounty" || city == "LienchiangCounty"
+}
+
 // busDailyroute caches each subroute's daily timetable in Redis as a protobuf
 // under bus_daily_timetable:<subRouteUID>, TTL just under 24h so a missed daily
 // refresh expires the stale copy. A short skip list omits cities whose daily
 // timetable TDX does not serve. Runs both at boot and in the 03:00 static cron.
+// The fetch wrapper only owns the TDX call; the decoder-side assembly and Redis
+// writes are shared with the loader path via loadBusDailyTimetable.
 func busDailyroute(client *resty.Client, rc *redis.Client) {
 	log.Infof("[bus] action=bus_dailyroute event=start")
-	var temp rawBusDailytimetable
 	for _, city := range cities {
-		if city == "Taipei" || city == "NewTaipei" || city == "Tainan" || city == "KinmenCounty" || city == "LienchiangCounty" {
+		if busDailyTimetableSkip(city) {
 			continue
 		}
 		var url string
@@ -368,61 +378,77 @@ func busDailyroute(client *resty.Client, rc *redis.Client) {
 			log.Infof("[bus] action=bus_dailyroute city=%s event=skip reason=already", city)
 			continue
 		}
-		if _, err := dec.Token(); err != nil {
-			log.Infof("[bus] action=bus_dailyroute city=%s event=decode_error error=%v", city, err)
-			continue
-		}
 		func() {
 			defer flipopen()
-			pipe := rc.Pipeline()
-			mp := make(map[string]map[int32]*models.Temp, 300)
-			for dec.More() {
-				temp = rawBusDailytimetable{}
-				if err := dec.Decode(&temp); err == nil {
-					uid, dir := makethatsame(city, temp.SubRouteUID, temp.Direction)
-					if _, exists := mp[uid]; !exists {
-						mp[uid] = make(map[int32]*models.Temp, 4)
-					}
-					if _, exists := mp[uid][int32(dir)]; !exists {
-						mp[uid][int32(dir)] = &models.Temp{
-							DailyTimetables: make([]*models.Bus_DailyTimetable, 0, 64),
-						}
-					}
-					for _, t := range temp.Timetables {
-						stop := make([]*models.Temp_StopTimes, len(t.StopTimes))
-						for i, st := range t.StopTimes {
-							stop[i] = &models.Temp_StopTimes{
-								StopSequence:  int32(st.StopSequence),
-								ArrivalTime:   st.ArrivalTime,
-								DepartureTime: st.DepartureTime,
-							}
-						}
-						timtable := &models.Bus_DailyTimetable{
-							TripID:     t.TripID,
-							IsLowFloor: t.IsLowFloor,
-							StopTimes:  stop,
-						}
-						mp[uid][int32(dir)].DailyTimetables = append(mp[uid][int32(dir)].DailyTimetables, timtable)
-					}
-				}
+			if err := loadBusDailyTimetable(context.Background(), dec, nil, rc, city); err != nil {
+				log.Infof("[bus] action=bus_dailyroute city=%s event=error error=%v", city, err)
 			}
-			for subRouteUID, t := range mp {
-				pbRoute := &models.Bus_DailyTimetables{
-					SubRouteUID: subRouteUID,
-					Direction:   t,
-				}
-				pb, err := proto.Marshal(pbRoute)
-				if err != nil {
-					log.Infof("[bus] action=bus_dailyroute subRouteUID=%s event=marshal_error error=%v", subRouteUID, err)
-					continue
-				}
-				pipe.Set(fmt.Sprintf("bus_daily_timetable:%s", subRouteUID), pb, 23*time.Hour+30*time.Minute)
-			}
-			_, _ = pipe.Exec()
-			log.Infof("[bus] action= %s bus_dailyroute event=complete", city)
 		}()
 	}
 	log.Infof("[bus] action=bus_dailyroute event=complete")
+}
+
+// loadBusDailyTimetable assembles one city's daily timetables from an opened
+// decoder and writes each subroute's protobuf into Redis under
+// bus_daily_timetable:<subRouteUID> (TTL 23h30m), byte-identical to the legacy
+// busDailyroute transform. It consumes the decoder from the opening '[' onward,
+// so both the TDX fetch wrapper and the loader (which hands an unopened decoder
+// over reconstructed raw_tdx.bus_dailytimetable bytes) call it the same way. db
+// is unused (this dataset is Redis-only); the parameter keeps the loadSpec
+// signature.
+func loadBusDailyTimetable(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool, rc *redis.Client, city string) error {
+	if _, err := dec.Token(); err != nil {
+		log.Infof("[bus] action=bus_dailyroute city=%s event=decode_error error=%v", city, err)
+		return err
+	}
+	pipe := rc.Pipeline()
+	mp := make(map[string]map[int32]*models.Temp, 300)
+	var temp rawBusDailytimetable
+	for dec.More() {
+		temp = rawBusDailytimetable{}
+		if err := dec.Decode(&temp); err == nil {
+			uid, dir := makethatsame(city, temp.SubRouteUID, temp.Direction)
+			if _, exists := mp[uid]; !exists {
+				mp[uid] = make(map[int32]*models.Temp, 4)
+			}
+			if _, exists := mp[uid][int32(dir)]; !exists {
+				mp[uid][int32(dir)] = &models.Temp{
+					DailyTimetables: make([]*models.Bus_DailyTimetable, 0, 64),
+				}
+			}
+			for _, t := range temp.Timetables {
+				stop := make([]*models.Temp_StopTimes, len(t.StopTimes))
+				for i, st := range t.StopTimes {
+					stop[i] = &models.Temp_StopTimes{
+						StopSequence:  int32(st.StopSequence),
+						ArrivalTime:   st.ArrivalTime,
+						DepartureTime: st.DepartureTime,
+					}
+				}
+				timtable := &models.Bus_DailyTimetable{
+					TripID:     t.TripID,
+					IsLowFloor: t.IsLowFloor,
+					StopTimes:  stop,
+				}
+				mp[uid][int32(dir)].DailyTimetables = append(mp[uid][int32(dir)].DailyTimetables, timtable)
+			}
+		}
+	}
+	for subRouteUID, t := range mp {
+		pbRoute := &models.Bus_DailyTimetables{
+			SubRouteUID: subRouteUID,
+			Direction:   t,
+		}
+		pb, err := proto.Marshal(pbRoute)
+		if err != nil {
+			log.Infof("[bus] action=bus_dailyroute subRouteUID=%s event=marshal_error error=%v", subRouteUID, err)
+			continue
+		}
+		pipe.Set(fmt.Sprintf("bus_daily_timetable:%s", subRouteUID), pb, 23*time.Hour+30*time.Minute)
+	}
+	_, _ = pipe.Exec()
+	log.Infof("[bus] action= %s bus_dailyroute event=complete", city)
+	return nil
 }
 
 // jsonOrNil returns nil for empty or literal-null JSON so the value is stored as

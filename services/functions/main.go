@@ -81,9 +81,10 @@ const (
 	modeIngestor
 )
 
-// resolveRole maps the ROLE env to a run mode. Unimplemented (eta/realtime, etl)
-// and unknown roles are errors, so they can never silently fall into the legacy
-// prod flow. Empty ROLE preserves current prod behavior.
+// resolveRole maps the ROLE env to a run mode. Unimplemented (eta/realtime) and
+// unknown roles are errors, so they can never silently fall into the legacy prod
+// flow. Empty ROLE preserves current prod behavior and now also owns the 03:30
+// loader cron (registerLoaderCrons); there is no separate etl role.
 func resolveRole(role string) (appMode, error) {
 	switch role {
 	case "":
@@ -92,8 +93,6 @@ func resolveRole(role string) (appMode, error) {
 		return modeIngestor, nil
 	case "eta", "realtime":
 		return modeInvalid, fmt.Errorf("ROLE=%s not implemented yet (Phase 2)", role)
-	case "etl":
-		return modeInvalid, fmt.Errorf("ROLE=etl not implemented yet (Phase 3)")
 	default:
 		return modeInvalid, fmt.Errorf("unknown ROLE: %q", role)
 	}
@@ -139,26 +138,18 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 	busDailyroute(c, rc)
 	loadHolidays()
 	loadModel()
-	_, _ = r.AddFunc("0 0 3 * * *", func() {
-		log.Infoln("[crontab] action=daily event=start")
-		runDaily("busStatic", 10*time.Minute, func(ctx context.Context) error {
-			return busStatic(ctx, c, rc, db)
-		})
-		runDaily("bikeStatic", 10*time.Minute, func(ctx context.Context) error {
-			return bikeStatic(ctx, c, rc, db)
-		})
-		runDaily("mrtStatic", 10*time.Minute, func(ctx context.Context) error {
-			return mrtStatic(ctx, c, rc, db)
-		})
-		runDaily("railStatic", 10*time.Minute, func(ctx context.Context) error {
-			return railStatic(ctx, c, rc, db)
-		})
+	// The four legacy direct-fetch static jobs (busStatic/bikeStatic/mrtStatic/
+	// railStatic) no longer run here: the ingestor lands raw_tdx at 03:00 and the
+	// 03:30 loader cron (registerLoaderCrons) transforms it into this env's schema.
+	// changetovector reads the tables the loader fills, so it moves to 03:45 to run
+	// after the 03:30 load rather than racing the retired 03:00 static writes.
+	_, _ = r.AddFunc("0 45 3 * * *", func() {
 		runDaily("changetovector", 10*time.Minute, func(ctx context.Context) error {
 			changetovector(ctx, rc, db)
 			return nil
 		})
-		log.Infoln("[crontab] action=daily event=end")
 	})
+	registerLoaderCrons(r, db, rc)
 	_, _ = r.AddFunc("@every 2m", func() {
 		log.Infoln("[crontab] action=tra event=start")
 		traEta(c, rc)

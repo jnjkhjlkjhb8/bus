@@ -187,6 +187,15 @@ func loaderRegistry(src loadSource) []loadSpec {
 		}
 		return out
 	}
+	dailyTimetableCities := func() []string {
+		var out []string
+		for _, c := range cities {
+			if !busDailyTimetableSkip(c) {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
 	single := func() []string { return []string{""} }
 	return []loadSpec{
 		{key: "bus_operator", table: "bus_operator", partCol: "city", partitions: allCities,
@@ -198,6 +207,7 @@ func loaderRegistry(src loadSource) []loadSpec {
 			load: func(ctx context.Context, _ *json.Decoder, db *pgxpool.Pool, rc *redis.Client, part string) error {
 				return loadBus(ctx, src, db, rc, part)
 			}},
+		{key: "bus_dailytimetable", table: "bus_dailytimetable", partCol: "city", partitions: dailyTimetableCities, load: loadBusDailyTimetable},
 		{key: "bike", table: "bike_station", partCol: "city", partitions: bikeCities, load: loadBikeStations},
 		{key: "mrt_station", table: "metro_station", partCol: "system", partitions: func() []string { return ingestMetroStationSystems }, load: loadMrtStations},
 		{key: "mrt_firstlast", table: "metro_schedule", partCol: "system", partitions: func() []string { return ingestMetroFirstLast }, load: loadMrtFirstlast},

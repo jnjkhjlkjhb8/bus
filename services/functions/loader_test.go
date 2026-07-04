@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"google.golang.org/protobuf/proto"
 )
 
 // fakeLoadSource serves fixed JSON per (table,partVal) and a fixed fetched_at.
@@ -108,6 +111,58 @@ func TestLoaderRegistryKeysUnique(t *testing.T) {
 			t.Fatalf("duplicate registry key %q", s.key)
 		}
 		seen[s.key] = true
+	}
+}
+
+// TestLoadBusDailyTimetableWritesRedis feeds a daily-timetable array to the
+// shared assembly function and asserts it lands the reconstructed protobuf under
+// bus_daily_timetable:<subRouteUID> with the expected TTL, exercising the loader
+// path that closes the legacy busDailyroute Redis gap. It needs a local Redis
+// (127.0.0.1:6379) and skips when one is not reachable, mirroring the DB-gated
+// tests' skip posture.
+func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
+	rc := redis.NewClient(&redis.Options{
+		Addr:        "127.0.0.1:6379",
+		DialTimeout: 200 * time.Millisecond,
+		MaxRetries:  0,
+	})
+	defer rc.Close()
+	if err := rc.Ping().Err(); err != nil {
+		t.Skipf("local Redis not reachable; skipping: %v", err)
+	}
+
+	const uid = "ZZ_DTT_SUB1"
+	key := "bus_daily_timetable:" + uid
+	_ = rc.Del(key).Err()
+	defer func() { _ = rc.Del(key).Err() }()
+
+	body := []byte(`[{"SubRouteUID":"` + uid + `","Direction":0,"Timetables":[{"TripID":"T1","IsLowFloor":true,"StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]}]`)
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := loadBusDailyTimetable(context.Background(), dec, nil, rc, "Kaohsiung"); err != nil {
+		t.Fatalf("loadBusDailyTimetable: %v", err)
+	}
+
+	pb, err := rc.Get(key).Bytes()
+	if err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
+	var got models.Bus_DailyTimetables
+	if err := proto.Unmarshal(pb, &got); err != nil {
+		t.Fatalf("unmarshal proto: %v", err)
+	}
+	if got.SubRouteUID != uid {
+		t.Fatalf("SubRouteUID = %q, want %q", got.SubRouteUID, uid)
+	}
+	dir0, ok := got.Direction[0]
+	if !ok || len(dir0.DailyTimetables) != 1 {
+		t.Fatalf("direction 0 timetables = %+v, want one entry", got.Direction)
+	}
+	if dir0.DailyTimetables[0].TripID != "T1" || len(dir0.DailyTimetables[0].StopTimes) != 1 {
+		t.Fatalf("assembled trip = %+v, want TripID T1 with one stop", dir0.DailyTimetables[0])
+	}
+	ttl := rc.TTL(key).Val()
+	if ttl <= 23*time.Hour || ttl > 23*time.Hour+30*time.Minute {
+		t.Fatalf("TTL = %s, want ~23h30m", ttl)
 	}
 }
 
