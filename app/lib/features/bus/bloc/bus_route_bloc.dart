@@ -1,15 +1,13 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/grpc/resilient_stream.dart';
-import 'package:wheres_the_car/data/decoders/bus_decoder.dart';
 import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
-import 'package:wheres_the_car/data/generated/bus.pb.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 import 'package:wheres_the_car/data/repositories/bus_repository.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
@@ -28,7 +26,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   }
 
   final String subRouteUid;
-  ResilientSubscription<Resp_Bus_eta>? _etaSub;
+  ResilientSubscription<List<BusStopEtaViewModel>>? _etaSub;
 
   static String etaKey(BusStopEtaViewModel eta) => eta.sequence > 0
       ? 'seq:${eta.direction}:${eta.sequence}'
@@ -42,10 +40,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     _etaSub = null;
     emit(state.copyWith(loading: true, clearError: true));
     try {
-      final staticResp = await BusRepository.instance.routeStatic(subRouteUid);
-      final route = BusDecoder.instance.decodeStatic(
-        Uint8List.fromList(staticResp.data),
-      );
+      final route = await BusRepository.instance.routeStatic(subRouteUid);
       emit(
         state.copyWith(
           route: route,
@@ -55,13 +50,9 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
         ),
       );
 
-      _etaSub = ResilientSubscription<Resp_Bus_eta>(
+      _etaSub = ResilientSubscription<List<BusStopEtaViewModel>>(
         source: () => BusRepository.instance.routeEta(subRouteUid),
-        onData: (resp) {
-          if (resp.data.isEmpty) return;
-          final etaList = BusDecoder.instance.decodeRouteEta(
-            Uint8List.fromList(resp.data),
-          );
+        onData: (etaList) {
           final map = {for (final e in etaList) etaKey(e): e};
           if (map.isEmpty) return;
           add(BusRouteEtaUpdated(map));
@@ -84,13 +75,11 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     }
   }
 
-  Future<({Bus_DailyTimetables? daily, Bus_Fare? fare})?> _loadDetails() async {
-    Bus_DailyTimetables? daily;
+  Future<({BusDailyTimetable? daily, BusFareInfo? fare})?>
+  _loadDetails() async {
+    BusDailyTimetable? daily;
     try {
-      final dailyResp = await BusRepository.instance.routeDaily(subRouteUid);
-      daily = BusDecoder.instance.decodeDaily(
-        Uint8List.fromList(dailyResp.data),
-      );
+      daily = await BusRepository.instance.routeDaily(subRouteUid);
     } on Object catch (e, s) {
       CrashReporter.record(e, s);
       daily = null;
@@ -108,11 +97,8 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   }
 
   void _onEtaUpdated(BusRouteEtaUpdated event, Emitter<BusRouteState> emit) {
-    final typed = event.etaMap.map(
-      (k, v) => MapEntry(k, v as BusStopEtaViewModel),
-    );
-    if (typed.isEmpty && state.etaMap.isNotEmpty) return;
-    emit(state.copyWith(etaMap: typed));
+    if (event.etaMap.isEmpty && state.etaMap.isNotEmpty) return;
+    emit(state.copyWith(etaMap: event.etaMap));
   }
 
   void _onDetailsUpdated(

@@ -75,8 +75,8 @@ String _timeLabel(String value) {
 
 List<_DepartureInfo> _departuresFor(BusRouteState state) {
   final trips =
-      state.daily?.direction[state.direction]?.dailyTimetables.toList() ??
-      <Bus_DailyTimetable>[];
+      state.daily?.tripsForDirection(state.direction) ??
+      const <BusDailyTrip>[];
   final now = TimeOfDay.now();
   final rows = <String>[];
   for (final trip in trips) {
@@ -107,8 +107,8 @@ List<_DepartureInfo> _departuresFor(BusRouteState state) {
 
 List<_TimetableInfo> _timetableFor(BusRouteState state) {
   final trips =
-      state.daily?.direction[state.direction]?.dailyTimetables.toList() ??
-      <Bus_DailyTimetable>[];
+      state.daily?.tripsForDirection(state.direction) ??
+      const <BusDailyTrip>[];
   final destination = state.currentHeadsign.isNotEmpty
       ? state.currentHeadsign
       : (state.currentStops.isEmpty ? '-' : state.currentStops.last.stopName);
@@ -125,7 +125,7 @@ List<_TimetableInfo> _timetableFor(BusRouteState state) {
     rows.add((
       destination: destination,
       time: _timeLabel(time),
-      trip: trip.tripID.isEmpty ? '-' : trip.tripID,
+      trip: trip.tripId.isEmpty ? '-' : trip.tripId,
       vehicle: trip.isLowFloor ? '低地板' : '-',
     ));
   }
@@ -133,10 +133,10 @@ List<_TimetableInfo> _timetableFor(BusRouteState state) {
   return rows;
 }
 
-List<(String, String)> _fareRows(Bus_Fare? fare) {
+List<(String, String)> _fareRows(BusFareInfo? fare) {
   if (fare == null) return const [];
   final rows = <(String, String)>[
-    ('票價型態', _farePricingTypeLabel(fare.farePricingType)),
+    ('票價型態', _farePricingTypeLabel(fare.pricingType)),
     ('免費公車', fare.isFreeBus ? '是' : '否'),
   ];
   if (fare.sectionFaresJson.isNotEmpty) {

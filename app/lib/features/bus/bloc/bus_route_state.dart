@@ -1,7 +1,7 @@
 import 'package:equatable/equatable.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/generated/bus.pb.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 
 class BusRouteState extends Equatable {
   const BusRouteState({
@@ -18,8 +18,8 @@ class BusRouteState extends Equatable {
 
   final BusRouteViewModel? route;
   final Map<String, BusStopEtaViewModel> etaMap;
-  final Bus_DailyTimetables? daily;
-  final Bus_Fare? fare;
+  final BusDailyTimetable? daily;
+  final BusFareInfo? fare;
   final Set<int> bufferSequences;
   final int direction;
   final Set<String> reminders;
@@ -36,8 +36,8 @@ class BusRouteState extends Equatable {
   BusRouteState copyWith({
     BusRouteViewModel? route,
     Map<String, BusStopEtaViewModel>? etaMap,
-    Bus_DailyTimetables? daily,
-    Bus_Fare? fare,
+    BusDailyTimetable? daily,
+    BusFareInfo? fare,
     Set<int>? bufferSequences,
     int? direction,
     Set<String>? reminders,

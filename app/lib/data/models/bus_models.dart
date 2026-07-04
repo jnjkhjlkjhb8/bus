@@ -1,5 +1,5 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/data/generated/bus.pb.dart';
+import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 import 'package:wheres_the_car/data/models/eta_format.dart';
 
 enum BusArrivalStatus { arriving, approaching, minutes, unknown }
@@ -102,7 +102,7 @@ class BusRouteViewModel extends Equatable {
   final List<BusStopModel> stopsReturn;
   final String geometryGo;
   final String geometryReturn;
-  final Bus_Fare? fare;
+  final BusFareInfo? fare;
 
   @override
   List<Object?> get props => [

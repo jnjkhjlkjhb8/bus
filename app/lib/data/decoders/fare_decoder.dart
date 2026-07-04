@@ -1,8 +1,8 @@
 import 'dart:convert';
 
-import 'package:wheres_the_car/data/generated/bus.pb.dart';
+import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 
-Set<int> decodeBufferSequences(Bus_Fare? fare) {
+Set<int> decodeBufferSequences(BusFareInfo? fare) {
   if (fare == null || fare.sectionFaresJson.isEmpty) return const {};
   try {
     final parsed = jsonDecode(utf8.decode(fare.sectionFaresJson));

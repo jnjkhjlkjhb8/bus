@@ -2,10 +2,23 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
-import 'package:wheres_the_car/data/generated/bus.pb.dart';
+import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 
-Bus_Fare fareWith(String json) =>
-    Bus_Fare(sectionFaresJson: utf8.encode(json));
+BusFareInfo fareWith(String json) => BusFareInfo(
+  pricingType: 0,
+  isFreeBus: false,
+  sectionFaresJson: utf8.encode(json),
+  stageFaresJson: const [],
+  odFaresJson: const [],
+);
+
+const _emptyFare = BusFareInfo(
+  pricingType: 0,
+  isFreeBus: false,
+  sectionFaresJson: [],
+  stageFaresJson: [],
+  odFaresJson: [],
+);
 
 void main() {
   test('extracts buffer stop sequences across sections', () {
@@ -32,7 +45,7 @@ void main() {
   });
 
   test('empty payload yields empty set', () {
-    expect(decodeBufferSequences(Bus_Fare()), isEmpty);
+    expect(decodeBufferSequences(_emptyFare), isEmpty);
   });
 
   test('malformed json yields empty set', () {

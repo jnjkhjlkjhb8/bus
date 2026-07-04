@@ -1,24 +1,37 @@
+import 'dart:typed_data';
+
 import 'package:wheres_the_car/core/grpc/grpc_client.dart';
+import 'package:wheres_the_car/data/decoders/bus_decoder.dart';
 import 'package:wheres_the_car/data/generated/bus.pb.dart';
 import 'package:wheres_the_car/data/generated/bus.pbgrpc.dart';
+import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 
 class BusRepository {
   const BusRepository._();
   static const instance = BusRepository._();
-  Future<Resp_Bus_static> routeStatic(String subRouteUid) => GrpcClient
-      .instance
-      .busRoute
-      .static(Bus_Ask_Route(subRouteUID: subRouteUid));
 
-  Future<Resp_Bus_daily_timetable> routeDaily(String subRouteUid) => GrpcClient
-      .instance
-      .busRoute
-      .daily(Bus_Ask_Route(subRouteUID: subRouteUid));
+  Future<BusRouteViewModel> routeStatic(String subRouteUid) async {
+    final resp = await GrpcClient.instance.busRoute
+        .static(Bus_Ask_Route(subRouteUID: subRouteUid));
+    return BusDecoder.instance.decodeStatic(Uint8List.fromList(resp.data));
+  }
 
-  /// Server-streaming: emits updated bus positions until the stream is
-  /// cancelled.
-  Stream<Resp_Bus_eta> routeEta(String subRouteUid) =>
-      GrpcClient.instance.busRoute.eta(Bus_Ask_Route(subRouteUID: subRouteUid));
+  Future<BusDailyTimetable> routeDaily(String subRouteUid) async {
+    final resp = await GrpcClient.instance.busRoute
+        .daily(Bus_Ask_Route(subRouteUID: subRouteUid));
+    return BusDecoder.instance.decodeDaily(Uint8List.fromList(resp.data));
+  }
+
+  /// Server-streaming: emits decoded route ETAs until the stream is cancelled.
+  Stream<List<BusStopEtaViewModel>> routeEta(String subRouteUid) =>
+      GrpcClient.instance.busRoute
+          .eta(Bus_Ask_Route(subRouteUID: subRouteUid))
+          .map(
+            (resp) => BusDecoder.instance.decodeRouteEta(
+              Uint8List.fromList(resp.data),
+            ),
+          );
 
   /// Server-streaming: emits ETA data for buses serving [stationName] in
   /// [city]. The server expects the key formatted as `"city:stationName"`.
