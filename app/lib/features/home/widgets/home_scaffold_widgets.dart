@@ -41,6 +41,10 @@ extension _HomeScreenScaffold on _HomeScreenState {
                 : const _MapSkeleton(),
           ),
 
+          Positioned.fill(
+            child: IgnorePointer(child: _LocatePing(ping: _ping)),
+          ),
+
           Positioned(
             top: 16,
             left: 16,
@@ -225,10 +229,16 @@ extension _HomeScreenScaffold on _HomeScreenState {
                   boxShadow: AppShadows.floating,
                 ),
                 child: Center(
-                  child: Icon(
-                    Icons.gps_fixed_rounded,
-                    size: 20,
-                    color: cs.onSurface,
+                  child: AnimatedSwitcher(
+                    duration: AppMotion.short,
+                    child: _locating
+                        ? const AppSpinner(key: ValueKey('locating'), size: 20)
+                        : Icon(
+                            Icons.gps_fixed_rounded,
+                            key: const ValueKey('idle'),
+                            size: 20,
+                            color: cs.onSurface,
+                          ),
                   ),
                 ),
               ),
@@ -310,4 +320,104 @@ extension _HomeScreenScaffold on _HomeScreenState {
       ),
     );
   }
+}
+
+/// A single ping request: where on screen the ring should emanate from.
+class _Ping {
+  const _Ping(this.offset);
+  final Offset offset;
+}
+
+/// Draws one expanding, fading ring — the "scanning around you" cue — each time
+/// [ping] changes. Load-only and transient; skipped under reduce-motion (the
+/// producer never emits a ping in that case).
+class _LocatePing extends StatefulWidget {
+  const _LocatePing({required this.ping});
+
+  final ValueListenable<_Ping?> ping;
+
+  @override
+  State<_LocatePing> createState() => _LocatePingState();
+}
+
+class _LocatePingState extends State<_LocatePing>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  Offset? _center;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 680),
+    );
+    widget.ping.addListener(_onPing);
+  }
+
+  void _onPing() {
+    final ping = widget.ping.value;
+    if (ping == null || !mounted) return;
+    setState(() => _center = ping.offset);
+    unawaited(_ctrl.forward(from: 0));
+  }
+
+  @override
+  void dispose() {
+    widget.ping.removeListener(_onPing);
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Theme.of(context).colorScheme.primary;
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (context, _) {
+        final center = _center;
+        if (center == null || !_ctrl.isAnimating) {
+          return const SizedBox.expand();
+        }
+        final t = _ctrl.value;
+        final radius = 12 + AppMotion.easeOut.transform(t) * 60;
+        return Stack(
+          children: [
+            Positioned(
+              left: center.dx - radius,
+              top: center.dy - radius,
+              child: CustomPaint(
+                size: Size.square(radius * 2),
+                painter: _RingPainter(color: color, opacity: (1 - t) * 0.4),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _RingPainter extends CustomPainter {
+  _RingPainter({required this.color, required this.opacity});
+
+  final Color color;
+  final double opacity;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = size.width / 2;
+    canvas.drawCircle(
+      Offset(r, r),
+      r - 1,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = color.withValues(alpha: opacity),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_RingPainter old) =>
+      old.opacity != opacity || old.color != color;
 }
