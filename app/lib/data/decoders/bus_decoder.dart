@@ -84,9 +84,4 @@ class BusDecoder {
       },
     );
   }
-
-  int? etaMinutes(int estimateSecs) {
-    if (estimateSecs <= 0) return null;
-    return (estimateSecs / 60).ceil();
-  }
 }
