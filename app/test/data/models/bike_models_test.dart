@@ -1,0 +1,20 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_car/data/models/bike_models.dart';
+
+void main() {
+  test('BikeAvailability sums general and electric into available', () {
+    const a = BikeAvailability(
+      generalBikes: 3,
+      electricBikes: 2,
+      returnDocks: 7,
+    );
+    expect(a.available, 5);
+    expect(a.returnDocks, 7);
+  });
+
+  test('BikeStationInfo carries name and capacity', () {
+    const s = BikeStationInfo(name: 'YouBike 大安', capacity: 30);
+    expect(s.name, 'YouBike 大安');
+    expect(s.capacity, 30);
+  });
+}

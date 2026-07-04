@@ -1,8 +1,7 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/data/generated/bike.pb.dart';
+import 'package:wheres_the_car/data/models/bike_models.dart';
 import 'package:wheres_the_car/data/repositories/bike_repository.dart';
 import 'package:wheres_the_car/features/bike/bloc/bike_station_event.dart';
 import 'package:wheres_the_car/features/bike/bloc/bike_station_state.dart';
@@ -16,23 +15,26 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
   }
 
   final String stationUid;
-  StreamSubscription<Resp_Bike_eta>? _sub;
+  StreamSubscription<BikeAvailability>? _sub;
 
   Future<void> _onStarted(
     BikeStationStarted _,
     Emitter<BikeStationState> emit,
   ) async {
     try {
-      final s = await BikeRepository.instance.stationStatic(stationUid);
-      emit(state.copyWith(name: s.name, capacity: s.capacity, loading: false));
-      _sub = BikeRepository.instance.stationEta(stationUid).listen((resp) {
-        final e = Bike_eta.fromBuffer(Uint8List.fromList(resp.data));
+      final info = await BikeRepository.instance.stationStatic(stationUid);
+      emit(state.copyWith(
+        name: info.name,
+        capacity: info.capacity,
+        loading: false,
+      ));
+      _sub = BikeRepository.instance.stationEta(stationUid).listen((a) {
         add(
           BikeStationEtaUpdated(
-            available: e.generalBikes + e.electricBikes,
-            returnDocks: e.availableReturnBikes,
-            generalBikes: e.generalBikes,
-            electricBikes: e.electricBikes,
+            available: a.available,
+            returnDocks: a.returnDocks,
+            generalBikes: a.generalBikes,
+            electricBikes: a.electricBikes,
           ),
         );
       });
