@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -163,6 +165,99 @@ func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
 	ttl := rc.TTL(key).Val()
 	if ttl <= 23*time.Hour || ttl > 23*time.Hour+30*time.Minute {
 		t.Fatalf("TTL = %s, want ~23h30m", ttl)
+	}
+}
+
+// fixtureSource reads committed raw_tdx array fixtures from testdata/raw_tdx/,
+// keyed by table name. It is the loadSource seam's file adapter for replay tests:
+// the fixtures were exported by scripts/export-fixtures using the same
+// reconstruction contract as rawTDXSource (lowercased keys, no fetched_at), so a
+// committed fixture replays byte-identically through the loader with no network.
+type fixtureSource struct {
+	dir     string
+	fetched time.Time
+}
+
+func (f fixtureSource) datasetJSON(_ context.Context, table, _, _ string) ([]byte, time.Time, error) {
+	b, err := os.ReadFile(filepath.Join(f.dir, table+".json"))
+	if err != nil {
+		// Absent fixture → empty array, treated as fresh so the transform runs on
+		// zero rows rather than being staleness-skipped.
+		return []byte("[]"), f.fetched, nil
+	}
+	return b, f.fetched, nil
+}
+
+// provisionThsrStationSink creates the thsr_stations env-schema sink on the
+// raw_tdx-only loader cluster. That cluster has no PostGIS, but loadThsrStation
+// calls ST_GeomFromText; a text-returning stub of that function plus a text geom
+// column lets the real transform run unmodified. Mirrors provisionBusSinks'
+// posture of creating sinks in-test on the throwaway cluster.
+func provisionThsrStationSink(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	ddl := []string{
+		`CREATE OR REPLACE FUNCTION ST_GeomFromText(wkt text, srid int) RETURNS text
+			LANGUAGE sql IMMUTABLE AS 'SELECT wkt'`,
+		`CREATE TABLE IF NOT EXISTS thsr_stations (
+			station_id text PRIMARY KEY,
+			name text,
+			city text,
+			geom text,
+			stationcode text,
+			updated_at timestamptz NOT NULL DEFAULT NOW())`,
+	}
+	for _, s := range ddl {
+		if _, err := pool.Exec(ctx, s); err != nil {
+			t.Fatalf("provision thsr_stations sink: %v\nDDL: %s", err, s)
+		}
+	}
+}
+
+// TestLoaderReplayThsrStation replays the committed thsr_station fixture through
+// the real loadThsrStation transform via runLoad and asserts the sink rows,
+// exercising the second loadSource adapter (fixtureSource) end to end with no
+// network. loadThsrStation's ON CONFLICT (station_id) upsert makes the replay
+// idempotent, so re-running is safe.
+func TestLoaderReplayThsrStation(t *testing.T) {
+	pool := loaderTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+
+	prev := ingestDB
+	ingestDB = pool
+	defer func() { ingestDB = prev }()
+
+	provisionThsrStationSink(t, ctx, pool)
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM thsr_stations WHERE station_id IN ('0990','1000')")
+	}
+	cleanup()
+	defer cleanup()
+
+	src := fixtureSource{dir: "testdata/raw_tdx", fetched: time.Now()}
+	if err := runLoad(ctx, src, pool, nil, []string{"thsr_station"}); err != nil {
+		t.Fatalf("runLoad: %v", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx,
+		"SELECT count(*) FROM thsr_stations WHERE station_id IN ('0990','1000')").Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("loaded %d thsr stations, want 2", n)
+	}
+
+	// The reconstructed geom must round-trip the fixture position through the
+	// transform's POINT(lon lat) formatting, proving the fixture keys decoded into
+	// the railStation struct (not merely that rows appeared).
+	var geom string
+	if err := pool.QueryRow(ctx,
+		"SELECT geom FROM thsr_stations WHERE station_id='0990'").Scan(&geom); err != nil {
+		t.Fatalf("read geom: %v", err)
+	}
+	if geom != "POINT(121.606700 25.053300)" {
+		t.Fatalf("geom = %q, want POINT(121.606700 25.053300)", geom)
 	}
 }
 
