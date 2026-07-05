@@ -477,15 +477,17 @@ func rawDeleteSQL(table, partCol string) string {
 
 // rawInsertSQL lowercases each object's top-level keys (PascalCase TDX → lowercase
 // columns), preserves nested objects/arrays as jsonb, injects context columns, and
-// coerces types by column name. COALESCE(...,'[]') makes an empty TDX array a
-// clean 0-row insert instead of a NULL-populate error.
+// coerces types by column name. It streams the array element-by-element through a
+// LATERAL jsonb_populate_record rather than materialising one giant lowercased
+// jsonb_agg array and re-parsing it in a single jsonb_populate_recordset — that
+// intermediate is O(payload) memory and was the long pole on the largest table
+// (tra_odfare, ~every station pair): the single-statement build overran the landing
+// deadline. An empty TDX array yields zero elements → a clean 0-row insert.
 func rawInsertSQL(table string) string {
 	return fmt.Sprintf(`INSERT INTO raw_tdx.%s
-SELECT * FROM jsonb_populate_recordset(NULL::raw_tdx.%s,
-  COALESCE(
-    (SELECT jsonb_agg((SELECT jsonb_object_agg(lower(e.k), e.v) FROM jsonb_each(elem) AS e(k,v)) || $1::jsonb)
-     FROM jsonb_array_elements($2::jsonb) elem),
-    '[]'::jsonb))`, table, table)
+SELECT r.* FROM jsonb_array_elements($2::jsonb) elem,
+  LATERAL jsonb_populate_record(NULL::raw_tdx.%s,
+    (SELECT jsonb_object_agg(lower(e.k), e.v) FROM jsonb_each(elem) AS e(k,v)) || $1::jsonb) r`, table, table)
 }
 
 // dumpRawTDX lands a raw TDX JSON array into raw_tdx.<table>. Partitioned tables
@@ -520,7 +522,20 @@ func landRawTDX(ctx context.Context, table, partCol, partVal string, body []byte
 	if err != nil {
 		return fmt.Errorf("%w: begin: %v", errRawDump, err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// Roll back on a context independent of ctx: if this attempt was cancelled by
+	// the deadline above, a Rollback(ctx) would be a no-op and the TRUNCATE/DELETE's
+	// lock would linger, blocking the next retry's TRUNCATE until its own deadline.
+	defer func() {
+		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rbCtx)
+	}()
+
+	// Bound lock waits so a held lock fails this attempt fast (retryable) instead of
+	// stalling TRUNCATE/DELETE for the full landing deadline.
+	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '20s'"); err != nil {
+		return fmt.Errorf("%w: set lock_timeout: %v", errRawDump, err)
+	}
 
 	inject := "{}"
 	if partCol != "" {
