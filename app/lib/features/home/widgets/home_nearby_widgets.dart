@@ -110,9 +110,9 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
             builder: (context, state) {
               if (state.loading && state.stations.isEmpty) {
                 return ListView(
-                  padding: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.only(top: 4),
                   children: const [
-                    ShimmerRow(height: 62),
+                    _LocatingHeader(),
                     ShimmerRow(height: 62),
                     ShimmerRow(height: 62),
                     ShimmerRow(height: 62),
@@ -133,14 +133,45 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
               }
               return ListView(
                 padding: EdgeInsets.zero,
-                children: items
-                    .map((s) => _NearbyStationRow(station: s))
-                    .toList(),
+                children: [
+                  for (var i = 0; i < items.length; i++)
+                    StaggerItem(
+                      index: i,
+                      child: _NearbyStationRow(station: items[i]),
+                    ),
+                ],
               );
             },
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Loading header shown above the shimmer while GPS + the nearby query run —
+/// turns the bare skeleton into an explicit "we're finding stations" cue.
+class _LocatingHeader extends StatelessWidget {
+  const _LocatingHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 10, 20, 14),
+      child: Row(
+        children: [
+          const AppSpinner(size: 14),
+          const SizedBox(width: 10),
+          Text(
+            '正在尋找附近站點…',
+            style: AppTextStyles.bodyRegular.copyWith(
+              fontSize: 13,
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

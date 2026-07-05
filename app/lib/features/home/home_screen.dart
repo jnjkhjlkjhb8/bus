@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -25,7 +26,10 @@ import 'package:wheres_the_car/features/home/bloc/nearby_bloc.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_event.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_state.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/motion/stagger.dart';
+import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/route_tab_bar.dart';
@@ -60,6 +64,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Timer? _idleDebounce;
   bool _mapReady = false;
   bool _tabApplied = false;
+
+  /// True while a manual "locate me" tap is acquiring the GPS fix — drives the
+  /// recenter FAB's spinner so the button never reads as doing nothing.
+  bool _locating = false;
+  /// Fires a one-shot sonar ring at the user's on-screen position after a
+  /// manual recenter. Null until the first ping.
+  final ValueNotifier<_Ping?> _ping = ValueNotifier<_Ping?>(null);
 
   Future<void> _rebuildMarkers(List<NearStationViewModel> stations) async {
     final revision = ++_markerRevision;
@@ -198,6 +209,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _locateUser() async {
+    if (mounted) setState(() => _locating = true);
     try {
       final pos = await LocationService.instance.currentPosition();
       final target = LatLng(pos.latitude, pos.longitude);
@@ -205,14 +217,30 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       setState(() {
         _center = target;
         _camCenter = target;
+        _locating = false;
       });
       final controller = _mapController;
-      if (controller != null) {
-        unawaited(controller.animateCamera(CameraUpdate.newLatLng(target)));
-      }
+      if (controller == null) return;
+      unawaited(controller.animateCamera(CameraUpdate.newLatLng(target)));
+      await _playPing(target);
     } on Object catch (e, s) {
+      if (mounted) setState(() => _locating = false);
       CrashReporter.record(e, s);
     }
+  }
+
+  /// Emits a single expanding ring at the user's screen position once the
+  /// recenter camera move has settled. `getScreenCoordinate` returns physical
+  /// pixels, so divide by the device ratio for logical layout coordinates.
+  Future<void> _playPing(LatLng target) async {
+    if (!mounted || MediaQuery.disableAnimationsOf(context)) return;
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    final controller = _mapController;
+    if (!mounted || controller == null) return;
+    final coord = await controller.getScreenCoordinate(target);
+    if (!mounted) return;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    _ping.value = _Ping(Offset(coord.x / dpr, coord.y / dpr));
   }
 
   void _recenter() {
@@ -226,6 +254,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     App.isInitialized.removeListener(_onFavoritesReady);
     _sheetController.dispose();
     _tabController.dispose();
+    _ping.dispose();
     super.dispose();
   }
 
