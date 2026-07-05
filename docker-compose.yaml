@@ -94,7 +94,6 @@ services:
       GOMEMLIMIT: ${INGESTOR_GOMEMLIMIT:-230MiB}
       REDIS_ADDR: redis:6379
       ROLE: ingestor
-      INGEST_ON_BOOT: "${INGEST_ON_BOOT:-false}"
     volumes:
       - ./secrets:/run/secrets:ro
     mem_limit: ${INGESTOR_MEM_LIMIT:-256m}
