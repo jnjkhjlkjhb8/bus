@@ -14,6 +14,7 @@ RUN protoc --go_out=paths=source_relative:models \
            --go-grpc_out=paths=source_relative:models \
            -I models models/*.proto
 COPY services/obs/ ./services/obs/
+COPY services/shared/ ./services/shared/
 COPY services/functions/ ./services/functions/
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o functions ./services/functions
 FROM alpine:3.23
