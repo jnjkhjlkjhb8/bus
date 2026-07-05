@@ -1,5 +1,5 @@
 # Build context: ./docker-compose.yaml
-# docker build -f server/functions/Dockerfile -t wheres_the_car-functions .
+# docker build -f services/functions/Dockerfile -t wheres_the_car-functions .
 
 FROM golang:1.26.3-alpine3.23 AS builder
 RUN apk add --no-cache git protobuf-dev
@@ -13,9 +13,9 @@ COPY models/ ./models/
 RUN protoc --go_out=paths=source_relative:models \
            --go-grpc_out=paths=source_relative:models \
            -I models models/*.proto
-COPY server/obs/ ./server/obs/
-COPY server/functions/ ./server/functions/
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o functions ./server/functions
+COPY services/obs/ ./services/obs/
+COPY services/functions/ ./services/functions/
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o functions ./services/functions
 FROM alpine:3.23
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /root/
