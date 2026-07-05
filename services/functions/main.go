@@ -503,6 +503,19 @@ func dumpRawTDX(ctx context.Context, table, partCol, partVal string, body []byte
 	if len(body) == 0 {
 		body = []byte("[]")
 	}
+	return obs.Retry(ctx, 3, 2*time.Second, func() error {
+		return obs.Transient(landRawTDX(ctx, table, partCol, partVal, body))
+	})
+}
+// landRawTDX runs one raw_tdx landing transaction, bounded by its own timeout so
+// a dead Azure peer cannot block the pgx socket read indefinitely (there is no
+// server statement_timeout, and TCP keepalive is too slow to notice). On timeout
+// pgx cancels the query; dumpRawTDX retries, and if all attempts fail the caller
+// leaves the IMS cache un-advanced so this partition refetches next run.
+func landRawTDX(ctx context.Context, table, partCol, partVal string, body []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
 	tx, err := ingestDB.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: begin: %v", errRawDump, err)

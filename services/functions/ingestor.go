@@ -74,51 +74,42 @@ func ingestRaw(ctx context.Context, c *resty.Client, rc *redis.Client) {
 
 	log.Infoln("[INGEST] action=raw event=start")
 
-	sem := make(chan struct{}, 4)
-	var wg sync.WaitGroup
-	for _, city := range cities {
-		for _, api := range ingestBusAPIs {
-			var url string
-			if city == "InterCity" {
-				url = fmt.Sprintf("/v2/Bus/%s/InterCity", api)
-			} else {
-				url = fmt.Sprintf("/v2/Bus/%s/City/%s", api, city)
-			}
-			name := "bus_" + api + city
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(url, name string) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				fetchRaw(c, rc, url, name)
-			}(url, name)
-		}
-	}
-	wg.Wait()
+	type job struct{ url, name string }
+	var jobs []job
+	add := func(url, name string) { jobs = append(jobs, job{url, name}) }
 
 	for _, city := range cities {
-		if ingestBikeSkip[city] {
-			continue
+		for _, api := range ingestBusAPIs {
+			if city == "InterCity" {
+				add(fmt.Sprintf("/v2/Bus/%s/InterCity", api), "bus_"+api+city)
+			} else {
+				add(fmt.Sprintf("/v2/Bus/%s/City/%s", api, city), "bus_"+api+city)
+			}
 		}
-		fetchRaw(c, rc, "/v2/Bike/Station/City/"+city, "bike_"+city)
+	}
+
+	for _, city := range cities {
+		if !ingestBikeSkip[city] {
+			add("/v2/Bike/Station/City/"+city, "bike_"+city)
+		}
 	}
 
 	for _, s := range ingestMetroStationSystems {
-		fetchRaw(c, rc, "/v2/Rail/Metro/Station/"+s, "metro_station_"+s)
+		add("/v2/Rail/Metro/Station/"+s, "metro_station_"+s)
 	}
 	for _, s := range ingestMetroFirstLast {
-		fetchRaw(c, rc, "/v2/Rail/Metro/FirstLastTimetable/"+s, "metro_fl_"+s)
+		add("/v2/Rail/Metro/FirstLastTimetable/"+s, "metro_fl_"+s)
 	}
 	for _, s := range ingestMetroODFare {
-		fetchRaw(c, rc, "/v2/Rail/Metro/ODFare/"+s, "metro_od_"+s)
+		add("/v2/Rail/Metro/ODFare/"+s, "metro_od_"+s)
 	}
 
-	fetchRaw(c, rc, "/v2/Rail/TRA/ODFare", "tra_odfare")
+	add("/v2/Rail/TRA/ODFare", "tra_odfare")
 	// TRA/TrainType is intentionally not landed: nothing loads raw_tdx.tra_traintype,
 	// and train-type data arrives inside the daily-timetable payloads below.
-	fetchRaw(c, rc, "/v2/Rail/TRA/Station", "tra_station")
-	fetchRaw(c, rc, "/v2/Rail/THSR/Station", "thsr_station")
-	fetchRaw(c, rc, "/v2/Rail/THSR/ODFare", "thsr_odfare")
+	add("/v2/Rail/TRA/Station", "tra_station")
+	add("/v2/Rail/THSR/Station", "thsr_station")
+	add("/v2/Rail/THSR/ODFare", "thsr_odfare")
 
 	// Land the full timetable window (TRA today..+60, THSR today..+45),
 	// mirroring railPreFetch's horizons. Day 0 is today so the current day is
@@ -128,13 +119,24 @@ func ingestRaw(ctx context.Context, c *resty.Client, rc *redis.Client) {
 	today := time.Now()
 	for i := 0; i <= 60; i++ {
 		d := today.AddDate(0, 0, i).Format(time.DateOnly)
-		fetchRaw(c, rc, "/v2/Rail/TRA/DailyTimetable/TrainDate/"+d, "tra_daily_"+d)
+		add("/v2/Rail/TRA/DailyTimetable/TrainDate/"+d, "tra_daily_"+d)
 	}
 	for i := 0; i <= 45; i++ {
 		d := today.AddDate(0, 0, i).Format(time.DateOnly)
-		fetchRaw(c, rc, "/v2/Rail/THSR/DailyTimetable/TrainDate/"+d, "thsr_daily_"+d)
+		add("/v2/Rail/THSR/DailyTimetable/TrainDate/"+d, "thsr_daily_"+d)
 	}
-
+	sem := make(chan struct{}, 6)
+	var wg sync.WaitGroup
+	for _, j := range jobs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(j job) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			fetchRaw(c, rc, j.url, j.name)
+		}(j)
+	}
+	wg.Wait()
 	log.Infoln("[INGEST] action=raw event=end")
 }
 
