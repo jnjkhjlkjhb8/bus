@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:hive_ce_flutter/adapters.dart';
 import 'package:wheres_the_car/app/router/app_router.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
@@ -37,7 +38,11 @@ class _AppState extends State<App> {
         BlocProvider(
           create: (_) => JourneySessionBloc(
             channel: LiveActivityChannel(),
-            positions: LocationService.instance.navigationStream,
+            // Read the toggle at board time so it takes effect immediately;
+            // when off, the riding phase runs fully manual (empty stream).
+            positions: () => HiveStore.navigationLocationEnabled
+                ? LocationService.instance.navigationStream()
+                : const Stream<Position>.empty(),
           ),
         ),
         BlocProvider(

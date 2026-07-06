@@ -51,6 +51,12 @@ class HiveStore {
   static set liveActivityEnabled(bool v) =>
       settings.put('live_activity_enabled', v);
 
+  static bool get navigationLocationEnabled =>
+      settings.get('navigation_location_enabled', defaultValue: true) as bool;
+
+  static set navigationLocationEnabled(bool v) =>
+      settings.put('navigation_location_enabled', v);
+
   static bool get devModeEnabled =>
       settings.get('dev_mode_enabled', defaultValue: false) as bool;
 

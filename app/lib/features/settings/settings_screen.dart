@@ -52,6 +52,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _analyticsEnabled;
   late bool _crashlyticsEnabled;
   late bool _largeText;
+  late bool _liveActivityEnabled;
+  late bool _navigationLocationEnabled;
 
   @override
   void initState() {
@@ -61,6 +63,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _analyticsEnabled = HiveStore.analyticsEnabled;
     _crashlyticsEnabled = HiveStore.crashlyticsEnabled;
     _largeText = HiveStore.largeText;
+    _liveActivityEnabled = HiveStore.liveActivityEnabled;
+    _navigationLocationEnabled = HiveStore.navigationLocationEnabled;
   }
 
   Future<void> _setPush(bool value) async {
@@ -168,6 +172,32 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onChanged: (v) {
                   HiveStore.largeText = v;
                   setState(() => _largeText = v);
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _SettingsSection(
+            title: '導航',
+            children: [
+              _SettingsSwitchRow(
+                icon: Icons.dashboard_customize_outlined,
+                label: '即時動態',
+                subtitle: '鎖定畫面與動態島顯示導航資訊',
+                value: _liveActivityEnabled,
+                onChanged: (v) {
+                  HiveStore.liveActivityEnabled = v;
+                  setState(() => _liveActivityEnabled = v);
+                },
+              ),
+              _SettingsSwitchRow(
+                icon: Icons.my_location_outlined,
+                label: '導航自動定位',
+                subtitle: '用於自動上車提醒與車上進度；關閉後仍可手動操作',
+                value: _navigationLocationEnabled,
+                onChanged: (v) {
+                  HiveStore.navigationLocationEnabled = v;
+                  setState(() => _navigationLocationEnabled = v);
                 },
               ),
             ],
@@ -291,12 +321,14 @@ class _SettingsSwitchRow extends StatelessWidget {
     required this.value,
     required this.onChanged,
     this.icon,
+    this.subtitle,
   });
 
   final String label;
   final bool value;
   final ValueChanged<bool>? onChanged;
   final IconData? icon;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -333,9 +365,19 @@ class _SettingsSwitchRow extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(label, style: AppTextStyles.bodyLarge),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle!,
+                        style: AppTextStyles.bodySmall.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
+              const SizedBox(width: 12),
               sw,
             ],
           ),

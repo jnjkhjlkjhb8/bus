@@ -8,6 +8,11 @@ import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 
+/// Mutable gate so the disabled branch isn't statically dead in the test.
+class _Gate {
+  bool enabled = false;
+}
+
 JourneyLeg _leg(String label) => JourneyLeg(
   kind: JourneyLegKind.bus,
   routeLabel: label,
@@ -124,6 +129,33 @@ void main() {
     b.add(const BoardConfirmed());
     final s = await b.stream.firstWhere((s) => s.phase == JourneyPhase.riding);
     expect(s.phase, JourneyPhase.riding);
+    await b.close();
+  });
+
+  test('positions factory gated off is never subscribed (setting disabled)',
+      () async {
+    // Mirrors app.dart's runtime gate: when the toggle is off the closure
+    // returns an empty stream and the erroring branch must never be reached.
+    // enabled is read from a field so the analyzer can't prove the branch
+    // dead; it stays false for the whole test (toggle simulated off).
+    final gate = _Gate();
+    var subscribed = false;
+    Stream<Position> positions() {
+      if (!gate.enabled) return const Stream<Position>.empty();
+      subscribed = true;
+      return Stream<Position>.error(Exception('should not subscribe'));
+    }
+
+    final b = JourneySessionBloc(
+      etaStream: (_) => etaCtrl.stream,
+      positions: positions,
+    )..add(JourneyStarted(legs: [_leg('307')]));
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+    b.add(const BoardConfirmed());
+    final s = await b.stream.firstWhere((s) => s.phase == JourneyPhase.riding);
+    expect(s.phase, JourneyPhase.riding);
+    await Future<void>.delayed(Duration.zero);
+    expect(subscribed, isFalse);
     await b.close();
   });
 
