@@ -46,19 +46,10 @@ class _TrainCardState extends State<_TrainCard> {
         unawaited(
           Navigator.push(
             context,
-            PageRouteBuilder<void>(
-              pageBuilder: (_, _, _) => RailTrainScreen(
+            MaterialPageRoute<void>(
+              builder: (_) => RailTrainScreen(
                 type: widget.type,
                 trainNo: widget.number,
-              ),
-              transitionsBuilder: (_, animation, _, child) => SlideTransition(
-                position: animation.drive(
-                  Tween(
-                    begin: const Offset(1, 0),
-                    end: Offset.zero,
-                  ).chain(CurveTween(curve: Curves.easeOut)),
-                ),
-                child: child,
               ),
             ),
           ),

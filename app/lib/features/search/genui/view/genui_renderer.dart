@@ -1,22 +1,38 @@
 import 'package:flutter/material.dart';
+import 'package:wheres_the_car/features/search/bloc/search_state.dart';
 import 'package:wheres_the_car/features/search/genui/model/genui_node.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 
 class GenUiRenderer extends StatelessWidget {
-  const GenUiRenderer({required this.nodes, required this.onChip, super.key});
+  const GenUiRenderer({
+    required this.nodes,
+    required this.refs,
+    required this.onChip,
+    required this.onOpen,
+    super.key,
+  });
 
   final List<GenUiNode> nodes;
+  final Map<String, SearchResult> refs;
   final ValueChanged<String> onChip;
+  final ValueChanged<SearchResult> onOpen;
+
+  SearchResult? _refOf(String? refUid) =>
+      refUid == null ? null : refs[refUid];
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        for (final node in nodes)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: _node(context, node),
+        for (final (i, node) in nodes.indexed)
+          _StaggerIn(
+            index: i,
+            child: Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _node(context, node),
+            ),
           ),
       ],
     );
@@ -45,12 +61,20 @@ class GenUiRenderer extends StatelessWidget {
           ),
         );
       case GenUiRoute():
-        return _RouteCard(node: node);
+        final ref = _refOf(node.refUid);
+        final card = _RouteCard(node: node, openable: ref != null);
+        if (ref == null) return card;
+        return Pressable(
+          onTap: () => onOpen(ref),
+          semanticLabel: node.title,
+          child: card,
+        );
       case GenUiStep():
         return _StepRow(node: node);
       case GenUiChip():
+        final ref = _refOf(node.refUid);
         return Pressable(
-          onTap: () => onChip(node.query),
+          onTap: () => ref != null ? onOpen(ref) : onChip(node.query),
           semanticLabel: node.label,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
@@ -62,7 +86,9 @@ class GenUiRenderer extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  Icons.search_rounded,
+                  ref != null
+                      ? Icons.arrow_outward_rounded
+                      : Icons.search_rounded,
                   size: 15,
                   color: cs.onSurfaceVariant,
                 ),
@@ -86,8 +112,9 @@ class GenUiRenderer extends StatelessWidget {
 }
 
 class _RouteCard extends StatelessWidget {
-  const _RouteCard({required this.node});
+  const _RouteCard({required this.node, required this.openable});
   final GenUiRoute node;
+  final bool openable;
 
   @override
   Widget build(BuildContext context) {
@@ -105,13 +132,25 @@ class _RouteCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            node.title,
-            style: TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
-              color: cs.onSurface,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  node.title,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: cs.onSurface,
+                  ),
+                ),
+              ),
+              if (openable)
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 18,
+                  color: cs.onSurfaceVariant,
+                ),
+            ],
           ),
           if (node.badges.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -178,6 +217,34 @@ class _StepRow extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _StaggerIn extends StatelessWidget {
+  const _StaggerIn({required this.index, required this.child});
+  final int index;
+  final Widget child;
+
+  static const _step = Duration(milliseconds: 30);
+
+  @override
+  Widget build(BuildContext context) {
+    final delay = _step * index;
+    final total = AppMotion.medium + delay;
+    final start = delay.inMilliseconds / total.inMilliseconds;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: total,
+      curve: Interval(start, 1, curve: AppMotion.easeOut),
+      child: child,
+      builder: (context, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(
+          offset: Offset(0, 4 * (1 - t)),
+          child: child,
+        ),
+      ),
     );
   }
 }

@@ -15,6 +15,7 @@ sealed class GenUiNode {
               .map((e) => e.toString())
               .toList(),
           etaText: json['etaText'] as String? ?? '',
+          refUid: _refUid(json),
         );
       case 'step':
         return GenUiStep(
@@ -25,6 +26,7 @@ sealed class GenUiNode {
         return GenUiChip(
           label: json['label'] as String? ?? '',
           query: json['query'] as String? ?? '',
+          refUid: _refUid(json),
         );
       case 'divider':
         return const GenUiDivider();
@@ -40,6 +42,11 @@ sealed class GenUiNode {
         .map((m) => fromJson(Map<String, Object?>.from(m)))
         .whereType<GenUiNode>()
         .toList();
+  }
+
+  static String? _refUid(Map<String, Object?> json) {
+    final v = (json['refUid'] as String? ?? '').trim();
+    return v.isEmpty ? null : v;
   }
 }
 
@@ -58,10 +65,12 @@ class GenUiRoute extends GenUiNode {
     required this.title,
     required this.badges,
     required this.etaText,
+    this.refUid,
   });
   final String title;
   final List<String> badges;
   final String etaText;
+  final String? refUid;
 }
 
 enum GenUiStepKind {
@@ -85,9 +94,10 @@ class GenUiStep extends GenUiNode {
 }
 
 class GenUiChip extends GenUiNode {
-  const GenUiChip({required this.label, required this.query});
+  const GenUiChip({required this.label, required this.query, this.refUid});
   final String label;
   final String query;
+  final String? refUid;
 }
 
 class GenUiDivider extends GenUiNode {

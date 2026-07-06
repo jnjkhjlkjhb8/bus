@@ -59,19 +59,10 @@ void _navigateToResult(BuildContext context, SearchResult result) {
       unawaited(
         Navigator.push(
           context,
-          PageRouteBuilder<void>(
-            pageBuilder: (_, _, _) => RailTrainScreen(
+          MaterialPageRoute<void>(
+            builder: (_) => RailTrainScreen(
               type: result.type == SearchResultType.traTrain ? '台鐵' : '高鐵',
               trainNo: result.uid,
-            ),
-            transitionsBuilder: (_, animation, _, child) => SlideTransition(
-              position: animation.drive(
-                Tween(
-                  begin: const Offset(1, 0),
-                  end: Offset.zero,
-                ).chain(CurveTween(curve: Curves.easeOut)),
-              ),
-              child: child,
             ),
           ),
         ),
@@ -128,12 +119,19 @@ class _SearchViewState extends State<_SearchView> {
   }
 
   Future<void> _openGenUi() async {
-    final query = await showGenUiSheet(context, initialQuery: _controller.text);
-    if (!mounted || query == null || query.trim().isEmpty) return;
-    _controller.text = query;
-    _controller.selection = TextSelection.collapsed(offset: query.length);
-    context.read<SearchBloc>().add(SearchQueryChanged(query));
-    _focusNode.requestFocus();
+    final result =
+        await showGenUiSheet(context, initialQuery: _controller.text);
+    if (!mounted || result == null) return;
+    switch (result) {
+      case GenUiSheetOpen(:final result):
+        _navigateToResult(context, result);
+      case GenUiSheetQuery(:final query):
+        if (query.trim().isEmpty) return;
+        _controller.text = query;
+        _controller.selection = TextSelection.collapsed(offset: query.length);
+        context.read<SearchBloc>().add(SearchQueryChanged(query));
+        _focusNode.requestFocus();
+    }
   }
 
   TransportType _transportType(SearchResultType type) => switch (type) {
