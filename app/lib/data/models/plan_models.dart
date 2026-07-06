@@ -80,6 +80,7 @@ class PlanSection extends Equatable {
     required this.arrival,
     required this.transport,
     required this.intermediateStops,
+    this.identity = const PlanIdentity.empty(),
   });
 
   factory PlanSection.fromProto(maas.Section proto) => PlanSection(
@@ -91,6 +92,7 @@ class PlanSection extends Equatable {
     intermediateStops: [
       for (final stop in proto.intermediateStops) PlanStop.fromProto(stop),
     ],
+    identity: PlanIdentity.fromProto(proto.notificationIdentity),
   );
 
   final String type;
@@ -99,6 +101,7 @@ class PlanSection extends Equatable {
   final PlanPlace arrival;
   final PlanTransport transport;
   final List<PlanStop> intermediateStops;
+  final PlanIdentity identity;
 
   @override
   List<Object?> get props => [
@@ -108,6 +111,53 @@ class PlanSection extends Equatable {
     arrival,
     transport,
     intermediateStops,
+    identity,
+  ];
+}
+
+class PlanIdentity extends Equatable {
+  const PlanIdentity({
+    required this.routeType,
+    required this.routeKey,
+    required this.direction,
+    required this.departureStopKey,
+    required this.arrivalStopKey,
+    required this.supported,
+  });
+
+  const PlanIdentity.empty()
+    : routeType = '',
+      routeKey = '',
+      direction = '',
+      departureStopKey = '',
+      arrivalStopKey = '',
+      supported = false;
+
+  factory PlanIdentity.fromProto(maas.NotificationIdentity proto) =>
+      PlanIdentity(
+        routeType: proto.routeType,
+        routeKey: proto.routeKey,
+        direction: proto.direction,
+        departureStopKey: proto.departureStopKey,
+        arrivalStopKey: proto.arrivalStopKey,
+        supported: proto.supported,
+      );
+
+  final String routeType;
+  final String routeKey;
+  final String direction;
+  final String departureStopKey;
+  final String arrivalStopKey;
+  final bool supported;
+
+  @override
+  List<Object?> get props => [
+    routeType,
+    routeKey,
+    direction,
+    departureStopKey,
+    arrivalStopKey,
+    supported,
   ];
 }
 
