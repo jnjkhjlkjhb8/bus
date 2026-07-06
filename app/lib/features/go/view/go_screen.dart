@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -9,6 +10,8 @@ import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
+import 'package:wheres_the_car/core/live_activity/pip_mode.dart';
+import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
@@ -17,6 +20,10 @@ import 'package:wheres_the_car/features/go/model/planned_place.dart';
 import 'package:wheres_the_car/features/go/view/place_search_sheet.dart';
 import 'package:wheres_the_car/features/go/widgets/route_option_card.dart';
 import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
@@ -121,6 +128,11 @@ class _GoScreenState extends State<GoScreen> {
     bloc
       ..add(RouteSelected(index: routes.indexOf(route)))
       ..add(const NavigationStarted());
+    final legs = JourneyLeg.legsFromRoute(route);
+    if (legs.isNotEmpty && HiveStore.liveActivityEnabled) {
+      context.read<JourneySessionBloc>().add(JourneyStarted(legs: legs));
+      unawaited(PipMode.instance.setNavigating(true));
+    }
     final start = _firstPoint(route);
     final map = _map;
     if (start != null && map != null) {
@@ -139,6 +151,7 @@ class _GoScreenState extends State<GoScreen> {
     final bloc = context.read<PlanBloc>();
     if (activeLeg >= route.sections.length - 1) {
       bloc.add(const NavigationEnded());
+      _stopJourneySession();
       _resetCamera();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -159,7 +172,16 @@ class _GoScreenState extends State<GoScreen> {
   void _endNav() {
     unawaited(HapticService.instance.lightTap());
     context.read<PlanBloc>().add(const NavigationEnded());
+    _stopJourneySession();
     _resetCamera();
+  }
+
+  /// User-initiated end of navigation: tear down the journey session and the
+  /// picture-in-picture navigating flag. Safe to call when no session is
+  /// active (JourneyCancelled is a no-op from the idle phase).
+  void _stopJourneySession() {
+    context.read<JourneySessionBloc>().add(const JourneyCancelled());
+    unawaited(PipMode.instance.setNavigating(false));
   }
 
   void _resetCamera() {
@@ -266,6 +288,24 @@ class _GoScreenState extends State<GoScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // The session can reach `done` on its own (last leg alighted, or the 8h
+    // ActivityKit cap). Mirror that back into PlanBloc + PiP so the panel
+    // reverts even when the user didn't tap 結束導航.
+    return BlocListener<JourneySessionBloc, JourneySessionState>(
+      listenWhen: (p, c) => p.phase != c.phase && c.phase == JourneyPhase.done,
+      listener: (context, _) {
+        unawaited(PipMode.instance.setNavigating(false));
+        final plan = context.read<PlanBloc>();
+        if (plan.state.activeLegIndex != null) {
+          plan.add(const NavigationEnded());
+          _resetCamera();
+        }
+      },
+      child: _buildPlanner(),
+    );
+  }
+
+  Widget _buildPlanner() {
     return BlocConsumer<PlanBloc, PlanState>(
       listenWhen: (p, c) =>
           p.status != c.status && c.status == PlanStatus.success,
