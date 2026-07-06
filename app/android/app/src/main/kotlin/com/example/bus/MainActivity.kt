@@ -21,7 +21,7 @@ class MainActivity : FlutterActivity() {
         LiveActivityPlugin(this).register(flutterEngine.dartExecutor.binaryMessenger)
         pipChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
-            "com.jnjk.bus/pip",
+            "com.wheres.bus/pip",
         ).apply {
             setMethodCallHandler { call, result ->
                 when (call.method) {

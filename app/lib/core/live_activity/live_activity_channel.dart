@@ -47,7 +47,7 @@ class LiveActivityContent {
 /// Thin wrapper over the platform live-activity channel. All platform errors
 /// are swallowed: a broken lock-screen card must never break navigation.
 class LiveActivityChannel {
-  static const _channel = MethodChannel('com.jnjk.bus/live_activity');
+  static const _channel = MethodChannel('com.wheres.bus/live_activity');
   bool _active = false;
 
   Future<void> start(LiveActivityContent content) async {

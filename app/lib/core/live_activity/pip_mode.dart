@@ -13,7 +13,7 @@ class PipMode {
   }
 
   static final PipMode instance = PipMode._();
-  static const _channel = MethodChannel('com.jnjk.bus/pip');
+  static const _channel = MethodChannel('com.wheres.bus/pip');
 
   final ValueNotifier<bool> isPip = ValueNotifier(false);
 

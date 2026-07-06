@@ -5,7 +5,7 @@ import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const channel = MethodChannel('com.jnjk.bus/live_activity');
+  const channel = MethodChannel('com.wheres.bus/live_activity');
   final calls = <MethodCall>[];
 
   setUp(() {
