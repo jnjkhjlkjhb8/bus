@@ -152,6 +152,23 @@ class RouteOptionCard extends StatelessWidget {
                 color: cs.onSurfaceVariant,
               ),
             ),
+            if (route.totalFare > 0) ...[
+              const Spacer(),
+              Text(
+                r'NT$ ',
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: cs.onSurfaceVariant,
+                ),
+              ),
+              Text(
+                '${route.totalFare}',
+                style: AppTextStyles.memo.copyWith(
+                  fontSize: AppTextStyles.bodySmall.fontSize,
+                  color: cs.onSurface,
+                  fontFeatures: AppTextStyles.tabularFigures,
+                ),
+              ),
+            ],
           ],
         ),
       ],

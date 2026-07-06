@@ -27,6 +27,9 @@ message Route {
   string          endTime       = 3;
   int32           transfers     = 4;
   repeated Section sections    = 5;
+  // Sum of every resolved section fare (NT$). 0 when no section fare was
+  // found; a partial sum when only some sections resolved.
+  int32           totalFare     = 6;
 }
 
 message Section {
@@ -38,6 +41,9 @@ message Section {
   repeated IntermediateStop intermediateStops = 6;
   Agency agency = 7;
   NotificationIdentity notification_identity = 8;
+  // Adult full fare for this section (NT$). Unset (0) when no fare could be
+  // resolved; a missing fare never fails the plan.
+  int32 fare = 9;
 }
 
 message NotificationIdentity {

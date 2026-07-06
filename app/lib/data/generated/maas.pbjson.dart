@@ -67,6 +67,7 @@ const Route$json = {
       '6': '.Section',
       '10': 'sections'
     },
+    {'1': 'totalFare', '3': 6, '4': 1, '5': 5, '10': 'totalFare'},
   ],
 };
 
@@ -74,7 +75,8 @@ const Route$json = {
 final $typed_data.Uint8List routeDescriptor = $convert.base64Decode(
     'CgVSb3V0ZRIeCgp0cmF2ZWxUaW1lGAEgASgDUgp0cmF2ZWxUaW1lEhwKCXN0YXJ0VGltZRgCIA'
     'EoCVIJc3RhcnRUaW1lEhgKB2VuZFRpbWUYAyABKAlSB2VuZFRpbWUSHAoJdHJhbnNmZXJzGAQg'
-    'ASgFUgl0cmFuc2ZlcnMSJAoIc2VjdGlvbnMYBSADKAsyCC5TZWN0aW9uUghzZWN0aW9ucw==');
+    'ASgFUgl0cmFuc2ZlcnMSJAoIc2VjdGlvbnMYBSADKAsyCC5TZWN0aW9uUghzZWN0aW9ucxIcCg'
+    'l0b3RhbEZhcmUYBiABKAVSCXRvdGFsRmFyZQ==');
 
 @$core.Deprecated('Use sectionDescriptor instead')
 const Section$json = {
@@ -123,6 +125,7 @@ const Section$json = {
       '6': '.NotificationIdentity',
       '10': 'notificationIdentity'
     },
+    {'1': 'fare', '3': 9, '4': 1, '5': 5, '10': 'fare'},
   ],
 };
 
@@ -134,7 +137,7 @@ final $typed_data.Uint8List sectionDescriptor = $convert.base64Decode(
     'gLMgouVHJhbnNwb3J0Ugl0cmFuc3BvcnQSPwoRaW50ZXJtZWRpYXRlU3RvcHMYBiADKAsyES5J'
     'bnRlcm1lZGlhdGVTdG9wUhFpbnRlcm1lZGlhdGVTdG9wcxIfCgZhZ2VuY3kYByABKAsyBy5BZ2'
     'VuY3lSBmFnZW5jeRJKChVub3RpZmljYXRpb25faWRlbnRpdHkYCCABKAsyFS5Ob3RpZmljYXRp'
-    'b25JZGVudGl0eVIUbm90aWZpY2F0aW9uSWRlbnRpdHk=');
+    'b25JZGVudGl0eVIUbm90aWZpY2F0aW9uSWRlbnRpdHkSEgoEZmFyZRgJIAEoBVIEZmFyZQ==');
 
 @$core.Deprecated('Use notificationIdentityDescriptor instead')
 const NotificationIdentity$json = {

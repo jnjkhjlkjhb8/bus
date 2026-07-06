@@ -351,21 +351,56 @@ func mrtEta(client *resty.Client, rc *redis.Client) {
 }
 
 // mrtODFare decodes a TDX Rail/Metro/ODFare element: fares between an
-// origin/destination station pair, by ticket type.
+// origin/destination station pair, by ticket type. The same feed carries the
+// station-to-station TravelTime (whole minutes), which populates
+// mrt_journey_matrix.travel_time_min. TravelTime is json.Number because TDX has
+// emitted it both as a bare number and as a quoted string across systems; a
+// missing or unparseable value yields 0 (left as-is by the upsert's COALESCE).
 type mrtODFare struct {
-	OriginStationID      string `json:"OriginStationID"`
-	DestinationStationID string `json:"DestinationStationID"`
+	OriginStationID      string      `json:"OriginStationID"`
+	DestinationStationID string      `json:"DestinationStationID"`
+	TravelTime           json.Number `json:"TravelTime"`
 	Fares                []struct {
 		TicketType int `json:"TicketType"`
 		Price      int `json:"Price"`
 	} `json:"Fares"`
 }
 
+// travelTimeMin parses an mrtODFare's TravelTime into whole minutes, returning 0
+// when absent or unparseable.
+func (f mrtODFare) travelTimeMin() int {
+	if f.TravelTime == "" {
+		return 0
+	}
+	if v, err := f.TravelTime.Float64(); err == nil && v > 0 {
+		return int(v)
+	}
+	return 0
+}
+
+// mrtJourneyMatrixUpsert is the shared ON CONFLICT upsert for the metro journey
+// matrix. fare_nt always tracks the latest ODFare; travel_time_min is only
+// overwritten when the incoming value is positive, so a fare-only refresh (or a
+// system whose feed omits TravelTime) never zeroes a previously populated time.
+const mrtJourneyMatrixUpsert = `
+	INSERT INTO mrt_journey_matrix
+		(id, from_station_id, to_station_id, system, travel_time_min, fare_nt, updated_at)
+	VALUES ($1,$2,$3,$4,$5,$6,NOW())
+	ON CONFLICT (from_station_id, to_station_id, system)
+	DO UPDATE SET
+		fare_nt = EXCLUDED.fare_nt,
+		travel_time_min = CASE
+			WHEN EXCLUDED.travel_time_min > 0 THEN EXCLUDED.travel_time_min
+			ELSE mrt_journey_matrix.travel_time_min
+		END,
+		updated_at = NOW()`
+
 // loadMrtJourneyMatrix upserts one metro system's OD fare matrix into
 // mrt_journey_matrix from a decoder over the reconstructed raw_tdx array. It
-// decodes []mrtODFare and upserts the adult fare (TicketType 1) per OD pair.
-// This is the sole writer of mrt_journey_matrix (loader registry key
-// "mrt_odfare"); the table carries fares only.
+// decodes []mrtODFare and applies mrtJourneyMatrixUpsert, which writes both the
+// adult fare (TicketType 1) and the station-to-station travel time from the
+// same ODFare feed. This is the sole writer of mrt_journey_matrix (loader
+// registry key "mrt_odfare").
 func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, system string) error {
 	var fares []mrtODFare
 	if err := dec.Decode(&fares); err != nil {
@@ -381,13 +416,8 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, db *pgxpool.Po
 			}
 		}
 		id := fmt.Sprintf("%s-%s-%s", system, f.OriginStationID, f.DestinationStationID)
-		batch.Queue(`
-					INSERT INTO mrt_journey_matrix
-						(id, from_station_id, to_station_id, system, fare_nt, updated_at)
-					VALUES ($1,$2,$3,$4,$5,NOW())
-					ON CONFLICT (from_station_id, to_station_id, system)
-					DO UPDATE SET fare_nt=EXCLUDED.fare_nt, updated_at=NOW()`,
-			id, f.OriginStationID, f.DestinationStationID, system, adultPrice,
+		batch.Queue(mrtJourneyMatrixUpsert,
+			id, f.OriginStationID, f.DestinationStationID, system, f.travelTimeMin(), adultPrice,
 		)
 	}
 	br := db.SendBatch(ctx, batch)

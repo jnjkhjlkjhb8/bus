@@ -82,13 +82,16 @@ func (d *notificationDispatcher) routeAlert(ctx context.Context, routeType, rout
 }
 
 // arrival fires arrival reminders for a stop when the live ETA falls within a
-// reminder's lead time. No-op for a nil dispatcher, non-bus types, or a negative
-// ETA. Each reminder is claimed before sending to avoid duplicate pushes across
+// reminder's lead time. It is transport-agnostic: bus arrivals come from the
+// live TDX ETA (busEta), metro from the Redis metro ETA cache, and TRA/THSR from
+// timetable data (see arrival_sources.go); each source computes etaSeconds and
+// calls this method the same way. No-op for a nil dispatcher or a negative ETA.
+// Each reminder is claimed before sending to avoid duplicate pushes across
 // concurrent ETA runs; on success it is marked fired, and an unregistered-token
 // send invalidates the token. etaSeconds is rounded up to whole minutes in the
 // message body.
 func (d *notificationDispatcher) arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32) {
-	if d == nil || routeType != "bus" || etaSeconds < 0 {
+	if d == nil || etaSeconds < 0 {
 		return
 	}
 	now := d.now()

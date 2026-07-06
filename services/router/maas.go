@@ -28,6 +28,7 @@ type MaasServer struct {
 	rc         *redis.Client
 	db         maasDB
 	maasClient *resty.Client
+	osrmClient *resty.Client
 	sfGroup    singleflight.Group
 }
 
@@ -51,7 +52,7 @@ func newMaasServer(rc *redis.Client, db maasDB, tdxAuthToken func() string) *Maa
 			req.SetAuthToken(tdxAuthToken())
 			return nil
 		})
-	return &MaasServer{rc: rc, db: db, maasClient: c}
+	return &MaasServer{rc: rc, db: db, maasClient: c, osrmClient: resty.New().SetTimeout(5 * time.Second)}
 }
 
 type tdxRoute struct {
@@ -177,9 +178,9 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 	if !resp.IsSuccess() {
 		return nil, fmt.Errorf("TDX MaaS HTTP %d", resp.StatusCode())
 	}
-	return convert(ctx, s.db, &apiResp), nil
+	return convert(ctx, s.db, s.osrmClient, &apiResp), nil
 }
-func convert(ctx context.Context, db maasDB, api *tdxAPIResponse) *pb.MaasPlanResponse {
+func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxAPIResponse) *pb.MaasPlanResponse {
 	out := &pb.MaasPlanResponse{}
 	for _, route := range api.Data.Routes {
 		pbRoute := &pb.Route{
@@ -188,7 +189,7 @@ func convert(ctx context.Context, db maasDB, api *tdxAPIResponse) *pb.MaasPlanRe
 			EndTime:    route.EndTime,
 			Transfers:  route.Transfers,
 		}
-		for _, sec := range route.Sections {
+		for secIdx, sec := range route.Sections {
 			pbSec := &pb.Section{
 				Type: sec.Type,
 				TravelSummary: &pb.Summary{
@@ -245,11 +246,138 @@ func convert(ctx context.Context, db maasDB, api *tdxAPIResponse) *pb.MaasPlanRe
 				}
 			}
 			pbSec.NotificationIdentity = resolveBusNotificationIdentity(ctx, db, sec)
+
+			// First/last-mile walks: TDX bakes the fixed first_mile_time /
+			// last_mile_time budget into their duration. Replace it with the real
+			// OSRM foot time when both endpoints have coordinates; on any OSRM
+			// error or missing coordinate the TDX value is left untouched.
+			if isWalkMode(sec.Transport.Mode) && (secIdx == 0 || secIdx == len(route.Sections)-1) {
+				if secs, ok := walkDurationSeconds(ctx, osrmClient, pbSec.Departure.Location, pbSec.Arrival.Location); ok {
+					pbSec.TravelSummary.Duration = secs
+				}
+			}
+
+			if fare, ok := sectionFare(ctx, db, sec); ok {
+				pbSec.Fare = fare
+				pbRoute.TotalFare += fare
+			}
+
 			pbRoute.Sections = append(pbRoute.Sections, pbSec)
 		}
 		out.Routes = append(out.Routes, pbRoute)
 	}
 	return out
+}
+
+// isWalkMode reports whether a section's transport mode is a pedestrian leg.
+// TDX emits an empty mode or "WALK" for walking sections.
+func isWalkMode(mode string) bool {
+	return mode == "" || strings.EqualFold(mode, "walk")
+}
+
+// walkDurationSeconds returns the OSRM foot travel time (seconds) between two
+// points. ok is false when either point lacks coordinates or OSRM does not
+// return a usable duration, so the caller keeps the fixed TDX estimate.
+func walkDurationSeconds(ctx context.Context, osrmClient *resty.Client, from, to *pb.Location) (int64, bool) {
+	if osrmClient == nil || from == nil || to == nil {
+		return 0, false
+	}
+	if (from.Lat == 0 && from.Lng == 0) || (to.Lat == 0 && to.Lng == 0) {
+		return 0, false
+	}
+	coords := fmt.Sprintf("%f,%f;%f,%f", from.Lng, from.Lat, to.Lng, to.Lat)
+	var out struct {
+		Code      string      `json:"code"`
+		Durations [][]float64 `json:"durations"`
+	}
+	resp, err := osrmClient.R().
+		SetContext(ctx).
+		SetQueryParam("sources", "0").
+		SetQueryParam("destinations", "1").
+		SetQueryParam("annotations", "duration").
+		SetResult(&out).
+		Get(fmt.Sprintf("http://osrm:5000/table/v1/foot/%s", coords))
+	if err != nil || !resp.IsSuccess() || out.Code != "Ok" || len(out.Durations) == 0 || len(out.Durations[0]) == 0 {
+		return 0, false
+	}
+	return int64(out.Durations[0][0]), true
+}
+
+// sectionFare resolves the adult full fare (NT$) for one transit section by
+// looking up the origin/destination station pair (matched by station name) in
+// the mode's fare table: metro → mrt_journey_matrix, TRA → tra_fares, THSR →
+// thsr_fares. ok is false for non-rail modes, a missing db, a query error, or
+// no matching fare — the caller then leaves the fare unset (a missing fare must
+// never fail the plan).
+func sectionFare(ctx context.Context, db maasDB, sec tdxSection) (int32, bool) {
+	if db == nil {
+		return 0, false
+	}
+	from := sec.Departure.Place.Name
+	to := sec.Arrival.Place.Name
+	if from == "" || to == "" {
+		return 0, false
+	}
+	switch {
+	case isMetroMode(sec.Transport.Mode):
+		return queryFare(ctx, db, `
+			SELECT m.fare_nt
+			FROM mrt_journey_matrix m
+			JOIN mrt_station o ON o.station_id = m.from_station_id AND o.system = m.system
+			JOIN mrt_station d ON d.station_id = m.to_station_id AND d.system = m.system
+			WHERE o.name = $1 AND d.name = $2
+			LIMIT 1`, from, to)
+	case isThsrMode(sec.Transport.Mode):
+		return queryFare(ctx, db, `
+			SELECT f.price
+			FROM thsr_fares f
+			JOIN thsr_stations o ON o.station_id = f.origin_station_id
+			JOIN thsr_stations d ON d.station_id = f.destination_station_id
+			WHERE o.name = $1 AND d.name = $2 AND f.ticket_type = 1 AND f.fare_class = 1
+			ORDER BY f.price
+			LIMIT 1`, from, to)
+	case isRailMode(sec.Transport.Mode):
+		return queryFare(ctx, db, `
+			SELECT f.price
+			FROM tra_fares f
+			JOIN tra_stations o ON o.station_id = f.origin_station_id
+			JOIN tra_stations d ON d.station_id = f.destination_station_id
+			WHERE o.name = $1 AND d.name = $2
+			ORDER BY f.price
+			LIMIT 1`, from, to)
+	}
+	return 0, false
+}
+
+// queryFare runs a single-value fare query and reports whether a positive fare
+// was found. Any error or non-positive fare yields ok=false.
+func queryFare(ctx context.Context, db maasDB, q string, args ...any) (int32, bool) {
+	rows, err := db.Query(ctx, q, args...)
+	if err != nil {
+		return 0, false
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, false
+	}
+	var fare int32
+	if err := rows.Scan(&fare); err != nil || fare <= 0 {
+		return 0, false
+	}
+	return fare, true
+}
+
+// Rail-mode classifiers. TDX MaaS mode strings vary by dataset; these cover the
+// documented values (SUBWAY/METRO for metro, RAIL/TRA for conventional rail,
+// THSR/HSR for high-speed rail).
+func isMetroMode(mode string) bool {
+	return strings.EqualFold(mode, "subway") || strings.EqualFold(mode, "metro") || strings.EqualFold(mode, "mrt")
+}
+func isThsrMode(mode string) bool {
+	return strings.EqualFold(mode, "thsr") || strings.EqualFold(mode, "hsr")
+}
+func isRailMode(mode string) bool {
+	return strings.EqualFold(mode, "rail") || strings.EqualFold(mode, "tra") || strings.EqualFold(mode, "train")
 }
 
 func resolveBusNotificationIdentity(ctx context.Context, db maasDB, sec tdxSection) *pb.NotificationIdentity {

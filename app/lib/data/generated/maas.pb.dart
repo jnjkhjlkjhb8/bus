@@ -215,6 +215,7 @@ class Route extends $pb.GeneratedMessage {
     $core.String? endTime,
     $core.int? transfers,
     $core.Iterable<Section>? sections,
+    $core.int? totalFare,
   }) {
     final result = create();
     if (travelTime != null) result.travelTime = travelTime;
@@ -222,6 +223,7 @@ class Route extends $pb.GeneratedMessage {
     if (endTime != null) result.endTime = endTime;
     if (transfers != null) result.transfers = transfers;
     if (sections != null) result.sections.addAll(sections);
+    if (totalFare != null) result.totalFare = totalFare;
     return result;
   }
 
@@ -243,6 +245,7 @@ class Route extends $pb.GeneratedMessage {
     ..aI(4, _omitFieldNames ? '' : 'transfers')
     ..pPM<Section>(5, _omitFieldNames ? '' : 'sections',
         subBuilder: Section.create)
+    ..aI(6, _omitFieldNames ? '' : 'totalFare', protoName: 'totalFare')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -301,6 +304,17 @@ class Route extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(5)
   $pb.PbList<Section> get sections => $_getList(4);
+
+  /// Sum of every resolved section fare (NT$). 0 when no section fare was
+  /// found; a partial sum when only some sections resolved.
+  @$pb.TagNumber(6)
+  $core.int get totalFare => $_getIZ(5);
+  @$pb.TagNumber(6)
+  set totalFare($core.int value) => $_setSignedInt32(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasTotalFare() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearTotalFare() => $_clearField(6);
 }
 
 class Section extends $pb.GeneratedMessage {
@@ -313,6 +327,7 @@ class Section extends $pb.GeneratedMessage {
     $core.Iterable<IntermediateStop>? intermediateStops,
     Agency? agency,
     NotificationIdentity? notificationIdentity,
+    $core.int? fare,
   }) {
     final result = create();
     if (type != null) result.type = type;
@@ -325,6 +340,7 @@ class Section extends $pb.GeneratedMessage {
     if (agency != null) result.agency = agency;
     if (notificationIdentity != null)
       result.notificationIdentity = notificationIdentity;
+    if (fare != null) result.fare = fare;
     return result;
   }
 
@@ -354,6 +370,7 @@ class Section extends $pb.GeneratedMessage {
     ..aOM<NotificationIdentity>(
         8, _omitFieldNames ? '' : 'notificationIdentity',
         subBuilder: NotificationIdentity.create)
+    ..aI(9, _omitFieldNames ? '' : 'fare')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -451,6 +468,17 @@ class Section extends $pb.GeneratedMessage {
   void clearNotificationIdentity() => $_clearField(8);
   @$pb.TagNumber(8)
   NotificationIdentity ensureNotificationIdentity() => $_ensure(7);
+
+  /// Adult full fare for this section (NT$). Unset (0) when no fare could be
+  /// resolved; a missing fare never fails the plan.
+  @$pb.TagNumber(9)
+  $core.int get fare => $_getIZ(8);
+  @$pb.TagNumber(9)
+  set fare($core.int value) => $_setSignedInt32(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasFare() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearFare() => $_clearField(9);
 }
 
 class NotificationIdentity extends $pb.GeneratedMessage {
