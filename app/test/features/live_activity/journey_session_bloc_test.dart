@@ -1,0 +1,116 @@
+import 'dart:async';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+
+JourneyLeg _leg(String label) => JourneyLeg(
+  kind: JourneyLegKind.bus,
+  routeLabel: label,
+  boardStop: '起點站',
+  alightStop: '終點站',
+  stopNames: const ['中站'],
+  identity: const PlanIdentity.empty(),
+  leadingWalkMinutes: 0,
+  scheduledDeparture: DateTime(2026, 7, 6, 10),
+  scheduledArrival: DateTime(2026, 7, 6, 10, 30),
+  boardLocation: const PlanPoint(lat: 25, lng: 121.5),
+  stopLocations: const [
+    PlanPoint(lat: 25.01, lng: 121.51),
+    PlanPoint(lat: 25.02, lng: 121.52),
+  ],
+);
+
+void main() {
+  late StreamController<Duration?> etaCtrl;
+  // channel and positions default to null: platform channel and location
+  // tracking are skipped in tests.
+  JourneySessionBloc bloc() =>
+      JourneySessionBloc(etaStream: (_) => etaCtrl.stream);
+
+  setUp(() => etaCtrl = StreamController<Duration?>.broadcast());
+  tearDown(() => etaCtrl.close());
+
+  test('start → waiting on first leg with streamed ETA', () async {
+    final b = bloc()..add(JourneyStarted(legs: [_leg('307')]));
+    await expectLater(
+      b.stream,
+      emits(
+        isA<JourneySessionState>()
+            .having((s) => s.phase, 'phase', JourneyPhase.waiting)
+            .having((s) => s.legIndex, 'legIndex', 0),
+      ),
+    );
+    etaCtrl.add(const Duration(minutes: 3));
+    await expectLater(
+      b.stream,
+      emits(
+        isA<JourneySessionState>()
+            .having((s) => s.eta, 'eta', const Duration(minutes: 3)),
+      ),
+    );
+    await b.close();
+  });
+
+  test('board → riding; alight on last leg → done', () async {
+    final b = bloc()..add(JourneyStarted(legs: [_leg('307')]));
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+    b.add(const BoardConfirmed());
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.riding);
+    b.add(const AlightConfirmed());
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.done);
+    await b.close();
+  });
+
+  test('alight on non-final leg advances to waiting on next leg', () async {
+    final b = bloc()
+      ..add(JourneyStarted(legs: [_leg('307'), _leg('自強123')]));
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+    b.add(const BoardConfirmed());
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.riding);
+    b.add(const AlightConfirmed());
+    final s = await b.stream.firstWhere(
+      (s) => s.phase == JourneyPhase.waiting,
+    );
+    expect(s.legIndex, 1);
+    expect(s.currentLeg?.routeLabel, '自強123');
+    await b.close();
+  });
+
+  test('eta reaching zero flags suggestBoarding while waiting', () async {
+    final b = bloc()..add(JourneyStarted(legs: [_leg('307')]));
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+    etaCtrl.add(Duration.zero);
+    final s = await b.stream.firstWhere((s) => s.eta == Duration.zero);
+    expect(s.suggestBoarding, isTrue);
+    await b.close();
+  });
+
+  test('cancel from any phase → done', () async {
+    final b = bloc()..add(JourneyStarted(legs: [_leg('307')]));
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+    b.add(const JourneyCancelled());
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.done);
+    await b.close();
+  });
+
+  test('eta stream error falls back to scheduled countdown', () async {
+    final b = JourneySessionBloc(
+      etaStream: (_) => Stream<Duration?>.error(Exception('grpc drop')),
+    )..add(JourneyStarted(legs: [_leg('307')]));
+    // scheduledDeparture is in the past → fallback emits Duration.zero
+    final s = await b.stream.firstWhere((s) => s.eta != null);
+    expect(s.eta, Duration.zero);
+    await b.close();
+  });
+
+  test('empty legs list is a no-op', () async {
+    final b = bloc()..add(const JourneyStarted(legs: []));
+    await Future<void>.delayed(Duration.zero);
+    expect(b.state.phase, JourneyPhase.idle);
+    await b.close();
+  });
+}
