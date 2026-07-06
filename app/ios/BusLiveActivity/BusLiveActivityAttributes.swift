@@ -3,10 +3,16 @@ import Foundation
 
 struct BusLiveActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
+        /// "waiting" | "riding"
+        var mode: String
         var nextStation: String
         var previousStation: String?
+        var alightStation: String?
+        var remainingStops: Int?
         var progressPercent: Double
-        var arrivalTime: Date
+        /// waiting: expected departure; riding: expected arrival
+        var etaDate: Date?
+        var walkMinutes: Int
     }
 
     let routeOrTrain: String
