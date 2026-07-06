@@ -163,7 +163,9 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 	})
 	_, _ = r.AddFunc("@every 30s", func() {
 		log.Infoln("[crontab] action=bus&bike event=start")
-		bikeEta(c, rc)
+		withTimeout(25*time.Second, func(ctx context.Context) {
+			bikeEta(ctx, c, rc, db)
+		})
 		withTimeout(25*time.Second, func(ctx context.Context) {
 			busEta(ctx, c, rc, db, dispatcher)
 		})
@@ -182,6 +184,7 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 	})
 	_, _ = r.AddFunc("0 30 4 * * *", func() {
 		runDaily("cleanupBusHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBusHistory(ctx, db) })
+		runDaily("cleanupBikeHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBikeHistory(ctx, db) })
 	})
 	r.Start()
 	defer r.Stop()

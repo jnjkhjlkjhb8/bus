@@ -166,12 +166,23 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
 	return nil
 }
 
+// bikeHistorySampleGate is the process-wide 5-minute-per-station gate shared
+// across bikeEta rounds, so history sampling survives between 30s ticks.
+var bikeHistorySampleGate bikeHistorySampler
+
 // bikeEta refreshes live bike availability into Redis every 30s. For each
 // non-skipped city it fetches TDX Bike/Availability and pipelines a protobuf
 // BikeEta per station under bike_availability:<StationUID> with a 2-minute TTL,
-// so stale data expires if a city stops updating.
-func bikeEta(client *resty.Client, rc *redis.Client) {
+// so stale data expires if a city stops updating. Alongside the Redis refresh it
+// samples each station's rentable/returnable counts into
+// bike_availability_history at most once per 5 minutes per station
+// (bikeHistorySampleGate), building the training data for future availability
+// prediction. A nil db skips history collection so the realtime path can run
+// without a database.
+func bikeEta(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
 	log.Infof("[BIKE_ETA] action=bike_eta event=start")
+	now := time.Now()
+	var historyRows [][]interface{}
 	for _, city := range cities {
 		if city == "Keelung" || city == "HsinchuCounty" || city == "NantouCounty" || city == "YilanCounty" || city == "PenghuCounty" || city == "KinmenCounty" || city == "LienchiangCounty" || city == "InterCity" || city == "HualienCounty" {
 			continue
@@ -196,6 +207,7 @@ func bikeEta(client *resty.Client, rc *redis.Client) {
 			for dec.More() {
 				var temp bikeAvailability
 				if err := dec.Decode(&temp); err == nil {
+					availableRent := int(temp.AvailableRentBikesDetail.GeneralBikes) + int(temp.AvailableRentBikesDetail.ElectricBikes)
 					raw := &models.BikeEta{
 						StationUID:           temp.StationUID,
 						ServiceStatus:        int32(temp.ServiceStatus),
@@ -209,11 +221,20 @@ func bikeEta(client *resty.Client, rc *redis.Client) {
 						continue
 					}
 					pipe.Set(fmt.Sprintf("bike_availability:%s", temp.StationUID), pb, 2*time.Minute)
+					// Sample into history at most once per 5 minutes per station.
+					if db != nil && bikeHistorySampleGate.shouldSample(temp.StationUID, now) {
+						historyRows = append(historyRows, []interface{}{
+							temp.StationUID, availableRent, int(temp.AvailableReturnBikes), now,
+						})
+					}
 				}
 			}
 			_, _ = pipe.Exec()
 			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)
 		}()
+	}
+	if db != nil {
+		saveBikeAvailabilityHistory(ctx, db, historyRows)
 	}
 	log.Infof("[BIKE_ETA] action=bike_eta event=complete")
 }
