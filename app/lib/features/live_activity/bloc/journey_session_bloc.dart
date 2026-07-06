@@ -133,7 +133,9 @@ class JourneySessionBloc
     final positions = _positions;
     if (positions == null) return;
     unawaited(_posSub?.cancel());
-    _posSub = positions().listen(_onPosition);
+    // Stream error (permission revoked mid-ride) → riding continues on manual
+    // stop control; position-based progress simply stops updating.
+    _posSub = positions().listen(_onPosition, onError: (Object _) {});
   }
 
   void _onPosition(Position pos) {

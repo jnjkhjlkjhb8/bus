@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
@@ -111,6 +112,33 @@ void main() {
     final b = bloc()..add(const JourneyStarted(legs: []));
     await Future<void>.delayed(Duration.zero);
     expect(b.state.phase, JourneyPhase.idle);
+    await b.close();
+  });
+
+  test('default (no positions) reaches riding without touching geolocator',
+      () async {
+    // positions omitted → _subscribePositions returns early, so no geolocator
+    // platform call is made (that would throw MissingPluginException in tests).
+    final b = bloc()..add(JourneyStarted(legs: [_leg('307')]));
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+    b.add(const BoardConfirmed());
+    final s = await b.stream.firstWhere((s) => s.phase == JourneyPhase.riding);
+    expect(s.phase, JourneyPhase.riding);
+    await b.close();
+  });
+
+  test('position stream error does not break riding', () async {
+    final b = JourneySessionBloc(
+      etaStream: (_) => etaCtrl.stream,
+      positions: () => Stream<Position>.error(Exception('permission revoked')),
+    )..add(JourneyStarted(legs: [_leg('307')]));
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+    b.add(const BoardConfirmed());
+    final s = await b.stream.firstWhere((s) => s.phase == JourneyPhase.riding);
+    expect(s.phase, JourneyPhase.riding);
+    // Give the errored subscription a chance to surface before closing.
+    await Future<void>.delayed(Duration.zero);
+    expect(b.state.phase, JourneyPhase.riding);
     await b.close();
   });
 }

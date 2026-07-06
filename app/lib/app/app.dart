@@ -3,7 +3,9 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_ce_flutter/adapters.dart';
 import 'package:wheres_the_car/app/router/app_router.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
 import 'package:wheres_the_car/core/live_activity/pip_mode.dart';
+import 'package:wheres_the_car/core/location/location_service.dart';
 import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/core/update/force_update.dart';
 import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
@@ -32,7 +34,12 @@ class _AppState extends State<App> {
       providers: [
         BlocProvider(create: (_) => AlertBloc()),
         BlocProvider(create: (_) => PlanBloc()),
-        BlocProvider(create: (_) => JourneySessionBloc()),
+        BlocProvider(
+          create: (_) => JourneySessionBloc(
+            channel: LiveActivityChannel(),
+            positions: LocationService.instance.navigationStream,
+          ),
+        ),
         BlocProvider(
           create: (_) =>
               FavoritesBloc(FavoritesRepository.instance, App.isInitialized),
