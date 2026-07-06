@@ -157,7 +157,19 @@ func processBusEtaCity(
 	var fillKeys []routeDirKey
 	fillUIDs := make(map[string]bool)
 	for _, b := range mp {
-		if etaEnt, ok2 := etamap[b.StopUID]; ok2 && etaEnt.StopStatus == 1 && etaEnt.NextBusTime == "" {
+		etaEnt, ok2 := etamap[b.StopUID]
+		if !ok2 {
+			continue
+		}
+		if etaEnt.StopStatus == 1 && etaEnt.NextBusTime == "" {
+			uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
+			fillKeys = append(fillKeys, routeDirKey{uid, int32(dir)})
+			fillUIDs[uid] = true
+		}
+		// Delay propagation needs the baseline (schedule + travel avg) at upstream
+		// stops where a live bus is en route, so include those routes' departures
+		// and travel averages in the batched lookups too.
+		if etaEnt.StopStatus == 0 {
 			uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
 			fillKeys = append(fillKeys, routeDirKey{uid, int32(dir)})
 			fillUIDs[uid] = true
@@ -177,6 +189,62 @@ func processBusEtaCity(
 			maxAvgMap[rk] = v
 		}
 	}
+	// baselineFor returns the schedule+travel-average arrival for a stop, shared by
+	// the delay-propagation observation pass and the downstream fill.
+	baselineFor := func(b busStationmap, uid string, dir int32) time.Time {
+		rk := routeDirKey{uid, dir}
+		avgKey := travelAvgKey{uid, dir, b.StopUID, now.Hour(), int(now.Weekday())}
+		avgVal, hasAvg := travelAvgMap[avgKey]
+		return baselineArrival(
+			busStopCtx{
+				subRouteUID:  uid,
+				direction:    dir,
+				stopUID:      b.StopUID,
+				city:         city,
+				stopSequence: int(b.StopSequence),
+				totalStops:   totalStops[uid],
+			},
+			predictionInputs{
+				now:          now,
+				nextDep:      depMap[rk],
+				travelAvg:    avgVal,
+				hasTravelAvg: hasAvg,
+				maxTravelAvg: maxAvgMap[rk],
+			},
+		)
+	}
+	// Delay-propagation pass: for every stop with a live bus en route (StopStatus
+	// 0) and a usable estimate, record how far that vehicle runs behind (or ahead
+	// of) the schedule+travel-average baseline, keyed per route/direction. A
+	// downstream stop TDX left blank then inherits the closest upstream vehicle's
+	// decayed delay before falling through to the model.
+	upstreamByRoute := make(map[routeDirKey][]upstreamObs)
+	for _, b := range mp {
+		eta, ok := etamap[b.StopUID]
+		if !ok || eta.StopStatus != 0 {
+			continue
+		}
+		uid, cdir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
+		dir := int32(cdir)
+		var est int32
+		if srcT, parseErr := time.Parse(time.RFC3339, eta.SrcUpdateTime); parseErr == nil {
+			est = eta.EstimatedTime - int32(now.Sub(srcT).Seconds())
+		} else {
+			est = eta.EstimatedTime
+		}
+		baseline := baselineFor(b, uid, dir)
+		if baseline.IsZero() {
+			continue
+		}
+		observedArrival := now.Add(time.Duration(est) * time.Second)
+		rk := routeDirKey{uid, dir}
+		upstreamByRoute[rk] = append(upstreamByRoute[rk], upstreamObs{
+			stopSequence: int(b.StopSequence),
+			delaySeconds: observedArrival.Sub(baseline).Seconds(),
+			observedAt:   now,
+		})
+	}
+	var predictionRows []predictionRecord
 	var historyRows [][]interface{}
 	for _, b := range mp {
 		eta, ok := etamap[b.StopUID]
@@ -250,25 +318,63 @@ func processBusEtaCity(
 		}
 		if status == 1 && eta.NextBusTime == "" {
 			rk := routeDirKey{uid, int32(dir)}
-			avgKey := travelAvgKey{uid, int32(dir), b.StopUID, now.Hour(), int(now.Weekday())}
-			avgVal, hasAvg := travelAvgMap[avgKey]
-			eta.NextBusTime = predictNextBusTime(rc,
-				busStopCtx{
-					subRouteUID:  uid,
-					direction:    int32(dir),
-					stopUID:      b.StopUID,
-					city:         city,
-					stopSequence: int(b.StopSequence),
-					totalStops:   totalStops[uid],
-				},
-				predictionInputs{
-					now:          now,
-					nextDep:      depMap[rk],
-					travelAvg:    avgVal,
-					hasTravelAvg: hasAvg,
-					maxTravelAvg: maxAvgMap[rk],
-				},
-			)
+			// Priority: delay propagation (a fresh upstream vehicle's decayed delay
+			// on the schedule+travel-average baseline) sits above the XGBoost model.
+			// It applies only when the same route has a live bus upstream of this
+			// stop; otherwise fall through to predictNextBusTime.
+			var predictedArrival time.Time
+			var predSource string
+			if propArrival, propOK := propagateDelay(
+				baselineFor(b, uid, int32(dir)), int(b.StopSequence), upstreamByRoute[rk], now,
+			); propOK {
+				predictedArrival = propArrival
+				predSource = sourcePropagation
+				eta.NextBusTime = propArrival.Format(time.RFC3339)
+			} else {
+				avgKey := travelAvgKey{uid, int32(dir), b.StopUID, now.Hour(), int(now.Weekday())}
+				avgVal, hasAvg := travelAvgMap[avgKey]
+				eta.NextBusTime = predictNextBusTime(rc,
+					busStopCtx{
+						subRouteUID:  uid,
+						direction:    int32(dir),
+						stopUID:      b.StopUID,
+						city:         city,
+						stopSequence: int(b.StopSequence),
+						totalStops:   totalStops[uid],
+					},
+					predictionInputs{
+						now:          now,
+						nextDep:      depMap[rk],
+						travelAvg:    avgVal,
+						hasTravelAvg: hasAvg,
+						maxTravelAvg: maxAvgMap[rk],
+					},
+				)
+				if eta.NextBusTime != "" {
+					if t, err := time.Parse(time.RFC3339, eta.NextBusTime); err == nil {
+						predictedArrival = t
+						// The model tier interpolates from travel averages when a
+						// per-stop average is missing; label by whether that average
+						// existed so accuracy can be compared model vs travel_avg.
+						if hasAvg {
+							predSource = sourceModel
+						} else {
+							predSource = sourceTravelAvg
+						}
+					}
+				}
+			}
+			// Record the prediction (actual pending) for daily MAE measurement.
+			if predSource != "" && !predictedArrival.IsZero() {
+				predictionRows = append(predictionRows, predictionRecord{
+					subRouteUID:   uid,
+					direction:     int16(dir),
+					stopUID:       b.StopUID,
+					source:        predSource,
+					predictedAt:   now,
+					predictedSecs: int(predictedArrival.Sub(now).Round(time.Second).Seconds()),
+				})
+			}
 		}
 		groupUID := b.GroupUID
 		if groupUID == "" {
@@ -340,6 +446,7 @@ func processBusEtaCity(
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=redis_success station_count=%d route_count=%d eat_count=%d posit_count=%d", city, len(stations), len(routes), len(eat), len(posit))
 	}
 	saveBusEtaHistory(ctx, db, historyRows)
+	recordPredictionErrors(ctx, db, predictionRows)
 }
 
 // shouldDispatchBusArrival reports whether a live ETA warrants an arrival

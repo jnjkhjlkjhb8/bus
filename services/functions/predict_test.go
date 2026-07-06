@@ -67,6 +67,46 @@ func TestPredictNextBusTime_NoTravelAverageReturnsDeparture(t *testing.T) {
 	}
 }
 
+func TestBaselineArrival(t *testing.T) {
+	now := time.Date(2026, 7, 6, 8, 0, 0, 0, taipei)
+	dep := time.Date(2026, 1, 1, 8, 5, 0, 0, taipei)
+
+	t.Run("no departure yields zero time", func(t *testing.T) {
+		if got := baselineArrival(busStopCtx{}, predictionInputs{now: now}); !got.IsZero() {
+			t.Fatalf("want zero time, got %v", got)
+		}
+	})
+
+	t.Run("departure plus travel average", func(t *testing.T) {
+		got := baselineArrival(busStopCtx{}, predictionInputs{
+			now: now, nextDep: dep, travelAvg: 120, hasTravelAvg: true,
+		})
+		want := time.Date(2026, 7, 6, 8, 7, 0, 0, taipei)
+		if !got.Equal(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("no travel average and no max yields bare departure", func(t *testing.T) {
+		got := baselineArrival(busStopCtx{}, predictionInputs{now: now, nextDep: dep})
+		want := time.Date(2026, 7, 6, 8, 5, 0, 0, taipei)
+		if !got.Equal(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("interpolates from route max by sequence ratio", func(t *testing.T) {
+		got := baselineArrival(
+			busStopCtx{stopSequence: 5, totalStops: 10},
+			predictionInputs{now: now, nextDep: dep, maxTravelAvg: 600},
+		)
+		want := time.Date(2026, 7, 6, 8, 10, 0, 0, taipei)
+		if !got.Equal(want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+}
+
 func TestBoolToFloat64(t *testing.T) {
 	if got := boolToFloat64(true); got != 1 {
 		t.Fatalf("true = %v, want 1", got)

@@ -182,6 +182,34 @@ type predictionInputs struct {
 // is unavailable it falls back to the bare departure time. Returns "" when the
 // model is not loaded or there is no upcoming scheduled departure. Result is an
 // RFC3339 timestamp.
+// baselineArrival computes the schedule+travel-average arrival for a stop, with
+// no model correction: today's scheduled departure plus expected travel seconds.
+// When no per-stop travel average exists it interpolates from the route's max
+// average by stop-sequence ratio; if even that is unavailable (maxTravelAvg == 0)
+// it returns the bare departure. It returns the zero time when there is no
+// upcoming scheduled departure. This is the delay-propagation baseline and the
+// pre-correction basis inside predictNextBusTime.
+func baselineArrival(stop busStopCtx, inputs predictionInputs) time.Time {
+	if inputs.nextDep.IsZero() {
+		return time.Time{}
+	}
+	t := inputs.now.In(taipei)
+	dep := time.Date(t.Year(), t.Month(), t.Day(),
+		inputs.nextDep.Hour(), inputs.nextDep.Minute(), inputs.nextDep.Second(), 0, taipei)
+	travelSec := inputs.travelAvg
+	if !inputs.hasTravelAvg {
+		if inputs.maxTravelAvg == 0 {
+			return dep
+		}
+		ratio := 0.0
+		if stop.totalStops > 0 {
+			ratio = float64(stop.stopSequence) / float64(stop.totalStops)
+		}
+		travelSec = int(ratio * float64(inputs.maxTravelAvg))
+	}
+	return dep.Add(time.Duration(travelSec) * time.Second)
+}
+
 func predictNextBusTime(rc *redis.Client, stop busStopCtx, inputs predictionInputs) string {
 	if etaModel == nil || inputs.nextDep.IsZero() {
 		return ""

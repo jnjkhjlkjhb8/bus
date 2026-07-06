@@ -182,6 +182,9 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 	_, _ = r.AddFunc("0 0 4 * * *", func() {
 		runDaily("computeTravelAvg", 15*time.Minute, func(ctx context.Context) error { return computeTravelAvg(ctx, db) })
 	})
+	_, _ = r.AddFunc("0 15 4 * * *", func() {
+		runDaily("measurePredictionError", 10*time.Minute, func(ctx context.Context) error { return measurePredictionError(ctx, db) })
+	})
 	_, _ = r.AddFunc("0 30 4 * * *", func() {
 		runDaily("cleanupBusHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBusHistory(ctx, db) })
 		runDaily("cleanupBikeHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBikeHistory(ctx, db) })

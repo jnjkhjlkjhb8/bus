@@ -11,15 +11,22 @@ import (
 )
 
 // cleanupBusHistory deletes bus_eta_history rows older than 30 days (the
-// retention window). A failure is wrapped as transient so runDaily retries it.
+// retention window) and, piggybacking on the same job, the prediction-error rows
+// past the same window. A failure is wrapped as transient so runDaily retries.
 func cleanupBusHistory(ctx context.Context, db *pgxpool.Pool) error {
 	tag, err := db.Exec(ctx, `DELETE FROM bus_eta_history WHERE recorded_at < NOW() - INTERVAL '30 days'`)
 	if err != nil {
 		log.Infof("[ETA_HISTORY] cleanup error: %v", err)
 		return obs.Transient(fmt.Errorf("cleanup bus history: %w", err))
-	} else {
-		log.Infof("[ETA_HISTORY] cleanup deleted %d rows", tag.RowsAffected())
 	}
+	log.Infof("[ETA_HISTORY] cleanup deleted %d rows", tag.RowsAffected())
+
+	perrTag, err := db.Exec(ctx, `DELETE FROM bus_eta_prediction_error WHERE predicted_at < NOW() - INTERVAL '30 days'`)
+	if err != nil {
+		log.Infof("[ETA_ERROR] cleanup error: %v", err)
+		return obs.Transient(fmt.Errorf("cleanup prediction error: %w", err))
+	}
+	log.Infof("[ETA_ERROR] cleanup deleted %d rows", perrTag.RowsAffected())
 	return nil
 }
 
