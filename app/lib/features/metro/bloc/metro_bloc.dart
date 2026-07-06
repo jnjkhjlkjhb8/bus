@@ -8,14 +8,9 @@ import 'package:wheres_the_car/features/metro/bloc/metro_state.dart';
 
 class MetroBloc extends Bloc<MetroEvent, MetroState> {
   MetroBloc() : super(const MetroState()) {
-    on<MetroDisplayModeChanged>(_onModeChanged);
     on<MetroStationTapped>(_onStationTapped);
     on<MetroStationDismissed>(_onStationDismissed);
     on<MetroJourneyMatrixLoaded>(_onMatrixLoaded);
-  }
-
-  void _onModeChanged(MetroDisplayModeChanged event, Emitter<MetroState> emit) {
-    emit(state.copyWith(displayMode: event.mode));
   }
 
   Future<void> _onStationTapped(
@@ -60,7 +55,7 @@ class MetroBloc extends Bloc<MetroEvent, MetroState> {
   Future<Map<String, JourneyInfo>> _loadJourneyMatrix(String stationId) async {
     final db = PowerSyncService.instance.db;
     final rows = await db.getAll(
-      'SELECT to_station_id, travel_time_min, fare_nt '
+      'SELECT to_station_id, fare_nt '
       'FROM mrt_journey_matrix WHERE from_station_id = ?',
       [stationId],
     );

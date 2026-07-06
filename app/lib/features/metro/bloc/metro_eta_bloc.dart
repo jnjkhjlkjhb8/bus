@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/grpc/live_data.dart';
 import 'package:wheres_the_car/core/powersync/powersync_service.dart';
 import 'package:wheres_the_car/data/models/eta_format.dart';
@@ -29,7 +30,8 @@ class MetroEtaBloc extends Bloc<MetroEtaEvent, MetroEtaState> {
               line: live.line,
               destination: live.destination,
               estimateMinutes: etaCeilMinutes(live.estimateSeconds),
-              approaching: live.estimateSeconds <= 30,
+              approaching: live.estimateSeconds <=
+                  AppConfig.getInt('eta_approaching_threshold_s'),
             ),
           ),
         ),

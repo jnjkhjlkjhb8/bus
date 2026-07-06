@@ -12,6 +12,7 @@ import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/location/location_service.dart';
 import 'package:wheres_the_car/data/models/near_models.dart';
@@ -111,7 +112,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   Future<int> _visibleRadiusMeters() async {
     final controller = _mapController;
-    if (controller == null) return _kFallbackRadiusMeters;
+    if (controller == null) return _fallbackRadiusMeters;
     final bounds = await controller.getVisibleRegion();
     final northEast = bounds.northeast;
     final southWest = bounds.southwest;

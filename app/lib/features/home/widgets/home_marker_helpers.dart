@@ -4,7 +4,12 @@ const _kLargeDotZoomThreshold = 13.0;
 const _kSmallDotSize = 7.0;
 const _kLargeDotSize = 10.0;
 const _kMapMarkerLimit = 60;
-const _kFallbackRadiusMeters = 900;
+
+/// Radius used when the map controller isn't ready yet and we can't measure the
+/// visible viewport. Remote-tunable so ops can widen/narrow the cold-start
+/// nearby query without a release.
+int get _fallbackRadiusMeters =>
+    AppConfig.getInt('nearby_fallback_radius_m');
 
 enum _MarkerStyle { largeDot, smallDot }
 

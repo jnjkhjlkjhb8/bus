@@ -45,7 +45,6 @@ bucket_definitions:
             from_station_id,
             to_station_id,
             system,
-            travel_time_min,
             fare_nt
           FROM mrt_journey_matrix
       - SELECT

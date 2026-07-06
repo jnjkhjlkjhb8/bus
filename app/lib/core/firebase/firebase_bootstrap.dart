@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/firebase/firebase_notifications.dart';
 import 'package:wheres_the_car/core/firebase/firebase_telemetry.dart';
+import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
 import 'package:wheres_the_car/firebase_options.dart';
@@ -122,13 +123,7 @@ class FirebaseBootstrap {
             minimumFetchInterval: const Duration(hours: 1),
           ),
         );
-        await remoteConfig.setDefaults(const {
-          'maintenance_banner_enabled': false,
-          'maintenance_banner_text': '',
-          'push_enabled': true,
-          'min_supported_version': '1.0.0',
-          'arrival_lead_minutes': '1,3,5',
-        });
+        await remoteConfig.setDefaults(AppConfig.defaults);
         await remoteConfig.fetchAndActivate();
       },
       () async => updatePushPreference(requested: HiveStore.pushEnabled),
@@ -143,7 +138,8 @@ class FirebaseBootstrap {
     if (!FirebaseGate.enabled) return requested;
 
     var enabled = false;
-    if (requested) {
+    // Remote kill switch: ops can disable push app-wide without a release.
+    if (requested && AppConfig.getBool('push_enabled')) {
       try {
         final permission = await FirebaseMessaging.instance.requestPermission();
         enabled =

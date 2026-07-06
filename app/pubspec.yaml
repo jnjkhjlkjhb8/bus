@@ -71,6 +71,7 @@ dependencies:
   powersync: ^2.2.0
   pretty_dio_logger: ^1.4.0
   protobuf: ^6.0.0
+  package_info_plus: ^10.2.0
   smooth_sheets: ^1.0.2
   sqlite3: ^3.3.2
   sqlite3_flutter_libs: ^0.6.0+eol

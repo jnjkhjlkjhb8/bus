@@ -56,7 +56,7 @@ func registerIngestorCrons(r *cron.Cron, c *resty.Client, rc *redis.Client) {
 }
 
 // ingestRaw lands every configured TDX static endpoint into raw_tdx: all bus
-// APIs across all cities (run concurrently, capped at 4 in flight), then bike,
+// APIs across all cities (run concurrently, capped at 3 in flight), then bike,
 // metro, and rail endpoints sequentially. Rail daily timetables are fetched for
 // today's date. Each fetch's raw_tdx write happens inside callApi; per-endpoint
 // failures are logged and do not abort the run.
@@ -125,7 +125,7 @@ func ingestRaw(ctx context.Context, c *resty.Client, rc *redis.Client) {
 		d := today.AddDate(0, 0, i).Format(time.DateOnly)
 		add("/v2/Rail/THSR/DailyTimetable/TrainDate/"+d, "thsr_daily_"+d)
 	}
-	sem := make(chan struct{}, 6)
+	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
 	for _, j := range jobs {
 		wg.Add(1)

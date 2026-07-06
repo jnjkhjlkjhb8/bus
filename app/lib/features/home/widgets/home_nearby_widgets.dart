@@ -123,7 +123,7 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
                 return ErrorStateView(
                   error: state.error!,
                   onRetry: () => context.read<NearbyBloc>().add(
-                    const NearbyRequested(radius: _kFallbackRadiusMeters),
+                    NearbyRequested(radius: _fallbackRadiusMeters),
                   ),
                 );
               }

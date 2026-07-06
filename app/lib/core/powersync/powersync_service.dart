@@ -40,7 +40,6 @@ const _schema = Schema([
     Column.text('from_station_id'),
     Column.text('to_station_id'),
     Column.text('system'),
-    Column.integer('travel_time_min'),
     Column.integer('fare_nt'),
   ]),
   Table('mrt_schedule', [

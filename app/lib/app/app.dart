@@ -4,6 +4,7 @@ import 'package:hive_ce_flutter/adapters.dart';
 import 'package:wheres_the_car/app/router/app_router.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'package:wheres_the_car/core/update/force_update.dart';
 import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
@@ -68,7 +69,7 @@ class _AppViewState extends State<_AppView> {
             routerConfig: AppRouter.router,
             debugShowCheckedModeBanner: false,
             builder: (context, child) =>
-                NotificationToastHost(child: child!),
+                ForceUpdateGate(child: NotificationToastHost(child: child!)),
           );
         }
 
@@ -96,7 +97,9 @@ class _AppViewState extends State<_AppView> {
                   child: base,
                 );
               }
-              return NotificationToastHost(child: base);
+              return ForceUpdateGate(
+                child: NotificationToastHost(child: base),
+              );
             },
           ),
         );

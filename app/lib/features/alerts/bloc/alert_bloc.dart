@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 
+import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/grpc/live_data.dart';
 import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/models/alert_models.dart';
@@ -10,6 +11,29 @@ import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
 
 const _kReadKey = 'read_alerts';
+
+/// Parses the `alert_sources` remote-config value: comma-separated tagged
+/// tokens `metro:<system>` and `bus:<city>`. Malformed or unknown-kind tokens
+/// are dropped so a bad remote value can't break alert startup. TRA/THSR are
+/// nationwide rail and stay wired directly, not listed here.
+({List<String> metro, List<String> bus}) parseAlertSources(String csv) {
+  final metro = <String>[];
+  final bus = <String>[];
+  for (final raw in csv.split(',')) {
+    final token = raw.trim();
+    final sep = token.indexOf(':');
+    if (sep <= 0) continue;
+    final value = token.substring(sep + 1).trim();
+    if (value.isEmpty) continue;
+    switch (token.substring(0, sep)) {
+      case 'metro':
+        metro.add(value);
+      case 'bus':
+        bus.add(value);
+    }
+  }
+  return (metro: metro, bus: bus);
+}
 
 class AlertBloc extends Bloc<AlertEvent, AlertState> {
   AlertBloc() : super(AlertState(readMessages: _loadRead())) {
@@ -58,8 +82,13 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
 
     listen(AlertRepository.instance.traAlert);
     listen(AlertRepository.instance.thsrAlert);
-    listen(() => AlertRepository.instance.metroAlert('TRTC'));
-    listen(() => AlertRepository.instance.busNews('Taipei'));
+    final sources = parseAlertSources(AppConfig.getString('alert_sources'));
+    for (final system in sources.metro) {
+      listen(() => AlertRepository.instance.metroAlert(system));
+    }
+    for (final city in sources.bus) {
+      listen(() => AlertRepository.instance.busNews(city));
+    }
   }
 
   void _onReceived(AlertReceived event, Emitter<AlertState> emit) {

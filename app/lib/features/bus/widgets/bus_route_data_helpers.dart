@@ -18,7 +18,8 @@ String? _etaLabel(BusStopEtaViewModel? eta) {
 
 bool _approaching(BusStopEtaViewModel? eta) {
   if (eta == null) return false;
-  return eta.estimateSeconds > 0 && eta.estimateSeconds <= 30;
+  return eta.estimateSeconds > 0 &&
+      eta.estimateSeconds <= AppConfig.getInt('eta_approaching_threshold_s');
 }
 
 String _markerEta(BusStopEtaViewModel? eta) {
