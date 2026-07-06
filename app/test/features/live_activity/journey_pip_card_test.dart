@@ -45,4 +45,28 @@ void main() {
     // widget test's FakeAsync zone; run it on the real event loop.
     await tester.runAsync(bloc.close);
   });
+
+  testWidgets('done journey renders nothing (no stale riding card)', (
+    tester,
+  ) async {
+    final bloc = JourneySessionBloc(etaStream: (_) => const Stream.empty())
+      ..add(JourneyStarted(legs: [buildTestLeg('307 往板橋')]))
+      ..add(const JourneyCancelled());
+    await tester.pump();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BlocProvider.value(value: bloc, child: const JourneyPipCard()),
+      ),
+    );
+    await tester.pump();
+    expect(find.textContaining('307 往板橋'), findsNothing);
+    expect(
+      find.descendant(
+        of: find.byType(JourneyPipCard),
+        matching: find.byType(ColoredBox),
+      ),
+      findsNothing,
+    );
+    await tester.runAsync(bloc.close);
+  });
 }

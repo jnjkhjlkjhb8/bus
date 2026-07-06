@@ -11,7 +11,11 @@ class JourneyPipCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = context.watch<JourneySessionBloc>().state;
     final leg = s.currentLeg;
-    if (leg == null) return const SizedBox.shrink();
+    // done keeps legs populated, so currentLeg alone can't detect a finished
+    // journey — without the phase guard the card would show stale riding data.
+    if (leg == null || s.phase == JourneyPhase.done) {
+      return const SizedBox.shrink();
+    }
     final waiting = s.phase == JourneyPhase.waiting;
     final names = [...leg.stopNames, leg.alightStop];
     final nextName = !waiting && s.nextStopIndex < names.length
