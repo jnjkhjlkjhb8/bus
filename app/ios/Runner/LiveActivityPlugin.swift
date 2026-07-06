@@ -63,7 +63,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
               let activity = Activity<BusLiveActivityAttributes>.activities.first(where: { $0.id == id })
         else { result(nil); return }
         Task {
-            await activity.end(nil, dismissalPolicy: .immediate)
+            await activity.end(using: nil, dismissalPolicy: .immediate)
             activityID = nil
             result(nil)
         }
