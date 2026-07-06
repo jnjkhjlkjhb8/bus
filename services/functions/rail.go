@@ -352,7 +352,8 @@ func fetchThsrTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Cli
 }
 
 // loadThsrTimetable upserts one day's THSR daily timetable stop rows into
-// thsr_timetable via a temp-table COPY. It consumes an already-opened decoder;
+// thsr_timetable via a temp-table COPY. Stop times parse as "15:04"; unparseable
+// times become the zero time. It consumes an already-opened decoder;
 // the temp_thsr_timetable COPY and ON CONFLICT (train_date,trainno,stationid)
 // upsert are byte-identical to the legacy transform.
 func loadThsrTimetable(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, date string) error {
@@ -365,6 +366,10 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool,
 		var temp raw_thsr_timetable
 		if err := dec.Decode(&temp); err == nil {
 			for _, stop := range temp.StopTimes {
+				// Parse "15:04" strings like the TRA path: pgx cannot binary-encode
+				// a raw string into a time column during COPY.
+				at, _ := time.Parse("15:04", stop.ArrivalTime)
+				dt, _ := time.Parse("15:04", stop.DepartureTime)
 				row = append(row, []interface{}{
 					temp.TrainDate,
 					temp.DailyTrainInfo.TrainNo,
@@ -376,8 +381,8 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool,
 					stop.StopSequence,
 					stop.StationID,
 					stop.StationName.ZhTw,
-					stop.ArrivalTime,
-					stop.DepartureTime,
+					at,
+					dt,
 					temp.DailyTrainInfo.Note.ZhTw,
 					temp.DailyTrainInfo.Overnight,
 				})

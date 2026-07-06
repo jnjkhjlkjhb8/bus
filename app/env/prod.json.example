@@ -1,0 +1,9 @@
+{
+  "API_BASE_URL": "https://example.com",
+  "POWERSYNC_URL": "https://example.com/powersync",
+  "GRPC_HOST": "example.com",
+  "GRPC_PORT": 50051,
+  "GRPC_TLS": true,
+  "FIREBASE_ENABLED": true,
+  "APP_ENV": "production"
+}

@@ -10,6 +10,7 @@ import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/firebase/firebase_bootstrap.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/firebase/firebase_notifications.dart';
+import 'package:wheres_the_car/core/grpc/grpc_client.dart';
 import 'package:wheres_the_car/core/powersync/powersync_service.dart';
 import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
@@ -37,6 +38,7 @@ Future<void> _bootstrap() async {
   }
 
   _prewarmMapRenderer();
+  await GrpcClient.init();
   _initializeRemoteServices();
   unawaited(
     FavoritesRepository.instance.migrateLegacy().catchError(

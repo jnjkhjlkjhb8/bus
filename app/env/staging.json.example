@@ -1,0 +1,9 @@
+{
+  "API_BASE_URL": "https://staging.example.com",
+  "POWERSYNC_URL": "https://staging.example.com/powersync",
+  "GRPC_HOST": "staging.example.com",
+  "GRPC_PORT": 50051,
+  "GRPC_TLS": true,
+  "FIREBASE_ENABLED": false,
+  "APP_ENV": "staging"
+}
