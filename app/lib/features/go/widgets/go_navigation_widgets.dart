@@ -281,6 +281,12 @@ class _NavSheet extends StatelessWidget {
 /// active-navigation sheet. Waiting → 我上車了 (+ static 車來了 banner when the
 /// bus is due); riding → 我下車了 with a remaining-stops caption. Rendered as a
 /// standalone widget (not a private helper) so it can be pumped in isolation.
+///
+/// Two state machines advance independently by design: PlanBloc's step list
+/// (完成此段 → activeLegIndex over all sections) and JourneySessionBloc
+/// (我上車了/我下車了 over transit legs). They reconcile only at journey end
+/// (done-listener / last-leg advance); mid-journey drift between them is
+/// expected, not a bug.
 class JourneyControls extends StatelessWidget {
   const JourneyControls({super.key});
 

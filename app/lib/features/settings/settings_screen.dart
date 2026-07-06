@@ -377,7 +377,9 @@ class _SettingsSwitchRow extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: 12),
+              // Subtitle-less rows keep the base layout (switch flush to the
+              // label column); only the taller subtitle rows get the gap.
+              if (subtitle != null) const SizedBox(width: 12),
               sw,
             ],
           ),

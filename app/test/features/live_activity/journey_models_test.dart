@@ -20,7 +20,7 @@ PlanSection _section({
     departure: PlanPlace(
       name: depName,
       type: 'station',
-      location: const PlanPoint(lat: 25.0, lng: 121.5),
+      location: const PlanPoint(lat: 25, lng: 121.5),
       time: depTime,
     ),
     arrival: PlanPlace(

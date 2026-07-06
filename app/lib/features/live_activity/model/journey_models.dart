@@ -84,6 +84,10 @@ class JourneyLeg extends Equatable {
 
   /// Intermediate stop locations plus the arrival location, in travel order —
   /// used for riding-mode progress by nearest-upcoming-stop.
+  ///
+  /// `stopNames + alightStop` and `stopLocations` are index-aligned (both
+  /// intermediateStops+arrival in travel order); three renderers (Swift LA,
+  /// PiP card, in-app caption) index both with nextStopIndex.
   final List<PlanPoint> stopLocations;
 
   @override

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
@@ -37,7 +38,12 @@ class _AppState extends State<App> {
         BlocProvider(create: (_) => PlanBloc()),
         BlocProvider(
           create: (_) => JourneySessionBloc(
-            channel: LiveActivityChannel(),
+            // Android renders via PiP only (spec 決策 3); the Kotlin
+            // notification plugin stays dormant, so we hand the channel to
+            // iOS alone where it drives the Live Activity / Dynamic Island.
+            channel: defaultTargetPlatform == TargetPlatform.iOS
+                ? LiveActivityChannel()
+                : null,
             // Read the toggle at board time so it takes effect immediately;
             // when off, the riding phase runs fully manual (empty stream).
             positions: () => HiveStore.navigationLocationEnabled
