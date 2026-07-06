@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
@@ -31,6 +32,23 @@ class MapMarkers {
       });
       info.picture.dispose();
       return _toBitmap(image);
+    });
+  }
+
+  static Future<BitmapDescriptor> pngAsset(
+    String asset, {
+    double size = 48,
+  }) {
+    return _memo('png:$asset:$size', () async {
+      final data = await rootBundle.load(asset);
+      final px = (size * _dpr).round();
+      final codec = await ui.instantiateImageCodec(
+        data.buffer.asUint8List(),
+        targetWidth: px,
+        targetHeight: px,
+      );
+      final frame = await codec.getNextFrame();
+      return _toBitmap(frame.image);
     });
   }
 

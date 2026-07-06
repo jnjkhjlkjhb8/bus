@@ -304,7 +304,7 @@ func loadBusOperatorMap(ctx context.Context, src loadSource, db *pgxpool.Pool, c
 		return busOperatorsFromDB(ctx, db, city)
 	}
 	if isStale(fetchedAt) {
-		log.Infof("[LOAD] action=bus_operators event=stale city=%s fetched_at=%s error=%v", city, fetchedAt.Format(time.RFC3339), errLoadStale)
+		log.Infof("[LOAD] action=bus_operators event=stale city=%s fetched_at=%s reason=%v", city, fetchedAt.Format(time.RFC3339), errLoadStale)
 	}
 	var ops []rawBusOperator
 	if err := json.Unmarshal(body, &ops); err != nil {
@@ -335,7 +335,7 @@ func loadBusFareMaps(ctx context.Context, src loadSource, city string) (map[stri
 		return nil, nil
 	}
 	if isStale(fetchedAt) {
-		log.Infof("[LOAD] action=bus_fares event=stale city=%s fetched_at=%s error=%v", city, fetchedAt.Format(time.RFC3339), errLoadStale)
+		log.Infof("[LOAD] action=bus_fares event=stale city=%s fetched_at=%s reason=%v", city, fetchedAt.Format(time.RFC3339), errLoadStale)
 	}
 	bySub, byRoute, loadErr := loadBusFares(json.NewDecoder(bytes.NewReader(body)), city)
 	if loadErr != nil {

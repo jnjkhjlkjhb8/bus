@@ -82,13 +82,17 @@ class FirebaseBootstrap {
     }
   }
 
-  static Future<void> init() async {
-    if (!FirebaseGate.enabled) return;
+  static Future<void> ensureCoreInitialized() async {
+    if (!FirebaseGate.enabled || Firebase.apps.isNotEmpty) return;
     FirebaseGate.ensureSecureTransport();
-
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+  }
+
+  static Future<void> init() async {
+    if (!FirebaseGate.enabled) return;
+    await ensureCoreInitialized();
     await runOptionalSteps([
       () => FirebaseAppCheck.instance.activate(
         providerApple: const AppleAppAttestProvider(),

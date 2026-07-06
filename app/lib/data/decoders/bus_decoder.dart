@@ -19,6 +19,16 @@ class BusDecoder {
         nextBusTime: s.nextBusTime,
         stopStatus: s.stopStatus,
         vehiclePlates: s.buses.map((b) => b.plateNumb).toList(),
+        vehicles: [
+          for (final b in s.buses)
+            if (b.positionLat != 0 || b.positionLon != 0)
+              BusVehiclePosition(
+                plate: b.plateNumb,
+                lat: b.positionLat,
+                lon: b.positionLon,
+                azimuth: b.azimuth,
+              ),
+        ],
       );
     }).toList();
   }

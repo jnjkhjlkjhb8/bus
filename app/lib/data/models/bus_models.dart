@@ -3,6 +3,22 @@ import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 import 'package:wheres_the_car/data/models/eta_format.dart';
 
 enum BusArrivalStatus { arriving, approaching, minutes, unknown }
+class BusVehiclePosition extends Equatable {
+  const BusVehiclePosition({
+    required this.plate,
+    required this.lat,
+    required this.lon,
+    required this.azimuth,
+  });
+
+  final String plate;
+  final double lat;
+  final double lon;
+  final int azimuth;
+
+  @override
+  List<Object?> get props => [plate, lat, lon, azimuth];
+}
 
 class BusStopEtaViewModel extends Equatable {
   const BusStopEtaViewModel({
@@ -13,6 +29,7 @@ class BusStopEtaViewModel extends Equatable {
     required this.nextBusTime,
     required this.stopStatus,
     required this.vehiclePlates,
+    this.vehicles = const [],
   });
 
   final String stopUid;
@@ -22,6 +39,7 @@ class BusStopEtaViewModel extends Equatable {
   final String nextBusTime;
   final int stopStatus;
   final List<String> vehiclePlates;
+  final List<BusVehiclePosition> vehicles;
 
   int get estimateMinutes => etaCeilMinutes(estimateSeconds);
 
@@ -51,6 +69,7 @@ class BusStopEtaViewModel extends Equatable {
     nextBusTime,
     stopStatus,
     vehiclePlates,
+    vehicles,
   ];
 }
 

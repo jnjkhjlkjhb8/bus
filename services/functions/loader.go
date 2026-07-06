@@ -97,7 +97,7 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 				continue
 			}
 			if isStale(fetchedAt) {
-				log.Infof("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s error=%v", spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale)
+				log.Infof("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s reason=%v", spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale)
 				continue
 			}
 			dec := json.NewDecoder(bytes.NewReader(body))

@@ -38,6 +38,11 @@ Future<void> _bootstrap() async {
   }
 
   _prewarmMapRenderer();
+  try {
+    await FirebaseBootstrap.ensureCoreInitialized();
+  } on Object catch (e, s) {
+    CrashReporter.record(e, s);
+  }
   await GrpcClient.init();
   _initializeRemoteServices();
   unawaited(

@@ -106,6 +106,7 @@ flutter:
   assets:
     - assets/grpc.crt
     - assets/marker/
+    - assets/sprites/
     - assets/rails/
     - assets/mrt/
     - assets/mrt/TRTC/

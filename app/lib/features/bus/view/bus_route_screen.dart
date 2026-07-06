@@ -19,6 +19,7 @@ import 'package:wheres_the_car/data/models/timeline_stop.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
+import 'package:wheres_the_car/shared/map/bus_sprite.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/map/wkt.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
@@ -83,9 +84,13 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     final stops = s.direction == 0 ? route.stopsGo : route.stopsReturn;
     if (stops.isEmpty) return;
 
+    final vehicles = _vehiclePositionsFor(s);
     final sig =
         '${route.subRouteUid}:${s.direction}:${stops.length}:'
-        '${stops.map((st) => _markerEta(_etaFor(s, st))).join(',')}';
+        '${stops.map((st) => _markerEta(_etaFor(s, st))).join(',')}:'
+        '${vehicles.map(
+          (v) => '${v.plate}@${v.lat},${v.lon},${v.azimuth}',
+        ).join(';')}';
     if (sig == _mapSig) return;
     _mapSig = sig;
 
@@ -130,6 +135,22 @@ class _BusRouteScreenState extends State<BusRouteScreen>
           icon: icon,
           anchor: const Offset(0.5, 0.5),
           infoWindow: InfoWindow(title: st.stopName),
+        ),
+      );
+    }
+
+    for (final v in vehicles) {
+      final icon = await MapMarkers.pngAsset(
+        busSpriteAsset(v.azimuth.toDouble()),
+      );
+      markers.add(
+        Marker(
+          markerId: MarkerId('bus:${v.plate}'),
+          position: LatLng(v.lat, v.lon),
+          icon: icon,
+          anchor: const Offset(0.5, 0.5),
+          zIndexInt: 1,
+          infoWindow: InfoWindow(title: v.plate),
         ),
       );
     }
