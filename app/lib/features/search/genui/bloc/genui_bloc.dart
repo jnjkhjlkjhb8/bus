@@ -126,7 +126,6 @@ class GenUiBloc extends Bloc<GenUiEvent, GenUiState> {
     ));
   }
 
-  // ponytail: 字串比對辨識離線;firebase_ai 例外型別不穩定,誤判只影響文案。
   static bool _isOffline(Object e) =>
       e is SocketException || e.toString().contains('SocketException');
 }

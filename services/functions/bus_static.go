@@ -177,7 +177,7 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 					m := mask2(t.ServiceDay.Monday, t.ServiceDay.Tuesday, t.ServiceDay.Wednesday, t.ServiceDay.Thursday, t.ServiceDay.Friday, t.ServiceDay.Saturday, t.ServiceDay.Sunday)
 					for _, temp := range t.StopTimes {
 						d.Schedules = append(d.Schedules, &models.Bus_Schedule{
-							Type:                        true,
+							IsTimetable:                 true,
 							Tripid:                      t.TripID,
 							Islowfloor:                  t.IsLowFloor,
 							MinHeadwayMinsArrivalTime:   temp.ArrivalTime,
@@ -189,7 +189,7 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 				for _, t := range r.Frequencys {
 					m := mask2(t.ServiceDay.Monday, t.ServiceDay.Tuesday, t.ServiceDay.Wednesday, t.ServiceDay.Thursday, t.ServiceDay.Friday, t.ServiceDay.Saturday, t.ServiceDay.Sunday)
 					d.Schedules = append(d.Schedules, &models.Bus_Schedule{
-						Type:                        false,
+						IsTimetable:                 false,
 						Start_Time:                  t.StartTime,
 						End_Time:                    t.EndTime,
 						MinHeadwayMinsArrivalTime:   strconv.Itoa(int(t.MinHeadwayMins)),
@@ -206,9 +206,9 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 	fareBySub, fareByRoute := loadBusFareMaps(ctx, src, city)
 	for uid, sub := range subRoutemap {
 		if f, ok := fareBySub[uid]; ok {
-			sub.Fare = cloneBusFare(f, uid)
+			sub.Fare = cloneBusFare(f)
 		} else if f, ok := fareByRoute[sub.RouteUID]; ok {
-			sub.Fare = cloneBusFare(f, uid)
+			sub.Fare = cloneBusFare(f)
 		}
 	}
 	changetodbformat(ctx, db, &subRoutemap)

@@ -177,7 +177,6 @@ func processBusEtaCity(
 	dec, comp, err, flipopen = callApi(client, rc, url, "bus_RealTimeByFrequency"+city)
 	if err != nil || !comp {
 		if err == nil {
-			// ponytail: a position-only 304 also drops this cycle's fresh ETA
 			// decode; TTL re-arm keeps the previous snapshot alive, merge the
 			// fresh ETAs here if that staleness ever matters.
 			refreshBusEtaTTLs(rc, city)
@@ -218,9 +217,6 @@ func processBusEtaCity(
 			PositionLat: b.BusPosition.PositionLat,
 			Speed:       int32(b.Speed),
 			Azimuth:     int32(b.Azimuth),
-			DutyStatus:  int32(b.DutyStatus),
-			BusStatus:   int32(b.BusStatus),
-			GpsTime:     b.GPSTime,
 		}
 		busmap[uid] = append(busmap[uid], pb)
 	}

@@ -50,8 +50,13 @@ class BusStopEtaViewModel extends Equatable {
   /// so a just-passed arrival instant with stopStatus 0 still reads 進站中.
   BusStopEtaViewModel decayed(DateTime now) {
     if (arrivalUnix <= 0) return this;
-    final seconds = arrivalUnix - now.millisecondsSinceEpoch ~/ 1000;
-    return copyWith(estimateSeconds: seconds > 0 ? seconds : 0);
+    return copyWith(
+      estimateSeconds: etaRemainingSeconds(
+        arrivalUnix: arrivalUnix,
+        serverEstimateSeconds: estimateSeconds,
+        now: now,
+      ),
+    );
   }
 
   BusStopEtaViewModel copyWith({int? estimateSeconds}) => BusStopEtaViewModel(
@@ -95,6 +100,83 @@ class BusStopEtaViewModel extends Equatable {
     arrivalUnix,
     vehicles,
   ];
+}
+
+enum BusArrivalState { arriving, scheduled, unknown }
+
+/// The one stop-arrival state mapping, shared by decode and local decay.
+BusArrivalState busArrivalStateFor(int stopStatus, int? minutes) =>
+    switch (stopStatus) {
+      0 when minutes != null => BusArrivalState.scheduled,
+      1 => BusArrivalState.arriving,
+      _ => BusArrivalState.unknown,
+    };
+
+/// A member stop of a station group, resolved to the fields the stop screen
+/// reads. A validated domain type: no proto leaks past the decoder.
+class BusStationMember {
+  const BusStationMember({
+    required this.stationUid,
+    required this.stationId,
+    required this.stationName,
+    required this.lat,
+    required this.lon,
+  });
+
+  final String stationUid;
+  final String stationId;
+  final String stationName;
+  final double lat;
+  final double lon;
+}
+
+/// One route's arrival at a stop. [minutes] and [state] are derived from
+/// [arrivalUnix] against wall-clock time; [decayed] re-derives them locally so
+/// the countdown stays accurate between server frames.
+class BusStopArrival {
+  const BusStopArrival({
+    required this.stationId,
+    required this.routeName,
+    required this.destination,
+    required this.state,
+    this.minutes,
+    this.stopStatus = 0,
+    this.arrivalUnix = 0,
+  });
+
+  final String stationId;
+  final String routeName;
+  final String destination;
+  final BusArrivalState state;
+  final int? minutes;
+
+  /// TDX StopStatus, kept so [decayed] can re-derive [state] locally.
+  final int stopStatus;
+
+  /// Absolute arrival instant (Unix seconds), or 0 when the server sent none.
+  final int arrivalUnix;
+
+  /// Re-derives [minutes] and [state] from [arrivalUnix] against [now] so the
+  /// countdown decays between server pushes. Leaves the arrival unchanged when
+  /// no absolute instant was sent.
+  BusStopArrival decayed(DateTime now) {
+    if (arrivalUnix <= 0) return this;
+    final seconds = etaRemainingSeconds(
+      arrivalUnix: arrivalUnix,
+      serverEstimateSeconds: 0,
+      now: now,
+    );
+    final mins = seconds > 0 ? etaCeilMinutes(seconds) : null;
+    return BusStopArrival(
+      stationId: stationId,
+      routeName: routeName,
+      destination: destination,
+      state: busArrivalStateFor(stopStatus, mins),
+      minutes: mins,
+      stopStatus: stopStatus,
+      arrivalUnix: arrivalUnix,
+    );
+  }
 }
 
 class BusStopModel extends Equatable {

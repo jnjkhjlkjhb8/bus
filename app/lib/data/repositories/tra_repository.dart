@@ -13,9 +13,7 @@ class TraRepository {
       GrpcClient.instance.traStation
           .live_board(ask_staiton(stationId: stationId, date: date))
           .map(
-            (resp) => TraDecoder.instance.decodeLiveBoard(
-              tra_LiveBoards.fromBuffer(resp.data),
-            ),
+            (resp) => TraDecoder.instance.decodeLiveBoard(resp.data),
           );
 
   Future<List<TraTimetableItem>> timetable(
@@ -56,7 +54,7 @@ class TraRepository {
       )
       .map(
         (resp) => Map<String, int>.from(
-          TraDecoder.instance.decodeDelayMap(tra_delays.fromBuffer(resp.data)),
+          TraDecoder.instance.decodeDelayMap(resp.data),
         ),
       );
 

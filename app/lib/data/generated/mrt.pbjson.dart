@@ -19,13 +19,13 @@ import 'dart:typed_data' as $typed_data;
 const Resp_Mrt_eta$json = {
   '1': 'Resp_Mrt_eta',
   '2': [
-    {'1': 'data', '3': 1, '4': 1, '5': 12, '10': 'data'},
+    {'1': 'data', '3': 1, '4': 1, '5': 11, '6': '.Mrt_live', '10': 'data'},
   ],
 };
 
 /// Descriptor for `Resp_Mrt_eta`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List resp_Mrt_etaDescriptor =
-    $convert.base64Decode('CgxSZXNwX01ydF9ldGESEgoEZGF0YRgBIAEoDFIEZGF0YQ==');
+final $typed_data.Uint8List resp_Mrt_etaDescriptor = $convert.base64Decode(
+    'CgxSZXNwX01ydF9ldGESHQoEZGF0YRgBIAEoCzIJLk1ydF9saXZlUgRkYXRh');
 
 @$core.Deprecated('Use ask_mrtDescriptor instead')
 const Ask_mrt$json = {

@@ -269,10 +269,18 @@ final $typed_data.Uint8List thsr_available_seatsDescriptor = $convert.base64Deco
 const Resp_thsr_seats$json = {
   '1': 'Resp_thsr_seats',
   '2': [
-    {'1': 'data', '3': 1, '4': 1, '5': 12, '10': 'data'},
+    {
+      '1': 'data',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.thsr_available_seats',
+      '10': 'data'
+    },
   ],
 };
 
 /// Descriptor for `Resp_thsr_seats`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List resp_thsr_seatsDescriptor = $convert
-    .base64Decode('Cg9SZXNwX3Roc3Jfc2VhdHMSEgoEZGF0YRgBIAEoDFIEZGF0YQ==');
+final $typed_data.Uint8List resp_thsr_seatsDescriptor = $convert.base64Decode(
+    'Cg9SZXNwX3Roc3Jfc2VhdHMSKQoEZGF0YRgBIAEoCzIVLnRoc3JfYXZhaWxhYmxlX3NlYXRzUg'
+    'RkYXRh');

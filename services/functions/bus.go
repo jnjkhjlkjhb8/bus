@@ -371,24 +371,24 @@ func loadBusDailyTimetable(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool
 		return err
 	}
 	pipe := rc.Pipeline()
-	mp := make(map[string]map[int32]*models.Temp, 300)
+	mp := make(map[string]map[int32]*models.Bus_DirectionTimetable, 300)
 	var temp rawBusDailytimetable
 	for dec.More() {
 		temp = rawBusDailytimetable{}
 		if err := dec.Decode(&temp); err == nil {
 			uid, dir := shared.CanonicalSubroute(city, temp.SubRouteUID, temp.Direction)
 			if _, exists := mp[uid]; !exists {
-				mp[uid] = make(map[int32]*models.Temp, 4)
+				mp[uid] = make(map[int32]*models.Bus_DirectionTimetable, 4)
 			}
 			if _, exists := mp[uid][int32(dir)]; !exists {
-				mp[uid][int32(dir)] = &models.Temp{
+				mp[uid][int32(dir)] = &models.Bus_DirectionTimetable{
 					DailyTimetables: make([]*models.Bus_DailyTimetable, 0, 64),
 				}
 			}
 			for _, t := range temp.Timetables {
-				stop := make([]*models.Temp_StopTimes, len(t.StopTimes))
+				stop := make([]*models.Bus_StopTime, len(t.StopTimes))
 				for i, st := range t.StopTimes {
-					stop[i] = &models.Temp_StopTimes{
+					stop[i] = &models.Bus_StopTime{
 						StopSequence:  int32(st.StopSequence),
 						ArrivalTime:   st.ArrivalTime,
 						DepartureTime: st.DepartureTime,
@@ -429,16 +429,14 @@ func jsonOrNil(r json.RawMessage) []byte {
 	return r
 }
 
-// cloneBusFare deep-copies a fare and stamps it with subRouteUID, so a
-// route-wide fare shared across subroutes can be attached to each without
-// aliasing the same proto message. Returns nil for a nil input.
-func cloneBusFare(f *models.Bus_Fare, subRouteUID string) *models.Bus_Fare {
+// cloneBusFare deep-copies a fare so a route-wide fare shared across subroutes
+// can be attached to each without aliasing the same proto message. Returns nil
+// for a nil input.
+func cloneBusFare(f *models.Bus_Fare) *models.Bus_Fare {
 	if f == nil {
 		return nil
 	}
-	cloned := proto.Clone(f).(*models.Bus_Fare)
-	cloned.SubRouteUid = subRouteUID
-	return cloned
+	return proto.Clone(f).(*models.Bus_Fare)
 }
 
 // loadBusFares parses a city's route fares from an already-opened decoder (the
@@ -468,7 +466,6 @@ func loadBusFares(dec *json.Decoder, city string) (map[string]*models.Bus_Fare, 
 		}
 		if f.SubRouteID != "" {
 			uid := pre + f.SubRouteID
-			fare.SubRouteUid = uid
 			bySub[uid] = fare
 		}
 		if f.IsForAllSubRoutes == 1 && f.RouteID != "" {

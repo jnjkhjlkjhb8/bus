@@ -19,25 +19,33 @@ import 'dart:typed_data' as $typed_data;
 const Resp_tra_live_board$json = {
   '1': 'Resp_tra_live_board',
   '2': [
-    {'1': 'data', '3': 1, '4': 1, '5': 12, '10': 'data'},
+    {
+      '1': 'data',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.tra_LiveBoards',
+      '10': 'data'
+    },
   ],
 };
 
 /// Descriptor for `Resp_tra_live_board`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List resp_tra_live_boardDescriptor = $convert
-    .base64Decode('ChNSZXNwX3RyYV9saXZlX2JvYXJkEhIKBGRhdGEYASABKAxSBGRhdGE=');
+final $typed_data.Uint8List resp_tra_live_boardDescriptor = $convert.base64Decode(
+    'ChNSZXNwX3RyYV9saXZlX2JvYXJkEiMKBGRhdGEYASABKAsyDy50cmFfTGl2ZUJvYXJkc1IEZG'
+    'F0YQ==');
 
 @$core.Deprecated('Use resp_tra_delayDescriptor instead')
 const Resp_tra_delay$json = {
   '1': 'Resp_tra_delay',
   '2': [
-    {'1': 'data', '3': 1, '4': 1, '5': 12, '10': 'data'},
+    {'1': 'data', '3': 1, '4': 1, '5': 11, '6': '.tra_delays', '10': 'data'},
   ],
 };
 
 /// Descriptor for `Resp_tra_delay`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List resp_tra_delayDescriptor =
-    $convert.base64Decode('Cg5SZXNwX3RyYV9kZWxheRISCgRkYXRhGAEgASgMUgRkYXRh');
+final $typed_data.Uint8List resp_tra_delayDescriptor = $convert.base64Decode(
+    'Cg5SZXNwX3RyYV9kZWxheRIfCgRkYXRhGAEgASgLMgsudHJhX2RlbGF5c1IEZGF0YQ==');
 
 @$core.Deprecated('Use ask_detainDescriptor instead')
 const ask_detain$json = {

@@ -83,7 +83,6 @@ String _iconAsset(NearStationViewModel s) {
 String _mrtIconAsset(String stationId) {
   final code = stationId.split(RegExp(r'[_\d]')).first.toUpperCase();
   switch (code) {
-    // ponytail: KRTC R/O share codes with TRTC and the near payload carries no
     // system; they get the TRTC icon until stationId encodes the system.
     case 'BL':
     case 'BR':

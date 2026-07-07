@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -24,11 +23,7 @@ func (s *BusRouteserver) Static(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.
 // Daily implements the Daily RPC, returning the cached daily timetable payload
 // produced by BusDailytable wrapped in the RPC's response type.
 func (s *BusRouteserver) Daily(_ context.Context, in *pb.Bus_Ask_Route) (*pb.Resp_BusDailyTimetable, error) {
-	resp, err := s.BusDailytable(in)
-	if err != nil {
-		return nil, err
-	}
-	return &pb.Resp_BusDailyTimetable{Data: resp.Data}, nil
+	return s.BusDailytable(in)
 }
 
 // Eta implements the Bus_Route_Service Eta streaming RPC by delegating to
@@ -47,7 +42,11 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 	route := in.SubRouteUID
 	if s.cache != nil {
 		if data, ok := s.cache.get("bus_static:" + route); ok {
-			return &pb.Resp_BusStatic{Data: data}, nil
+			sub, err := decodePayload(data, &pb.BusSubroute{})
+			if err != nil {
+				return nil, err
+			}
+			return &pb.Resp_BusStatic{Data: sub}, nil
 		}
 	}
 	var data []byte
@@ -59,7 +58,11 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 	if s.cache != nil {
 		s.cache.set("bus_static:"+route, data, time.Hour)
 	}
-	return &pb.Resp_BusStatic{Data: data}, nil
+	sub, err := decodePayload(data, &pb.BusSubroute{})
+	if err != nil {
+		return nil, err
+	}
+	return &pb.Resp_BusStatic{Data: sub}, nil
 }
 
 // BusRouteEta streams live ETA for a bus route. It subscribes to the route's
@@ -74,24 +77,26 @@ func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_S
 		seedKeys: []string{key},
 		usable:   usableBusEtaPayload,
 	}, func(data []byte) error {
-		return stream.Send(&pb.Resp_BusEta{Data: data})
+		arrival, err := decodePayload(data, &pb.Bus_RouteArrival{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.Resp_BusEta{Data: arrival})
 	})
 }
 
-// BusStationEta streams live ETA for a station group. The request's SubRouteUID
-// field carries a "city:group_uid" pair; when the city is omitted it is looked
-// up from bus_station_groups. It returns InvalidArgument when neither a city nor
-// a resolvable group_uid is available. Like BusRouteEta it seeds the stream from
+// BusStationEta streams live ETA for a station group. The request carries the
+// group_uid and, optionally, its city; when the city is omitted it is looked up
+// from bus_station_groups. It returns InvalidArgument when neither a city nor a
+// resolvable group_uid is available. Like BusRouteEta it seeds the stream from
 // the cached value, then forwards Redis Pub/Sub updates, skipping empty payloads.
-func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_Route, stream pb.Bus_Station_Service_EtaServer) error {
-	log.Infof("call Bus_station_eta %s", in.SubRouteUID)
-	city, groupUID, ok := strings.Cut(in.SubRouteUID, ":")
-	if !ok {
-		groupUID = in.SubRouteUID
-	}
+func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
+	log.Infof("call Bus_station_eta %s:%s", in.City, in.GroupUid)
+	groupUID := in.GroupUid
 	if groupUID == "" {
 		return status.Error(codes.InvalidArgument, "station eta key must include group_uid")
 	}
+	city := in.City
 	if city == "" && s.db != nil {
 		var dbCity string
 		if err := s.db.QueryRow(stream.Context(), `SELECT city FROM bus_station_groups WHERE group_uid = $1`, groupUID).Scan(&dbCity); err == nil {
@@ -107,7 +112,11 @@ func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_Route, stream pb.Bus_Stati
 		seedKeys: []string{key},
 		usable:   usableBusEtaPayload,
 	}, func(data []byte) error {
-		return stream.Send(&pb.Resp_BusEta{Data: data})
+		arrival, err := decodePayload(data, &pb.Bus_StationArrival{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.Resp_BusStationEta{Data: arrival})
 	})
 }
 
@@ -115,32 +124,33 @@ func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_Route, stream pb.Bus_Stati
 // The sub-route UID is used as-is: canonical subroute identity is produced at
 // the 03:30 load (ADR-0006), so requests arrive already canonical. A missing key
 // maps to NotFound via grpcStatusFor.
-func (s *BusRouteserver) BusDailytable(in *pb.Bus_Ask_Route) (*pb.Resp_BusEta, error) {
-	log.Infof("call Bus_route_eta %s", in.SubRouteUID)
+func (s *BusRouteserver) BusDailytable(in *pb.Bus_Ask_Route) (*pb.Resp_BusDailyTimetable, error) {
+	log.Infof("call Bus_dailytable %s", in.SubRouteUID)
 	route := in.SubRouteUID
 	val, err := s.rc.Get(fmt.Sprintf("bus_daily_timetable:%s", route)).Result()
 	if err != nil {
 		log.Infof("[gRPC] action=bus_dailytable event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "timetable not found")
 	}
-	resp := &pb.Resp_BusEta{
-		Data: []byte(val),
+	tt, err := decodePayload([]byte(val), &pb.Bus_DailyTimetables{})
+	if err != nil {
+		return nil, err
 	}
-	return resp, nil
+	return &pb.Resp_BusDailyTimetable{Data: tt}, nil
 }
 
 // Eta implements the Bus_Station_Service Eta streaming RPC. The station-ETA
 // logic lives on BusRouteserver, so it forwards to a transient BusRouteserver
 // sharing this server's db and rc handles (no cache is needed for a stream).
-func (s *BusStationserver) Eta(in *pb.Bus_Ask_Route, stream pb.Bus_Station_Service_EtaServer) error {
+func (s *BusStationserver) Eta(in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
 	return (&BusRouteserver{db: s.db, rc: s.rc}).BusStationEta(in, stream)
 }
 
 // Group returns a station group and its member stops from PostgreSQL. It
 // returns InvalidArgument for an empty group_uid and NotFound when the group
 // does not exist.
-func (s *BusStationserver) Group(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.Bus_StationGroup, error) {
-	groupUID := in.SubRouteUID
+func (s *BusStationserver) Group(ctx context.Context, in *pb.Bus_Ask_StationGroup) (*pb.Bus_StationGroup, error) {
+	groupUID := in.GroupUid
 	if groupUID == "" {
 		return nil, status.Error(codes.InvalidArgument, "group_uid required")
 	}
@@ -228,7 +238,11 @@ func (s *BikeServer) bikeEta(in *pb.BikeRequest, stream pb.Bike_Service_EtaServe
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
-		return stream.Send(&pb.Resp_BikeEta{Data: data})
+		eta, err := decodePayload(data, &pb.BikeEta{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.Resp_BikeEta{Data: eta})
 	})
 }
 
@@ -249,7 +263,11 @@ func (s *MrtServer) MrtEta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error
 		channel:  channel,
 		seedScan: channel + ":*",
 	}, func(data []byte) error {
-		return stream.Send(&pb.Resp_MrtEta{Data: data})
+		live, err := decodePayload(data, &pb.MrtLive{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.Resp_MrtEta{Data: live})
 	})
 }
 
@@ -270,7 +288,11 @@ func (s *Tra_StationServer) traLiveboard(in *pb.AskStaiton, stream pb.TRAStation
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
-		return stream.Send(&pb.RespTraLiveBoard{Data: data})
+		board, err := decodePayload(data, &pb.Tra_LiveBoards{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.RespTraLiveBoard{Data: board})
 	})
 }
 
@@ -334,7 +356,11 @@ func (s *Tra_TimetableServer) traDelay(stream pb.TRATimetableService_DelayServer
 		channel:  "tra:delay:all",
 		seedKeys: []string{"tra:delay:all"},
 	}, func(data []byte) error {
-		return stream.Send(&pb.RespTraDelay{Data: data})
+		delays, err := decodePayload(data, &pb.TraDelays{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.RespTraDelay{Data: delays})
 	})
 }
 
@@ -369,7 +395,11 @@ func (s *Tra_DetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainServi
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
-		return stream.Send(&pb.RespTraDelay{Data: data})
+		delays, err := decodePayload(data, &pb.TraDelays{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.RespTraDelay{Data: delays})
 	})
 }
 
@@ -417,8 +447,11 @@ func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreaming
 			if err != nil {
 				continue
 			}
-			resp := &pb.RespThsrSeats{Data: val}
-			if err = stream.Send(resp); err != nil {
+			seats, err := decodePayload(val, &pb.ThsrAvailableSeats{})
+			if err != nil {
+				return err
+			}
+			if err = stream.Send(&pb.RespThsrSeats{Data: seats}); err != nil {
 				return err
 			}
 		}
@@ -441,8 +474,11 @@ func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreaming
 		if err != nil {
 			return err
 		}
-		resp := &pb.RespThsrSeats{Data: []byte(m.Payload)}
-		if err = stream.Send(resp); err != nil {
+		seats, err := decodePayload([]byte(m.Payload), &pb.ThsrAvailableSeats{})
+		if err != nil {
+			return err
+		}
+		if err = stream.Send(&pb.RespThsrSeats{Data: seats}); err != nil {
 			return err
 		}
 	}

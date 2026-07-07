@@ -31,13 +31,13 @@ final $typed_data.Uint8List bike_requestDescriptor = $convert.base64Decode(
 const Resp_Bike_eta$json = {
   '1': 'Resp_Bike_eta',
   '2': [
-    {'1': 'data', '3': 1, '4': 1, '5': 12, '10': 'data'},
+    {'1': 'data', '3': 1, '4': 1, '5': 11, '6': '.Bike_eta', '10': 'data'},
   ],
 };
 
 /// Descriptor for `Resp_Bike_eta`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List resp_Bike_etaDescriptor =
-    $convert.base64Decode('Cg1SZXNwX0Jpa2VfZXRhEhIKBGRhdGEYASABKAxSBGRhdGE=');
+final $typed_data.Uint8List resp_Bike_etaDescriptor = $convert.base64Decode(
+    'Cg1SZXNwX0Jpa2VfZXRhEh0KBGRhdGEYASABKAsyCS5CaWtlX2V0YVIEZGF0YQ==');
 
 @$core.Deprecated('Use bike_staticDescriptor instead')
 const Bike_static$json = {

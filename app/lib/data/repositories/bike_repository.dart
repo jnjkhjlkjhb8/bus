@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:wheres_the_car/core/grpc/grpc_client.dart';
 import 'package:wheres_the_car/data/generated/bike.pb.dart';
 import 'package:wheres_the_car/data/models/bike_models.dart';
@@ -20,7 +18,7 @@ class BikeRepository {
       .bike
       .eta(Bike_request(stationUID: stationUid))
       .map((resp) {
-        final e = Bike_eta.fromBuffer(Uint8List.fromList(resp.data));
+        final e = resp.data;
         return BikeAvailability(
           generalBikes: e.generalBikes,
           electricBikes: e.electricBikes,

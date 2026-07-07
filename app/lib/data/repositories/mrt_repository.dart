@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:wheres_the_car/core/grpc/grpc_client.dart';
 import 'package:wheres_the_car/data/decoders/mrt_decoder.dart';
 import 'package:wheres_the_car/data/generated/mrt.pb.dart';
@@ -17,9 +15,5 @@ class MrtRepository {
       .instance
       .mrt
       .eta(Ask_mrt(system: system, stationID: stationId))
-      .map(
-        (resp) => MrtDecoder.instance.decodeEta(
-          Uint8List.fromList(resp.data),
-        ),
-      );
+      .map((resp) => MrtDecoder.instance.decodeEta(resp.data));
 }

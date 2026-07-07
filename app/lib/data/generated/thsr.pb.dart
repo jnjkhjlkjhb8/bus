@@ -910,9 +910,11 @@ class thsr_available_seats extends $pb.GeneratedMessage {
   $pb.PbList<thsr_seat_segment> get segments => $_getList(1);
 }
 
+/// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+/// marshaled thsr_available_seats, now typed for the interface.
 class Resp_thsr_seats extends $pb.GeneratedMessage {
   factory Resp_thsr_seats({
-    $core.List<$core.int>? data,
+    thsr_available_seats? data,
   }) {
     final result = create();
     if (data != null) result.data = data;
@@ -931,8 +933,8 @@ class Resp_thsr_seats extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Resp_thsr_seats',
       createEmptyInstance: create)
-    ..a<$core.List<$core.int>>(
-        1, _omitFieldNames ? '' : 'data', $pb.PbFieldType.OY)
+    ..aOM<thsr_available_seats>(1, _omitFieldNames ? '' : 'data',
+        subBuilder: thsr_available_seats.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -955,13 +957,15 @@ class Resp_thsr_seats extends $pb.GeneratedMessage {
   static Resp_thsr_seats? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $core.List<$core.int> get data => $_getN(0);
+  thsr_available_seats get data => $_getN(0);
   @$pb.TagNumber(1)
-  set data($core.List<$core.int> value) => $_setBytes(0, value);
+  set data(thsr_available_seats value) => $_setField(1, value);
   @$pb.TagNumber(1)
   $core.bool hasData() => $_has(0);
   @$pb.TagNumber(1)
   void clearData() => $_clearField(1);
+  @$pb.TagNumber(1)
+  thsr_available_seats ensureData() => $_ensure(0);
 }
 
 const $core.bool _omitFieldNames =

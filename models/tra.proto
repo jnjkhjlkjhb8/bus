@@ -12,11 +12,15 @@ service TRA_Detain_service{
   rpc stops(ask_detain) returns (tra_stoptimes) {}
   rpc delay(ask_detain) returns (stream Resp_tra_delay) {}
 }
+// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+// marshaled tra_LiveBoards, now typed for the interface.
 message Resp_tra_live_board{
-  bytes data = 1;
+  tra_LiveBoards data = 1;
 }
+// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+// marshaled tra_delays (both the system-wide and per-train delay RPCs).
 message Resp_tra_delay{
-  bytes data = 1;
+  tra_delays data = 1;
 }
 message ask_detain{
   string date = 1;
