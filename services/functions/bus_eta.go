@@ -17,6 +17,32 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// etaKey identifies one TDX ETA entry by its canonical subroute, derived
+// direction, and stop. TDX emits one entry per (stop x subroute x direction),
+// so keying on all three keeps multi-route stops from overwriting each other.
+type etaKey struct {
+	subRouteUID string
+	direction   uint8
+	stopUID     string
+}
+
+// pickBusEstimate resolves two ETA entries sharing an etaKey (multiple buses on
+// the same route toward the same stop): prefer a bus en route (StopStatus 0),
+// and among those keep the soonest (smallest EstimatedTime). If neither is
+// status 0, keep the first seen.
+func pickBusEstimate(prev, next rawBusEsimated) rawBusEsimated {
+	if prev.StopStatus == 0 && next.StopStatus == 0 {
+		if next.EstimatedTime < prev.EstimatedTime {
+			return next
+		}
+		return prev
+	}
+	if next.StopStatus == 0 {
+		return next
+	}
+	return prev
+}
+
 // busEta refreshes live bus arrivals for all cities on the 30s cron. Cities are
 // processed concurrently, capped at 4 in flight (sem). Two cities with no usable
 // TDX ETA feed are skipped inline. It blocks until every city finishes.
@@ -44,6 +70,44 @@ func busEta(
 	}
 	wg.Wait()
 	log.Infof("[BUS_ETA] action=Bus_eta event=complete")
+}
+
+// refreshBusEtaTTLs re-arms the 180s TTL on a city's cached ETA snapshots.
+// Called when TDX answers 304 Not-Modified: the cached arrival instants are
+// still valid, so the snapshots must outlive the polling gap instead of
+// expiring while TDX keeps reporting "unchanged".
+func refreshBusEtaTTLs(rc *redis.Client, city string) {
+	patterns := []string{
+		fmt.Sprintf("bus_eta_station:%s:*", city),
+		fmt.Sprintf("bus_eta_route:%s*", citymap[city]),
+	}
+	total := 0
+	for _, pattern := range patterns {
+		var cursor uint64
+		for {
+			keys, next, err := rc.Scan(cursor, pattern, 500).Result()
+			if err != nil {
+				log.Infof("[BUS_ETA] action=ttl_refresh city=%s event=scan_error error=%v", city, err)
+				return
+			}
+			if len(keys) > 0 {
+				pipe := rc.Pipeline()
+				for _, k := range keys {
+					pipe.Expire(k, 180*time.Second)
+				}
+				if _, err := pipe.Exec(); err != nil {
+					log.Infof("[BUS_ETA] action=ttl_refresh city=%s event=expire_error error=%v", city, err)
+					return
+				}
+				total += len(keys)
+			}
+			cursor = next
+			if cursor == 0 {
+				break
+			}
+		}
+	}
+	log.Infof("[BUS_ETA] action=ttl_refresh city=%s event=success keys=%d", city, total)
 }
 
 // processBusEtaCity builds and publishes one city's bus arrivals. It joins the
@@ -87,6 +151,11 @@ func processBusEtaCity(
 	}
 	dec, comp, err, flipopen := callApi(client, rc, url, "bus_EstimatedTimeOfArrival"+city)
 	if err != nil || !comp {
+		if err == nil {
+			// 304 Not-Modified: the cached arrival instants are still valid, so
+			// re-arm their TTL instead of letting the snapshots expire mid-validity.
+			refreshBusEtaTTLs(rc, city)
+		}
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_eta error=%v", city, err)
 		return
 	}
@@ -107,6 +176,12 @@ func processBusEtaCity(
 	}
 	dec, comp, err, flipopen = callApi(client, rc, url, "bus_RealTimeByFrequency"+city)
 	if err != nil || !comp {
+		if err == nil {
+			// ponytail: a position-only 304 also drops this cycle's fresh ETA
+			// decode; TTL re-arm keeps the previous snapshot alive, merge the
+			// fresh ETAs here if that staleness ever matters.
+			refreshBusEtaTTLs(rc, city)
+		}
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)
 		return
 	}
@@ -120,11 +195,20 @@ func processBusEtaCity(
 	}
 	flipopen()
 	busmap := make(map[string][]*models.BusPosition)
-	etamap := make(map[string]rawBusEsimated)
+	etamap := make(map[etaKey]rawBusEsimated)
 	stations := make(map[string]*models.Bus_StationArrival)
 	routes := make(map[string]*models.Bus_RouteArrival)
-	for _, eat := range eat {
-		etamap[eat.StopUID] = eat
+	// TDX returns one ETA per (stop x subroute x direction); keying on StopUID
+	// alone would let multi-route stops overwrite each other. Canonicalize the
+	// subroute/direction (ADR-0006) so each route at a stop keeps its own ETA.
+	for _, e := range eat {
+		uid, dir := shared.CanonicalSubroute(city, e.SubRouteUID, e.Direction)
+		k := etaKey{uid, dir, e.StopUID}
+		if prev, seen := etamap[k]; seen {
+			etamap[k] = pickBusEstimate(prev, e)
+		} else {
+			etamap[k] = e
+		}
 	}
 	for _, b := range posit {
 		uid, _ := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
@@ -157,12 +241,12 @@ func processBusEtaCity(
 	var fillKeys []routeDirKey
 	fillUIDs := make(map[string]bool)
 	for _, b := range mp {
-		etaEnt, ok2 := etamap[b.StopUID]
+		uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
+		etaEnt, ok2 := etamap[etaKey{uid, dir, b.StopUID}]
 		if !ok2 {
 			continue
 		}
 		if etaEnt.StopStatus == 1 && etaEnt.NextBusTime == "" {
-			uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
 			fillKeys = append(fillKeys, routeDirKey{uid, int32(dir)})
 			fillUIDs[uid] = true
 		}
@@ -170,7 +254,6 @@ func processBusEtaCity(
 		// stops where a live bus is en route, so include those routes' departures
 		// and travel averages in the batched lookups too.
 		if etaEnt.StopStatus == 0 {
-			uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
 			fillKeys = append(fillKeys, routeDirKey{uid, int32(dir)})
 			fillUIDs[uid] = true
 		}
@@ -220,11 +303,11 @@ func processBusEtaCity(
 	// decayed delay before falling through to the model.
 	upstreamByRoute := make(map[routeDirKey][]upstreamObs)
 	for _, b := range mp {
-		eta, ok := etamap[b.StopUID]
+		uid, cdir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
+		eta, ok := etamap[etaKey{uid, cdir, b.StopUID}]
 		if !ok || eta.StopStatus != 0 {
 			continue
 		}
-		uid, cdir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
 		dir := int32(cdir)
 		var est int32
 		if srcT, parseErr := time.Parse(time.RFC3339, eta.SrcUpdateTime); parseErr == nil {
@@ -247,16 +330,16 @@ func processBusEtaCity(
 	var predictionRows []predictionRecord
 	var historyRows [][]interface{}
 	for _, b := range mp {
-		eta, ok := etamap[b.StopUID]
-		status := uint8(67)
-		var est int32
-		var stime string
 		// Canonicalize before every downstream write: the Redis route key, the
 		// bus_eta_history row, dispatched notifications, and the app-facing protos
 		// all key on the canonical UID plus derived direction (ADR-0006), so the
 		// router (which no longer normalizes) and the training data see one
 		// identity space. For non-InterCity, this is identity.
 		uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
+		eta, ok := etamap[etaKey{uid, dir, b.StopUID}]
+		status := uint8(67)
+		var est int32
+		var stime string
 		if ok {
 			if srcT, parseErr := time.Parse(time.RFC3339, eta.SrcUpdateTime); parseErr == nil {
 				est = eta.EstimatedTime - int32(now.Sub(srcT).Seconds())
@@ -391,6 +474,19 @@ func processBusEtaCity(
 				Routes:      make([]*models.Bus_StopEstimate, 0),
 			}
 		}
+		// arrivalUnix is the absolute arrival instant so the app can decay the
+		// countdown locally between server pushes. Status 0 with a live estimate
+		// derives it from now+est; status 1 uses the (predicted or TDX) NextBusTime
+		// when it parses as RFC3339; otherwise it stays 0 and the app falls back to
+		// the estimate field.
+		var arrivalUnix int64
+		if status == 0 && est > 0 {
+			arrivalUnix = now.Add(time.Duration(est) * time.Second).Unix()
+		} else if status == 1 && eta.NextBusTime != "" {
+			if t, err := time.Parse(time.RFC3339, eta.NextBusTime); err == nil {
+				arrivalUnix = t.Unix()
+			}
+		}
 		station := stations[groupUID]
 		if !slices.Contains(station.StationUid, b.StationUID) {
 			station.StationUid = append(station.StationUid, b.StationUID)
@@ -405,6 +501,7 @@ func processBusEtaCity(
 			StopStatus:    int32(status),
 			SrcUpdateTime: stime,
 			Buses:         busmap[uid],
+			ArrivalUnix:   arrivalUnix,
 		})
 		if shouldDispatchBusArrival(ok, status, est) {
 			dispatcher.arrival(ctx, "bus", uid, b.StopUID, strconv.Itoa(int(dir)), est)
@@ -424,6 +521,7 @@ func processBusEtaCity(
 			SrcUpdateTime: stime,
 			Buses:         busmap[uid],
 			StopSequence:  int32(b.StopSequence),
+			ArrivalUnix:   arrivalUnix,
 		})
 	}
 	pipe := rc.Pipeline()
