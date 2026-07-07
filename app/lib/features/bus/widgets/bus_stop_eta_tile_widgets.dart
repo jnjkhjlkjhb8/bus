@@ -1,4 +1,4 @@
-part of '../view/bus_stop_screen.dart';
+part of '../view/bus_stop_detail_view.dart';
 
 class _EtaChevronTile extends StatelessWidget {
   const _EtaChevronTile({
