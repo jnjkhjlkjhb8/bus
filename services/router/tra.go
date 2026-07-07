@@ -113,7 +113,47 @@ func traStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr string
 // destination for a date, pairs them into origin/destination legs, and returns
 // the marshaled TraTimetables proto plus the number of paired legs. A zero count
 // signals NotFound (ADR-0005); it never fetches from TDX.
+// isNumericStationID reports whether s is already a numeric station code (TRA
+// and THSR ids are digit strings) rather than a station name needing resolution.
+func isNumericStationID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveRailStationID maps a station name to its numeric station_id, tolerating
+// the 臺/台 spelling split (TDX data stores 臺, the app's labels use 台). Inputs
+// that are already numeric ids, or that match no station, are returned as-is.
+// table is a caller-supplied constant ("tra_stations"/"thsr_stations").
+func resolveRailStationID(ctx context.Context, db railDB, table, s string) string {
+	if isNumericStationID(s) {
+		return s
+	}
+	rows, err := db.Query(ctx,
+		`SELECT station_id FROM `+table+
+			` WHERE replace(name, '臺', '台') = replace($1, '臺', '台') LIMIT 1`, s)
+	if err != nil {
+		return s
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			return id
+		}
+	}
+	return s
+}
+
 func traTimetablePayload(ctx context.Context, db railDB, start, end string, date time.Time) ([]byte, int, error) {
+	start = resolveRailStationID(ctx, db, "tra_stations", start)
+	end = resolveRailStationID(ctx, db, "tra_stations", end)
 	const combined = `SELECT train_date,trainno, starting_station_id,starting_station_name,ending_station_id,ending_station_name, stopsequence,train_type_id,train_type_code,train_type_name,tripline,stationid,arrivaltime,stationname,mask,note,departuretime FROM tra_timetable WHERE stationid = ANY($1) AND train_date = $2 AND arrivaltime >= $3;`
 	stations := []string{start, end}
 	rows, err := db.Query(ctx, combined, stations, date.Format(time.DateOnly), date.Format(time.TimeOnly))

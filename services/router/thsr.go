@@ -128,6 +128,8 @@ func thsrStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr strin
 // the marshaled ThsrTimetables proto plus the number of paired legs. A zero count
 // signals NotFound (ADR-0005); it never fetches from TDX.
 func thsrTimetablePayload(ctx context.Context, db railDB, start, end string, date time.Time) ([]byte, int, error) {
+	start = resolveRailStationID(ctx, db, "thsr_stations", start)
+	end = resolveRailStationID(ctx, db, "thsr_stations", end)
 	const combined = `SELECT trainno, starting_station_id,starting_station_name,ending_station_id,ending_station_name,arrivaltime,note,overnight,stationid FROM thsr_timetable WHERE stationid = ANY($1) AND train_date = $2;`
 	stations := []string{start, end}
 	rows, err := db.Query(ctx, combined, stations, date.Format(time.DateOnly))

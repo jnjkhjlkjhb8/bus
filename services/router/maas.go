@@ -186,12 +186,19 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 		SetQueryParam("last_mile_mode", fmt.Sprintf("%d", lastMode)).
 		SetQueryParam("last_mile_time", fmt.Sprintf("%d", lastTime)).
 		SetResult(&apiResp)
-	// depart and arrival are mutually exclusive. Send arrival
-	// only when the user asked to arrive by a time; otherwise send depart.
-	if req.ArriveBy {
+	// depart and arrival are mutually exclusive (TDX: pick one). Send arrival
+	// only when the user asked to arrive by a time. Otherwise send depart only
+	// when it is in the future: a depart at/before now trips TDX's 20001
+	// "depart time before now", and omitting it makes TDX default to its own
+	// current time — exactly what a "depart now" search wants. Times are Taipei
+	// (server local per TDX); an unparseable value falls through as-is.
+	switch {
+	case req.ArriveBy:
 		r.SetQueryParam("arrival", paramTime)
-	} else {
-		r.SetQueryParam("depart", paramTime)
+	default:
+		if t, perr := time.ParseInLocation("2006-01-02T15:04:05", paramTime, time.Local); perr != nil || t.After(time.Now()) {
+			r.SetQueryParam("depart", paramTime)
+		}
 	}
 	resp, err := r.Get("/routing")
 	if err != nil {

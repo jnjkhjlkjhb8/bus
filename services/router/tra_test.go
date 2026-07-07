@@ -162,3 +162,37 @@ func TestTraTimetablePayloadPairsOriginDestination(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestTraTimetablePayloadResolvesStationNames verifies that station names (which
+// the app sends when its local station table is unavailable) are resolved to
+// numeric ids — tolerating the 臺/台 split — before the timetable query.
+func TestTraTimetablePayloadResolvesStationNames(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	date := time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)
+	// The app sends '台北' (台); the DB stores '臺北' (臺). Resolution must bridge.
+	db.ExpectQuery("SELECT station_id FROM tra_stations").
+		WithArgs("台北").
+		WillReturnRows(pgxmock.NewRows([]string{"station_id"}).AddRow("1000"))
+	db.ExpectQuery("SELECT station_id FROM tra_stations").
+		WithArgs("花蓮").
+		WillReturnRows(pgxmock.NewRows([]string{"station_id"}).AddRow("7000"))
+	db.ExpectQuery("FROM tra_timetable WHERE stationid = ANY").
+		WithArgs([]string{"1000", "7000"}, "2026-07-04", date.Format(time.TimeOnly)).
+		WillReturnRows(pgxmock.NewRows([]string{"station_id"}))
+
+	_, n, err := traTimetablePayload(context.Background(), db, "台北", "花蓮", date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("leg count = %d, want 0", n)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

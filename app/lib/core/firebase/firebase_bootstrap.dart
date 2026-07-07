@@ -93,9 +93,15 @@ class FirebaseBootstrap {
   static Future<void> init() async {
     if (!FirebaseGate.enabled) return;
     await ensureCoreInitialized();
+    const isProd = FirebaseGate.appEnv == 'production';
     await runOptionalSteps([
       () => FirebaseAppCheck.instance.activate(
-        providerApple: const AppleAppAttestProvider(),
+        providerApple: isProd
+            ? const AppleAppAttestProvider()
+            : const AppleDebugProvider(),
+        providerAndroid: isProd
+            ? const AndroidPlayIntegrityProvider()
+            : const AndroidDebugProvider(),
       ),
     ]);
     FlutterError.onError = (details) {
@@ -139,6 +145,8 @@ class FirebaseBootstrap {
 
   static Future<bool> updatePushPreference({required bool requested}) async {
     HiveStore.pushEnabled = requested;
+    debugPrint('[firebase-reg] enabled=${FirebaseGate.enabled} '
+        'requested=$requested');
     if (!FirebaseGate.enabled) return requested;
 
     var enabled = false;
@@ -165,8 +173,12 @@ class FirebaseBootstrap {
     } on Object catch (_) {}
     try {
       final token = await FirebaseMessaging.instance.getToken();
+      debugPrint('[firebase-reg] fcm token '
+          '${token == null ? 'null' : 'len=${token.length}'}');
       if (token != null && token.isNotEmpty) await _syncToken(token);
-    } on Object catch (_) {}
+    } on Object catch (error) {
+      debugPrint('[firebase-reg] getToken failed: $error');
+    }
     return enabled;
   }
 
@@ -179,9 +191,11 @@ class FirebaseBootstrap {
         '${HiveStore.performanceEnabled}',
         () async {
           await FirebaseRepository.instance.upsertDevice(fcmToken: token);
+          debugPrint('[firebase-reg] upsertDevice ok');
         },
       );
     } on Object catch (error, stack) {
+      debugPrint('[firebase-reg] upsertDevice failed: $error');
       await FirebaseCrashlytics.instance.recordError(error, stack);
     }
   }

@@ -130,7 +130,8 @@ class _RailScreenState extends State<RailScreen> {
       if (_originName == _destName) _destName = _defaultOrigin(request.system);
       _destId = '';
     }
-    unawaited(_resolveAndSearch());
+    // No auto-query: the default O/D is just a placeholder for the picker, not
+    // a real request. A timetable is only fetched when the user taps 查詢.
   }
 
   String _defaultOrigin(RailSystem system) =>
@@ -178,7 +179,8 @@ class _RailScreenState extends State<RailScreen> {
       _originId = '';
       _destId = '';
     });
-    unawaited(_resolveAndSearch());
+    // Clear stale results back to the prompt (no query until user searches).
+    _bloc.add(RailSystemChanged(system));
   }
 
   void _swap() {
@@ -265,13 +267,40 @@ class _RailScreenState extends State<RailScreen> {
                         ],
                       );
                     }
-                    if (state is! RailTimetableLoaded) {
+                    if (state is RailTimetableLoading) {
                       return ListView(
                         padding: EdgeInsets.fromLTRB(16, topPad + 68, 16, 16),
                         children: const [
                           SizedBox(height: 12),
                           _ShimmerTrainList(),
                         ],
+                      );
+                    }
+                    if (state is! RailTimetableLoaded) {
+                      // No search run yet — prompt instead of auto-querying a
+                      // placeholder O/D pair.
+                      return Padding(
+                        padding: EdgeInsets.fromLTRB(24, topPad + 68, 24, 24),
+                        child: Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.train_rounded,
+                                size: 40,
+                                color: cs.outline,
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                '選擇起訖站查詢班次',
+                                textAlign: TextAlign.center,
+                                style: AppTextStyles.bodyRegular.copyWith(
+                                  color: cs.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       );
                     }
                     final items = [
@@ -453,7 +482,7 @@ class _RailScreenState extends State<RailScreen> {
                       onOriginTap: _pickOrigin,
                       onDestTap: _pickDest,
                       onSearch: () {
-                        _dispatchSearch();
+                        unawaited(_resolveAndSearch());
                         // Collapse the inline sheet to reveal results. Never
                         // pop the navigator here — the sheet is part of this
                         // screen's Stack, so popping unwinds back to home.

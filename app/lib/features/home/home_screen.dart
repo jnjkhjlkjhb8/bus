@@ -335,7 +335,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 }
 
-/// Test-only：以指定 callback 建立單一附近車站列，供 widget 測試觸發點擊。
 @visibleForTesting
 Widget buildNearbyRowForTest({
   required NearStationViewModel station,

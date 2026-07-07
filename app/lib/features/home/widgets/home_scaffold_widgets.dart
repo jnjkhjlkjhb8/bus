@@ -77,36 +77,6 @@ extension _HomeScreenScaffold on _HomeScreenState {
 
           Positioned(
             top: 16,
-            left: 68,
-            child: SafeArea(
-              child: Pressable(
-                onTap: () {
-                  unawaited(HapticService.instance.lightTap());
-                  unawaited(context.push('/rail'));
-                },
-                semanticLabel: '台鐵',
-                child: Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: cs.brightness == Brightness.light
-                        ? Colors.white
-                        : cs.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: AppShadows.floating,
-                  ),
-                  child: Icon(
-                    Icons.train_rounded,
-                    size: 20,
-                    color: cs.primary,
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-          Positioned(
-            top: 16,
             right: 16,
             child: SafeArea(
               child: Column(
