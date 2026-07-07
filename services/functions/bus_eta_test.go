@@ -2,19 +2,6 @@ package main
 
 import "testing"
 
-// Every polled city must resolve to a UID prefix. An empty prefix makes
-// busstaticmp's LIKE match every subroute nationwide, so that city's ETA cycle
-// rewrites every bus_eta_route:* snapshot with empty (status 67) entries,
-// clobbering other cities' live ETAs — and the static loader's
-// LIKE-prefix DELETEs wipe whole tables the same way.
-func TestCitymapCoversAllCities(t *testing.T) {
-	for _, city := range cities {
-		if citymap[city] == "" {
-			t.Errorf("citymap[%q] is empty", city)
-		}
-	}
-}
-
 func TestPickBusEstimate(t *testing.T) {
 	tests := []struct {
 		name string

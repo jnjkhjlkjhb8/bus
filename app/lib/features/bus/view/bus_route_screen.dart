@@ -145,7 +145,6 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     for (final v in vehicles) {
       final icon = await MapMarkers.pngAsset(
         busSpriteAsset(v.azimuth.toDouble()),
-        size: 72,
       );
       markers.add(
         Marker(

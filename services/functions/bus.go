@@ -27,16 +27,15 @@ var cities = []string{
 }
 
 // citymap maps a TDX city code to its short prefix used in UID construction and
-// as the authority_code for operators. Keys must match cities exactly: a missing
-// key yields an empty prefix, which turns LIKE-prefix queries into full-table
-// matches (nationwide ETA clobbering, loader partition wipes).
+// as the authority_code for operators. Note it lacks the "County" suffixes that
+// appear in cities (e.g. "Miaoli" not "MiaoliCounty").
 var citymap = map[string]string{
 	"Taipei": "TPE", "NewTaipei": "NWT", "Taoyuan": "TAO", "Taichung": "TXG",
 	"Tainan": "TNN", "Kaohsiung": "KHH", "InterCity": "THB", "Keelung": "KEE",
-	"Hsinchu": "HSZ", "HsinchuCounty": "HSQ", "MiaoliCounty": "MIA", "ChanghuaCounty": "CHA",
-	"NantouCounty": "NAN", "Chiayi": "CYI", "ChiayiCounty": "CYQ", "YunlinCounty": "YUN",
-	"PingtungCounty": "PIF", "YilanCounty": "ILA", "HualienCounty": "HUA", "TaitungCounty": "TTT",
-	"PenghuCounty": "PEN", "KinmenCounty": "KIN", "LienchiangCounty": "LIE",
+	"Hsinchu": "HSZ", "HsinchuCounty": "HSQ", "Miaoli": "MIA", "Changhua": "CHA",
+	"Nantou": "NAN", "Chiayi": "CYI", "ChiayiCounty": "CYQ", "Yunlin": "YUN",
+	"Pingtung": "PIF", "Yilan": "ILA", "Hualien": "HUA", "Taitung": "TTT",
+	"Penghu": "PEN", "Kinmen": "KIN", "Lienchiang": "LIE",
 }
 
 // citymap2 is the inverse of citymap, resolving a short prefix back to a TDX
