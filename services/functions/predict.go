@@ -43,11 +43,14 @@ func dedupRouteDirPairs(keys []routeDirKey) []routeDirKey {
 	return out
 }
 
-// batchNextDepartures returns, per route/direction, the earliest scheduled
-// origin-stop departure at or after todTime (today's local time-of-day). It is a
-// single query over all keys, feeding ETA prediction the "next scheduled bus"
-// baseline. An empty key set or a query error yields an empty map.
-func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirKey, todTime string) map[routeDirKey]time.Time {
+// batchNextDepartures returns, per route/direction, the next scheduled
+// departure at or after todTime (today's local time-of-day), considering only
+// rows whose service_day mask includes dayBit. Timetable rows (type=false)
+// contribute their trip's origin-stop time; frequency rows (type=true) have no
+// per-trip departures, so an open service window contributes the window start
+// clamped to now. Timetable wins over frequency when both exist. An empty key
+// set or a query error yields an empty map.
+func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirKey, todTime string, dayBit int) map[routeDirKey]time.Time {
 	out := make(map[routeDirKey]time.Time, len(keys))
 	if len(keys) == 0 {
 		return out
@@ -59,27 +62,56 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 		dirs[i] = k.direction
 	}
 	rows, err := db.Query(ctx, `
-		SELECT sub_route_uid, direction, MIN("arrival_time/StartTime") AS dep
-		FROM bus_schedule
-		WHERE type = true AND stopsequence = 0
-		  AND "arrival_time/StartTime" >= $3::time
-		  AND (sub_route_uid, direction) IN (
-		      SELECT unnest($1::text[]), unnest($2::int[])
-		  )
-		GROUP BY sub_route_uid, direction`,
-		uids, dirs, todTime)
+		WITH wanted(sub_route_uid, direction) AS (
+			SELECT unnest($1::text[]), unnest($2::int[])
+		),
+		origin AS (
+			SELECT DISTINCT ON (b.sub_route_uid, b.direction, b.tripid)
+			       b.sub_route_uid, b.direction, b."arrival_time/StartTime" AS dep
+			FROM bus_schedule b
+			JOIN wanted w ON b.sub_route_uid = w.sub_route_uid AND b.direction = w.direction
+			WHERE b.type = false AND (b.service_day & $4) <> 0
+			ORDER BY b.sub_route_uid, b.direction, b.tripid, b.stopsequence
+		)
+		SELECT sub_route_uid, direction, dep, 0 AS prio FROM (
+			SELECT sub_route_uid, direction, MIN(dep) AS dep
+			FROM origin WHERE dep >= $3::time
+			GROUP BY sub_route_uid, direction
+		) tt
+		UNION ALL
+		SELECT b.sub_route_uid, b.direction,
+		       MIN(GREATEST(b."arrival_time/StartTime", $3::time)) AS dep, 1 AS prio
+		FROM bus_schedule b
+		JOIN wanted w ON b.sub_route_uid = w.sub_route_uid AND b.direction = w.direction
+		WHERE b.type = true AND (b.service_day & $4) <> 0
+		  AND b."departure_time/EndTime" >= $3::time
+		GROUP BY b.sub_route_uid, b.direction`,
+		uids, dirs, todTime, dayBit)
 	if err != nil {
 		log.Infof("[MODEL] batchNextDepartures error: %v", err)
 		return out
 	}
 	defer rows.Close()
+	type prioDep struct {
+		dep  time.Time
+		prio int
+	}
+	best := make(map[routeDirKey]prioDep, len(keys))
 	for rows.Next() {
 		var uid string
 		var dir int32
 		var dep time.Time
-		if err := rows.Scan(&uid, &dir, &dep); err == nil {
-			out[routeDirKey{subRouteUID: uid, direction: dir}] = dep
+		var prio int
+		if err := rows.Scan(&uid, &dir, &dep, &prio); err != nil {
+			continue
 		}
+		k := routeDirKey{subRouteUID: uid, direction: dir}
+		if cur, ok := best[k]; !ok || prio < cur.prio {
+			best[k] = prioDep{dep: dep, prio: prio}
+		}
+	}
+	for k, v := range best {
+		out[k] = v.dep
 	}
 	return out
 }
@@ -230,7 +262,9 @@ func predictNextBusTime(rc *redis.Client, stop busStopCtx, inputs predictionInpu
 	}
 	var wd weatherData
 	if wjson, wErr := rc.Get("weather:" + stop.city).Result(); wErr == nil {
-		json.Unmarshal([]byte(wjson), &wd)
+		if err := json.Unmarshal([]byte(wjson), &wd); err != nil {
+			log.Infof("[MODEL] decode weather city=%s error=%v", stop.city, err)
+		}
 	}
 	cityEnc := -1.0
 	if v, ok := modelEncoders.City[stop.city]; ok {

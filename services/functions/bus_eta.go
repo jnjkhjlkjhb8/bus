@@ -186,13 +186,19 @@ func processBusEtaCity(
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)
 		return
 	}
+	var droppedPosition int
 	if _, err := dec.Token(); err == nil {
 		for dec.More() {
 			var p rawBusPosition
 			if err := dec.Decode(&p); err == nil {
 				posit = append(posit, p)
+			} else {
+				droppedPosition++
 			}
 		}
+	}
+	if droppedPosition > 0 {
+		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=decode_dropped kind=position count=%d kept=%d", city, droppedPosition, len(posit))
 	}
 	flipopen()
 	busmap := make(map[string][]*models.BusPosition)
@@ -257,7 +263,11 @@ func processBusEtaCity(
 		}
 	}
 	todTime := now.Format("15:04:05")
-	depMap := batchNextDepartures(ctx, db, dedupRouteDirPairs(fillKeys), todTime)
+	// ponytail: day-of-week mask only; holiday-aware schedules need TDX
+	// SpecialDays landing (schedule rows carry no holiday flag from TDX's
+	// ServiceDay Mon-Sun fields).
+	dayBit := 1 << ((int(now.Weekday()) + 6) % 7) // mask2 bit order: Monday=bit0..Sunday=bit6
+	depMap := batchNextDepartures(ctx, db, dedupRouteDirPairs(fillKeys), todTime, dayBit)
 	uidList := make([]string, 0, len(fillUIDs))
 	for u := range fillUIDs {
 		uidList = append(uidList, u)
