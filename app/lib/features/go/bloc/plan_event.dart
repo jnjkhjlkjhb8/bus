@@ -13,6 +13,13 @@ class PlanSearchRequested extends PlanEvent {
     this.arriveBy = false,
     this.gc = 0.0,
     this.transitModes = const [3, 4, 5, 6, 7, 8, 9],
+    this.top = 5,
+    this.transferMin = 15,
+    this.transferMax = 60,
+    this.firstMileMode = 0,
+    this.firstMileTime = 10,
+    this.lastMileMode = 0,
+    this.lastMileTime = 10,
   });
 
   final double fromLat;
@@ -24,6 +31,13 @@ class PlanSearchRequested extends PlanEvent {
   final bool arriveBy;
   final double gc;
   final List<int> transitModes;
+  final int top;
+  final int transferMin;
+  final int transferMax;
+  final int firstMileMode;
+  final int firstMileTime;
+  final int lastMileMode;
+  final int lastMileTime;
 }
 
 class RouteSelected extends PlanEvent {

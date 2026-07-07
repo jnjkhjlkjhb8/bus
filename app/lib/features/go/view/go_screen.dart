@@ -16,6 +16,7 @@ import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
+import 'package:wheres_the_car/features/go/model/plan_options.dart';
 import 'package:wheres_the_car/features/go/model/planned_place.dart';
 import 'package:wheres_the_car/features/go/view/place_search_sheet.dart';
 import 'package:wheres_the_car/features/go/widgets/route_option_card.dart';
@@ -26,7 +27,11 @@ import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
+import 'package:wheres_the_car/shared/widgets/app_button.dart';
+import 'package:wheres_the_car/shared/widgets/app_quantity_selector.dart';
+import 'package:wheres_the_car/shared/widgets/app_slider.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_car/shared/widgets/filter_chip_group.dart';
 
 part '../widgets/go_planner_widgets.dart';
 part '../widgets/go_navigation_widgets.dart';
@@ -45,6 +50,7 @@ class _GoScreenState extends State<GoScreen> {
   late final SheetController _sheet;
   PlannedPlace? _origin;
   PlannedPlace? _dest;
+  PlanOptions _options = const PlanOptions();
 
   @override
   void initState() {
@@ -112,12 +118,29 @@ class _GoScreenState extends State<GoScreen> {
         toLon: to.latLng.longitude,
         date: '${now.year}-${two(now.month)}-${two(now.day)}',
         time: '${two(now.hour)}:${two(now.minute)}',
+        gc: _options.gc,
+        transitModes: _options.transitModes,
+        top: _options.top,
+        transferMin: _options.transferMin,
+        transferMax: _options.transferMax,
+        firstMileMode: _options.firstMileMode,
+        firstMileTime: _options.firstMileTime,
+        lastMileMode: _options.lastMileMode,
+        lastMileTime: _options.lastMileTime,
       ),
     );
   }
 
   void _retry() {
     unawaited(HapticService.instance.lightTap());
+    _maybePlan();
+  }
+
+  Future<void> _adjustOptions() async {
+    unawaited(HapticService.instance.lightTap());
+    final picked = await showOptionsSheet(context, current: _options);
+    if (picked == null || !mounted || picked == _options) return;
+    setState(() => _options = picked);
     _maybePlan();
   }
 
@@ -389,6 +412,7 @@ class _GoScreenState extends State<GoScreen> {
                     onSelect: _selectRoute,
                     onRetry: _retry,
                     onPickDestination: () => _editField(origin: false),
+                    onAdjustOptions: _adjustOptions,
                   ),
               ],
             ),

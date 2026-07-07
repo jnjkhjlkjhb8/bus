@@ -69,6 +69,8 @@ class Bike_request extends $pb.GeneratedMessage {
   void clearStationUID() => $_clearField(1);
 }
 
+/// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+/// marshaled Bike_eta, now typed for the interface.
 class Resp_Bike_eta extends $pb.GeneratedMessage {
   factory Resp_Bike_eta({
     Bike_eta? data,

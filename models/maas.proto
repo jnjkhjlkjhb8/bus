@@ -15,6 +15,13 @@ message MaasPlanRequest {
   bool   arriveBy         = 7;
   double gc               = 8;
   repeated int32 transitModes = 9;
+  int32  top              = 10;  // route count, 1..10 (default 5)
+  int32  transferTimeMin  = 11;  // preferred transfer window min, minutes
+  int32  transferTimeMax  = 12;  // preferred transfer window max, minutes
+  int32  firstMileMode    = 13;  // 0 walk,1 bike,2 car,3 shared-bike
+  int32  firstMileTime    = 14;  // first-mile max minutes (default 10)
+  int32  lastMileMode     = 15;  // 0 walk,1 bike,2 car,3 shared-bike
+  int32  lastMileTime     = 16;  // last-mile max minutes (default 10)
 }
 
 message MaasPlanResponse {

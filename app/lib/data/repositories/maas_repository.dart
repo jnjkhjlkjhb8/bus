@@ -16,6 +16,13 @@ class MaasRepository {
     bool arriveBy = false,
     double gc = 0.0,
     List<int> transitModes = const [3, 4, 5, 6, 7, 8, 9],
+    int top = 5,
+    int transferMin = 15,
+    int transferMax = 60,
+    int firstMileMode = 0,
+    int firstMileTime = 10,
+    int lastMileMode = 0,
+    int lastMileTime = 10,
   }) async {
     final response = await GrpcClient.instance.maas.plan(
       MaasPlanRequest(
@@ -28,6 +35,13 @@ class MaasRepository {
         arriveBy: arriveBy,
         gc: gc,
         transitModes: transitModes,
+        top: top,
+        transferTimeMin: transferMin,
+        transferTimeMax: transferMax,
+        firstMileMode: firstMileMode,
+        firstMileTime: firstMileTime,
+        lastMileMode: lastMileMode,
+        lastMileTime: lastMileTime,
       ),
     );
     return PlanResult.fromProto(response);

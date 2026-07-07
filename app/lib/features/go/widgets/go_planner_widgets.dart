@@ -156,6 +156,7 @@ class _PlannerSheet extends StatelessWidget {
     required this.onSelect,
     required this.onRetry,
     required this.onPickDestination,
+    required this.onAdjustOptions,
   });
 
   final SheetController controller;
@@ -164,6 +165,7 @@ class _PlannerSheet extends StatelessWidget {
   final void Function(PlanRoute) onSelect;
   final VoidCallback onRetry;
   final VoidCallback onPickDestination;
+  final VoidCallback onAdjustOptions;
 
   @override
   Widget build(BuildContext context) {
@@ -196,7 +198,12 @@ class _PlannerSheet extends StatelessWidget {
               const SheetDragHandle(),
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
-                child: _SheetTitle(state: state),
+                child: Row(
+                  children: [
+                    Expanded(child: _SheetTitle(state: state)),
+                    _OptionsButton(onTap: onAdjustOptions),
+                  ],
+                ),
               ),
               Divider(height: 1, color: cs.outlineVariant),
               Expanded(
@@ -349,6 +356,314 @@ class _RouteSkeleton extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Trailing control in the sheet header. Opens the routing-options sheet.
+class _OptionsButton extends StatelessWidget {
+  const _OptionsButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Pressable(
+      onTap: onTap,
+      semanticLabel: '路線選項',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.tune_rounded, size: 18, color: cs.onSurface),
+            const SizedBox(width: 6),
+            Text(
+              '選項',
+              style: AppTextStyles.bodySmall.copyWith(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// TDX transit-mode ids the planner exposes (excludes 20:航空).
+const _kTransitModes = <int, String>{
+  3: '高鐵',
+  4: '台鐵',
+  5: '公車',
+  6: '捷運',
+  7: '輕軌',
+  8: '渡輪',
+  9: '纜車',
+};
+// TDX first/last-mile mode ids.
+const _kMileModes = <int, String>{0: '走路', 1: '腳踏車', 2: '開車', 3: '共享單車'};
+
+/// Options sheet for all TDX MaaS routing parameters. Returns the edited
+/// [PlanOptions] on 套用, or null on dismiss.
+Future<PlanOptions?> showOptionsSheet(
+  BuildContext context, {
+  required PlanOptions current,
+}) {
+  return showModalBottomSheet<PlanOptions>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _OptionsSheet(initial: current),
+  );
+}
+
+class _OptionsSheet extends StatefulWidget {
+  const _OptionsSheet({required this.initial});
+
+  final PlanOptions initial;
+
+  @override
+  State<_OptionsSheet> createState() => _OptionsSheetState();
+}
+
+class _OptionsSheetState extends State<_OptionsSheet> {
+  late PlanOptions _o = widget.initial;
+
+  void _toggleMode(int id) {
+    final modes = _o.transitModes.toList();
+    if (modes.contains(id)) {
+      if (modes.length == 1) return; // keep at least one mode selected
+      modes.remove(id);
+    } else {
+      modes.add(id);
+    }
+    modes.sort();
+    setState(() => _o = _o.copyWith(transitModes: modes));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final maxHeight = MediaQuery.of(context).size.height * 0.85;
+    return Container(
+      constraints: BoxConstraints(maxHeight: maxHeight),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: const BorderRadius.vertical(
+          top: Radius.circular(AppTheme.radiusBottomSheet),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SheetDragHandle(),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '路線選項',
+                  style: AppTextStyles.heading2.copyWith(color: cs.onSurface),
+                ),
+              ),
+            ),
+            Flexible(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                children: [
+                  _sectionRow(
+                    '時間 / 價格偏好',
+                    'gc ${_o.gc.toStringAsFixed(1)}',
+                    cs,
+                  ),
+                  AppSlider(
+                    value: _o.gc,
+                    divisions: 10,
+                    onChanged: (v) => setState(() => _o = _o.copyWith(gc: v)),
+                  ),
+                  _endLabels('省錢', '省時', cs),
+                  const SizedBox(height: 12),
+                  _rowControl(
+                    '路線數量',
+                    AppQuantitySelector(
+                      value: _o.top,
+                      min: 1,
+                      max: 10,
+                      onChanged: (v) =>
+                          setState(() => _o = _o.copyWith(top: v)),
+                    ),
+                    cs,
+                  ),
+                  const SizedBox(height: 12),
+                  _sectionRow('搭乘運具', '', cs),
+                  const SizedBox(height: 8),
+                  FilterChipGroup<int>(
+                    options: _kTransitModes,
+                    selected: _o.transitModes.toSet(),
+                    onToggle: _toggleMode,
+                  ),
+                  const SizedBox(height: 16),
+                  _sectionRow(
+                    '轉乘時間',
+                    '${_o.transferMin} - ${_o.transferMax} 分',
+                    cs,
+                  ),
+                  const SizedBox(height: 8),
+                  _rowControl(
+                    '最短（分鐘）',
+                    AppQuantitySelector(
+                      value: _o.transferMin,
+                      max: 60,
+                      onChanged: (v) => setState(
+                        () => _o = _o.copyWith(
+                          transferMin: v > _o.transferMax ? _o.transferMax : v,
+                        ),
+                      ),
+                    ),
+                    cs,
+                  ),
+                  _rowControl(
+                    '最長（分鐘）',
+                    AppQuantitySelector(
+                      value: _o.transferMax,
+                      max: 60,
+                      onChanged: (v) => setState(
+                        () => _o = _o.copyWith(
+                          transferMax: v < _o.transferMin ? _o.transferMin : v,
+                        ),
+                      ),
+                    ),
+                    cs,
+                  ),
+                  const SizedBox(height: 12),
+                  _mileSection(
+                    '第一哩路（分鐘）',
+                    _o.firstMileMode,
+                    _o.firstMileTime,
+                    (m) => setState(() => _o = _o.copyWith(firstMileMode: m)),
+                    (t) => setState(() => _o = _o.copyWith(firstMileTime: t)),
+                    cs,
+                  ),
+                  const SizedBox(height: 12),
+                  _mileSection(
+                    '最後一哩路（分鐘）',
+                    _o.lastMileMode,
+                    _o.lastMileTime,
+                    (m) => setState(() => _o = _o.copyWith(lastMileMode: m)),
+                    (t) => setState(() => _o = _o.copyWith(lastMileTime: t)),
+                    cs,
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: AppButton(
+                  label: '套用',
+                  onPressed: () => Navigator.of(context).pop(_o),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionRow(String title, String value, ColorScheme cs) => Row(
+    children: [
+      Expanded(
+        child: Text(
+          title,
+          style: AppTextStyles.bodyLarge.copyWith(
+            color: cs.onSurface,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+      if (value.isNotEmpty)
+        Text(
+          value,
+          style: AppTextStyles.bodySmall.copyWith(
+            color: cs.onSurfaceVariant,
+            fontFeatures: AppTextStyles.tabularFigures,
+          ),
+        ),
+    ],
+  );
+
+  Widget _rowControl(String title, Widget control, ColorScheme cs) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            style: AppTextStyles.bodyLarge.copyWith(
+              color: cs.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        control,
+      ],
+    ),
+  );
+
+  Widget _endLabels(String left, String right, ColorScheme cs) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 4),
+    child: Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          left,
+          style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
+        ),
+        Text(
+          right,
+          style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
+        ),
+      ],
+    ),
+  );
+
+  Widget _mileSection(
+    String title,
+    int mode,
+    int time,
+    ValueChanged<int> onMode,
+    ValueChanged<int> onTime,
+    ColorScheme cs,
+  ) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _rowControl(
+        title,
+        AppQuantitySelector(
+          value: time,
+          min: 1,
+          max: 60,
+          onChanged: onTime,
+        ),
+        cs,
+      ),
+      const SizedBox(height: 8),
+      FilterChipGroup<int>(
+        options: _kMileModes,
+        selected: {mode},
+        onToggle: onMode,
+      ),
+    ],
+  );
 }
 
 class _GoMessage extends StatelessWidget {

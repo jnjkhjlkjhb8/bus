@@ -2,7 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
 
-bool isWalk(PlanSection s) => s.transport.mode.toLowerCase() == 'walk';
+// TDX emits an empty mode (not "walk") for pedestrian sections, and the router
+// only populates Transport when mode is non-empty — so an unset/empty mode is a
+// walk. Must match services/router/maas.go isWalkMode.
+bool isWalk(PlanSection s) {
+  final mode = s.transport.mode.toLowerCase();
+  return mode.isEmpty || mode == 'walk';
+}
 
 IconData transitIcon(String mode) => switch (mode.toLowerCase()) {
   'walk' => Icons.directions_walk_rounded,

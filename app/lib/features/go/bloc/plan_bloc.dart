@@ -32,6 +32,13 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
         arriveBy: event.arriveBy,
         gc: event.gc,
         transitModes: event.transitModes,
+        top: event.top,
+        transferMin: event.transferMin,
+        transferMax: event.transferMax,
+        firstMileMode: event.firstMileMode,
+        firstMileTime: event.firstMileTime,
+        lastMileMode: event.lastMileMode,
+        lastMileTime: event.lastMileTime,
       );
       emit(state.copyWith(status: PlanStatus.success, result: result));
     } on Object catch (e) {

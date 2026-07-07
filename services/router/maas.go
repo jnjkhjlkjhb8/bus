@@ -138,7 +138,13 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 	return resp, nil
 }
 func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
-	paramTime := fmt.Sprintf("%sT%s", req.Date, req.Time)
+	// TDX expects a full yyyy-mm-ddTHH:mm:ss timestamp; the app sends HH:mm, so
+	// pad the seconds when they are missing.
+	timeStr := req.Time
+	if len(timeStr) == len("HH:mm") {
+		timeStr += ":00"
+	}
+	paramTime := fmt.Sprintf("%sT%s", req.Date, timeStr)
 
 	gc := req.Gc
 	if gc < 0 || gc > 1 {
@@ -155,6 +161,17 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 	}
 	transitStr := strings.Join(parts, ",")
 
+	top := clampInt(req.Top, 1, 10, 5)
+	tMin := clampInt(req.TransferTimeMin, 0, 60, 15)
+	tMax := clampInt(req.TransferTimeMax, 0, 60, 60)
+	if tMin > tMax {
+		tMin, tMax = tMax, tMin
+	}
+	firstMode := clampInt(req.FirstMileMode, 0, 3, 0)
+	firstTime := clampInt(req.FirstMileTime, 1, 60, 10)
+	lastMode := clampInt(req.LastMileMode, 0, 3, 0)
+	lastTime := clampInt(req.LastMileTime, 1, 60, 10)
+
 	var apiResp tdxAPIResponse
 	resp, err := s.maasClient.R().
 		SetContext(ctx).
@@ -162,14 +179,14 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 		SetQueryParam("destination", fmt.Sprintf("%.6f,%.6f", req.ToLat, req.ToLon)).
 		SetQueryParam("depart", paramTime).
 		SetQueryParam("arrival", paramTime).
-		SetQueryParam("gc", fmt.Sprintf("%.2f", gc)).
-		SetQueryParam("top", "5").
+		SetQueryParam("gc", fmt.Sprintf("%.1f", gc)).
+		SetQueryParam("top", fmt.Sprintf("%d", top)).
 		SetQueryParam("transit", transitStr).
-		SetQueryParam("transfer_time", "15,60").
-		SetQueryParam("first_mile_mode", "0").
-		SetQueryParam("first_mile_time", "10").
-		SetQueryParam("last_mile_mode", "0").
-		SetQueryParam("last_mile_time", "10").
+		SetQueryParam("transfer_time", fmt.Sprintf("%d,%d", tMin, tMax)).
+		SetQueryParam("first_mile_mode", fmt.Sprintf("%d", firstMode)).
+		SetQueryParam("first_mile_time", fmt.Sprintf("%d", firstTime)).
+		SetQueryParam("last_mile_mode", fmt.Sprintf("%d", lastMode)).
+		SetQueryParam("last_mile_time", fmt.Sprintf("%d", lastTime)).
 		SetResult(&apiResp).
 		Get("/routing")
 	if err != nil {
@@ -431,10 +448,28 @@ func isBusMode(mode string) bool {
 	return strings.EqualFold(mode, "bus") || strings.EqualFold(mode, "HighwayBus")
 }
 
+// clampInt returns v bounded to [min,max], or def when v is unset (0) and 0 is
+// outside the valid range — so old clients / cached zero-value requests fall
+// back to the TDX defaults rather than sending 0.
+func clampInt(v, min, max, def int32) int32 {
+	if v == 0 && (0 < min || 0 > max) {
+		return def
+	}
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
 func maasKey(req *pb.MaasPlanRequest) string {
-	key := fmt.Sprintf("%.6f,%.6f,%.6f,%.6f,%s,%s,%v,%.2f,%v",
+	key := fmt.Sprintf("%.6f,%.6f,%.6f,%.6f,%s,%s,%v,%.2f,%v,%d,%d,%d,%d,%d,%d,%d",
 		req.FromLat, req.FromLon, req.ToLat, req.ToLon,
-		req.Date, req.Time, req.ArriveBy, req.Gc, req.TransitModes)
+		req.Date, req.Time, req.ArriveBy, req.Gc, req.TransitModes,
+		req.Top, req.TransferTimeMin, req.TransferTimeMax,
+		req.FirstMileMode, req.FirstMileTime, req.LastMileMode, req.LastMileTime)
 	sum := sha256.Sum256([]byte(key))
-	return fmt.Sprintf("maas:plan:v2:%x", sum[:8])
+	return fmt.Sprintf("maas:plan:v3:%x", sum[:8])
 }
