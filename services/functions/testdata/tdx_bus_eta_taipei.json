@@ -1,0 +1,12 @@
+[
+  {
+    "PlateNumb": "ABC-123",
+    "StopUID": "TPE1001",
+    "SubRouteUID": "TPE15311",
+    "Direction": 0,
+    "EstimatedTime": 180,
+    "NextBusTime": "",
+    "StopStatus": 0,
+    "SrcUpdateTime": "2026-07-07T08:00:00+08:00"
+  }
+]

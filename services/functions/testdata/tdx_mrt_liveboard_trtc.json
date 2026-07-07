@@ -1,0 +1,20 @@
+[
+  {
+    "LineID": "BL",
+    "StationID": "BL12",
+    "TripHeadSign": "往南港展覽館",
+    "DestinationStaionID": "BL23",
+    "DestinationStationName": { "Zh_tw": "南港展覽館" },
+    "ServiceStatus": 0,
+    "EstimateTime": 120
+  },
+  {
+    "LineID": "BL",
+    "StationID": "BL12",
+    "TripHeadSign": "往頂埔",
+    "DestinationStaionID": "BL01",
+    "DestinationStationName": { "Zh_tw": "頂埔" },
+    "ServiceStatus": 0,
+    "EstimateTime": 300
+  }
+]

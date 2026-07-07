@@ -1,0 +1,18 @@
+[
+  {
+    "StationUID": "TPE500101001",
+    "StationID": "500101001",
+    "ServiceStatus": 1,
+    "ServiceType": 2,
+    "AvailableReturnBikes": 12,
+    "AvailableRentBikesDetail": { "GeneralBikes": 5, "ElectricBikes": 3 }
+  },
+  {
+    "StationUID": "TPE500101002",
+    "StationID": "500101002",
+    "ServiceStatus": 1,
+    "ServiceType": 2,
+    "AvailableReturnBikes": 0,
+    "AvailableRentBikesDetail": { "GeneralBikes": 8, "ElectricBikes": 0 }
+  }
+]
