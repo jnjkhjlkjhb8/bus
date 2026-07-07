@@ -127,7 +127,10 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     final markers = <Marker>{};
     for (final st in stops) {
       if (st.lat == 0 && st.lon == 0) continue;
-      final icon = await MapMarkers.etaStop(_markerEta(_etaFor(s, st)));
+      final icon = await MapMarkers.etaStop(
+        _markerEta(_etaFor(s, st)),
+        size: 32,
+      );
       markers.add(
         Marker(
           markerId: MarkerId(st.stopUid),
