@@ -5,6 +5,7 @@ const _kIconZoomThreshold = 15.5;
 const _kSmallDotSize = 7.0;
 const _kLargeDotSize = 10.0;
 const _kIconMarkerSize = 32.0;
+const _kHighlightIconMarkerSize = 44.0;
 const _kMapMarkerLimit = 60;
 
 /// Radius used when the map controller isn't ready yet and we can't measure the
@@ -46,8 +47,12 @@ double _dotMarkerSize(_MarkerStyle style) =>
 
 Future<BitmapDescriptor> _markerIcon(
   NearStationViewModel s,
-  _MarkerStyle style,
-) {
+  _MarkerStyle style, {
+  bool highlighted = false,
+}) {
+  if (highlighted) {
+    return MapMarkers.svgAsset(_iconAsset(s), size: _kHighlightIconMarkerSize);
+  }
   if (style == _MarkerStyle.icon) {
     return MapMarkers.svgAsset(_iconAsset(s), size: _kIconMarkerSize);
   }

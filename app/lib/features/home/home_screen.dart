@@ -85,10 +85,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final markers = await Future.wait(
       stations.take(_kMapMarkerLimit).map((s) async {
         final key = '${s.type.name}:${s.stationId}';
-        final markerStyle = key == _highlightedKey
-            ? _MarkerStyle.largeDot
-            : style;
-        final icon = await _markerIcon(s, markerStyle);
+        final highlighted = key == _highlightedKey;
+        final icon = await _markerIcon(s, style, highlighted: highlighted);
         return Marker(
           markerId: MarkerId('${s.type.name}:${s.stationId}'),
           position: LatLng(s.lat, s.lon),
