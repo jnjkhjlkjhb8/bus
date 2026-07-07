@@ -52,8 +52,9 @@ func TestRawInsertSQLStructure(t *testing.T) {
 	for _, sub := range []string{
 		"INSERT INTO raw_tdx.metro_station",
 		"NULL::raw_tdx.metro_station",
-		"COALESCE(",
-		"'[]'::jsonb",
+		"jsonb_array_elements($2::jsonb)",
+		"jsonb_object_agg(lower(",
+		"$1::jsonb",
 	} {
 		if !strings.Contains(got, sub) {
 			t.Errorf("rawInsertSQL missing %q in:\n%s", sub, got)

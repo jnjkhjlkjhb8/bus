@@ -515,33 +515,21 @@ class _OptionsSheetState extends State<_OptionsSheet> {
                     '${_o.transferMin} - ${_o.transferMax} 分',
                     cs,
                   ),
-                  const SizedBox(height: 8),
-                  _rowControl(
-                    '最短（分鐘）',
-                    AppQuantitySelector(
-                      value: _o.transferMin,
-                      max: 60,
-                      onChanged: (v) => setState(
-                        () => _o = _o.copyWith(
-                          transferMin: v > _o.transferMax ? _o.transferMax : v,
-                        ),
+                  AppRangeSlider(
+                    values: RangeValues(
+                      _o.transferMin.toDouble(),
+                      _o.transferMax.toDouble(),
+                    ),
+                    max: 60,
+                    divisions: 12,
+                    onChanged: (v) => setState(
+                      () => _o = _o.copyWith(
+                        transferMin: v.start.round(),
+                        transferMax: v.end.round(),
                       ),
                     ),
-                    cs,
                   ),
-                  _rowControl(
-                    '最長（分鐘）',
-                    AppQuantitySelector(
-                      value: _o.transferMax,
-                      max: 60,
-                      onChanged: (v) => setState(
-                        () => _o = _o.copyWith(
-                          transferMax: v < _o.transferMin ? _o.transferMin : v,
-                        ),
-                      ),
-                    ),
-                    cs,
-                  ),
+                  _endLabels('0 分', '60 分', cs),
                   const SizedBox(height: 12),
                   _mileSection(
                     '第一哩路（分鐘）',

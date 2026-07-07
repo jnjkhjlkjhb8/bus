@@ -42,6 +42,30 @@ func pickBusEstimate(prev, next rawBusEsimated) rawBusEsimated {
 	return prev
 }
 
+// decodeBusEtaArray streams a TDX ETA array into rawBusEsimated entries. It
+// reports complete=false when the opening array token is missing, any element
+// fails to decode, or the closing token never arrives — all signs of a
+// truncated or malformed body. Callers use this to avoid overwriting the live
+// snapshot with a partial (blank-heavy) result: a bad body is treated like a
+// 304, keeping the last good ETAs alive rather than blanking the route for a
+// tick until the next good fetch.
+func decodeBusEtaArray(dec *json.Decoder) (eat []rawBusEsimated, complete bool) {
+	if _, err := dec.Token(); err != nil { // opening '['
+		return nil, false
+	}
+	for dec.More() {
+		var e rawBusEsimated
+		if err := dec.Decode(&e); err != nil {
+			return eat, false
+		}
+		eat = append(eat, e)
+	}
+	if _, err := dec.Token(); err != nil { // closing ']'
+		return eat, false
+	}
+	return eat, true
+}
+
 // busEta refreshes live bus arrivals for all cities on the 30s cron. Cities are
 // processed concurrently, capped at 4 in flight (sem). Two cities with no usable
 // TDX ETA feed are skipped inline. It blocks until every city finishes.
@@ -116,7 +140,6 @@ func processBusEtaCity(
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
 		return
 	}
-	var eat []rawBusEsimated
 	var url string
 	if city == "InterCity" {
 		url = "/v2/Bus/EstimatedTimeOfArrival/InterCity"
@@ -133,15 +156,16 @@ func processBusEtaCity(
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_eta error=%v", city, err)
 		return
 	}
-	if _, err := dec.Token(); err == nil {
-		for dec.More() {
-			var e rawBusEsimated
-			if err := dec.Decode(&e); err == nil {
-				eat = append(eat, e)
-			}
-		}
-	}
+	eat, complete := decodeBusEtaArray(dec)
 	flipopen()
+	if !complete {
+		// Truncated or malformed body: committing it would overwrite the live
+		// snapshot with mostly status-67 blanks (the abrupt-blank-then-recover
+		// flicker). Treat it like a 304 — re-arm the last good snapshot's TTL.
+		sink.refreshTTL(busEtaTTLPatterns(city))
+		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_partial_eta eat_count=%d", city, len(eat))
+		return
+	}
 	var posit []rawBusPosition
 	if city == "InterCity" {
 		url = "/v2/Bus/RealTimeByFrequency/InterCity"

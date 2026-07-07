@@ -29,6 +29,7 @@ import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_button.dart';
 import 'package:wheres_the_car/shared/widgets/app_quantity_selector.dart';
+import 'package:wheres_the_car/shared/widgets/app_range_slider.dart';
 import 'package:wheres_the_car/shared/widgets/app_slider.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/filter_chip_group.dart';

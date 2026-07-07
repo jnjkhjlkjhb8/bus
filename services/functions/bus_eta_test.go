@@ -1,6 +1,37 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestDecodeBusEtaArray(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		wantLen      int
+		wantComplete bool
+	}{
+		{"full array", `[{"StopUID":"A","EstimatedTime":60},{"StopUID":"B","EstimatedTime":120}]`, 2, true},
+		{"empty array is complete", `[]`, 0, true},
+		{"truncated mid-element", `[{"StopUID":"A","EstimatedTime":60},{"StopUID":"B",`, 1, false},
+		{"missing closing bracket", `[{"StopUID":"A","EstimatedTime":60}`, 1, false},
+		{"not an array", `garbage`, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dec := json.NewDecoder(strings.NewReader(tt.body))
+			eat, complete := decodeBusEtaArray(dec)
+			if complete != tt.wantComplete {
+				t.Fatalf("complete = %v, want %v", complete, tt.wantComplete)
+			}
+			if len(eat) != tt.wantLen {
+				t.Fatalf("len(eat) = %d, want %d", len(eat), tt.wantLen)
+			}
+		})
+	}
+}
 
 func TestPickBusEstimate(t *testing.T) {
 	tests := []struct {

@@ -138,13 +138,9 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 	return resp, nil
 }
 func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
-	// TDX expects a full yyyy-mm-ddTHH:mm:ss timestamp; the app sends HH:mm, so
-	// pad the seconds when they are missing.
-	timeStr := req.Time
-	if len(timeStr) == len("HH:mm") {
-		timeStr += ":00"
-	}
-	paramTime := fmt.Sprintf("%sT%s", req.Date, timeStr)
+	// Minute-granularity depart/arrival (HH:mm, no seconds):
+	// past second as an error, so a "now" departure must stay at minute
+	paramTime := fmt.Sprintf("%sT%s", req.Date, req.Time)
 
 	gc := req.Gc
 	if gc < 0 || gc > 1 {
@@ -173,12 +169,10 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 	lastTime := clampInt(req.LastMileTime, 1, 60, 10)
 
 	var apiResp tdxAPIResponse
-	resp, err := s.maasClient.R().
+	r := s.maasClient.R().
 		SetContext(ctx).
 		SetQueryParam("origin", fmt.Sprintf("%.6f,%.6f", req.FromLat, req.FromLon)).
 		SetQueryParam("destination", fmt.Sprintf("%.6f,%.6f", req.ToLat, req.ToLon)).
-		SetQueryParam("depart", paramTime).
-		SetQueryParam("arrival", paramTime).
 		SetQueryParam("gc", fmt.Sprintf("%.1f", gc)).
 		SetQueryParam("top", fmt.Sprintf("%d", top)).
 		SetQueryParam("transit", transitStr).
@@ -187,13 +181,21 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 		SetQueryParam("first_mile_time", fmt.Sprintf("%d", firstTime)).
 		SetQueryParam("last_mile_mode", fmt.Sprintf("%d", lastMode)).
 		SetQueryParam("last_mile_time", fmt.Sprintf("%d", lastTime)).
-		SetResult(&apiResp).
-		Get("/routing")
+		SetResult(&apiResp)
+	// depart and arrival are mutually exclusive. Send arrival
+	// only when the user asked to arrive by a time; otherwise send depart.
+	if req.ArriveBy {
+		r.SetQueryParam("arrival", paramTime)
+	} else {
+		r.SetQueryParam("depart", paramTime)
+	}
+	resp, err := r.Get("/routing")
 	if err != nil {
 		return nil, err
 	}
 	if !resp.IsSuccess() {
-		return nil, fmt.Errorf("TDX MaaS HTTP %d", resp.StatusCode())
+		return nil, fmt.Errorf("TDX MaaS HTTP %d for %s: %s",
+			resp.StatusCode(), resp.Request.URL, strings.TrimSpace(resp.String()))
 	}
 	return convert(ctx, s.db, s.osrmClient, &apiResp), nil
 }
