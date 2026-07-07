@@ -138,9 +138,13 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 	return resp, nil
 }
 func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
-	// Minute-granularity depart/arrival (HH:mm, no seconds):
-	// past second as an error, so a "now" departure must stay at minute
-	paramTime := fmt.Sprintf("%sT%s", req.Date, req.Time)
+	// TDX requires the full yyyy-mm-ddTHH:mm:ss format (code 40001 otherwise);
+	// the app sends HH:mm, so pad the seconds when missing.
+	timeStr := req.Time
+	if len(timeStr) == len("HH:mm") {
+		timeStr += ":00"
+	}
+	paramTime := fmt.Sprintf("%sT%s", req.Date, timeStr)
 
 	gc := req.Gc
 	if gc < 0 || gc > 1 {
