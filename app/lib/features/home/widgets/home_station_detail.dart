@@ -4,6 +4,7 @@ import 'package:wheres_the_car/data/models/near_models.dart';
 import 'package:wheres_the_car/features/bike/view/bike_station_detail_view.dart';
 import 'package:wheres_the_car/features/bus/view/bus_stop_detail_view.dart';
 import 'package:wheres_the_car/features/metro/view/metro_station_detail_view.dart';
+import 'package:wheres_the_car/features/rail/view/tra_station_detail_view.dart';
 
 /// 依站別回傳首頁第二層 sheet 要顯示的 detail 內容。
 /// Task 3-7 逐一把各 case 換成真正的 *DetailView；在那之前一律回 placeholder。
@@ -27,6 +28,10 @@ Widget stationDetailPage(NearStationViewModel station) {
         name: station.stationName,
       );
     case NearStationType.tra:
+      return TraStationDetailView(
+        stationId: station.stationId,
+        name: station.stationName,
+      );
     case NearStationType.thsr:
       return _StationDetailPlaceholder(station: station);
   }
