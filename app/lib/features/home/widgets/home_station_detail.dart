@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/data/models/near_models.dart';
+import 'package:wheres_the_car/features/bike/view/bike_station_detail_view.dart';
 import 'package:wheres_the_car/features/bus/view/bus_stop_detail_view.dart';
 
 /// 依站別回傳首頁第二層 sheet 要顯示的 detail 內容。
@@ -15,6 +16,7 @@ Widget stationDetailPage(NearStationViewModel station) {
         // 是否要在切換成員站時再平移，留待手動驗證後決定是否補上。
       );
     case NearStationType.bike:
+      return BikeStationDetailView(stationUid: station.stationId);
     case NearStationType.mrt:
     case NearStationType.tra:
     case NearStationType.thsr:
