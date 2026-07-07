@@ -1,34 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/core/powersync/powersync_service.dart';
-import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
-import 'package:wheres_the_car/data/repositories/tra_repository.dart';
+import 'package:wheres_the_car/features/rail/bloc/rail_train_bloc.dart';
+import 'package:wheres_the_car/features/rail/bloc/rail_train_event.dart';
+import 'package:wheres_the_car/features/rail/bloc/rail_train_state.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
 import 'package:wheres_the_car/shared/widgets/bookmark_button.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/route_tab_bar.dart';
-
-/// One stop on a train's timetable, normalized across TRA/THSR.
-class _Stop {
-  const _Stop(this.name, this.arrive, this.depart);
-  final String name;
-  final String arrive;
-  final String depart;
-}
-
-/// Everything the detail screen renders, loaded from real data.
-class _TrainDetail {
-  const _TrainDetail({
-    required this.stops,
-    required this.fullFare,
-  });
-  final List<_Stop> stops;
-
-  /// Adult (全票) fare in NT$, or null when the fare query has no data.
-  final int? fullFare;
-}
 
 class RailTrainScreen extends StatefulWidget {
   const RailTrainScreen({
@@ -51,139 +34,89 @@ class RailTrainScreen extends StatefulWidget {
 class _RailTrainScreenState extends State<RailTrainScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
-  late Future<_TrainDetail> _future;
-
-  bool get _isThsr => widget.type == '高鐵';
+  late final RailTrainBloc _bloc;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
-    _future = _load();
+    _bloc = RailTrainBloc(
+      type: widget.type,
+      trainNo: widget.trainNo,
+      date: widget.date,
+    )..add(const RailTrainStarted());
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    unawaited(_bloc.close());
     super.dispose();
-  }
-
-  Future<_TrainDetail> _load() async {
-    final stops = _isThsr
-        ? (await ThsrRepository.instance.stops(widget.date, widget.trainNo))
-              .map((s) => _Stop(s.stationName, s.arrivalTime, s.departureTime))
-              .toList()
-        : (await TraRepository.instance.stops(widget.date, widget.trainNo))
-              .map((s) => _Stop(s.stationName, s.arrivalTime, s.departureTime))
-              .toList();
-
-    if (stops.isEmpty) {
-      return const _TrainDetail(stops: [], fullFare: null);
-    }
-
-    return _TrainDetail(
-      stops: stops,
-      fullFare: await _loadFare(stops.first.name, stops.last.name),
-    );
-  }
-
-  /// Best-effort adult fare for the origin→destination pair. Returns null on
-  /// any failure so the timetable still renders without a fare card.
-  Future<int?> _loadFare(String originName, String destName) async {
-    try {
-      final table = _isThsr ? 'thsr_stations' : 'tra_stations';
-      final originId = await _resolveStationId(table, originName);
-      final destId = await _resolveStationId(table, destName);
-      if (originId == null || destId == null) return null;
-
-      if (_isThsr) {
-        final fare = await ThsrRepository.instance.fare(
-          widget.date,
-          originId,
-          destId,
-        );
-        return fare.price;
-      }
-      final fare = await TraRepository.instance.fare(
-        '$originId:$destId',
-        widget.date,
-      );
-      return fare.price;
-    } on Object {
-      return null;
-    }
-  }
-
-  Future<String?> _resolveStationId(String table, String name) async {
-    final rows = await PowerSyncService.instance.db.getAll(
-      'SELECT station_id FROM $table WHERE station_name = ? LIMIT 1',
-      [name],
-    );
-    if (rows.isEmpty) return null;
-    return rows.first['station_id'] as String?;
   }
 
   @override
   Widget build(BuildContext context) {
     final dateStr = widget.date.replaceAll('-', '/');
 
-    return Scaffold(
-      appBar: DetailAppBar(
-        title: '${widget.type} ${widget.trainNo}',
-        subtitle: dateStr,
-        actions: [
-          BookmarkButton(
-            routeType: widget.type,
-            routeKey: widget.trainNo,
-            routeLabel: '${widget.type} ${widget.trainNo}',
-          ),
-        ],
-      ),
-      body: FutureBuilder<_TrainDetail>(
-        future: _future,
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return ErrorStateView(
-              error: AppError.from(snapshot.error!),
-              onRetry: () => setState(() => _future = _load()),
-            );
-          }
-          if (!snapshot.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final detail = snapshot.data!;
-          if (detail.stops.isEmpty) {
-            return Center(
-              child: Text(
-                '查無此車次的停靠資訊',
-                style: AppTextStyles.bodyRegular.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-            );
-          }
-          return Column(
-            children: [
-              RouteTabBar(
-                controller: _tabController,
-                tabs: const ['時刻表', '車次詳細資訊'],
-              ),
-              Expanded(
-                child: TabBarView(
-                  controller: _tabController,
+    return BlocProvider.value(
+      value: _bloc,
+      child: Scaffold(
+        appBar: DetailAppBar(
+          title: '${widget.type} ${widget.trainNo}',
+          subtitle: dateStr,
+          actions: [
+            BookmarkButton(
+              routeType: widget.type,
+              routeKey: widget.trainNo,
+              routeLabel: '${widget.type} ${widget.trainNo}',
+            ),
+          ],
+        ),
+        body: BlocBuilder<RailTrainBloc, RailTrainState>(
+          builder: (context, state) {
+            switch (state.status) {
+              case RailTrainStatus.loading:
+                return const Center(child: CircularProgressIndicator());
+              case RailTrainStatus.error:
+                return ErrorStateView(
+                  error: state.error ?? const UnknownError(),
+                  onRetry: () => _bloc.add(const RailTrainStarted()),
+                );
+              case RailTrainStatus.empty:
+                return Center(
+                  child: Text(
+                    '查無此車次的停靠資訊',
+                    style: AppTextStyles.bodyRegular.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              case RailTrainStatus.loaded:
+                return Column(
                   children: [
-                    _TimetableTab(stops: detail.stops),
-                    _InfoTab(
-                      type: widget.type,
-                      trainNo: widget.trainNo,
-                      detail: detail,
+                    RouteTabBar(
+                      controller: _tabController,
+                      tabs: const ['時刻表', '車次詳細資訊'],
+                    ),
+                    Expanded(
+                      child: TabBarView(
+                        controller: _tabController,
+                        children: [
+                          _TimetableTab(stops: state.stops),
+                          _InfoTab(
+                            type: widget.type,
+                            trainNo: widget.trainNo,
+                            stops: state.stops,
+                            fullFare: state.fullFare,
+                          ),
+                        ],
+                      ),
                     ),
                   ],
-                ),
-              ),
-            ],
-          );
-        },
+                );
+            }
+          },
+        ),
       ),
     );
   }
@@ -192,7 +125,7 @@ class _RailTrainScreenState extends State<RailTrainScreen>
 class _TimetableTab extends StatelessWidget {
   const _TimetableTab({required this.stops});
 
-  final List<_Stop> stops;
+  final List<RailTrainStop> stops;
 
   @override
   Widget build(BuildContext context) {
@@ -223,7 +156,7 @@ class _TimetableTab extends StatelessWidget {
     );
   }
 
-  Widget _times(_Stop stop, ColorScheme cs) {
+  Widget _times(RailTrainStop stop, ColorScheme cs) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
@@ -258,12 +191,14 @@ class _InfoTab extends StatelessWidget {
   const _InfoTab({
     required this.type,
     required this.trainNo,
-    required this.detail,
+    required this.stops,
+    required this.fullFare,
   });
 
   final String type;
   final String trainNo;
-  final _TrainDetail detail;
+  final List<RailTrainStop> stops;
+  final int? fullFare;
 
   static const TextStyle _labelStyle = AppTextStyles.bodyLarge;
   static const TextStyle _valueStyle = AppTextStyles.heading2;
@@ -279,15 +214,15 @@ class _InfoTab extends StatelessWidget {
         spacing: 16,
         children: [
           _buildTrainInfo(cs),
-          if (detail.fullFare != null) _buildFares(cs, detail.fullFare!),
+          if (fullFare != null) _buildFare(cs, fullFare!),
         ],
       ),
     );
   }
 
   Widget _buildTrainInfo(ColorScheme cs) {
-    final origin = detail.stops.first;
-    final dest = detail.stops.last;
+    final origin = stops.first;
+    final dest = stops.last;
     final departTime = origin.depart.isNotEmpty ? origin.depart : origin.arrive;
     final arriveTime = dest.arrive.isNotEmpty ? dest.arrive : dest.depart;
 
@@ -347,11 +282,7 @@ class _InfoTab extends StatelessWidget {
     );
   }
 
-  Widget _buildFares(ColorScheme cs, int fullFare) {
-    // ponytail: API returns the adult fare only; child/disabled/companion are
-    // half fare (floor) by TRA/THSR regulation. Add per-type queries if the
-    // agencies ever diverge from the 半票 rule.
-    final halfFare = fullFare ~/ 2;
+  Widget _buildFare(ColorScheme cs, int fullFare) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 12,
@@ -377,34 +308,6 @@ class _InfoTab extends StatelessWidget {
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
-            ],
-          ),
-        ),
-        AppCard.filled(
-          child: Wrap(
-            spacing: 16,
-            runSpacing: 10,
-            children: [
-              for (final label in ['孩童', '愛心', '愛陪'])
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  spacing: 6,
-                  children: [
-                    Text(
-                      label,
-                      style: AppTextStyles.bodySmall.copyWith(
-                        color: cs.onSurfaceVariant,
-                      ),
-                    ),
-                    Text(
-                      '\$$halfFare',
-                      style: AppTextStyles.bodySmall.copyWith(
-                        color: cs.onSurface,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ),
             ],
           ),
         ),
