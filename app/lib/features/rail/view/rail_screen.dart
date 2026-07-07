@@ -9,6 +9,7 @@ import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/powersync/powersync_service.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_bloc.dart';
@@ -103,6 +104,7 @@ class _RailScreenState extends State<RailScreen> {
         _originId = originId;
         _destId = destId;
       });
+      _dispatchSearch();
     }
   }
 
@@ -180,15 +182,6 @@ class _RailScreenState extends State<RailScreen> {
                 color: cs.surface,
                 child: BlocBuilder<RailBloc, RailState>(
                   builder: (context, state) {
-                    if (state is RailTimetableLoading) {
-                      return ListView(
-                        padding: EdgeInsets.fromLTRB(16, topPad + 68, 16, 16),
-                        children: const [
-                          SizedBox(height: 12),
-                          _ShimmerTrainList(),
-                        ],
-                      );
-                    }
                     if (state is RailError) {
                       return ListView(
                         padding: EdgeInsets.fromLTRB(16, topPad + 68, 16, 16),
@@ -201,7 +194,13 @@ class _RailScreenState extends State<RailScreen> {
                       );
                     }
                     if (state is! RailTimetableLoaded) {
-                      return const SizedBox.shrink();
+                      return ListView(
+                        padding: EdgeInsets.fromLTRB(16, topPad + 68, 16, 16),
+                        children: const [
+                          SizedBox(height: 12),
+                          _ShimmerTrainList(),
+                        ],
+                      );
                     }
                     final items = [
                       for (final item in state.traItems)
@@ -221,6 +220,17 @@ class _RailScreenState extends State<RailScreen> {
                           arrive: item.arrivalTime,
                         ),
                     ];
+                    if (items.isEmpty) {
+                      return ListView(
+                        padding: EdgeInsets.fromLTRB(16, topPad + 68, 16, 16),
+                        children: [
+                          ErrorStateView(
+                            error: const NotFoundError(),
+                            onRetry: _dispatchSearch,
+                          ),
+                        ],
+                      );
+                    }
                     return ValueListenableBuilder<double?>(
                       valueListenable: _sheetController,
                       builder: (context, offset, _) {
@@ -370,7 +380,14 @@ class _RailScreenState extends State<RailScreen> {
                       onDestTap: _pickDest,
                       onSearch: () {
                         _dispatchSearch();
-                        Navigator.of(context).pop();
+                        // Collapse the inline sheet to reveal results. Never
+                        // pop the navigator here — the sheet is part of this
+                        // screen's Stack, so popping unwinds back to home.
+                        unawaited(
+                          _sheetController.animateTo(
+                            const SheetOffset.proportionalToViewport(0.15),
+                          ),
+                        );
                       },
                     ),
                   ),

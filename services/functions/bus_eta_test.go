@@ -33,6 +33,23 @@ func TestDecodeBusEtaArray(t *testing.T) {
 	}
 }
 
+// Every city whose bus ETA must work has to resolve to a non-empty UID prefix.
+// An empty prefix makes busstaticmp match every city's stops (LIKE '%'), whose
+// blank cross-city rows then clobber the shared, non-city-scoped bus_eta_route
+// keys — the Taoyuan-route-blanks-out bug. Guards against a citymap rename
+// silently dropping a served city back to the empty prefix.
+func TestServedCityPrefixesResolve(t *testing.T) {
+	mustServe := []string{
+		"Taipei", "NewTaipei", "Taoyuan", "Taichung", "Tainan", "Kaohsiung",
+		"Keelung", "Hsinchu", "HsinchuCounty", "Chiayi", "ChiayiCounty", "InterCity",
+	}
+	for _, c := range mustServe {
+		if citymap[c] == "" {
+			t.Errorf("city %q has empty prefix: its bus ETA would load the nationwide static map and clobber other cities' route keys", c)
+		}
+	}
+}
+
 func TestPickBusEstimate(t *testing.T) {
 	tests := []struct {
 		name string

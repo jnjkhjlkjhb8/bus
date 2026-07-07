@@ -126,6 +126,10 @@ func processBusEtaCity(
 ) {
 	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=city_start", city)
 	prefix := citymap[city]
+	if prefix == "" {
+		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_prefix", city)
+		return
+	}
 	mp, cached := cachedBusStaticMap(prefix)
 	if !cached {
 		var err error
