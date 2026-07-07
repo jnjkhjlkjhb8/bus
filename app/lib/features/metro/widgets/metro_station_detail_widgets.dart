@@ -1,14 +1,18 @@
-part of '../view/metro_screen.dart';
+part of '../view/metro_station_detail_view.dart';
 
 class _StationDetailSheet extends StatelessWidget {
   const _StationDetailSheet({
+    required this.system,
     required this.station,
-    required this.onClose,
-    super.key,
+    this.onClose,
   });
 
+  final String system;
   final MetroMapStation station;
-  final VoidCallback onClose;
+
+  /// 關閉鈕的回呼；省略時不顯示關閉鈕（第二層 sheet 的關閉由 PagedSheet
+  /// 返回手勢處理）。`/metro` 地圖內的站點面板仍會傳入此參數以顯示關閉鈕。
+  final VoidCallback? onClose;
 
   List<String> _lines() =>
       station.id.split('_').map((p) => p.replaceAll(_digits, '')).toList();
@@ -20,7 +24,7 @@ class _StationDetailSheet extends StatelessWidget {
 
     return RefreshIndicator(
       onRefresh: () async {
-        context.read<MetroEtaBloc>().add(LoadMetroEta('TRTC', station.id));
+        context.read<MetroEtaBloc>().add(LoadMetroEta(system, station.id));
       },
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
@@ -43,11 +47,12 @@ class _StationDetailSheet extends StatelessWidget {
                 ),
               ),
               _MetroFavButton(station: station),
-              IconButton(
-                icon: const Icon(Icons.close_rounded),
-                onPressed: onClose,
-                visualDensity: VisualDensity.compact,
-              ),
+              if (onClose != null)
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: onClose,
+                  visualDensity: VisualDensity.compact,
+                ),
             ],
           ),
           const SizedBox(height: 12),

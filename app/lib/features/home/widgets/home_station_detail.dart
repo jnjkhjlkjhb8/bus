@@ -3,6 +3,7 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/data/models/near_models.dart';
 import 'package:wheres_the_car/features/bike/view/bike_station_detail_view.dart';
 import 'package:wheres_the_car/features/bus/view/bus_stop_detail_view.dart';
+import 'package:wheres_the_car/features/metro/view/metro_station_detail_view.dart';
 
 /// 依站別回傳首頁第二層 sheet 要顯示的 detail 內容。
 /// Task 3-7 逐一把各 case 換成真正的 *DetailView；在那之前一律回 placeholder。
@@ -18,6 +19,13 @@ Widget stationDetailPage(NearStationViewModel station) {
     case NearStationType.bike:
       return BikeStationDetailView(stationUid: station.stationId);
     case NearStationType.mrt:
+      // TRTC 為固定值：NearStationViewModel 未帶捷運系統欄位，
+      // 且目前 app 內僅支援台北捷運 (TRTC)；等有第二個系統再擴充 model。
+      return MetroStationDetailView(
+        system: 'TRTC',
+        stationId: station.stationId,
+        name: station.stationName,
+      );
     case NearStationType.tra:
     case NearStationType.thsr:
       return _StationDetailPlaceholder(station: station);
