@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -48,7 +47,8 @@ func pickBusEstimate(prev, next rawBusEsimated) rawBusEsimated {
 // TDX ETA feed are skipped inline. It blocks until every city finishes.
 func busEta(
 	ctx context.Context,
-	client *resty.Client,
+	fetch boundFetch,
+	sink liveSink,
 	rc *redis.Client,
 	db *pgxpool.Pool,
 	dispatcher *notificationDispatcher,
@@ -65,49 +65,22 @@ func busEta(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			processBusEtaCity(ctx, client, rc, db, city, dispatcher)
+			processBusEtaCity(ctx, fetch, sink, rc, db, city, dispatcher)
 		}(city)
 	}
 	wg.Wait()
 	log.Infof("[BUS_ETA] action=Bus_eta event=complete")
 }
 
-// refreshBusEtaTTLs re-arms the 180s TTL on a city's cached ETA snapshots.
-// Called when TDX answers 304 Not-Modified: the cached arrival instants are
-// still valid, so the snapshots must outlive the polling gap instead of
-// expiring while TDX keeps reporting "unchanged".
-func refreshBusEtaTTLs(rc *redis.Client, city string) {
-	patterns := []string{
-		fmt.Sprintf("bus_eta_station:%s:*", city),
-		fmt.Sprintf("bus_eta_route:%s*", citymap[city]),
+// busEtaTTLPatterns returns the station-group and route ETA key patterns for one
+// city, paired with the 180s window to re-arm. It is the per-city input to the
+// sink's 304→TTL refresh (CONTEXT.md): the cached arrival instants stay valid
+// across a 304, so their snapshots must outlive the polling gap.
+func busEtaTTLPatterns(city string) []ttlPattern {
+	return []ttlPattern{
+		{pattern: shared.BusStationEtaPattern(city), ttl: busLiveTTL},
+		{pattern: shared.BusRouteEtaPattern(citymap[city]), ttl: busLiveTTL},
 	}
-	total := 0
-	for _, pattern := range patterns {
-		var cursor uint64
-		for {
-			keys, next, err := rc.Scan(cursor, pattern, 500).Result()
-			if err != nil {
-				log.Infof("[BUS_ETA] action=ttl_refresh city=%s event=scan_error error=%v", city, err)
-				return
-			}
-			if len(keys) > 0 {
-				pipe := rc.Pipeline()
-				for _, k := range keys {
-					pipe.Expire(k, 180*time.Second)
-				}
-				if _, err := pipe.Exec(); err != nil {
-					log.Infof("[BUS_ETA] action=ttl_refresh city=%s event=expire_error error=%v", city, err)
-					return
-				}
-				total += len(keys)
-			}
-			cursor = next
-			if cursor == 0 {
-				break
-			}
-		}
-	}
-	log.Infof("[BUS_ETA] action=ttl_refresh city=%s event=success keys=%d", city, total)
 }
 
 // processBusEtaCity builds and publishes one city's bus arrivals. It joins the
@@ -120,7 +93,8 @@ func refreshBusEtaTTLs(rc *redis.Client, city string) {
 // as SET snapshots (180s TTL) and PUBLISH events, keyed per station and per route.
 func processBusEtaCity(
 	ctx context.Context,
-	client *resty.Client,
+	fetch boundFetch,
+	sink liveSink,
 	rc *redis.Client,
 	db *pgxpool.Pool,
 	city string,
@@ -149,12 +123,12 @@ func processBusEtaCity(
 	} else {
 		url = fmt.Sprintf("/v2/Bus/EstimatedTimeOfArrival/City/%s", city)
 	}
-	dec, comp, err, flipopen := callApi(client, rc, url, "bus_EstimatedTimeOfArrival"+city)
+	dec, comp, flipopen, err := fetch(ctx, url, "bus_EstimatedTimeOfArrival"+city)
 	if err != nil || !comp {
 		if err == nil {
 			// 304 Not-Modified: the cached arrival instants are still valid, so
 			// re-arm their TTL instead of letting the snapshots expire mid-validity.
-			refreshBusEtaTTLs(rc, city)
+			sink.refreshTTL(busEtaTTLPatterns(city))
 		}
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_eta error=%v", city, err)
 		return
@@ -174,12 +148,12 @@ func processBusEtaCity(
 	} else {
 		url = fmt.Sprintf("/v2/Bus/RealTimeByFrequency/City/%s", city)
 	}
-	dec, comp, err, flipopen = callApi(client, rc, url, "bus_RealTimeByFrequency"+city)
+	dec, comp, flipopen, err = fetch(ctx, url, "bus_RealTimeByFrequency"+city)
 	if err != nil || !comp {
 		if err == nil {
 			// decode; TTL re-arm keeps the previous snapshot alive, merge the
 			// fresh ETAs here if that staleness ever matters.
-			refreshBusEtaTTLs(rc, city)
+			sink.refreshTTL(busEtaTTLPatterns(city))
 		}
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)
 		return
@@ -520,20 +494,20 @@ func processBusEtaCity(
 			ArrivalUnix:   arrivalUnix,
 		})
 	}
-	pipe := rc.Pipeline()
+	pipe := sink.pipeline()
 	for groupUID, pb := range stations {
 		data, _ := proto.Marshal(pb)
-		key := fmt.Sprintf("bus_eta_station:%s:%s", city, groupUID)
-		pipe.Set(key, data, 180*time.Second)
+		key := shared.BusStationEtaKey(city, groupUID)
+		pipe.Set(key, data, busLiveTTL)
 		pipe.Publish(key, data)
 	}
 	for uid, pb := range routes {
 		data, _ := proto.Marshal(pb)
-		key := busRouteEtaKey(uid)
-		pipe.Set(key, data, 180*time.Second)
+		key := shared.BusRouteEtaKey(uid)
+		pipe.Set(key, data, busLiveTTL)
 		pipe.Publish(key, data)
 	}
-	_, err = pipe.Exec()
+	err = pipe.Exec()
 	if err != nil {
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=redis_error error=%v station_count=%d route_count=%d eat_count=%d posit_count=%d", city, err, len(stations), len(routes), len(eat), len(posit))
 	} else {

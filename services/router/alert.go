@@ -1,10 +1,9 @@
 package main
 
 import (
-	"fmt"
-
 	"github.com/go-redis/redis"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/grpc"
 )
 
@@ -21,27 +20,27 @@ type AlertServer struct {
 // interpolated into the Redis channel name, so an empty city subscribes to a
 // channel that never receives messages.
 func (s *AlertServer) BusNews(in *pb.Alert_Bus_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	key := fmt.Sprintf("mqtt:v2:Bus:News:City:%s", in.City)
+	key := shared.AlertBusNewsChannel(in.City)
 	return streamAlert(s.rc, key, stream)
 }
 
 // MetroAlert streams metro alerts for the requested rail system (e.g. TRTC,
 // KRTC). The system code is interpolated into the Redis channel name.
 func (s *AlertServer) MetroAlert(in *pb.Alert_Metro_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	key := fmt.Sprintf("mqtt:v2:Rail:Metro:Alert:%s", in.System)
+	key := shared.AlertMetroChannel(in.System)
 	return streamAlert(s.rc, key, stream)
 }
 
 // TraAlert streams TRA (conventional rail) alerts. The request carries no
 // parameters; all TRA alerts share one channel.
 func (s *AlertServer) TraAlert(_ *pb.Alert_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	return streamAlert(s.rc, "mqtt:v3:Rail:TRA:Alert", stream)
+	return streamAlert(s.rc, shared.AlertTraChannel, stream)
 }
 
 // ThsrAlert streams THSR (high-speed rail) alerts. The request carries no
 // parameters; all THSR alerts share one channel.
 func (s *AlertServer) ThsrAlert(_ *pb.Alert_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	return streamAlert(s.rc, "mqtt:v2:Rail:THSR:AlertInfo", stream)
+	return streamAlert(s.rc, shared.AlertThsrChannel, stream)
 }
 
 // streamAlert bridges one alert channel to a gRPC stream: the mirrored

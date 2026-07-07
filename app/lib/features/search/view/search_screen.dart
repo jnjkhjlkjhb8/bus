@@ -15,12 +15,18 @@ import 'package:wheres_the_car/features/search/genui/view/genui_sheet.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
-import 'package:wheres_the_car/shared/widgets/line_badge.dart';
 import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
 
 part '../widgets/search_ai_button.dart';
 part '../widgets/search_result_row.dart';
 part '../widgets/recent_searches.dart';
+
+String _todayIso() {
+  final now = DateTime.now();
+  final m = now.month.toString().padLeft(2, '0');
+  final d = now.day.toString().padLeft(2, '0');
+  return '${now.year}-$m-$d';
+}
 
 void _navigateToResult(BuildContext context, SearchResult result) {
   unawaited(HapticService.instance.lightTap());
@@ -64,6 +70,7 @@ void _navigateToResult(BuildContext context, SearchResult result) {
             builder: (_) => RailTrainScreen(
               type: result.type == SearchResultType.traTrain ? '台鐵' : '高鐵',
               trainNo: result.uid,
+              date: _todayIso(),
             ),
           ),
         ),

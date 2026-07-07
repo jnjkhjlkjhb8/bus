@@ -45,6 +45,7 @@ sealed class EtaStatus {
   factory EtaStatus.arriving() = _Arriving;
   factory EtaStatus.approaching() = _Approaching;
   factory EtaStatus.minutes(int m) = _Minutes;
+  factory EtaStatus.label(String text) = _Label;
   factory EtaStatus.unknown() = _Unknown;
 }
 
@@ -59,6 +60,13 @@ final class _Approaching extends EtaStatus {
 final class _Minutes extends EtaStatus {
   const _Minutes(this.value);
   final int value;
+}
+
+/// A service-state label (e.g. 尚未發車, 末班已過, or a scheduled clock time)
+/// carried verbatim from the one status-label mapping in eta_format.dart.
+final class _Label extends EtaStatus {
+  const _Label(this.text);
+  final String text;
 }
 
 final class _Unknown extends EtaStatus {
@@ -202,6 +210,13 @@ class EtaValue extends StatelessWidget {
             style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
           ),
         ],
+      ),
+      _Label(:final text) => Text(
+        text,
+        style: AppTextStyles.bodyLarge.copyWith(
+          fontWeight: FontWeight.w600,
+          color: cs.onSurfaceVariant,
+        ),
       ),
       _Unknown() => Text(
         '—',

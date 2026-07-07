@@ -251,6 +251,7 @@ class _RailScreenState extends State<RailScreen> {
                                   ),
                                   origin: state.originName,
                                   destination: state.destName,
+                                  date: state.date,
                                 ),
                               );
                             },

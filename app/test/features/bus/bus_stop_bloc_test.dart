@@ -20,10 +20,10 @@ void main() {
       arrivalsResult: const [
         BusStopArrival(
           stationId: 'stop-1',
+          subRouteUid: 'sub-307',
           routeName: '307',
           destination: '板橋',
-          state: BusArrivalState.scheduled,
-          minutes: 3,
+          estimateSeconds: 180,
         ),
       ],
     );

@@ -13,6 +13,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -812,9 +813,9 @@ func loadThsrFare(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *r
 // builds per-station live boards, merging in those delays, and caches each under
 // tra:liveboard:<stationID>. All cached values carry a 3-minute TTL so stale data
 // expires. A missing delay feed is logged but does not block the live board.
-func traEta(client *resty.Client, rc *redis.Client) {
+func traEta(ctx context.Context, fetch boundFetch, sink liveSink, rc *redis.Client) {
 	log.Infof("[TRA_ETA] action=tra_eta event=start")
-	dec, comp, err, flipopen := callApi(client, rc, "/v2/Rail/TRA/LiveTrainDelay", "tra_delay")
+	dec, comp, flipopen, err := fetch(ctx, "/v2/Rail/TRA/LiveTrainDelay", "tra_delay")
 	if err == nil && comp {
 		func() {
 			defer flipopen()
@@ -823,20 +824,20 @@ func traEta(client *resty.Client, rc *redis.Client) {
 					Delay: make(map[string]int32),
 				}
 				count := 0
-				pipe := rc.Pipeline()
+				pipe := sink.pipeline()
 				for dec.More() {
 					var temp traDelay
 					if err := dec.Decode(&temp); err == nil {
 						count++
 						data.Delay[temp.TrainNo] = int32(temp.DelayTime)
-						pipe.HSet("tra:delay", temp.TrainNo, temp.DelayTime)
+						pipe.HSet(shared.TraDelayHashKey, temp.TrainNo, temp.DelayTime)
 					}
 				}
 				bytes, _ := proto.Marshal(data)
-				pipe.Set("tra:delay:all", bytes, 3*time.Minute)
-				pipe.Publish("tra:delay:all", string(bytes))
-				pipe.Expire("tra:delay", 3*time.Minute)
-				_, pipErr := pipe.Exec()
+				pipe.Set(shared.TraDelayAllKey, bytes, 3*time.Minute)
+				pipe.Publish(shared.TraDelayAllKey, string(bytes))
+				pipe.Expire(shared.TraDelayHashKey, 3*time.Minute)
+				pipErr := pipe.Exec()
 				if pipErr != nil {
 					log.Infof("[TRA_ETA] action=tra_eta event=delay_redis_error error=%v", pipErr)
 				} else {
@@ -845,9 +846,10 @@ func traEta(client *resty.Client, rc *redis.Client) {
 			}
 		}()
 	} else {
+		// On a 304, boundFetch has already re-armed the delay keys' TTL.
 		log.Infof("[TRA_ETA] action=tra_eta event=skip_delay reason=api_error")
 	}
-	dec, comp, err, flipopen = callApi(client, rc, "/v2/Rail/TRA/LiveBoard", "tra_liveboard")
+	dec, comp, flipopen, err = fetch(ctx, "/v2/Rail/TRA/LiveBoard", "tra_liveboard")
 	func() {
 		if flipopen != nil {
 			defer flipopen()
@@ -858,7 +860,7 @@ func traEta(client *resty.Client, rc *redis.Client) {
 		if _, err := dec.Token(); err != nil {
 			return
 		}
-		delays, _ := rc.HGetAll("tra:delay").Result()
+		delays, _ := rc.HGetAll(shared.TraDelayHashKey).Result()
 		res := make(map[string][]*models.Tra_LiveBoard)
 		for dec.More() {
 			var temp traLiveboard
@@ -885,7 +887,7 @@ func traEta(client *resty.Client, rc *redis.Client) {
 				res[temp.StationID] = append(res[temp.StationID], pb)
 			}
 		}
-		pipe := rc.Pipeline()
+		pipe := sink.pipeline()
 		for a, b := range res {
 			pb := &models.Tra_LiveBoards{
 				StationId: a,
@@ -895,9 +897,9 @@ func traEta(client *resty.Client, rc *redis.Client) {
 			if err != nil {
 				continue
 			}
-			pipe.Set(fmt.Sprintf("tra:liveboard:%s", a), pbs, 3*time.Minute)
+			pipe.Set(shared.TraLiveboardKey(a), pbs, 3*time.Minute)
 		}
-		_, err = pipe.Exec()
+		_ = pipe.Exec()
 	}()
 	log.Infof("[TRA_ETA] action=tra_eta event=complete")
 }

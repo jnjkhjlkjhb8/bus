@@ -10,6 +10,7 @@ class _TrainCard extends StatefulWidget {
     required this.duration,
     required this.origin,
     required this.destination,
+    required this.date,
   });
 
   final String type;
@@ -20,6 +21,7 @@ class _TrainCard extends StatefulWidget {
   final String duration;
   final String origin;
   final String destination;
+  final String date;
 
   @override
   State<_TrainCard> createState() => _TrainCardState();
@@ -50,6 +52,7 @@ class _TrainCardState extends State<_TrainCard> {
               builder: (_) => RailTrainScreen(
                 type: widget.type,
                 trainNo: widget.number,
+                date: widget.date,
               ),
             ),
           ),

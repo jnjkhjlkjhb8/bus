@@ -131,6 +131,7 @@ const NearStation$json = {
     {'1': 'PositionLat', '3': 6, '4': 1, '5': 1, '10': 'PositionLat'},
     {'1': 'walk', '3': 7, '4': 1, '5': 5, '10': 'walk'},
     {'1': 'distance', '3': 8, '4': 1, '5': 5, '10': 'distance'},
+    {'1': 'routed', '3': 9, '4': 1, '5': 8, '10': 'routed'},
   ],
 };
 
@@ -140,4 +141,4 @@ final $typed_data.Uint8List nearStationDescriptor = $convert.base64Decode(
     'RhdGlvbklEEiAKC1N0YXRpb25OYW1lGAMgASgJUgtTdGF0aW9uTmFtZRISCgRjaXR5GAQgASgJ'
     'UgRjaXR5EiAKC1Bvc2l0aW9uTG9uGAUgASgBUgtQb3NpdGlvbkxvbhIgCgtQb3NpdGlvbkxhdB'
     'gGIAEoAVILUG9zaXRpb25MYXQSEgoEd2FsaxgHIAEoBVIEd2FsaxIaCghkaXN0YW5jZRgIIAEo'
-    'BVIIZGlzdGFuY2U=');
+    'BVIIZGlzdGFuY2USFgoGcm91dGVkGAkgASgIUgZyb3V0ZWQ=');

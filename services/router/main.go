@@ -9,7 +9,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -26,14 +25,6 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
-
-// busRouteEtaKey returns the Redis key holding (and channel publishing) a bus
-// route's live ETA. The UID is used as-is: canonical subroute identity is
-// produced at the 03:30 load (ADR-0006), so requests arrive already canonical
-// and the router does no normalization.
-func busRouteEtaKey(subRouteUID string) string {
-	return fmt.Sprintf("bus_eta_route:%s", subRouteUID)
-}
 
 func usableBusEtaPayload(data []byte) bool {
 	return len(data) > 0

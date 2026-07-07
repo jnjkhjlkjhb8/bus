@@ -74,11 +74,11 @@ services:
     env_file: ${BUS_ENV_FILE:-./.env}
     environment:
       TZ: Asia/Taipei
-      GOMEMLIMIT: ${FUNCTIONS_GOMEMLIMIT:-315MiB}
+      GOMEMLIMIT: ${FUNCTIONS_GOMEMLIMIT:-896MiB}
       REDIS_ADDR: redis:6379
     volumes:
       - ./secrets:/run/secrets:ro
-    mem_limit: ${FUNCTIONS_MEM_LIMIT:-350m}
+    mem_limit: ${FUNCTIONS_MEM_LIMIT:-1g}
     depends_on:
       redis:
         condition: service_healthy

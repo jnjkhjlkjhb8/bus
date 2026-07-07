@@ -369,9 +369,10 @@ class _GoMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Center(
+    return Align(
+      alignment: Alignment.topCenter,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24),
+        padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [

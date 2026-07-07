@@ -114,7 +114,7 @@ type tdxAPIResponse struct {
 	} `json:"data"`
 }
 
-func (s *MaasServer) plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
+func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
 	cacheKey := maasKey(req)
 	if cached, err := s.rc.Get(cacheKey).Bytes(); err == nil {
 		var resp pb.MaasPlanResponse

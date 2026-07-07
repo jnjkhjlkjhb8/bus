@@ -97,12 +97,6 @@ const busScheduleInsertSQL = `INSERT INTO bus_schedule (sub_route_uid, direction
 				SELECT uid, dir, type, id, floor, seq, stopuid, stopname, arrival::time, departure::time, sdays, NOW()
 				FROM temp_bus`
 
-// busRouteEtaKey returns the Redis key holding (and the channel publishing) the
-// per-subroute ETA snapshot consumed by the router's route-arrival stream.
-func busRouteEtaKey(subRouteUID string) string {
-	return fmt.Sprintf("bus_eta_route:%s", subRouteUID)
-}
-
 // rawBusRoute decodes a TDX Bus/Route element: a route and its per-direction
 // subroutes, operators, and first/last service times.
 type rawBusRoute struct {
@@ -413,7 +407,7 @@ func loadBusDailyTimetable(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool
 			log.Infof("[bus] action=bus_dailyroute subRouteUID=%s event=marshal_error error=%v", subRouteUID, err)
 			continue
 		}
-		pipe.Set(fmt.Sprintf("bus_daily_timetable:%s", subRouteUID), pb, 23*time.Hour+30*time.Minute)
+		pipe.Set(shared.BusDailyTimetableKey(subRouteUID), pb, 23*time.Hour+30*time.Minute)
 	}
 	_, _ = pipe.Exec()
 	log.Infof("[BUS] action=bus_dailyroute event=complete city=%s", city)

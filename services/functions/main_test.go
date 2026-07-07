@@ -21,14 +21,6 @@ func TestMask2(t *testing.T) {
 	}
 }
 
-func TestBusRouteEtaKey(t *testing.T) {
-	got := busRouteEtaKey("THB1234")
-	want := "bus_eta_route:THB1234"
-	if got != want {
-		t.Fatalf("busRouteEtaKey() = %q, want %q", got, want)
-	}
-}
-
 func TestBusSubroutesUpsertDeduplicatesConflictKeys(t *testing.T) {
 	if !strings.Contains(busSubroutesUpsertSQL, "SELECT DISTINCT ON (uid, d)") {
 		t.Fatalf("bus_subroutes upsert SQL missing DISTINCT ON dedup")

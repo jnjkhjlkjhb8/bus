@@ -3,6 +3,7 @@ import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 import 'package:wheres_the_car/data/models/eta_format.dart';
 
 enum BusArrivalStatus { arriving, approaching, minutes, unknown }
+
 class BusVehiclePosition extends Equatable {
   const BusVehiclePosition({
     required this.plate,
@@ -44,6 +45,7 @@ class BusStopEtaViewModel extends Equatable {
   final List<BusVehiclePosition> vehicles;
 
   int get estimateMinutes => etaCeilMinutes(estimateSeconds);
+
   /// Re-derives [estimateSeconds] from [arrivalUnix] against [now] so the
   /// displayed countdown decays between server frames. When [arrivalUnix] is 0
   /// the server-sent [estimateSeconds] is kept unchanged. Negatives clamp to 0
@@ -102,16 +104,6 @@ class BusStopEtaViewModel extends Equatable {
   ];
 }
 
-enum BusArrivalState { arriving, scheduled, unknown }
-
-/// The one stop-arrival state mapping, shared by decode and local decay.
-BusArrivalState busArrivalStateFor(int stopStatus, int? minutes) =>
-    switch (stopStatus) {
-      0 when minutes != null => BusArrivalState.scheduled,
-      1 => BusArrivalState.arriving,
-      _ => BusArrivalState.unknown,
-    };
-
 /// A member stop of a station group, resolved to the fields the stop screen
 /// reads. A validated domain type: no proto leaks past the decoder.
 class BusStationMember {
@@ -130,49 +122,73 @@ class BusStationMember {
   final double lon;
 }
 
-/// One route's arrival at a stop. [minutes] and [state] are derived from
-/// [arrivalUnix] against wall-clock time; [decayed] re-derives them locally so
-/// the countdown stays accurate between server frames.
+/// One route's arrival at a member stop of a station group. The countdown and
+/// every display label derive from [estimateSeconds] + [stopStatus] through the
+/// one shared mapping in eta_format.dart; [decayed] re-derives the estimate
+/// from [arrivalUnix] locally so the countdown stays accurate between frames.
 class BusStopArrival {
   const BusStopArrival({
     required this.stationId,
+    required this.subRouteUid,
     required this.routeName,
     required this.destination,
-    required this.state,
-    this.minutes,
+    required this.estimateSeconds,
+    this.nextBusTime = '',
     this.stopStatus = 0,
     this.arrivalUnix = 0,
   });
 
   final String stationId;
+  final String subRouteUid;
   final String routeName;
   final String destination;
-  final BusArrivalState state;
-  final int? minutes;
+  final int estimateSeconds;
+  final String nextBusTime;
 
-  /// TDX StopStatus, kept so [decayed] can re-derive [state] locally.
+  /// TDX StopStatus (0 = normal, 1 = not departed, 2 = traffic control,
+  /// 3 = last bus passed, 4 = not operating today).
   final int stopStatus;
 
   /// Absolute arrival instant (Unix seconds), or 0 when the server sent none.
   final int arrivalUnix;
 
-  /// Re-derives [minutes] and [state] from [arrivalUnix] against [now] so the
+  /// Remaining whole minutes (ceil), or null when no positive estimate exists.
+  int? get minutes {
+    final m = etaCeilMinutes(estimateSeconds);
+    return m > 0 ? m : null;
+  }
+
+  BusStopDisplayStatus get displayStatus => busStopDisplayStatus(
+    estimateSeconds: estimateSeconds,
+    stopStatus: stopStatus,
+  );
+
+  /// User-facing label ('2分', '進站中', a clock time, or a service state), or
+  /// null when nothing is known.
+  String? get displayLabel => busStopDisplayLabel(
+    estimateSeconds: estimateSeconds,
+    stopStatus: stopStatus,
+    nextBusTime: nextBusTime,
+  );
+
+  bool get isArriving => displayStatus == BusStopDisplayStatus.arriving;
+
+  /// Re-derives [estimateSeconds] from [arrivalUnix] against [now] so the
   /// countdown decays between server pushes. Leaves the arrival unchanged when
   /// no absolute instant was sent.
   BusStopArrival decayed(DateTime now) {
     if (arrivalUnix <= 0) return this;
-    final seconds = etaRemainingSeconds(
-      arrivalUnix: arrivalUnix,
-      serverEstimateSeconds: 0,
-      now: now,
-    );
-    final mins = seconds > 0 ? etaCeilMinutes(seconds) : null;
     return BusStopArrival(
       stationId: stationId,
+      subRouteUid: subRouteUid,
       routeName: routeName,
       destination: destination,
-      state: busArrivalStateFor(stopStatus, mins),
-      minutes: mins,
+      estimateSeconds: etaRemainingSeconds(
+        arrivalUnix: arrivalUnix,
+        serverEstimateSeconds: estimateSeconds,
+        now: now,
+      ),
+      nextBusTime: nextBusTime,
       stopStatus: stopStatus,
       arrivalUnix: arrivalUnix,
     );

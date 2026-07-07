@@ -13,6 +13,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -301,13 +302,14 @@ func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
 // pipelines a protobuf MrtLive per (station, line) under mrt_live:... with a
 // 2-minute TTL and publishes per-station updates for live streaming. NTMC is
 // excluded (no live board). Per-system failures are logged and skipped.
-func mrtEta(client *resty.Client, rc *redis.Client) {
+func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 	log.Infof("[MRT_ETA] action=mrt_eta event=start")
 	var systems = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
 	for _, system := range systems {
 		log.Infof("[MRT_ETA] action=mrt_eta system=%s event=system_start", system)
-		dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Rail/Metro/LiveBoard/%s", system), "mrt_LiveBoard"+system)
+		dec, comp, flipopen, err := fetch(ctx, fmt.Sprintf("/v2/Rail/Metro/LiveBoard/%s", system), "mrt_LiveBoard"+system)
 		if !comp {
+			// A 304 has already refreshed the cached arrivals' TTL via boundFetch.
 			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=skip reason=no updated", system)
 			continue
 		}
@@ -322,7 +324,7 @@ func mrtEta(client *resty.Client, rc *redis.Client) {
 		}
 		func() {
 			defer flipopen()
-			pipe := rc.Pipeline()
+			pipe := sink.pipeline()
 			for dec.More() {
 				var temp mrtLive
 				if err := dec.Decode(&temp); err == nil {
@@ -340,11 +342,11 @@ func mrtEta(client *resty.Client, rc *redis.Client) {
 					if err != nil {
 						continue
 					}
-					pipe.Set(fmt.Sprintf("mrt_live:%s:%s:%s", system, temp.StationID, temp.LineID), pb, 2*time.Minute)
-					pipe.Publish(fmt.Sprintf("mrt_live:%s:%s", system, temp.StationID), string(pb))
+					pipe.Set(shared.MrtLiveKey(system, temp.StationID, temp.LineID), pb, 2*time.Minute)
+					pipe.Publish(shared.MrtLiveChannel(system, temp.StationID), string(pb))
 				}
 			}
-			_, _ = pipe.Exec()
+			_ = pipe.Exec()
 		}()
 	}
 	log.Infof("[MRT_ETA] action=mrt_eta event=complete")

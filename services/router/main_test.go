@@ -11,14 +11,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestBusRouteEtaKeyUsesUIDAsIs(t *testing.T) {
-	got := busRouteEtaKey("THB1234")
-	want := "bus_eta_route:THB1234"
-	if got != want {
-		t.Fatalf("busRouteEtaKey() = %q, want %q", got, want)
-	}
-}
-
 func TestUsableBusEtaPayloadRejectsEmptyPayload(t *testing.T) {
 	if usableBusEtaPayload(nil) {
 		t.Fatal("nil payload should not be sent")

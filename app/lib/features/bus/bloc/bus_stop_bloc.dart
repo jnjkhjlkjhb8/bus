@@ -18,6 +18,7 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     on<BusStopRetryRequested>(_onStarted);
     on<BusStopArrivalsUpdated>(_onUpdated);
     on<BusStopDecayTicked>(_onDecayTicked);
+    on<BusStopStationSelected>(_onStationSelected);
     on<BusStopFailed>(_onFailed);
     add(const BusStopStarted());
     _decayTimer = Timer.periodic(
@@ -26,17 +27,22 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     );
   }
 
-  final String stopId;
+  final String? stopId;
   final String? city;
   final BusStopEtaRepository _repository;
   ResilientSubscription<List<BusStopArrival>>? _sub;
   Timer? _decayTimer;
 
   Future<void> _onStarted(BusStopEvent _, Emitter<BusStopState> emit) async {
+    final id = stopId ?? '';
+    if (id.isEmpty) {
+      emit(state.copyWith(status: BusStopStatus.empty, clearError: true));
+      return;
+    }
     emit(state.copyWith(status: BusStopStatus.loading, clearError: true));
     await _sub?.cancel();
     try {
-      final members = await _repository.members(stopId);
+      final members = await _repository.members(id);
       if (members.isNotEmpty) {
         emit(state.copyWith(status: BusStopStatus.loaded, members: members));
       }
@@ -44,9 +50,20 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
       CrashReporter.record(e, s);
     }
     _sub = ResilientSubscription<List<BusStopArrival>>(
-      source: () => _repository.watchStop(stopId, city: city),
+      source: () => _repository.watchStop(id, city: city),
       onData: (arrivals) => add(BusStopArrivalsUpdated(arrivals)),
       onFailure: (e) => add(BusStopFailed(e)),
+    );
+  }
+
+  void _onStationSelected(
+    BusStopStationSelected event,
+    Emitter<BusStopState> emit,
+  ) {
+    emit(
+      event.stationUid == null
+          ? state.copyWith(clearSelection: true)
+          : state.copyWith(selectedStationUid: event.stationUid),
     );
   }
 

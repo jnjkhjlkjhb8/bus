@@ -156,26 +156,7 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 		})
 	})
 	registerLoaderCrons(r, db, rc)
-	_, _ = r.AddFunc("@every 2m", func() {
-		log.Infoln("[crontab] action=tra event=start")
-		traEta(c, rc)
-		log.Infoln("[crontab] action=tra event=end")
-	})
-	_, _ = r.AddFunc("@every 30s", func() {
-		log.Infoln("[crontab] action=bus&bike event=start")
-		withTimeout(25*time.Second, func(ctx context.Context) {
-			bikeEta(ctx, c, rc, db)
-		})
-		withTimeout(25*time.Second, func(ctx context.Context) {
-			busEta(ctx, c, rc, db, dispatcher)
-		})
-		log.Infoln("[crontab] action=bus&bike event=end")
-	})
-	_, _ = r.AddFunc("@every 10s", func() {
-		log.Infoln("[crontab] action=mrt event=start")
-		mrtEta(c, rc)
-		log.Infoln("[crontab] action=mrt event=end")
-	})
+	registerLiveCrons(r, c, rc, db, dispatcher)
 	_, _ = r.AddFunc("@every 10m", func() {
 		weatherSync(rc)
 	})
@@ -521,6 +502,7 @@ func dumpRawTDX(ctx context.Context, table, partCol, partVal string, body []byte
 		return obs.Transient(landRawTDX(ctx, table, partCol, partVal, body))
 	})
 }
+
 // landRawTDX runs one raw_tdx landing transaction, bounded by its own timeout so
 // a dead Azure peer cannot block the pgx socket read indefinitely (there is no
 // server statement_timeout, and TCP keepalive is too slow to notice). On timeout

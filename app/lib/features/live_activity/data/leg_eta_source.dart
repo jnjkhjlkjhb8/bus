@@ -12,12 +12,10 @@ Stream<Duration?> defaultLegEtaStream(JourneyLeg leg) {
         .watchStop(leg.identity.departureStopKey)
         .map((arrivals) {
           for (final a in arrivals) {
-            if (leg.routeLabel.startsWith(a.routeName) &&
-                a.minutes != null) {
+            if (leg.routeLabel.startsWith(a.routeName) && a.minutes != null) {
               return Duration(minutes: a.minutes!);
             }
-            if (leg.routeLabel.startsWith(a.routeName) &&
-                a.state == BusArrivalState.arriving) {
+            if (leg.routeLabel.startsWith(a.routeName) && a.isArriving) {
               return Duration.zero;
             }
           }

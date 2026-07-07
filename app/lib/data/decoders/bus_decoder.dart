@@ -59,15 +59,13 @@ class BusDecoder {
         serverEstimateSeconds: r.estimate,
         now: at,
       );
-      final minutes = estimateSeconds > 0
-          ? etaCeilMinutes(estimateSeconds)
-          : null;
       return BusStopArrival(
         stationId: r.stopUid,
+        subRouteUid: r.subRouteUid,
         routeName: r.routeName,
         destination: r.direction == 1 ? '返程' : '去程',
-        state: busArrivalStateFor(r.stopStatus, minutes),
-        minutes: minutes,
+        estimateSeconds: estimateSeconds,
+        nextBusTime: r.nextBusTime,
         stopStatus: r.stopStatus,
         arrivalUnix: arrivalUnix,
       );

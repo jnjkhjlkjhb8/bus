@@ -231,6 +231,7 @@ class NearStation extends $pb.GeneratedMessage {
     $core.double? positionLat,
     $core.int? walk,
     $core.int? distance,
+    $core.bool? routed,
   }) {
     final result = create();
     if (type != null) result.type = type;
@@ -241,6 +242,7 @@ class NearStation extends $pb.GeneratedMessage {
     if (positionLat != null) result.positionLat = positionLat;
     if (walk != null) result.walk = walk;
     if (distance != null) result.distance = distance;
+    if (routed != null) result.routed = routed;
     return result;
   }
 
@@ -264,6 +266,7 @@ class NearStation extends $pb.GeneratedMessage {
     ..aD(6, _omitFieldNames ? '' : 'PositionLat', protoName: 'PositionLat')
     ..aI(7, _omitFieldNames ? '' : 'walk')
     ..aI(8, _omitFieldNames ? '' : 'distance')
+    ..aOB(9, _omitFieldNames ? '' : 'routed')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -356,6 +359,15 @@ class NearStation extends $pb.GeneratedMessage {
   $core.bool hasDistance() => $_has(7);
   @$pb.TagNumber(8)
   void clearDistance() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $core.bool get routed => $_getBF(8);
+  @$pb.TagNumber(9)
+  set routed($core.bool value) => $_setBool(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasRouted() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearRouted() => $_clearField(9);
 }
 
 const $core.bool _omitFieldNames =

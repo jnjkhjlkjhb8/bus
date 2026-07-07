@@ -16,6 +16,8 @@ import 'package:protobuf/protobuf.dart' as $pb;
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
 
+/// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+/// marshaled Mrt_live, now typed for the interface.
 class Resp_Mrt_eta extends $pb.GeneratedMessage {
   factory Resp_Mrt_eta({
     Mrt_live? data,

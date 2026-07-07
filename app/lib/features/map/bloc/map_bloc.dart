@@ -7,7 +7,9 @@ import 'package:wheres_the_car/features/map/bloc/map_event.dart';
 import 'package:wheres_the_car/features/map/bloc/map_state.dart';
 
 class MapBloc extends Bloc<MapEvent, MapState> {
-  MapBloc() : super(const MapState()) {
+  MapBloc({NearRepository? repository})
+    : _repository = repository ?? NearRepository.instance,
+      super(const MapState()) {
     on<MapStarted>(_onStarted);
     on<MapLocateRequested>(_onLocate);
     on<MapFilterChanged>(_onFilterChanged);
@@ -15,6 +17,8 @@ class MapBloc extends Bloc<MapEvent, MapState> {
     on<MapLocateFailed>(_onFailed);
     add(const MapStarted());
   }
+
+  final NearRepository _repository;
 
   Future<void> _onStarted(MapStarted _, Emitter<MapState> emit) =>
       _locate(emit);
@@ -26,11 +30,11 @@ class MapBloc extends Bloc<MapEvent, MapState> {
     try {
       final pos = await LocationService.instance.currentPosition();
       final latLng = LatLng(pos.latitude, pos.longitude);
-      final nearResp = await NearRepository.instance
+      final stations = await _repository
           .nearOnce(pos.latitude, pos.longitude, 800)
           .first;
       emit(
-        state.copyWith(position: latLng, nearResp: nearResp, locating: false),
+        state.copyWith(position: latLng, stations: stations, locating: false),
       );
     } on Object catch (e) {
       emit(state.copyWith(locating: false, error: _errMsg(e)));
@@ -42,7 +46,7 @@ class MapBloc extends Bloc<MapEvent, MapState> {
   }
 
   void _onNearUpdated(MapNearUpdated event, Emitter<MapState> emit) {
-    emit(state.copyWith(position: event.position, nearResp: event.nearResp));
+    emit(state.copyWith(position: event.position, stations: event.stations));
   }
 
   void _onFailed(MapLocateFailed event, Emitter<MapState> emit) {

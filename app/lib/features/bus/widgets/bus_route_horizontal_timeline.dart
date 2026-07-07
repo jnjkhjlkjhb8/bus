@@ -1,6 +1,7 @@
 part of '../view/bus_route_screen.dart';
 
 const _busSpriteSize = 44.0;
+
 class _HorizontalRouteTimeline extends StatelessWidget {
   const _HorizontalRouteTimeline({
     required this.stops,

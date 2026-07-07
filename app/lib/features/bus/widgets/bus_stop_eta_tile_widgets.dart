@@ -22,7 +22,10 @@ class _EtaChevronTile extends StatelessWidget {
             highlighted: highlighted,
             onTap: () {
               unawaited(HapticService.instance.lightTap());
-              unawaited(context.push('/bus/route/${arrival.routeNo}'));
+              final target = arrival.subRouteUid.isNotEmpty
+                  ? arrival.subRouteUid
+                  : arrival.routeNo;
+              unawaited(context.push('/bus/route/$target'));
             },
           ),
         ),

@@ -13,6 +13,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -179,7 +180,7 @@ var bikeHistorySampleGate bikeHistorySampler
 // (bikeHistorySampleGate), building the training data for future availability
 // prediction. A nil db skips history collection so the realtime path can run
 // without a database.
-func bikeEta(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
+func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) {
 	log.Infof("[BIKE_ETA] action=bike_eta event=start")
 	now := time.Now()
 	var historyRows [][]interface{}
@@ -188,7 +189,7 @@ func bikeEta(ctx context.Context, client *resty.Client, rc *redis.Client, db *pg
 			continue
 		}
 		log.Infof("[BIKE_ETA] action=bike_eta city=%s event=city_start", city)
-		dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
+		dec, comp, flipopen, err := fetch(ctx, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
 		if !comp {
 			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=no updated", city)
 			continue
@@ -203,7 +204,7 @@ func bikeEta(ctx context.Context, client *resty.Client, rc *redis.Client, db *pg
 		}
 		func() {
 			defer flipopen()
-			pipe := rc.Pipeline()
+			pipe := sink.pipeline()
 			for dec.More() {
 				var temp bikeAvailability
 				if err := dec.Decode(&temp); err == nil {
@@ -220,7 +221,7 @@ func bikeEta(ctx context.Context, client *resty.Client, rc *redis.Client, db *pg
 					if err != nil {
 						continue
 					}
-					pipe.Set(fmt.Sprintf("bike_availability:%s", temp.StationUID), pb, 2*time.Minute)
+					pipe.Set(shared.BikeAvailabilityKey(temp.StationUID), pb, 2*time.Minute)
 					// Sample into history at most once per 5 minutes per station.
 					if db != nil && bikeHistorySampleGate.shouldSample(temp.StationUID, now) {
 						historyRows = append(historyRows, []interface{}{
@@ -229,7 +230,7 @@ func bikeEta(ctx context.Context, client *resty.Client, rc *redis.Client, db *pg
 					}
 				}
 			}
-			_, _ = pipe.Exec()
+			_ = pipe.Exec()
 			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)
 		}()
 	}

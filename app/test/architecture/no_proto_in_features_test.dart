@@ -6,10 +6,7 @@ void main() {
   test('no generated proto imports leak into migrated feature directories', () {
     // Scoped to the feature areas migrated behind the repository seam by the
     // Track B/C refactor. Directories are listed explicitly rather than
-    // scanning all of lib/features because some areas still import proto:
-    // TODO(rail-seam): nearby/map (home/bloc/nearby_bloc.dart, map/bloc/*)
-    // still import near.pb.dart; their migration is deferred to a separate
-    // tracked task.
+    // scanning all of lib/features because some areas still import proto.
     const scoped = [
       'lib/features/bus/bloc',
       'lib/features/bus/view',
@@ -18,6 +15,8 @@ void main() {
       'lib/features/bike/bloc',
       'lib/features/rail/bloc',
       'lib/features/alerts/bloc',
+      'lib/features/home/bloc',
+      'lib/features/map/bloc',
     ];
     final offenders = <String>[];
     final pattern = RegExp(r'''import\s+['"][^'"]*data/generated/[^'"]*\.pb''');

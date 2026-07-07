@@ -3,64 +3,47 @@ part of '../view/bus_stop_screen.dart';
 class _Arrival {
   const _Arrival({
     required this.stationId,
+    required this.subRouteUid,
     required this.routeNo,
     required this.destination,
     required this.status,
     required this.rank,
-    required this.progress,
-    this.trackColor,
   });
   final String stationId;
+  final String subRouteUid;
   final String routeNo;
   final String destination;
   final EtaStatus status;
   final int rank;
-  final double? progress;
-  final Color? trackColor;
 }
 
+/// Maps a decoded arrival onto the tile's display status via the one shared
+/// status mapping, so every service state (進站中 / 即將進站 / N分 / 尚未發車 /
+/// 末班已過 / 交管不停靠 / 發車時刻) renders faithfully. The rank sorts soonest
+/// first, service-state rows last.
 _Arrival _toArrival(BusStopArrival a) {
-  switch (a.state) {
-    case BusArrivalState.arriving:
-      return _Arrival(
-        stationId: a.stationId,
-        routeNo: a.routeName,
-        destination: a.destination,
-        status: EtaStatus.arriving(),
-        rank: 0,
-        progress: 0.92,
-        trackColor: AppTheme.statusArriving,
-      );
-    case BusArrivalState.scheduled:
-      final m = a.minutes;
-      if (m == null) {
-        return _Arrival(
-          stationId: a.stationId,
-          routeNo: a.routeName,
-          destination: a.destination,
-          status: EtaStatus.unknown(),
-          rank: 9999,
-          progress: null,
-        );
-      }
-      return _Arrival(
-        stationId: a.stationId,
-        routeNo: a.routeName,
-        destination: a.destination,
-        status: EtaStatus.minutes(m),
-        rank: m + 2,
-        progress: (1 - m / 20).clamp(0.05, 0.7),
-      );
-    case BusArrivalState.unknown:
-      return _Arrival(
-        stationId: a.stationId,
-        routeNo: a.routeName,
-        destination: a.destination,
-        status: EtaStatus.unknown(),
-        rank: 9999,
-        progress: null,
-      );
-  }
+  final (EtaStatus status, int rank) = switch (a.displayStatus) {
+    BusStopDisplayStatus.arriving => (EtaStatus.arriving(), 0),
+    BusStopDisplayStatus.departingSoon => (EtaStatus.approaching(), 1),
+    BusStopDisplayStatus.minutes => (
+      EtaStatus.minutes(a.minutes ?? 0),
+      (a.minutes ?? 0) + 2,
+    ),
+    _ => (
+      a.displayLabel != null
+          ? EtaStatus.label(a.displayLabel!)
+          : EtaStatus.unknown(),
+      9999,
+    ),
+  };
+  return _Arrival(
+    stationId: a.stationId,
+    subRouteUid: a.subRouteUid,
+    routeNo: a.routeName,
+    destination: a.destination,
+    status: status,
+    rank: rank,
+  );
 }
 
 class _StopSheet extends StatelessWidget {
@@ -134,32 +117,19 @@ class _StopSheet extends StatelessWidget {
         for (final a in arrivals) {
           byStation.putIfAbsent(a.stationId, () => []).add(a);
         }
+        final members = state.members;
+        final selected = state.selectedStationUid;
+        final hasFilter = members.length > 1;
+        final visibleMembers = selected == null
+            ? members
+            : members.where((m) => m.stationUid == selected).toList();
+        // Section headers only earn their space when 全部 spans several stops;
+        // a picked chip already names the stop.
+        final showHeaders = hasFilter && selected == null;
         return [
-          if (state.members.isNotEmpty)
-            _StationMemberList(members: state.members),
-          for (final (memberIndex, member) in state.members.indexed) ...[
-            _StationSectionHeader(member: member),
-            for (final (i, a)
-                in (byStation[member.stationUid] ?? const <_Arrival>[])
-                    .indexed) ...[
-              StaggerItem(
-                index: memberIndex * 10 + i,
-                child: _EtaChevronTile(
-                  arrival: a,
-                  highlighted: i == 0 && a.rank <= 3,
-                  colorScheme: cs,
-                ),
-              ),
-              if (i < (byStation[member.stationUid]?.length ?? 0) - 1)
-                Divider(
-                  height: 1,
-                  indent: 16,
-                  endIndent: 16,
-                  color: cs.outlineVariant.withValues(alpha: 0.5),
-                ),
-            ],
-          ],
-          if (state.members.isEmpty)
+          if (hasFilter)
+            _StationFilterBar(members: members, selectedUid: selected),
+          if (members.isEmpty)
             for (final (i, a) in arrivals.indexed)
               StaggerItem(
                 index: i,
@@ -168,52 +138,132 @@ class _StopSheet extends StatelessWidget {
                   highlighted: i == 0 && a.rank <= 3,
                   colorScheme: cs,
                 ),
-              ),
-          if (state.members.isNotEmpty && arrivals.isEmpty)
+              )
+          else
+            for (final (memberIndex, member) in visibleMembers.indexed) ...[
+              if (showHeaders) _StationSectionHeader(member: member),
+              for (final (i, a)
+                  in (byStation[member.stationUid] ?? const <_Arrival>[])
+                      .indexed) ...[
+                StaggerItem(
+                  index: memberIndex * 10 + i,
+                  child: _EtaChevronTile(
+                    arrival: a,
+                    highlighted: i == 0 && a.rank <= 3,
+                    colorScheme: cs,
+                  ),
+                ),
+                if (i < (byStation[member.stationUid]?.length ?? 0) - 1)
+                  Divider(
+                    height: 1,
+                    indent: 16,
+                    endIndent: 16,
+                    color: cs.outlineVariant.withValues(alpha: 0.5),
+                  ),
+              ],
+            ],
+          if (members.isNotEmpty && arrivals.isEmpty)
             const _StopMessage(
               icon: Icons.directions_bus_outlined,
-              title: '目前沒有 ETA',
-              hint: '已顯示此組站位底下的 StationID',
+              title: '目前沒有即時動態',
+              hint: '稍後再試,或下拉重新整理',
             ),
         ];
     }
   }
 }
 
-class _StationMemberList extends StatelessWidget {
-  const _StationMemberList({required this.members});
+/// Single-select filter chips, one per member stop plus 全部. Picking a chip
+/// filters the list and pans the map to that stop (via [BusStopStationSelected]
+/// on the bloc); labels use the stop name, never the raw StationID.
+class _StationFilterBar extends StatelessWidget {
+  const _StationFilterBar({required this.members, required this.selectedUid});
   final List<BusStationMember> members;
+  final String? selectedUid;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    final labels = _memberLabels(members);
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Row(
+        spacing: 8,
         children: [
-          Text(
-            '所屬 StationID',
-            style: AppTextStyles.bodySmall.copyWith(
-              color: cs.onSurfaceVariant,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 8),
+          _StationChip(label: '全部', selected: selectedUid == null, uid: null),
           for (final m in members)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Text(
-                '${m.stationId} · ${m.stationName} · '
-                '${m.lat.toStringAsFixed(5)}, '
-                '${m.lon.toStringAsFixed(5)}',
-                style: AppTextStyles.bodySmall.copyWith(color: cs.onSurface),
-              ),
+            _StationChip(
+              label: labels[m.stationUid] ?? m.stationName,
+              selected: selectedUid == m.stationUid,
+              uid: m.stationUid,
             ),
         ],
       ),
     );
   }
+}
+
+class _StationChip extends StatelessWidget {
+  const _StationChip({
+    required this.label,
+    required this.selected,
+    required this.uid,
+  });
+  final String label;
+  final bool selected;
+  final String? uid;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Pressable(
+      onTap: () {
+        unawaited(HapticService.instance.lightTap());
+        context.read<BusStopBloc>().add(BusStopStationSelected(uid));
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeInOut,
+        height: 36,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(
+          color: selected ? cs.primary : cs.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: TextStyle(
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            fontSize: 13,
+            color: selected ? cs.onPrimary : cs.onSurface,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Chip labels from member stop names, suffixing an ordinal only where two
+/// members share a name so every chip stays distinguishable without exposing
+/// the raw StationID.
+Map<String, String> _memberLabels(List<BusStationMember> members) {
+  final counts = <String, int>{};
+  for (final m in members) {
+    counts[m.stationName] = (counts[m.stationName] ?? 0) + 1;
+  }
+  final seen = <String, int>{};
+  final labels = <String, String>{};
+  for (final m in members) {
+    if ((counts[m.stationName] ?? 0) > 1) {
+      final n = (seen[m.stationName] ?? 0) + 1;
+      seen[m.stationName] = n;
+      labels[m.stationUid] = '${m.stationName} $n';
+    } else {
+      labels[m.stationUid] = m.stationName;
+    }
+  }
+  return labels;
 }
 
 class _StationSectionHeader extends StatelessWidget {
@@ -226,7 +276,7 @@ class _StationSectionHeader extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
       child: Text(
-        '${member.stationId} ${member.stationName}',
+        member.stationName,
         style: AppTextStyles.bodySmall.copyWith(
           color: cs.onSurfaceVariant,
           fontWeight: FontWeight.w700,

@@ -12,6 +12,7 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-redis/redis"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 )
 
 // mqttTopicCfg is a subscription: an MQTT topic pattern and the Redis TTL applied
@@ -95,7 +96,7 @@ func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *notificationD
 // It then dispatches route alerts, using SetNX on an "fcm:alert:" key as a
 // cross-run dedupe claim so the same alert is not pushed twice within its window.
 func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatcher *notificationDispatcher) {
-	key := "mqtt:" + strings.ReplaceAll(msg.Topic(), "/", ":")
+	key := shared.MQTTChannel(msg.Topic())
 	if err := rc.Set(key, msg.Payload(), ttl).Err(); err != nil {
 		log.Infof("[MQTT] redis set failed key=%s err=%v", key, err)
 		return
