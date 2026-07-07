@@ -324,9 +324,9 @@ extension _HomeScreenScaffold on _HomeScreenState {
         Expanded(
           child: TabBarView(
             controller: _tabController,
-            children: const [
-              _FavoritesTab(),
-              _NearbyStationsTab(),
+            children: [
+              const _FavoritesTab(),
+              _NearbyStationsTab(onStationTap: _openStationDetail),
             ],
           ),
         ),

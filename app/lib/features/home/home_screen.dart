@@ -26,6 +26,7 @@ import 'package:wheres_the_car/features/favorites/widgets/favorite_tile.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_bloc.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_event.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_state.dart';
+import 'package:wheres_the_car/features/home/widgets/home_station_detail.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
@@ -68,6 +69,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _mapReady = false;
   bool _tabApplied = false;
 
+  /// 目前在第二層 detail 頁高亮中的站點 markerId（null = 無）。
+  String? _highlightedKey;
+
   /// True while a manual "locate me" tap is acquiring the GPS fix — drives the
   /// recenter FAB's spinner so the button never reads as doing nothing.
   bool _locating = false;
@@ -80,7 +84,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final style = _markerStyle(_zoom);
     final markers = await Future.wait(
       stations.take(_kMapMarkerLimit).map((s) async {
-        final icon = await _markerIcon(s, style);
+        final key = '${s.type.name}:${s.stationId}';
+        final markerStyle = key == _highlightedKey
+            ? _MarkerStyle.largeDot
+            : style;
+        final icon = await _markerIcon(s, markerStyle);
         return Marker(
           markerId: MarkerId('${s.type.name}:${s.stationId}'),
           position: LatLng(s.lat, s.lon),
@@ -95,6 +103,50 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _markerStyleCache = style;
       _markers = markers.toSet();
     });
+  }
+
+  void _openStationDetail(NearStationViewModel station) {
+    _focusStationOnMap(station);
+    final navigator = _sheetNavigatorKey.currentState;
+    if (navigator == null) return;
+    unawaited(
+      navigator
+          .push(
+            PagedSheetRoute<void>(
+              scrollConfiguration: const SheetScrollConfiguration(),
+              initialOffset: const SheetOffset.proportionalToViewport(0.55),
+              snapGrid: const SheetSnapGrid(
+                snaps: [
+                  SheetOffset.proportionalToViewport(0.30),
+                  SheetOffset.proportionalToViewport(0.55),
+                  SheetOffset.proportionalToViewport(1),
+                ],
+              ),
+              builder: (_) => stationDetailPage(station),
+            ),
+          )
+          .then((_) => _unfocusStationOnMap()),
+    );
+  }
+
+  void _focusStationOnMap(NearStationViewModel station) {
+    final key = '${station.type.name}:${station.stationId}';
+    setState(() => _highlightedKey = key);
+    final controller = _mapController;
+    if (controller != null) {
+      unawaited(
+        controller.animateCamera(
+          CameraUpdate.newLatLngZoom(LatLng(station.lat, station.lon), 16.5),
+        ),
+      );
+    }
+    unawaited(_rebuildMarkers(context.read<NearbyBloc>().state.stations));
+  }
+
+  void _unfocusStationOnMap() {
+    if (!mounted) return;
+    setState(() => _highlightedKey = null);
+    unawaited(_rebuildMarkers(context.read<NearbyBloc>().state.stations));
   }
 
   double _distanceMeters(LatLng a, LatLng b) {
@@ -277,3 +329,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 }
+
+/// Test-only：以指定 callback 建立單一附近車站列，供 widget 測試觸發點擊。
+@visibleForTesting
+Widget buildNearbyRowForTest({
+  required NearStationViewModel station,
+  required ValueChanged<NearStationViewModel> onStationTap,
+}) => _NearbyStationRow(station: station, onStationTap: onStationTap);

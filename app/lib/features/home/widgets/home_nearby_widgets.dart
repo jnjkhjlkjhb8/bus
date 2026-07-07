@@ -84,7 +84,9 @@ class _FilterButtonGroup extends StatelessWidget {
 }
 
 class _NearbyStationsTab extends StatefulWidget {
-  const _NearbyStationsTab();
+  const _NearbyStationsTab({required this.onStationTap});
+
+  final ValueChanged<NearStationViewModel> onStationTap;
 
   @override
   State<_NearbyStationsTab> createState() => _NearbyStationsTabState();
@@ -154,7 +156,10 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
                   for (var i = 0; i < items.length; i++)
                     StaggerItem(
                       index: i,
-                      child: _NearbyStationRow(station: items[i]),
+                      child: _NearbyStationRow(
+                        station: items[i],
+                        onStationTap: widget.onStationTap,
+                      ),
                     ),
                 ],
               );
@@ -213,36 +218,15 @@ class _NearbyEmpty extends StatelessWidget {
 class _NearbyStationRow extends StatelessWidget {
   const _NearbyStationRow({
     required this.station,
+    required this.onStationTap,
   });
 
   final NearStationViewModel station;
+  final ValueChanged<NearStationViewModel> onStationTap;
 
   void _onTap(BuildContext context) {
     unawaited(HapticService.instance.lightTap());
-    switch (station.type) {
-      case NearStationType.bus:
-        unawaited(
-          context.push(
-            '/bus/stop',
-            extra: {
-              'stopName': station.stationName,
-              'stopId': station.stationId,
-            },
-          ),
-        );
-      case NearStationType.bike:
-        unawaited(
-          context.push(
-            '/bike/station',
-            extra: {'stationUid': station.stationId},
-          ),
-        );
-      case NearStationType.mrt:
-        unawaited(context.push('/metro'));
-      case NearStationType.tra:
-      case NearStationType.thsr:
-        unawaited(context.push('/rail'));
-    }
+    onStationTap(station);
   }
 
   @override
