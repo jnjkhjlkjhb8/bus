@@ -277,14 +277,12 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 
 	provisionBusSinks(t, ctx, pool)
 
-	// MiaoliCounty deliberately: citymap has no "MiaoliCounty" key (only
-	// "Miaoli"), so any operator path routed through citymap[city] — like a
-	// busOperatorsFromDB read filtering on authority_code — returns zero rows and
-	// operator enrichment silently blanks. This fixture proves loadBus enriches
-	// County-suffixed cities via the in-memory raw_tdx decode. CanonicalSubroute
-	// is identity for non-InterCity, so the subroute UID is the raw SubRouteUID
-	// "MIA100"; the fare prefix citymap["MiaoliCounty"] is "", so the fare's
-	// SubRouteID carries the full "MIA100".
+	// MiaoliCounty deliberately: a County-suffixed city, proving loadBus enriches
+	// operators via the in-memory raw_tdx decode and that fare/operator paths
+	// resolve the "MIA" prefix through citymap. CanonicalSubroute is identity for
+	// non-InterCity, so the subroute UID is the raw SubRouteUID "MIA100"; the
+	// fare's SubRouteID is the un-prefixed "100" (TDX convention), prefixed to
+	// "MIA100" by loadBusFares via citymap["MiaoliCounty"].
 	const city = "MiaoliCounty"
 	const subUID = "MIA100"
 	const opID = "ZZ_LOAD_OP"
@@ -315,7 +313,7 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	land("bus_station", `[]`)
 	land("bus_stationgroup", `[]`)
 	land("bus_operator", `[{"OperatorID":"ZZ_LOAD_OP","OperatorName":{"Zh_tw":"測運"},"OperatorPhone":"02-1234","OperatorUrl":"https://ex","AuthorityCode":"MIA"}]`)
-	land("bus_routefare", `[{"RouteID":"MIA1","SubRouteID":"MIA100","FarePricingType":1,"IsFreeBus":0}]`)
+	land("bus_routefare", `[{"RouteID":"1","SubRouteID":"100","FarePricingType":1,"IsFreeBus":0}]`)
 
 	// loadBus clears the legacy Redis static cache; point at an unreachable addr
 	// with tiny timeouts so the Del calls log-and-continue instead of blocking (no

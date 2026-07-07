@@ -292,11 +292,8 @@ func findConvergenceViolations(subRoutemap map[string]*models.BusSubroute, nameO
 // every subroute.
 //
 // Only when the raw read or decode itself fails does it fall back to the
-// stored bus_operators rows, mirroring legacy's TDX-failure fallback. That
-// fallback is citymap-limited: busOperatorsFromDB filters on authority_code =
-// citymap[city], and citymap lacks the County-suffixed city keys, so for those
-// cities the fallback returns empty — pre-existing legacy behavior, and the
-// reason the primary path here must not route through citymap or the DB.
+// stored bus_operators rows (busOperatorsFromDB, filtering on authority_code =
+// citymap[city]), mirroring legacy's TDX-failure fallback.
 func loadBusOperatorMap(ctx context.Context, src loadSource, db *pgxpool.Pool, city string) map[string]rawBusOperator {
 	body, fetchedAt, err := src.datasetJSON(ctx, "bus_operator", "city", city)
 	if err != nil {

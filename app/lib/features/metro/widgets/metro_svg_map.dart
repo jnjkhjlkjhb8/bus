@@ -6,7 +6,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:wheres_the_car/data/models/metro_map_models.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 
-class MetroSvgMap extends StatelessWidget {
+class MetroSvgMap extends StatefulWidget {
   const MetroSvgMap({
     required this.onStationTap,
     this.selectedStationId,
@@ -24,25 +24,66 @@ class MetroSvgMap extends StatelessWidget {
   static const double _mapH = 1920;
 
   @override
+  State<MetroSvgMap> createState() => _MetroSvgMapState();
+}
+
+class _MetroSvgMapState extends State<MetroSvgMap> {
+  // The base layer (SVG + 120 gesture targets) depends only on the layout
+  // scale, never on selection or labels. Cache it so selecting a station or
+  // toggling time/fare doesn't rebuild the 360KB SVG widget + every hit target.
+  late Widget _baseLayer;
+  double _baseScale = double.nan;
+
+  Widget _buildBaseLayer(double s) => RepaintBoundary(
+    child: Stack(
+      children: [
+        // Isolated so marker/label/ring animations never recomposite the
+        // large rasterised SVG.
+        Positioned.fill(
+          child: RepaintBoundary(
+            child: SvgPicture.asset(
+              'assets/mrt/TRTC_map.svg',
+              fit: BoxFit.fill,
+            ),
+          ),
+        ),
+        for (final station in metroMapStations)
+          Positioned(
+            left: station.x * s - 12,
+            top: station.y * s - 12,
+            width: 24,
+            height: 24,
+            child: Semantics(
+              button: true,
+              label: '${station.id} ${station.name}',
+              child: GestureDetector(
+                onTap: () => widget.onStationTap(station),
+                behavior: HitTestBehavior.opaque,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+      ],
+    ),
+  );
+
+  @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      final s = constraints.maxWidth / _mapW;
-      final mapH = _mapH * s;
+      final s = constraints.maxWidth / MetroSvgMap._mapW;
+      final mapH = MetroSvgMap._mapH * s;
 
-      final selectedStation = selectedStationId != null
+      if (_baseScale != s) {
+        _baseScale = s;
+        _baseLayer = _buildBaseLayer(s);
+      }
+
+      final selectedStation = widget.selectedStationId != null
           ? metroMapStations.firstWhere(
-              (st) => st.id == selectedStationId,
+              (st) => st.id == widget.selectedStationId,
               orElse: () => metroMapStations.first,
             )
           : null;
-
-      int getDelayMs(MetroMapStation station) {
-        if (selectedStation == null) return 0;
-        final dx = station.x - selectedStation.x;
-        final dy = station.y - selectedStation.y;
-        final dist = math.sqrt(dx * dx + dy * dy);
-        return (dist * 0.25).toInt().clamp(0, 600);
-      }
 
       return InteractiveViewer(
         minScale: .45,
@@ -54,53 +95,22 @@ class MetroSvgMap extends StatelessWidget {
           height: mapH,
           child: Stack(
             children: [
-              Positioned.fill(
-                child: SvgPicture.asset(
-                  'assets/mrt/TRTC_map.svg',
-                  fit: BoxFit.fill,
+              _baseLayer,
+              if (selectedStation != null)
+                _SelectedMarker(
+                  key: ValueKey(widget.selectedStationId),
+                  x: selectedStation.x * s,
+                  y: selectedStation.y * s,
+                  animate: widget.animate,
+                ),
+              RepaintBoundary(
+                child: _StationLabels(
+                  labels: widget.stationLabels,
+                  scale: s,
+                  selectedStation: selectedStation,
+                  animate: widget.animate,
                 ),
               ),
-              for (final station in metroMapStations)
-                if (station.id == selectedStationId)
-                  _SelectedMarker(
-                    key: ValueKey(selectedStationId),
-                    x: station.x * s,
-                    y: station.y * s,
-                    animate: animate,
-                  ),
-              for (final station in metroMapStations)
-                Positioned(
-                  left: station.x * s - 12,
-                  top: station.y * s - 12,
-                  width: 24,
-                  height: 24,
-                  child: Semantics(
-                    button: true,
-                    label: '${station.id} ${station.name}',
-                    child: GestureDetector(
-                      key: ValueKey(station.id),
-                      onTap: () => onStationTap(station),
-                      behavior: HitTestBehavior.opaque,
-                      child: const SizedBox.expand(),
-                    ),
-                  ),
-                ),
-              for (final station in metroMapStations)
-                if (stationLabels[station.id] case final label?)
-                  Positioned(
-                    left: station.x * s - 24,
-                    top: station.y * s - 2,
-                    width: 48,
-                    child: IgnorePointer(
-                      child: _AnimatedLabel(
-                        key: ValueKey(station.id),
-                        label: label,
-                        delayMs: getDelayMs(station),
-                        animate: animate,
-                        isSelected: station.id == selectedStationId,
-                      ),
-                    ),
-                  ),
             ],
           ),
         ),
@@ -109,92 +119,156 @@ class MetroSvgMap extends StatelessWidget {
   );
 }
 
-class _AnimatedLabel extends StatefulWidget {
-  const _AnimatedLabel({
-    required this.label,
-    required this.delayMs,
+/// All travel-time / fare labels driven by a single [AnimationController].
+/// Each label staggers via an [Interval] computed from its distance to the
+/// selected station — replacing the previous one-controller-plus-Timer per
+/// label (120 tickers on every selection).
+class _StationLabels extends StatefulWidget {
+  const _StationLabels({
+    required this.labels,
+    required this.scale,
+    required this.selectedStation,
     required this.animate,
-    required this.isSelected,
-    super.key,
   });
 
-  final String label;
-  final int delayMs;
+  final Map<String, String> labels;
+  final double scale;
+  final MetroMapStation? selectedStation;
   final bool animate;
-  final bool isSelected;
 
   @override
-  State<_AnimatedLabel> createState() => _AnimatedLabelState();
+  State<_StationLabels> createState() => _StationLabelsState();
 }
 
-class _AnimatedLabelState extends State<_AnimatedLabel>
+class _LabelEntry {
+  const _LabelEntry({
+    required this.left,
+    required this.top,
+    required this.begin,
+    required this.end,
+    required this.label,
+  });
+
+  final double left;
+  final double top;
+  final double begin; // normalised window start (0..1)
+  final double end; // normalised window end (0..1)
+  final String label;
+}
+
+class _StationLabelsState extends State<_StationLabels>
     with SingleTickerProviderStateMixin {
+  // Total timeline = max stagger delay (600ms) + per-label window (200ms).
+  static const double _windowMs = 200;
+  static const double _totalMs = 800;
+
   late final AnimationController _ctrl;
-  late final Animation<double> _scale;
-  late final Animation<double> _opacity;
-  Timer? _timer;
+  List<_LabelEntry> _entries = const [];
 
   @override
   void initState() {
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 200),
+      duration: const Duration(milliseconds: 800),
     );
-    _scale = Tween<double>(begin: 0.5, end: 1).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack),
-    );
-    _opacity = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeOut),
-    );
-
-    _playEntry();
+    _rebuildEntries();
+    _play();
   }
 
   @override
-  void didUpdateWidget(covariant _AnimatedLabel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.isSelected != widget.isSelected) {
-      _playEntry();
+  void didUpdateWidget(covariant _StationLabels old) {
+    super.didUpdateWidget(old);
+    final selChanged = old.selectedStation?.id != widget.selectedStation?.id;
+    if (selChanged ||
+        old.scale != widget.scale ||
+        !identical(old.labels, widget.labels)) {
+      _rebuildEntries();
+    }
+    if (selChanged || old.animate != widget.animate) {
+      _play();
     }
   }
 
-  void _playEntry() {
-    _timer?.cancel();
+  void _rebuildEntries() {
+    final sel = widget.selectedStation;
+    final list = <_LabelEntry>[];
+    for (final station in metroMapStations) {
+      final label = widget.labels[station.id];
+      if (label == null) continue;
+      var delay = 0.0;
+      if (sel != null) {
+        final dx = station.x - sel.x;
+        final dy = station.y - sel.y;
+        delay = (math.sqrt(dx * dx + dy * dy) * 0.25).clamp(0.0, 600.0);
+      }
+      list.add(
+        _LabelEntry(
+          left: station.x * widget.scale - 24,
+          top: station.y * widget.scale - 2,
+          begin: delay / _totalMs,
+          end: (delay + _windowMs) / _totalMs,
+          label: label,
+        ),
+      );
+    }
+    _entries = list;
+  }
+
+  void _play() {
     _ctrl.value = 0;
     if (!widget.animate) {
       _ctrl.value = 1;
       return;
     }
-    _timer = Timer(Duration(milliseconds: widget.delayMs), () {
-      if (mounted) {
-        unawaited(_ctrl.forward());
-      }
-    });
+    unawaited(_ctrl.forward());
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
     _ctrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return ScaleTransition(
-      scale: _scale,
-      child: FadeTransition(
-        opacity: _opacity,
-        child: Text(
-          widget.label,
-          textAlign: TextAlign.center,
-          style: const TextStyle(
-            fontSize: 4,
-            fontWeight: FontWeight.w800,
-            color: Colors.black,
-            height: 1,
-          ),
+    if (_entries.isEmpty) return const SizedBox.shrink();
+    return IgnorePointer(
+      child: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (context, _) {
+          final v = _ctrl.value;
+          return Stack(
+            children: [
+              for (final e in _entries)
+                Positioned(
+                  left: e.left,
+                  top: e.top,
+                  width: 48,
+                  child: _label(e, v),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _label(_LabelEntry e, double v) {
+    final raw = ((v - e.begin) / (e.end - e.begin)).clamp(0.0, 1.0);
+    final scale = 0.5 + 0.5 * Curves.easeOutBack.transform(raw);
+    final opacity = Curves.easeOut.transform(raw);
+    // Opacity is baked into the text colour (no saveLayer per label).
+    return Transform.scale(
+      scale: scale,
+      child: Text(
+        e.label,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontSize: 4,
+          fontWeight: FontWeight.w800,
+          color: Colors.black.withValues(alpha: opacity),
+          height: 1,
         ),
       ),
     );
@@ -279,61 +353,63 @@ class _SelectedMarkerState extends State<_SelectedMarker>
       top: widget.y - _ringMax,
       width: _ringMax * 2,
       height: _ringMax * 2,
-      child: IgnorePointer(
-        child: AnimatedBuilder(
-          animation: _ctrl,
-          builder: (context, child) {
-            final t = _ctrl.value;
-            final radius = 12 + AppMotion.easeOut.transform(t) * 60;
-            return Stack(
+      child: RepaintBoundary(
+        child: IgnorePointer(
+          child: AnimatedBuilder(
+            animation: _ctrl,
+            builder: (context, child) {
+              final t = _ctrl.value;
+              final radius = 12 + AppMotion.easeOut.transform(t) * 60;
+              return Stack(
+                alignment: Alignment.center,
+                children: [
+                  CustomPaint(
+                    size: Size.square(radius * 2),
+                    painter: _RingPainter(
+                      color: cs.onSurface,
+                      opacity: (1 - t) * 0.4,
+                    ),
+                  ),
+                  child!,
+                ],
+              );
+            },
+            child: Stack(
               alignment: Alignment.center,
               children: [
-                CustomPaint(
-                  size: Size.square(radius * 2),
-                  painter: _RingPainter(
-                    color: cs.onSurface,
-                    opacity: (1 - t) * 0.4,
+                Container(
+                  width: 24,
+                  height: 24,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: cs.onSurface.withValues(alpha: 0.15),
                   ),
                 ),
-                child!,
+                Container(
+                  width: 14,
+                  height: 14,
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black26,
+                        blurRadius: 3,
+                        offset: Offset(0, 1),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: cs.onSurface,
+                  ),
+                ),
               ],
-            );
-          },
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              Container(
-                width: 24,
-                height: 24,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: cs.onSurface.withValues(alpha: 0.15),
-                ),
-              ),
-              Container(
-                width: 14,
-                height: 14,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.white,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black26,
-                      blurRadius: 3,
-                      offset: Offset(0, 1),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: cs.onSurface,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
