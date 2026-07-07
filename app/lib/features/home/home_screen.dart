@@ -55,6 +55,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   GoogleMapController? _mapController;
   late final SheetController _sheetController;
+  final GlobalKey<NavigatorState> _sheetNavigatorKey =
+      GlobalKey<NavigatorState>();
   late final TabController _tabController;
   LatLng _center = _kDefaultPosition;
   LatLng _camCenter = _kDefaultPosition;

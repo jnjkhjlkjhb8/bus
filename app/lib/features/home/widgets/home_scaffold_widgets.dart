@@ -257,17 +257,8 @@ extension _HomeScreenScaffold on _HomeScreenState {
                 onExit: () => _sheetController.animateTo(
                   const SheetOffset.proportionalToViewport(0.30),
                 ),
-                child: Sheet(
+                child: PagedSheet(
                   controller: _sheetController,
-                  initialOffset: const SheetOffset.proportionalToViewport(0.30),
-                  snapGrid: const SheetSnapGrid(
-                    snaps: [
-                      SheetOffset.proportionalToViewport(0.10),
-                      SheetOffset.proportionalToViewport(0.30),
-                      SheetOffset.proportionalToViewport(1),
-                    ],
-                  ),
-                  scrollConfiguration: const SheetScrollConfiguration(),
                   decoration: MaterialSheetDecoration(
                     size: SheetSize.stretch,
                     color: cs.surfaceContainerLow,
@@ -276,39 +267,22 @@ extension _HomeScreenScaffold on _HomeScreenState {
                     ),
                     clipBehavior: Clip.antiAlias,
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SheetDragHandle(),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: _SearchBar(
-                                onTap: () {
-                                  unawaited(HapticService.instance.lightTap());
-                                  unawaited(context.push('/search'));
-                                },
-                              ),
-                            ),
+                  navigator: Navigator(
+                    key: _sheetNavigatorKey,
+                    onGenerateInitialRoutes: (navigator, initialRoute) => [
+                      PagedSheetRoute(
+                        initialOffset: const SheetOffset.proportionalToViewport(
+                          0.30,
+                        ),
+                        snapGrid: const SheetSnapGrid(
+                          snaps: [
+                            SheetOffset.proportionalToViewport(0.10),
+                            SheetOffset.proportionalToViewport(0.30),
+                            SheetOffset.proportionalToViewport(1),
                           ],
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      RouteTabBar(
-                        controller: _tabController,
-                        tabs: const ['我的收藏', '附近車站'],
-                        backgroundColor: cs.surfaceContainerLow,
-                      ),
-                      Expanded(
-                        child: TabBarView(
-                          controller: _tabController,
-                          children: const [
-                            _FavoritesTab(),
-                            _NearbyStationsTab(),
-                          ],
-                        ),
+                        scrollConfiguration: const SheetScrollConfiguration(),
+                        builder: (context) => _buildSheetRoot(context, cs),
                       ),
                     ],
                   ),
@@ -318,6 +292,45 @@ extension _HomeScreenScaffold on _HomeScreenState {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildSheetRoot(BuildContext context, ColorScheme cs) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SheetDragHandle(),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: _SearchBar(
+                  onTap: () {
+                    unawaited(HapticService.instance.lightTap());
+                    unawaited(context.push('/search'));
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 12),
+        RouteTabBar(
+          controller: _tabController,
+          tabs: const ['我的收藏', '附近車站'],
+          backgroundColor: cs.surfaceContainerLow,
+        ),
+        Expanded(
+          child: TabBarView(
+            controller: _tabController,
+            children: const [
+              _FavoritesTab(),
+              _NearbyStationsTab(),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
