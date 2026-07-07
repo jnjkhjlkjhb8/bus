@@ -17,14 +17,20 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     on<BusStopStarted>(_onStarted);
     on<BusStopRetryRequested>(_onStarted);
     on<BusStopArrivalsUpdated>(_onUpdated);
+    on<BusStopDecayTicked>(_onDecayTicked);
     on<BusStopFailed>(_onFailed);
     add(const BusStopStarted());
+    _decayTimer = Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => add(const BusStopDecayTicked()),
+    );
   }
 
   final String stopId;
   final String? city;
   final BusStopEtaRepository _repository;
   ResilientSubscription<List<BusStopArrival>>? _sub;
+  Timer? _decayTimer;
 
   Future<void> _onStarted(BusStopEvent _, Emitter<BusStopState> emit) async {
     emit(state.copyWith(status: BusStopStatus.loading, clearError: true));
@@ -58,12 +64,23 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     );
   }
 
+  void _onDecayTicked(BusStopDecayTicked _, Emitter<BusStopState> emit) {
+    if (state.arrivals.isEmpty) return;
+    final now = DateTime.now();
+    emit(
+      state.copyWith(
+        arrivals: [for (final a in state.arrivals) a.decayed(now)],
+      ),
+    );
+  }
+
   void _onFailed(BusStopFailed event, Emitter<BusStopState> emit) {
     emit(state.copyWith(status: BusStopStatus.error, error: event.error));
   }
 
   @override
   Future<void> close() async {
+    _decayTimer?.cancel();
     await _sub?.cancel();
     return super.close();
   }

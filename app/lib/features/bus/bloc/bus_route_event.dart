@@ -35,6 +35,10 @@ class BusRouteDetailsUpdated extends BusRouteEvent {
   List<Object?> get props => [daily, fare];
 }
 
+class BusRouteDecayTicked extends BusRouteEvent {
+  const BusRouteDecayTicked();
+}
+
 class BusRouteReminderToggled extends BusRouteEvent {
   const BusRouteReminderToggled(this.stopUid);
   final String stopUid;

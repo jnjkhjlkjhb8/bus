@@ -32,6 +32,17 @@ String _markerEta(BusStopEtaViewModel? eta) {
   return status == BusStopDisplayStatus.arriving ? '即' : '–';
 }
 
+List<BusVehiclePosition> _vehiclePositionsFor(BusRouteState s) {
+  final byPlate = <String, BusVehiclePosition>{};
+  for (final eta in s.etaMap.values) {
+    if (eta.direction != s.direction) continue;
+    for (final v in eta.vehicles) {
+      byPlate[v.plate] = v;
+    }
+  }
+  return byPlate.values.toList();
+}
+
 LatLngBounds _boundsOf(List<LatLng> pts) {
   var minLat = pts.first.latitude;
   var maxLat = pts.first.latitude;
@@ -76,15 +87,13 @@ String _timeLabel(String value) {
 
 List<_DepartureInfo> _departuresFor(BusRouteState state) {
   final trips =
-      state.daily?.tripsForDirection(state.direction) ??
-      const <BusDailyTrip>[];
+      state.daily?.tripsForDirection(state.direction) ?? const <BusDailyTrip>[];
   final now = TimeOfDay.now();
   final rows = <String>[];
   for (final trip in trips) {
     if (trip.stopTimes.isEmpty) continue;
     final first = trip.stopTimes.reduce(
-      (a, b) =>
-          a.stopSequence <= b.stopSequence ? a : b,
+      (a, b) => a.stopSequence <= b.stopSequence ? a : b,
     );
     final time = first.departureTime.isNotEmpty
         ? first.departureTime
@@ -108,8 +117,7 @@ List<_DepartureInfo> _departuresFor(BusRouteState state) {
 
 List<_TimetableInfo> _timetableFor(BusRouteState state) {
   final trips =
-      state.daily?.tripsForDirection(state.direction) ??
-      const <BusDailyTrip>[];
+      state.daily?.tripsForDirection(state.direction) ?? const <BusDailyTrip>[];
   final destination = state.currentHeadsign.isNotEmpty
       ? state.currentHeadsign
       : (state.currentStops.isEmpty ? '-' : state.currentStops.last.stopName);
@@ -117,8 +125,7 @@ List<_TimetableInfo> _timetableFor(BusRouteState state) {
   for (final trip in trips.take(24)) {
     if (trip.stopTimes.isEmpty) continue;
     final first = trip.stopTimes.reduce(
-      (a, b) =>
-          a.stopSequence <= b.stopSequence ? a : b,
+      (a, b) => a.stopSequence <= b.stopSequence ? a : b,
     );
     final time = first.departureTime.isNotEmpty
         ? first.departureTime

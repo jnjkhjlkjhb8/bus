@@ -23,6 +23,10 @@ class BusStopArrivalsUpdated extends BusStopEvent {
   List<Object?> get props => [arrivals];
 }
 
+class BusStopDecayTicked extends BusStopEvent {
+  const BusStopDecayTicked();
+}
+
 class BusStopFailed extends BusStopEvent {
   const BusStopFailed(this.error);
 

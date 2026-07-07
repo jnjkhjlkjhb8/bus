@@ -3,21 +3,29 @@ import 'package:wheres_the_car/data/generated/bus.pb.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 
-/// 公車資料解碼
 class BusDecoder {
   const BusDecoder._();
   static const BusDecoder instance = BusDecoder._();
 
   List<BusStopEtaViewModel> decodeRouteEta(Uint8List data) {
     final arrival = Bus_RouteArrival.fromBuffer(data);
+    final nowUnix = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     return arrival.stops.map((s) {
+      final arrivalUnix = s.arrivalUnix.toInt();
+      // Prefer the absolute arrival instant when the server sent one: derive
+      // the countdown against local time so it stays accurate between pushes. A
+      // just-passed instant clamps to 0, which stopStatus 0 reads as 進站中.
+      final estimateSeconds = arrivalUnix > 0
+          ? (arrivalUnix - nowUnix > 0 ? arrivalUnix - nowUnix : 0)
+          : s.estimate;
       return BusStopEtaViewModel(
         stopUid: s.stopUid,
         direction: s.direction,
         sequence: s.stopSequence,
-        estimateSeconds: s.estimate,
+        estimateSeconds: estimateSeconds,
         nextBusTime: s.nextBusTime,
         stopStatus: s.stopStatus,
+        arrivalUnix: arrivalUnix,
         vehiclePlates: s.buses.map((b) => b.plateNumb).toList(),
         vehicles: [
           for (final b in s.buses)

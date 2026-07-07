@@ -5,7 +5,6 @@ typedef LegEtaStream = Stream<Duration?> Function(JourneyLeg leg);
 
 /// Live ETA for bus legs whose notification identity resolved; every other
 /// leg counts down from its scheduled departure.
-// ponytail: metro/rail use scheduled countdown for now — switch to live
 // sources once the planner emits supported identities for them.
 Stream<Duration?> defaultLegEtaStream(JourneyLeg leg) {
   if (leg.kind == JourneyLegKind.bus && leg.identity.supported) {

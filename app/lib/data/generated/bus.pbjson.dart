@@ -396,6 +396,7 @@ const Bus_RouteEstimate$json = {
       '10': 'Buses'
     },
     {'1': 'StopSequence', '3': 8, '4': 1, '5': 5, '10': 'StopSequence'},
+    {'1': 'arrival_unix', '3': 9, '4': 1, '5': 3, '10': 'arrivalUnix'},
   ],
 };
 
@@ -406,7 +407,7 @@ final $typed_data.Uint8List bus_RouteEstimateDescriptor = $convert.base64Decode(
     'dEJ1c1RpbWUYBCABKAlSC05leHRCdXNUaW1lEh8KC1N0b3Bfc3RhdHVzGAUgASgFUgpTdG9wU3'
     'RhdHVzEiYKD3NyY191cGRhdGVfdGltZRgGIAEoCVINc3JjVXBkYXRlVGltZRIjCgVCdXNlcxgH'
     'IAMoCzINLkJ1c19wb3NpdGlvblIFQnVzZXMSIgoMU3RvcFNlcXVlbmNlGAggASgFUgxTdG9wU2'
-    'VxdWVuY2U=');
+    'VxdWVuY2USIQoMYXJyaXZhbF91bml4GAkgASgDUgthcnJpdmFsVW5peA==');
 
 @$core.Deprecated('Use bus_StopEstimateDescriptor instead')
 const Bus_StopEstimate$json = {
@@ -428,6 +429,7 @@ const Bus_StopEstimate$json = {
       '6': '.Bus_position',
       '10': 'Buses'
     },
+    {'1': 'arrival_unix', '3': 10, '4': 1, '5': 3, '10': 'arrivalUnix'},
   ],
 };
 
@@ -438,7 +440,8 @@ final $typed_data.Uint8List bus_StopEstimateDescriptor = $convert.base64Decode(
     'ZRIcCglEaXJlY3Rpb24YBCABKAVSCURpcmVjdGlvbhIaCghlc3RpbWF0ZRgFIAEoBVIIZXN0aW'
     '1hdGUSIAoLTmV4dEJ1c1RpbWUYBiABKAlSC05leHRCdXNUaW1lEh8KC1N0b3Bfc3RhdHVzGAcg'
     'ASgFUgpTdG9wU3RhdHVzEiYKD3NyY191cGRhdGVfdGltZRgIIAEoCVINc3JjVXBkYXRlVGltZR'
-    'IjCgVCdXNlcxgJIAMoCzINLkJ1c19wb3NpdGlvblIFQnVzZXM=');
+    'IjCgVCdXNlcxgJIAMoCzINLkJ1c19wb3NpdGlvblIFQnVzZXMSIQoMYXJyaXZhbF91bml4GAog'
+    'ASgDUgthcnJpdmFsVW5peA==');
 
 @$core.Deprecated('Use bus_positionDescriptor instead')
 const Bus_position$json = {

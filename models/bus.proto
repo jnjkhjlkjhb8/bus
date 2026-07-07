@@ -118,6 +118,7 @@ message Bus_RouteEstimate{
   string src_update_time = 6;
   repeated Bus_position Buses = 7;
   int32 StopSequence = 8;
+  int64 arrival_unix = 9;
 }
 message Bus_StopEstimate{
   string stop_uid = 1;
@@ -129,6 +130,7 @@ message Bus_StopEstimate{
   int32 Stop_status = 7;
   string src_update_time = 8;
   repeated Bus_position Buses = 9;
+  int64 arrival_unix = 10;
 }
 message Bus_position{
   string plate_numb = 1;

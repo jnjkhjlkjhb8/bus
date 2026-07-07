@@ -18,6 +18,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     on<BusRouteStarted>(_onStarted);
     on<BusRouteDirectionToggled>(_onDirectionToggled);
     on<BusRouteEtaUpdated>(_onEtaUpdated);
+    on<BusRouteDecayTicked>(_onDecayTicked);
     on<BusRouteDetailsUpdated>(_onDetailsUpdated);
     on<BusRouteReminderToggled>(_onReminderToggled);
     on<BusRouteStreamFailed>(_onStreamFailed);
@@ -27,6 +28,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
 
   final String subRouteUid;
   LiveData<List<BusStopEtaViewModel>>? _etaSub;
+  Timer? _decayTimer;
 
   static String etaKey(BusStopEtaViewModel eta) => eta.sequence > 0
       ? 'seq:${eta.direction}:${eta.sequence}'
@@ -38,6 +40,10 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   ) async {
     await _etaSub?.cancel();
     _etaSub = null;
+    _decayTimer ??= Timer.periodic(
+      const Duration(seconds: 15),
+      (_) => add(const BusRouteDecayTicked()),
+    );
     emit(state.copyWith(loading: true, clearError: true));
     try {
       final route = await BusRepository.instance.routeStatic(subRouteUid);
@@ -101,6 +107,16 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     emit(state.copyWith(etaMap: event.etaMap));
   }
 
+  void _onDecayTicked(BusRouteDecayTicked _, Emitter<BusRouteState> emit) {
+    if (state.etaMap.isEmpty) return;
+    final now = DateTime.now();
+    final decayed = {
+      for (final entry in state.etaMap.entries)
+        entry.key: entry.value.decayed(now),
+    };
+    emit(state.copyWith(etaMap: decayed));
+  }
+
   void _onDetailsUpdated(
     BusRouteDetailsUpdated event,
     Emitter<BusRouteState> emit,
@@ -143,6 +159,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
 
   @override
   Future<void> close() async {
+    _decayTimer?.cancel();
     await _etaSub?.cancel();
     return super.close();
   }

@@ -29,6 +29,7 @@ class BusStopEtaViewModel extends Equatable {
     required this.nextBusTime,
     required this.stopStatus,
     required this.vehiclePlates,
+    this.arrivalUnix = 0,
     this.vehicles = const [],
   });
 
@@ -39,9 +40,31 @@ class BusStopEtaViewModel extends Equatable {
   final String nextBusTime;
   final int stopStatus;
   final List<String> vehiclePlates;
+  final int arrivalUnix;
   final List<BusVehiclePosition> vehicles;
 
   int get estimateMinutes => etaCeilMinutes(estimateSeconds);
+  /// Re-derives [estimateSeconds] from [arrivalUnix] against [now] so the
+  /// displayed countdown decays between server frames. When [arrivalUnix] is 0
+  /// the server-sent [estimateSeconds] is kept unchanged. Negatives clamp to 0
+  /// so a just-passed arrival instant with stopStatus 0 still reads 進站中.
+  BusStopEtaViewModel decayed(DateTime now) {
+    if (arrivalUnix <= 0) return this;
+    final seconds = arrivalUnix - now.millisecondsSinceEpoch ~/ 1000;
+    return copyWith(estimateSeconds: seconds > 0 ? seconds : 0);
+  }
+
+  BusStopEtaViewModel copyWith({int? estimateSeconds}) => BusStopEtaViewModel(
+    stopUid: stopUid,
+    direction: direction,
+    sequence: sequence,
+    estimateSeconds: estimateSeconds ?? this.estimateSeconds,
+    nextBusTime: nextBusTime,
+    stopStatus: stopStatus,
+    vehiclePlates: vehiclePlates,
+    arrivalUnix: arrivalUnix,
+    vehicles: vehicles,
+  );
 
   String? get displayLabel => busStopDisplayLabel(
     estimateSeconds: estimateSeconds,
@@ -69,6 +92,7 @@ class BusStopEtaViewModel extends Equatable {
     nextBusTime,
     stopStatus,
     vehiclePlates,
+    arrivalUnix,
     vehicles,
   ];
 }
