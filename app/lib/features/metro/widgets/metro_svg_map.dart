@@ -219,8 +219,6 @@ class _SelectedMarker extends StatefulWidget {
 
 class _SelectedMarkerState extends State<_SelectedMarker>
     with SingleTickerProviderStateMixin {
-  // Half-size of the box the ring is painted into; the ring expands to this
-  // radius before fading out, so the box must be large enough to hold it.
   static const double _ringMax = 72;
 
   late final AnimationController _ctrl;
