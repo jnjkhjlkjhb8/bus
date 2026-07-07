@@ -4,17 +4,23 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_car/core/firebase/firebase_telemetry.dart';
 import 'package:wheres_the_car/core/grpc/live_data.dart';
 import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 import 'package:wheres_the_car/data/repositories/bus_repository.dart';
+import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
 
 class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
-  BusRouteBloc({required this.subRouteUid, bool autoStart = true})
-    : super(const BusRouteState()) {
+  BusRouteBloc({
+    required this.subRouteUid,
+    bool autoStart = true,
+    FirebaseRepository? firebaseRepository,
+  }) : _firebase = firebaseRepository ?? FirebaseRepository.instance,
+       super(const BusRouteState()) {
     on<BusRouteStarted>(_onStarted);
     on<BusRouteDirectionToggled>(_onDirectionToggled);
     on<BusRouteEtaUpdated>(_onEtaUpdated);
@@ -27,6 +33,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   }
 
   final String subRouteUid;
+  final FirebaseRepository _firebase;
   LiveData<List<BusStopEtaViewModel>>? _etaSub;
   Timer? _decayTimer;
 
@@ -130,17 +137,86 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     );
   }
 
-  void _onReminderToggled(
+  // ponytail: leadMinutes fixed at 3; read remote-config 'arrival_lead_minutes'
+  // (currently '1,3,5') and add a picker when per-user leads matter.
+  static const _leadMinutes = 3;
+  static const _reminderTtl = Duration(hours: 2);
+
+  Future<void> _onReminderToggled(
     BusRouteReminderToggled event,
     Emitter<BusRouteState> emit,
-  ) {
-    final updated = Set<String>.from(state.reminders);
-    if (updated.contains(event.stopUid)) {
-      updated.remove(event.stopUid);
-    } else {
-      updated.add(event.stopUid);
+  ) async {
+    final existing = state.reminders[event.stopUid];
+    if (existing != null) {
+      if (existing == 'pending') return;
+      // Optimistic off; restore on failure.
+      emit(
+        state.copyWith(
+          reminders: Map.of(state.reminders)..remove(event.stopUid),
+        ),
+      );
+      try {
+        if (!existing.startsWith('local:')) {
+          await _firebase.cancelArrivalReminder(existing);
+        }
+        unawaited(
+          FirebaseTelemetry.instance.arrivalReminderChanged(
+            routeType: 'bus',
+            routeKey: subRouteUid,
+            enabled: false,
+            leadMinutes: _leadMinutes,
+          ),
+        );
+      } on Object catch (e, s) {
+        CrashReporter.record(e, s);
+        if (emit.isDone) return;
+        emit(
+          state.copyWith(
+            reminders: Map.of(state.reminders)..[event.stopUid] = existing,
+          ),
+        );
+      }
+      return;
     }
-    emit(state.copyWith(reminders: updated));
+    // Optimistic on with a placeholder id; replace with the server id.
+    emit(
+      state.copyWith(
+        reminders: Map.of(state.reminders)..[event.stopUid] = 'pending',
+      ),
+    );
+    try {
+      final reminder = await _firebase.createArrivalReminder(
+        routeType: 'bus',
+        routeKey: subRouteUid,
+        stopKey: event.stopUid,
+        direction: '${state.direction}',
+        leadMinutes: _leadMinutes,
+        expiresAt: DateTime.now().add(_reminderTtl),
+      );
+      if (emit.isDone) return;
+      emit(
+        state.copyWith(
+          reminders: Map.of(state.reminders)
+            ..[event.stopUid] = reminder.reminderId,
+        ),
+      );
+      unawaited(
+        FirebaseTelemetry.instance.arrivalReminderChanged(
+          routeType: 'bus',
+          routeKey: subRouteUid,
+          enabled: true,
+          leadMinutes: _leadMinutes,
+        ),
+      );
+    } on Object catch (e, s) {
+      CrashReporter.record(e, s);
+      if (emit.isDone) return;
+      emit(
+        state.copyWith(
+          reminders: Map.of(state.reminders)..remove(event.stopUid),
+        ),
+      );
+    }
   }
 
   void _onStreamFailed(

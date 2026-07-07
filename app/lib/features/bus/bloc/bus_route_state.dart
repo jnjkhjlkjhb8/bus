@@ -22,7 +22,15 @@ class BusRouteState extends Equatable {
   final BusFareInfo? fare;
   final Set<int> bufferSequences;
   final int direction;
-  final Set<String> reminders;
+
+  /// Active arrival reminders on this route: stopUid -> server reminderId.
+  ///
+  // ponytail: reminders are one-shot and session-local — the backend marks
+  // a reminder fired after sending the push but never tells the app, and
+  // DeviceState has no reminders list, so this map cannot reflect
+  // fired/expired state and resets when the screen closes. Fixing this
+  // needs a listReminders RPC (proto change, wire-breaking, needs approval).
+  final Map<String, String> reminders;
   final bool loading;
   final AppError? error;
 
@@ -40,7 +48,7 @@ class BusRouteState extends Equatable {
     BusFareInfo? fare,
     Set<int>? bufferSequences,
     int? direction,
-    Set<String>? reminders,
+    Map<String, String>? reminders,
     bool? loading,
     AppError? error,
     bool clearError = false,

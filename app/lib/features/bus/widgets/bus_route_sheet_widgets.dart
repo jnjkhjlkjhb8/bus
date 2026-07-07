@@ -30,7 +30,7 @@ class _RouteSheet extends StatelessWidget {
   final String routeName;
   final List<String> dirNames;
   final BusRouteState routeState;
-  final Set<String> reminders;
+  final Map<String, String> reminders;
   final void Function(String) onReminderToggled;
 
   @override
