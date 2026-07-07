@@ -1,9 +1,0 @@
-{
-  "API_BASE_URL": "192.168.0.131",
-  "POWERSYNC_URL": "http://192.168.0.131/powersync",
-  "GRPC_HOST": "192.168.0.131",
-  "GRPC_PORT": 50051,
-  "GRPC_TLS": true,
-  "FIREBASE_ENABLED": true,
-  "APP_ENV": "staging"
-}

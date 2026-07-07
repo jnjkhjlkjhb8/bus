@@ -1,9 +1,0 @@
-{
-  "API_BASE_URL": "http://localhost:8080",
-  "POWERSYNC_URL": "http://localhost:8081",
-  "GRPC_HOST": "localhost",
-  "GRPC_PORT": 50051,
-  "GRPC_TLS": false,
-  "FIREBASE_ENABLED": false,
-  "APP_ENV": "test"
-}
