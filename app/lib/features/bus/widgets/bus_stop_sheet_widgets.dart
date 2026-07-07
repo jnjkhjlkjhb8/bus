@@ -67,7 +67,22 @@ class _StopSheet extends StatelessWidget {
               const SizedBox(height: 12),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: _StopMeta(state: state),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Semantics(
+                      header: true,
+                      child: Text(
+                        stopName,
+                        style: AppTextStyles.heading1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    _StopMeta(state: state),
+                  ],
+                ),
               ),
               Divider(
                 height: 1,
@@ -136,7 +151,6 @@ class _StopSheet extends StatelessWidget {
                 child: _EtaChevronTile(
                   arrival: a,
                   highlighted: i == 0 && a.rank <= 3,
-                  colorScheme: cs,
                 ),
               )
           else
@@ -150,7 +164,6 @@ class _StopSheet extends StatelessWidget {
                   child: _EtaChevronTile(
                     arrival: a,
                     highlighted: i == 0 && a.rank <= 3,
-                    colorScheme: cs,
                   ),
                 ),
                 if (i < (byStation[member.stationUid]?.length ?? 0) - 1)
@@ -294,12 +307,7 @@ class _StopMeta extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final updatedAt = state.updatedAt;
-    final count = state.arrivals.length;
-    final parts = <String>[
-      if (state.status == BusStopStatus.loaded) '$count 條路線可搭',
-      if (updatedAt != null) '更新於 ${_hhmm(updatedAt)}',
-    ];
-    final label = parts.isEmpty ? '即時動態' : parts.join(' · ');
+    final label = updatedAt != null ? '更新於 ${_hhmm(updatedAt)}' : '即時動態';
     return Text(
       label,
       style: AppTextStyles.bodyRegular.copyWith(color: cs.onSurfaceVariant),

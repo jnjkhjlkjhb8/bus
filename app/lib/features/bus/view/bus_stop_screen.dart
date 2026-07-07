@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -220,39 +219,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
                               color: cs.onSurface,
                             ),
                           ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Center(
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: BackdropFilter(
-                                  filter: ImageFilter.blur(
-                                    sigmaX: 16,
-                                    sigmaY: 16,
-                                  ),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 12,
-                                      vertical: 6,
-                                    ),
-                                    color: cs.surface.withValues(alpha: 0.55),
-                                    child: Semantics(
-                                      header: true,
-                                      child: Text(
-                                        widget.stopName,
-                                        style: AppTextStyles.bodyLarge.copyWith(
-                                          fontWeight: FontWeight.w700,
-                                          color: cs.onSurface,
-                                        ),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
+                          const Spacer(),
                           BlocBuilder<FavoritesBloc, FavoritesState>(
                             buildWhen: (prev, next) =>
                                 prev.contains(_favorite.id) !=

@@ -4,14 +4,13 @@ class _EtaChevronTile extends StatelessWidget {
   const _EtaChevronTile({
     required this.arrival,
     required this.highlighted,
-    required this.colorScheme,
   });
   final _Arrival arrival;
   final bool highlighted;
-  final ColorScheme colorScheme;
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Row(
       children: [
         Expanded(
@@ -30,13 +29,11 @@ class _EtaChevronTile extends StatelessWidget {
           ),
         ),
         Padding(
-          padding: EdgeInsets.only(right: highlighted ? 20 : 12),
+          padding: const EdgeInsets.only(right: 12),
           child: Icon(
             Icons.chevron_right_rounded,
             size: 20,
-            color: highlighted
-                ? colorScheme.onPrimaryContainer.withValues(alpha: 0.6)
-                : colorScheme.outline,
+            color: cs.outline,
           ),
         ),
       ],

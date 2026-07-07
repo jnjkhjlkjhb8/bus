@@ -35,20 +35,51 @@ class MapMarkers {
     });
   }
 
-  static Future<BitmapDescriptor> pngAsset(
+  /// Live-vehicle marker: the bus sprite grounded with a soft contact shadow
+  /// so it sits on the map instead of floating. Works with the existing
+  /// turntable sprites; shape/scale are untouched.
+  static Future<BitmapDescriptor> busMarker(
     String asset, {
-    double size = 48,
+    double size = 54,
   }) {
-    return _memo('png:$asset:$size', () async {
+    return _memo('bus:$asset:$size', () async {
       final data = await rootBundle.load(asset);
+      final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+      final sprite = (await codec.getNextFrame()).image;
       final px = (size * _dpr).round();
-      final codec = await ui.instantiateImageCodec(
-        data.buffer.asUint8List(),
-        targetWidth: px,
-        targetHeight: px,
-      );
-      final frame = await codec.getNextFrame();
-      return _toBitmap(frame.image);
+      final image = await _record(px, (canvas) {
+        // Contact shadow: soft ellipse under the bus.
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: Offset(px * 0.5, px * 0.72),
+            width: px * 0.68,
+            height: px * 0.15,
+          ),
+          Paint()
+            ..color = const Color(0x50000000)
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, px * 0.035),
+        );
+        // Sprite, nudged up so its wheels meet the shadow.
+        final side = px * 0.98;
+        canvas.drawImageRect(
+          sprite,
+          Rect.fromLTWH(
+            0,
+            0,
+            sprite.width.toDouble(),
+            sprite.height.toDouble(),
+          ),
+          Rect.fromLTWH(
+            (px - side) / 2,
+            (px - side) / 2 - px * 0.02,
+            side,
+            side,
+          ),
+          Paint()..filterQuality = FilterQuality.high,
+        );
+      });
+      sprite.dispose();
+      return _toBitmap(image);
     });
   }
 

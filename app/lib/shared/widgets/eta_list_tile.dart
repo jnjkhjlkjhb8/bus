@@ -96,10 +96,10 @@ class EtaListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final routeColor = highlighted ? cs.onPrimaryContainer : cs.onSurface;
-    final destColor = highlighted
-        ? cs.onPrimaryContainer.withValues(alpha: 0.8)
-        : cs.onSurfaceVariant;
+    // The coming-soon highlight is achromatic: same Ink text as every other
+    // row, emphasis carried by the surface-highlight background alone.
+    final routeColor = cs.onSurface;
+    final destColor = cs.onSurfaceVariant;
 
     final row = Row(
       children: [
@@ -152,16 +152,23 @@ class EtaListTile extends StatelessWidget {
       onTap: onTap,
       semanticLabel: '$routeNo 往 $destination',
       child: Container(
+        // Margin + padding sum to 16 on each side either way, so the highlight
+        // tint insets without shifting the row's content off the 16px column.
         margin: highlighted
-            ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6)
+            ? const EdgeInsets.symmetric(horizontal: 8, vertical: 6)
             : EdgeInsets.zero,
         decoration: highlighted
             ? BoxDecoration(
-                color: cs.primaryContainer,
+                color: cs.brightness == Brightness.light
+                    ? AppTheme.surfaceHighlightLight
+                    : AppTheme.surfaceHighlightDark,
                 borderRadius: BorderRadius.circular(AppTheme.radiusCard),
               )
             : null,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: EdgeInsets.symmetric(
+          horizontal: highlighted ? 8 : 16,
+          vertical: 10,
+        ),
         child: content,
       ),
     );

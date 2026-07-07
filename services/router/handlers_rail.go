@@ -11,6 +11,16 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// parseRailDate parses the app's 'yyyy-MM-dd' date strings, accepting RFC3339
+// too for any legacy caller. Returns the zero time only when neither parses.
+func parseRailDate(s string) time.Time {
+	if t, err := time.Parse(time.DateOnly, s); err == nil {
+		return t
+	}
+	t, _ := time.Parse(time.RFC3339, s)
+	return t
+}
+
 // traFare serves a TRA fare from Redis, falling back to the loaded env schema on
 // a cache miss. Per ADR-0005 the router no longer fetches from TDX: if the loaded
 // tables have no rows for the request (e.g. a date beyond the landed window), it
@@ -68,7 +78,7 @@ func (s *ThsrServer) thsrFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Da
 // fetches from TDX: an empty result returns codes.NotFound.
 func (s *Tra_TimetableServer) traTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
 	log.Infof("[gRPC] action=tra_timetable event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
-	da, _ := time.Parse(time.RFC3339, in.Date)
+	da := parseRailDate(in.Date)
 	key := fmt.Sprintf("TRA_timetable:%s:%s:%s", da.Format(time.DateOnly), in.OriginStationId, in.DestinationStationId)
 	if b, err := s.rc.Get(key).Bytes(); err == nil {
 		return &pb.Resp_Data{Data: b}, nil
@@ -92,7 +102,7 @@ func (s *Tra_TimetableServer) traTimetable(ctx context.Context, in *pb.AskRoute)
 // longer fetches from TDX: an empty result returns codes.NotFound.
 func (s *ThsrServer) thsrTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
 	log.Infof("[gRPC] action=thsr_timetable event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
-	da, _ := time.Parse(time.RFC3339, in.Date)
+	da := parseRailDate(in.Date)
 	key := fmt.Sprintf("THSR_timetable:%s:%s:%s", in.Date, in.OriginStationId, in.DestinationStationId)
 	if b, err := s.rc.Get(key).Bytes(); err == nil {
 		return &pb.Resp_Data{Data: b}, nil
@@ -120,7 +130,7 @@ func (s *Tra_DetainServer) traStops(ctx context.Context, in *pb.AskDetain) (*pb.
 	if b, err := s.rc.Get(key).Bytes(); err == nil {
 		return &pb.Resp_Data{Data: b}, nil
 	}
-	da, _ := time.Parse(time.RFC3339, in.Date)
+	da := parseRailDate(in.Date)
 	b, n, err := traStoptimesPayload(ctx, s.db, in.Trainno, da.Format(time.DateOnly))
 	if err != nil {
 		log.Infof("[gRPC] action=tra_stops event=query_failed error=%v", err)
@@ -144,7 +154,7 @@ func (s *Thsr_DetainServer) thsrStops(ctx context.Context, in *pb.ThsrAskDetain)
 	if b, err := s.rc.Get(key).Bytes(); err == nil {
 		return &pb.Resp_Data{Data: b}, nil
 	}
-	da, _ := time.Parse(time.RFC3339, in.Date)
+	da := parseRailDate(in.Date)
 	b, n, err := thsrStoptimesPayload(ctx, s.db, in.Trainno, da.Format(time.DateOnly))
 	if err != nil {
 		log.Infof("[gRPC] action=thsr_stops event=query_failed error=%v", err)

@@ -461,7 +461,7 @@ func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreaming
 		}
 		cursor = next
 		if cursor == 0 {
-			t, _ := time.Parse(time.RFC3339, in.Date)
+			t := parseRailDate(in.Date)
 			get_thsr_availableseatstatus(s.client, s.rc, t.Format(time.DateOnly))
 			break
 		}
