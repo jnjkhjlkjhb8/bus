@@ -219,8 +219,11 @@ class _SelectedMarker extends StatefulWidget {
 
 class _SelectedMarkerState extends State<_SelectedMarker>
     with SingleTickerProviderStateMixin {
+  // Half-size of the box the ring is painted into; the ring expands to this
+  // radius before fading out, so the box must be large enough to hold it.
+  static const double _ringMax = 72;
+
   late final AnimationController _ctrl;
-  late final Animation<double> _markerScale;
   bool _motionSynced = false;
 
   @override
@@ -228,14 +231,7 @@ class _SelectedMarkerState extends State<_SelectedMarker>
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: AppMotion.medium,
-    );
-
-    _markerScale = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(
-        parent: _ctrl,
-        curve: AppMotion.easeOut,
-      ),
+      duration: const Duration(milliseconds: 680),
     );
   }
 
@@ -277,14 +273,34 @@ class _SelectedMarkerState extends State<_SelectedMarker>
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
+    // Static marker (no scale-in); a locate-me-style ring pings out from it on
+    // each selection. Box is sized to _ringMax so the expanding ring isn't
+    // clipped; the marker stays centred within it.
     return Positioned(
-      left: widget.x - 12,
-      top: widget.y - 12,
-      width: 24,
-      height: 24,
+      left: widget.x - _ringMax,
+      top: widget.y - _ringMax,
+      width: _ringMax * 2,
+      height: _ringMax * 2,
       child: IgnorePointer(
-        child: ScaleTransition(
-          scale: _markerScale,
+        child: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (context, child) {
+            final t = _ctrl.value;
+            final radius = 12 + AppMotion.easeOut.transform(t) * 60;
+            return Stack(
+              alignment: Alignment.center,
+              children: [
+                CustomPaint(
+                  size: Size.square(radius * 2),
+                  painter: _RingPainter(
+                    color: cs.onSurface,
+                    opacity: (1 - t) * 0.4,
+                  ),
+                ),
+                child!,
+              ],
+            );
+          },
           child: Stack(
             alignment: Alignment.center,
             children: [
@@ -325,4 +341,30 @@ class _SelectedMarkerState extends State<_SelectedMarker>
       ),
     );
   }
+}
+
+/// Expanding, fading stroke ring — the locate-me "ping" reused for metro
+/// station selection. Copied from the home locate-me cue.
+class _RingPainter extends CustomPainter {
+  _RingPainter({required this.color, required this.opacity});
+
+  final Color color;
+  final double opacity;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = size.width / 2;
+    canvas.drawCircle(
+      Offset(r, r),
+      r - 1,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..color = color.withValues(alpha: opacity),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_RingPainter old) =>
+      old.opacity != opacity || old.color != color;
 }

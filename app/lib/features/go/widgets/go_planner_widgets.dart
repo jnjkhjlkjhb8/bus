@@ -369,52 +369,56 @@ class _GoMessage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 56, 24, 56),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 40, color: cs.outline),
-          const SizedBox(height: 16),
-          Text(
-            title,
-            textAlign: TextAlign.center,
-            style: AppTextStyles.bodyLarge.copyWith(
-              fontWeight: FontWeight.w600,
-              color: cs.onSurface,
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 40, color: cs.outline),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: AppTextStyles.bodyLarge.copyWith(
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface,
+              ),
             ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            hint,
-            textAlign: TextAlign.center,
-            style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
-          ),
-          if (actionLabel != null && onAction != null) ...[
-            const SizedBox(height: 20),
-            Pressable(
-              onTap: onAction,
-              semanticLabel: actionLabel,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: cs.primaryContainer,
-                  borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-                ),
-                child: Text(
-                  actionLabel!,
-                  style: AppTextStyles.bodyRegular.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: cs.onSurface,
+            const SizedBox(height: 6),
+            Text(
+              hint,
+              textAlign: TextAlign.center,
+              style: AppTextStyles.bodySmall.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+            if (actionLabel != null && onAction != null) ...[
+              const SizedBox(height: 20),
+              Pressable(
+                onTap: onAction,
+                semanticLabel: actionLabel,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 12,
+                  ),
+                  decoration: BoxDecoration(
+                    color: cs.primaryContainer,
+                    borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+                  ),
+                  child: Text(
+                    actionLabel!,
+                    style: AppTextStyles.bodyRegular.copyWith(
+                      fontWeight: FontWeight.w600,
+                      color: cs.onSurface,
+                    ),
                   ),
                 ),
               ),
-            ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
