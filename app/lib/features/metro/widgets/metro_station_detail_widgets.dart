@@ -32,6 +32,23 @@ class _StationDetailSheet extends StatelessWidget {
         children: [
           Row(
             children: [
+              if (onClose == null)
+                Pressable(
+                  onTap: () {
+                    unawaited(HapticService.instance.lightTap());
+                    unawaited(Navigator.of(context).maybePop());
+                  },
+                  semanticLabel: '返回',
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      size: 18,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                ),
               for (final line in lines)
                 Padding(
                   padding: const EdgeInsets.only(right: 4),

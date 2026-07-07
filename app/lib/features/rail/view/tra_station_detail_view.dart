@@ -1,28 +1,19 @@
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/models/favorite.dart';
 import 'package:wheres_the_car/data/models/tra_models.dart';
-import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
-import 'package:wheres_the_car/features/favorites/bloc/favorites_event.dart';
-import 'package:wheres_the_car/features/favorites/bloc/favorites_state.dart';
 import 'package:wheres_the_car/features/rail/bloc/tra_station_bloc.dart';
 import 'package:wheres_the_car/features/rail/bloc/tra_station_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/tra_station_state.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
+import 'package:wheres_the_car/shared/widgets/sheet_detail_header.dart';
 import 'package:wheres_the_car/shared/widgets/state_cards.dart';
 
 const List<FontFeature> _tnum = AppTextStyles.tabularFigures;
 
-/// 台鐵單站即時到離站看板：站名/收藏 header + 依發車時間排序的班次清單。
-/// 首頁第二層 sheet 用；不持有地圖。
-///
-/// 自建並唯一 provide 一份 [TraStationBloc]。
 class TraStationDetailView extends StatelessWidget {
   const TraStationDetailView({
     required this.stationId,
@@ -40,7 +31,14 @@ class TraStationDetailView extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _DetailHeader(stationId: stationId, name: name),
+          SheetDetailHeader(
+            title: name,
+            favorite: Favorite(
+              type: FavoriteType.railStation,
+              refId: stationId,
+              title: name,
+            ),
+          ),
           Flexible(child: _Board(stationId: stationId)),
         ],
       ),
@@ -48,75 +46,6 @@ class TraStationDetailView extends StatelessWidget {
   }
 }
 
-/// 站名 + 收藏鍵 header，樣式與 bus/bike 單站 detail 一致。
-class _DetailHeader extends StatelessWidget {
-  const _DetailHeader({required this.stationId, required this.name});
-
-  final String stationId;
-  final String name;
-
-  Favorite _favorite() => Favorite(
-    type: FavoriteType.railStation,
-    refId: stationId,
-    title: name,
-  );
-
-  void _toggle(BuildContext context) {
-    final favorite = _favorite();
-    unawaited(HapticService.instance.lightTap());
-    final wasSaved = context.read<FavoritesBloc>().state.contains(favorite.id);
-    context.read<FavoritesBloc>().add(FavoriteToggled(favorite));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(wasSaved ? '已取消收藏' : '已加入收藏'),
-        duration: const Duration(seconds: 3),
-        action: SnackBarAction(label: '復原', onPressed: () => _toggle(context)),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final favorite = _favorite();
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 4, 12, 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              name,
-              style: AppTextStyles.heading2,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          BlocBuilder<FavoritesBloc, FavoritesState>(
-            buildWhen: (p, n) =>
-                p.contains(favorite.id) != n.contains(favorite.id),
-            builder: (context, state) {
-              final saved = state.contains(favorite.id);
-              return Pressable(
-                onTap: () => _toggle(context),
-                semanticLabel: saved ? '取消收藏' : '收藏',
-                child: Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: Icon(
-                    saved
-                        ? Icons.bookmark_rounded
-                        : Icons.bookmark_border_rounded,
-                    size: 22,
-                    color: cs.onSurface,
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
 
 class _Board extends StatelessWidget {
   const _Board({required this.stationId});

@@ -12,7 +12,9 @@ import 'package:wheres_the_car/features/favorites/bloc/favorites_state.dart';
 import 'package:wheres_the_car/features/metro/bloc/metro_eta_bloc.dart';
 import 'package:wheres_the_car/features/metro/bloc/metro_eta_event.dart';
 import 'package:wheres_the_car/features/metro/bloc/metro_eta_state.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/motion/stagger.dart';
+import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/eta_list_tile.dart';
 import 'package:wheres_the_car/shared/widgets/state_cards.dart';
 import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
@@ -49,12 +51,6 @@ TransportType _getTransportType(String line) {
       return TransportType.mrtBL;
   }
 }
-
-/// 捷運單站可嵌入內容：站名/收藏 header + 到站清單 + 首末班，不持有地圖。
-/// 首頁第二層 sheet 與 `/metro` 地圖內的站點面板共用同一份內容
-/// （後者透過 `metro_screen.dart` 內既有的 `_StationDetailSheet` 用法）。
-///
-/// TRTC 為目前唯一支援的捷運系統；呼叫端（例如首頁 dispatch）於此固定帶入。
 class MetroStationDetailView extends StatelessWidget {
   const MetroStationDetailView({
     required this.system,
@@ -67,20 +63,25 @@ class MetroStationDetailView extends StatelessWidget {
   final String system;
   final String stationId;
   final String name;
-
-  /// 關閉鈕的回呼；省略時不顯示關閉鈕（首頁第二層 sheet 用法）。
-  /// `/metro` 地圖內的站點面板會傳入此參數以顯示關閉鈕。
   final VoidCallback? onClose;
 
   @override
   Widget build(BuildContext context) {
-    return BlocProvider(
+    final sheet = BlocProvider(
       create: (_) => MetroEtaBloc()..add(LoadMetroEta(system, stationId)),
       child: _StationDetailSheet(
         system: system,
         station: MetroMapStation(id: stationId, name: name, x: 0, y: 0),
         onClose: onClose,
       ),
+    );
+    if (onClose != null) return sheet;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SheetDragHandle(),
+        Flexible(child: sheet),
+      ],
     );
   }
 }

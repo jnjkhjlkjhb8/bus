@@ -47,8 +47,7 @@ _Arrival _toArrival(BusStopArrival a) {
 }
 
 class _StopSheet extends StatelessWidget {
-  const _StopSheet({required this.stopName});
-  final String stopName;
+  const _StopSheet();
 
   @override
   Widget build(BuildContext context) {
@@ -63,23 +62,12 @@ class _StopSheet extends StatelessWidget {
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.only(bottom: 56),
             children: [
-              const SheetDragHandle(),
-              const SizedBox(height: 12),
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Semantics(
-                      header: true,
-                      child: Text(
-                        stopName,
-                        style: AppTextStyles.heading1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
                     _StopMeta(state: state),
                   ],
                 ),
