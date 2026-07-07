@@ -69,8 +69,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _mapReady = false;
   bool _tabApplied = false;
 
-  /// 目前在第二層 detail 頁高亮中的站點 markerId（null = 無）。
   String? _highlightedKey;
+
+  /// Latest nearby stations, mirrored from [NearbyBloc] by the listener in
+  /// [build]. Focus/unfocus read this instead of `context.read<NearbyBloc>()`
+  /// because those run on the State's context, which sits above the provider.
+  List<NearStationViewModel> _stations = const [];
 
   /// True while a manual "locate me" tap is acquiring the GPS fix — drives the
   /// recenter FAB's spinner so the button never reads as doing nothing.
@@ -138,13 +142,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ),
       );
     }
-    unawaited(_rebuildMarkers(context.read<NearbyBloc>().state.stations));
+    unawaited(_rebuildMarkers(_stations));
   }
 
   void _unfocusStationOnMap() {
     if (!mounted) return;
     setState(() => _highlightedKey = null);
-    unawaited(_rebuildMarkers(context.read<NearbyBloc>().state.stations));
+    unawaited(_rebuildMarkers(_stations));
   }
 
   double _distanceMeters(LatLng a, LatLng b) {
@@ -320,7 +324,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       child: Builder(
         builder: (context) => BlocListener<NearbyBloc, NearbyState>(
           listenWhen: (p, c) => p.stations != c.stations,
-          listener: (_, state) => unawaited(_rebuildMarkers(state.stations)),
+          listener: (_, state) {
+            _stations = state.stations;
+            unawaited(_rebuildMarkers(state.stations));
+          },
           child: _buildScaffold(context, cs),
         ),
       ),
