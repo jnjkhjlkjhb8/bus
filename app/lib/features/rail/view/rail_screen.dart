@@ -15,14 +15,17 @@ import 'package:wheres_the_car/core/powersync/powersync_service.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_bloc.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
+import 'package:wheres_the_car/features/rail/rail_navigation_request.dart';
 import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
 import 'package:wheres_the_car/shared/widgets/app_date_picker.dart';
+import 'package:wheres_the_car/shared/widgets/app_sliding_segment.dart';
 import 'package:wheres_the_car/shared/widgets/app_time_picker.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
+import 'package:wheres_the_car/shared/widgets/thsr_station_picker.dart';
 import 'package:wheres_the_car/shared/widgets/tra_station_picker.dart';
 import 'package:wheres_the_car/shared/widgets/train_type_chip.dart';
 
@@ -73,6 +76,15 @@ Future<String> _resolveTraStationId(String name) async {
   return rows.first['station_id'] as String? ?? name;
 }
 
+Future<String> _resolveThsrStationId(String name) async {
+  final rows = await PowerSyncService.instance.db.getAll(
+    'SELECT station_id FROM thsr_stations WHERE station_name = ? LIMIT 1',
+    [name],
+  );
+  if (rows.isEmpty) return name;
+  return rows.first['station_id'] as String? ?? name;
+}
+
 class RailScreen extends StatefulWidget {
   const RailScreen({super.key});
 
@@ -82,30 +94,71 @@ class RailScreen extends StatefulWidget {
 
 class _RailScreenState extends State<RailScreen> {
   final _bloc = RailBloc();
+  RailSystem _system = RailSystem.tra;
   String _originName = '台北';
   String _originId = '';
   String _destName = '花蓮';
   String _destId = '';
   late final SheetController _sheetController;
   DateTime _selectedDate = DateTime.now();
+  bool _initialized = false;
 
   @override
   void initState() {
     super.initState();
     _sheetController = SheetController();
-    unawaited(_resolveInitialIds());
   }
 
-  Future<void> _resolveInitialIds() async {
-    final originId = await _resolveTraStationId(_originName);
-    final destId = await _resolveTraStationId(_destName);
-    if (mounted) {
-      setState(() {
-        _originId = originId;
-        _destId = destId;
-      });
-      _dispatchSearch();
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // One-shot: the hand-off request clears on read, so guard against the
+    // repeated didChangeDependencies calls Flutter makes on dependency changes.
+    if (_initialized) return;
+    _initialized = true;
+
+    final request = RailNavigationRequest.consume();
+    if (request != null) {
+      _system = request.system;
+      _originName = request.stationName;
+      // The near station id is already a valid tra/thsr station_id, so carry it
+      // directly rather than re-resolving by name.
+      _originId = request.stationId;
+      _destName = _defaultDest(request.system);
+      // If the preset station is itself the default destination, fall back to
+      // the default origin so the initial query is a real O/D pair.
+      if (_originName == _destName) _destName = _defaultOrigin(request.system);
+      _destId = '';
     }
+    unawaited(_resolveAndSearch());
+  }
+
+  String _defaultOrigin(RailSystem system) =>
+      system == RailSystem.thsr ? '南港' : '台北';
+
+  String _defaultDest(RailSystem system) =>
+      system == RailSystem.thsr ? '左營' : '花蓮';
+
+  Future<String> _resolveStationId(String name) => _system == RailSystem.thsr
+      ? _resolveThsrStationId(name)
+      : _resolveTraStationId(name);
+
+  Future<String?> _showStationPicker() => _system == RailSystem.thsr
+      ? showTHSRStationPicker(context)
+      : showTRAStationPicker(context);
+
+  /// Resolves any missing ids for the current origin/dest, then runs the query.
+  Future<void> _resolveAndSearch() async {
+    final originId = _originId.isNotEmpty
+        ? _originId
+        : await _resolveStationId(_originName);
+    final destId = await _resolveStationId(_destName);
+    if (!mounted) return;
+    setState(() {
+      _originId = originId;
+      _destId = destId;
+    });
+    _dispatchSearch();
   }
 
   @override
@@ -113,6 +166,19 @@ class _RailScreenState extends State<RailScreen> {
     _sheetController.dispose();
     unawaited(_bloc.close());
     super.dispose();
+  }
+
+  void _switchSystem(RailSystem system) {
+    if (system == _system) return;
+    unawaited(HapticService.instance.lightTap());
+    setState(() {
+      _system = system;
+      _originName = _defaultOrigin(system);
+      _destName = _defaultDest(system);
+      _originId = '';
+      _destId = '';
+    });
+    unawaited(_resolveAndSearch());
   }
 
   void _swap() {
@@ -130,20 +196,26 @@ class _RailScreenState extends State<RailScreen> {
 
   void _dispatchSearch() {
     if (_originId.isEmpty || _destId.isEmpty) return;
-    _bloc.add(
-      RailTimetableRequested(
-        originId: _originId,
-        destId: _destId,
-        date: _dateFormat.format(_selectedDate),
-      ),
-    );
+    // The bloc reads system + O/D names off a RailLiveBoardLoaded state, so
+    // re-establish it before every request; without this a repeat THSR query
+    // would silently fall back to TRA.
+    _bloc
+      ..add(RailSystemChanged(_system))
+      ..add(RailQueryChanged(originName: _originName, destName: _destName))
+      ..add(
+        RailTimetableRequested(
+          originId: _originId,
+          destId: _destId,
+          date: _dateFormat.format(_selectedDate),
+        ),
+      );
   }
 
   Future<void> _pickOrigin() async {
     unawaited(HapticService.instance.lightTap());
-    final name = await showTRAStationPicker(context);
+    final name = await _showStationPicker();
     if (name != null && mounted) {
-      final id = await _resolveTraStationId(name);
+      final id = await _resolveStationId(name);
       if (mounted) {
         setState(() {
           _originName = name;
@@ -155,9 +227,9 @@ class _RailScreenState extends State<RailScreen> {
 
   Future<void> _pickDest() async {
     unawaited(HapticService.instance.lightTap());
-    final name = await showTRAStationPicker(context);
+    final name = await _showStationPicker();
     if (name != null && mounted) {
-      final id = await _resolveTraStationId(name);
+      final id = await _resolveStationId(name);
       if (mounted) {
         setState(() {
           _destName = name;
@@ -369,9 +441,11 @@ class _RailScreenState extends State<RailScreen> {
                       ),
                     ),
                     child: _QuerySheetContent(
+                      system: _system,
                       origin: _originName,
                       destination: _destName,
                       selectedDate: _selectedDate,
+                      onSystemChanged: _switchSystem,
                       onSwap: _swap,
                       onDateChanged: (date) {
                         setState(() => _selectedDate = date);

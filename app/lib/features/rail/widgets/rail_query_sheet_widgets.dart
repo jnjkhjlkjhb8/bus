@@ -2,9 +2,11 @@ part of '../view/rail_screen.dart';
 
 class _QuerySheetContent extends StatefulWidget {
   const _QuerySheetContent({
+    required this.system,
     required this.origin,
     required this.destination,
     required this.selectedDate,
+    required this.onSystemChanged,
     required this.onSwap,
     required this.onOriginTap,
     required this.onDestTap,
@@ -12,9 +14,11 @@ class _QuerySheetContent extends StatefulWidget {
     required this.onSearch,
   });
 
+  final RailSystem system;
   final String origin;
   final String destination;
   final DateTime selectedDate;
+  final ValueChanged<RailSystem> onSystemChanged;
   final VoidCallback onSwap;
   final VoidCallback onOriginTap;
   final VoidCallback onDestTap;
@@ -53,6 +57,13 @@ class _QuerySheetContentState extends State<_QuerySheetContent> {
             fontSize: 22,
             color: cs.onSurface,
           ),
+        ),
+        const SizedBox(height: 16),
+
+        AppSlidingSegment<RailSystem>(
+          options: const {RailSystem.tra: '台鐵', RailSystem.thsr: '高鐵'},
+          value: widget.system,
+          onChanged: widget.onSystemChanged,
         ),
         const SizedBox(height: 16),
 
