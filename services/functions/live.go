@@ -330,4 +330,13 @@ func registerLiveCrons(r *cron.Cron, client *resty.Client, rc *redis.Client, db 
 			log.Infof("[LIVE] action=tick event=end cadence=%s", cadence)
 		})
 	}
+
+	// Rail arrival reminders fire on a schedule (fire_at = arrival − lead) rather
+	// than off a live ETA, so they dispatch on their own tick. Nil-safe when push
+	// is disabled.
+	_, _ = r.AddFunc("@every 30s", func() {
+		withTimeout(liveJobTimeout, func(ctx context.Context) {
+			dispatcher.fireScheduled(ctx)
+		})
+	})
 }

@@ -6,6 +6,7 @@ import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/firebase/firebase_telemetry.dart';
 import 'package:wheres_the_car/core/grpc/live_data.dart';
+import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
@@ -51,7 +52,13 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
       const Duration(seconds: 15),
       (_) => add(const BusRouteDecayTicked()),
     );
-    emit(state.copyWith(loading: true, clearError: true));
+    emit(
+      state.copyWith(
+        loading: true,
+        clearError: true,
+        reminders: HiveStore.activeReminders(subRouteUid),
+      ),
+    );
     try {
       final route = await BusRepository.instance.routeStatic(subRouteUid);
       emit(
@@ -137,8 +144,8 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     );
   }
 
-  // ponytail: leadMinutes fixed at 3; read remote-config 'arrival_lead_minutes'
-  // (currently '1,3,5') and add a picker when per-user leads matter.
+  // Fixed lead until a per-user picker exists; remote-config
+  // 'arrival_lead_minutes' offers '1,3,5'.
   static const _leadMinutes = 3;
   static const _reminderTtl = Duration(hours: 2);
 
@@ -159,6 +166,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
         if (!existing.startsWith('local:')) {
           await _firebase.cancelArrivalReminder(existing);
         }
+        await HiveStore.removeReminder(subRouteUid, event.stopUid);
         unawaited(
           FirebaseTelemetry.instance.arrivalReminderChanged(
             routeType: 'bus',
@@ -185,13 +193,14 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
       ),
     );
     try {
+      final expiresAt = DateTime.now().add(_reminderTtl);
       final reminder = await _firebase.createArrivalReminder(
         routeType: 'bus',
         routeKey: subRouteUid,
         stopKey: event.stopUid,
         direction: '${state.direction}',
         leadMinutes: _leadMinutes,
-        expiresAt: DateTime.now().add(_reminderTtl),
+        expiresAt: expiresAt,
       );
       if (emit.isDone) return;
       emit(
@@ -199,6 +208,12 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
           reminders: Map.of(state.reminders)
             ..[event.stopUid] = reminder.reminderId,
         ),
+      );
+      await HiveStore.putReminder(
+        subRouteUid,
+        event.stopUid,
+        reminder.reminderId,
+        expiresAt,
       );
       unawaited(
         FirebaseTelemetry.instance.arrivalReminderChanged(

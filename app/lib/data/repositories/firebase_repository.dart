@@ -9,7 +9,8 @@ import 'package:wheres_the_car/data/generated/firebase.pbgrpc.dart';
 
 bool isFirebaseRouteType(String value) => value == 'bus';
 
-bool isArrivalReminderRouteType(String value) => value == 'bus';
+bool isArrivalReminderRouteType(String value) =>
+    value == 'bus' || value == 'tra' || value == 'thsr';
 
 class FirebaseRepository {
   FirebaseRepository({Firebase_ServiceClient? client}) : _client = client;

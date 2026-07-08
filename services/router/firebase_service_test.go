@@ -111,6 +111,22 @@ func TestFirebaseServiceDeviceSubscriptionAndReminder(t *testing.T) {
 	if err != nil || store.cancelledID != reminder.ReminderId || store.cancelledBy != "install-1" {
 		t.Fatalf("CancelArrivalReminder() error = %v, id = %q, owner = %q", err, store.cancelledID, store.cancelledBy)
 	}
+
+	// Rail reminders fire on a schedule: the server derives fire_at = arrival
+	// (expires_at) − lead so the reminder cron can dispatch it without a live ETA.
+	railExpires := now.Add(time.Hour)
+	railReminder, err := server.CreateArrivalReminder(ctx, &pb.CreateArrivalReminderRequest{
+		InstallId: "install-1", RouteType: "tra", RouteKey: "1120", StopKey: "南港",
+		Direction: "0", LeadMinutes: 3, ExpiresAtUnix: railExpires.Unix(),
+	})
+	if err != nil {
+		t.Fatalf("CreateArrivalReminder(tra) error = %v", err)
+	}
+	wantFireAt := railExpires.Add(-3 * time.Minute)
+	if railReminder.GetReminderId() == "" || store.reminder.RouteType != "tra" ||
+		store.reminder.FireAt == nil || !store.reminder.FireAt.Equal(wantFireAt) {
+		t.Fatalf("stored rail reminder = %#v", store.reminder)
+	}
 }
 
 func TestFirebaseServiceRejectsWrongInstallationCredential(t *testing.T) {
@@ -174,12 +190,8 @@ func TestFirebaseServiceValidation(t *testing.T) {
 			_, err := server.CreateArrivalReminder(context.Background(), &pb.CreateArrivalReminderRequest{InstallId: "a", RouteType: "bus", RouteKey: "r", StopKey: "s", Direction: "0", LeadMinutes: 5, ExpiresAtUnix: time.Now().Add(-time.Minute).Unix()})
 			return err
 		}, codes.InvalidArgument},
-		{"unsupported thsr reminder", func() error {
-			_, err := server.CreateArrivalReminder(context.Background(), &pb.CreateArrivalReminderRequest{InstallId: "a", RouteType: "thsr", RouteKey: "r", StopKey: "s", Direction: "0", LeadMinutes: 5, ExpiresAtUnix: time.Now().Add(time.Hour).Unix()})
-			return err
-		}, codes.FailedPrecondition},
-		{"unsupported tra reminder", func() error {
-			_, err := server.CreateArrivalReminder(context.Background(), &pb.CreateArrivalReminderRequest{InstallId: "a", RouteType: "tra", RouteKey: "r", StopKey: "s", Direction: "0", LeadMinutes: 5, ExpiresAtUnix: time.Now().Add(time.Hour).Unix()})
+		{"unsupported mrt reminder", func() error {
+			_, err := server.CreateArrivalReminder(context.Background(), &pb.CreateArrivalReminderRequest{InstallId: "a", RouteType: "mrt", RouteKey: "r", StopKey: "s", Direction: "0", LeadMinutes: 5, ExpiresAtUnix: time.Now().Add(time.Hour).Unix()})
 			return err
 		}, codes.FailedPrecondition},
 		{"missing cancel owner", func() error {

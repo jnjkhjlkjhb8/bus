@@ -263,9 +263,8 @@ func processBusEtaCity(
 		}
 	}
 	todTime := now.Format("15:04:05")
-	// ponytail: day-of-week mask only; holiday-aware schedules need TDX
-	// SpecialDays landing (schedule rows carry no holiday flag from TDX's
-	// ServiceDay Mon-Sun fields).
+	// Day-of-week mask only; holiday-aware schedules would need TDX SpecialDays
+	// landing, as schedule rows carry no holiday flag from TDX's Mon-Sun fields.
 	dayBit := 1 << ((int(now.Weekday()) + 6) % 7) // mask2 bit order: Monday=bit0..Sunday=bit6
 	depMap := batchNextDepartures(ctx, db, dedupRouteDirPairs(fillKeys), todTime, dayBit)
 	uidList := make([]string, 0, len(fillUIDs))

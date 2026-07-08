@@ -11,3 +11,13 @@ sealed class RailTrainEvent extends Equatable {
 class RailTrainStarted extends RailTrainEvent {
   const RailTrainStarted();
 }
+
+/// Toggles the arrival reminder for the stop named [stopName].
+class RailTrainReminderToggled extends RailTrainEvent {
+  const RailTrainReminderToggled(this.stopName);
+
+  final String stopName;
+
+  @override
+  List<Object?> get props => [stopName];
+}

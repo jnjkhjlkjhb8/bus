@@ -25,6 +25,7 @@ class RailTrainState extends Equatable {
     this.stops = const [],
     this.fullFare,
     this.error,
+    this.reminders = const {},
   });
 
   final RailTrainStatus status;
@@ -34,6 +35,24 @@ class RailTrainState extends Equatable {
   final int? fullFare;
   final AppError? error;
 
+  /// Active arrival reminders, keyed by stop name → reminder id. A value of
+  /// `'pending'` marks an in-flight create/cancel so the bell can show progress.
+  final Map<String, String> reminders;
+
+  RailTrainState copyWith({
+    RailTrainStatus? status,
+    List<RailTrainStop>? stops,
+    int? fullFare,
+    AppError? error,
+    Map<String, String>? reminders,
+  }) => RailTrainState(
+    status: status ?? this.status,
+    stops: stops ?? this.stops,
+    fullFare: fullFare ?? this.fullFare,
+    error: error ?? this.error,
+    reminders: reminders ?? this.reminders,
+  );
+
   @override
-  List<Object?> get props => [status, stops, fullFare, error];
+  List<Object?> get props => [status, stops, fullFare, error, reminders];
 }

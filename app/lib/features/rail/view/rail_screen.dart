@@ -50,6 +50,13 @@ String _formatDateDisplay(DateTime date) {
   return '${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')} (${weekdayMap[date.weekday]})';
 }
 
+/// Normalizes a backend time to `HH:mm`, accepting both an RFC3339 timestamp
+/// (`2026-07-08T06:59:00+08:00`) and a bare `HH:mm:ss.ffffff` clock string.
+String _railHhmm(String t) {
+  final s = t.contains('T') ? t.split('T').last : t;
+  return s.length >= 5 ? s.substring(0, 5) : s;
+}
+
 String _computeDuration(String depart, String arrive) {
   final dParts = depart.split(':');
   final aParts = arrive.split(':');
@@ -309,16 +316,16 @@ class _RailScreenState extends State<RailScreen> {
                           type: item.trainType,
                           number: item.trainNo,
                           delay: state.delays[item.trainNo] ?? 0,
-                          depart: item.departureTime,
-                          arrive: item.arrivalTime,
+                          depart: _railHhmm(item.departureTime),
+                          arrive: _railHhmm(item.arrivalTime),
                         ),
                       for (final item in state.thsrItems)
                         (
                           type: '高鐵',
                           number: item.trainNo,
                           delay: state.delays[item.trainNo] ?? 0,
-                          depart: item.departureTime,
-                          arrive: item.arrivalTime,
+                          depart: _railHhmm(item.departureTime),
+                          arrive: _railHhmm(item.arrivalTime),
                         ),
                     ];
                     if (items.isEmpty) {

@@ -9,6 +9,7 @@ class HiveStore {
   static const _boxSettings = 'settings';
   static const _boxOnboarded = 'onboarded';
   static const _boxRecents = 'recent_searches';
+  static const _boxReminders = 'arrival_reminders';
 
   static Future<void> init() async {
     await Hive.initFlutter();
@@ -19,6 +20,7 @@ class HiveStore {
       Hive.openBox<dynamic>(_boxSettings),
       Hive.openBox<bool>(_boxOnboarded),
       Hive.openBox<dynamic>(_boxRecents),
+      Hive.openBox<dynamic>(_boxReminders),
     ]);
   }
 
@@ -101,4 +103,56 @@ class HiveStore {
 
   static set favMetroStations(List<String> list) =>
       settings.put('fav_metro_stations', list);
+
+  // Local mirror of arrival reminders (routeUid -> { stopUid -> {id, exp} }) so
+  // the bell survives navigation/restart — the server has no listReminders RPC
+  // to read active reminders back.
+  static bool get _remindersReady => Hive.isBoxOpen(_boxReminders);
+  static Box<dynamic> get _reminders => Hive.box(_boxReminders);
+
+  /// Active (non-expired) reminders for a route: stopUid -> reminderId.
+  /// Expired entries are filtered on read rather than pruned on write.
+  static Map<String, String> activeReminders(String routeUid) {
+    if (!_remindersReady) return <String, String>{};
+    final raw = _reminders.get(routeUid) as Map?;
+    if (raw == null) return <String, String>{};
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final out = <String, String>{};
+    raw.forEach((k, v) {
+      final entry = (v as Map).cast<String, dynamic>();
+      final exp = entry['exp'] as int?;
+      if (exp != null && exp < nowMs) return;
+      out[k as String] = entry['id'] as String;
+    });
+    return out;
+  }
+
+  static Future<void> putReminder(
+    String routeUid,
+    String stopUid,
+    String reminderId,
+    DateTime expiresAt,
+  ) async {
+    if (!_remindersReady) return;
+    final raw = Map<String, dynamic>.from(
+      (_reminders.get(routeUid) as Map?) ?? const {},
+    );
+    raw[stopUid] = {
+      'id': reminderId,
+      'exp': expiresAt.millisecondsSinceEpoch,
+    };
+    await _reminders.put(routeUid, raw);
+  }
+
+  static Future<void> removeReminder(String routeUid, String stopUid) async {
+    if (!_remindersReady) return;
+    final raw = Map<String, dynamic>.from(
+      (_reminders.get(routeUid) as Map?) ?? const {},
+    )..remove(stopUid);
+    if (raw.isEmpty) {
+      await _reminders.delete(routeUid);
+    } else {
+      await _reminders.put(routeUid, raw);
+    }
+  }
 }
