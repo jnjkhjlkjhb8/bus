@@ -70,6 +70,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   LatLng? _lastQueryCenter;
   /// When the last sonar ring was emitted; dedupes back-to-back pings.
   DateTime? _lastPingAt;
+  bool _sheetAtTop = false;
   bool _mapReady = false;
   bool _tabApplied = false;
 

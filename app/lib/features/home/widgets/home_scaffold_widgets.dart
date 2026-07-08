@@ -220,6 +220,12 @@ extension _HomeScreenScaffold on _HomeScreenState {
               if (notification is SheetDragEndNotification) {
                 unawaited(HapticService.instance.lightTap());
               }
+              final m = notification.metrics;
+              final atTop = m.offset >= m.maxOffset - 0.5;
+              if (atTop && !_sheetAtTop) {
+                unawaited(HapticService.instance.mediumTap());
+              }
+              _sheetAtTop = atTop;
               return false;
             },
             child: SheetViewport(
@@ -229,6 +235,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
                 ),
                 child: PagedSheet(
                   controller: _sheetController,
+                  physics: const ClampingSheetPhysics(),
                   decoration: MaterialSheetDecoration(
                     size: SheetSize.stretch,
                     color: cs.surfaceContainerLow,
