@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -468,15 +469,77 @@ func landRawTDX(ctx context.Context, table, partCol, partVal string, body []byte
 	} else if _, err := tx.Exec(ctx, fmt.Sprintf("TRUNCATE raw_tdx.%s", table)); err != nil {
 		return fmt.Errorf("%w: truncate: %v", errRawDump, err)
 	}
-	ct, err := tx.Exec(ctx, rawInsertSQL(table), inject, body)
+	rows, err := insertRawChunks(ctx, func(ctx context.Context, sql string, args ...any) (int64, error) {
+		ct, err := tx.Exec(ctx, sql, args...)
+		if err != nil {
+			return 0, err
+		}
+		return ct.RowsAffected(), nil
+	}, table, inject, body)
 	if err != nil {
 		return fmt.Errorf("%w: insert: %v", errRawDump, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("%w: commit: %v", errRawDump, err)
 	}
-	log.Infof("[RAW_TDX] table=%s rows=%d event=success", table, ct.RowsAffected())
+	log.Infof("[RAW_TDX] table=%s rows=%d event=success", table, rows)
 	return nil
+}
+
+// rawChunkBytes bounds the JSON slice bound to one INSERT during a raw_tdx
+// landing. The server parses each jsonb bind parameter in backend-private
+// memory (not bounded by work_mem), so binding a whole payload in one
+// statement scales server memory with payload size — which OOM-crashed the
+// 2GB B1ms Azure server. 4MB keeps per-statement parse memory trivial.
+const rawChunkBytes = 4 << 20
+
+// insertRawChunks streams the landed JSON array into raw_tdx.<table> in
+// rawChunkBytes slices via exec (one INSERT per slice, all inside the caller's
+// transaction), so server-side parse memory is bounded by the chunk size
+// rather than the payload. An element larger than rawChunkBytes still lands as
+// its own single-element chunk. An empty array issues one 0-row insert,
+// matching the previous single-statement behavior; a non-array payload is an
+// error, as it was under jsonb_array_elements.
+func insertRawChunks(ctx context.Context, exec func(context.Context, string, ...any) (int64, error), table, inject string, body []byte) (int64, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
+		return 0, fmt.Errorf("payload is not a JSON array (token %v): %v", tok, err)
+	}
+	sql := rawInsertSQL(table)
+	chunk := append(make([]byte, 0, rawChunkBytes+(1<<20)), '[')
+	var rows int64
+	flush := func() error {
+		n, err := exec(ctx, sql, inject, append(chunk, ']'))
+		if err != nil {
+			return err
+		}
+		rows += n
+		chunk = chunk[:1]
+		return nil
+	}
+	flushed := false
+	for dec.More() {
+		var elem json.RawMessage
+		if err := dec.Decode(&elem); err != nil {
+			return rows, fmt.Errorf("decode array element: %v", err)
+		}
+		if len(chunk) > 1 {
+			chunk = append(chunk, ',')
+		}
+		chunk = append(chunk, elem...)
+		if len(chunk) >= rawChunkBytes {
+			if err := flush(); err != nil {
+				return rows, err
+			}
+			flushed = true
+		}
+	}
+	if len(chunk) > 1 || !flushed {
+		if err := flush(); err != nil {
+			return rows, err
+		}
+	}
+	return rows, nil
 }
 
 // busstaticmp loads the per-stop station map for a city prefix: every stop of
