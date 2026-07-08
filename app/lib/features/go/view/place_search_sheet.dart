@@ -1,17 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:uuid/uuid.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/location/location_service.dart';
+import 'package:wheres_the_car/data/repositories/places_repository.dart';
 import 'package:wheres_the_car/features/go/model/planned_place.dart';
-import 'package:wheres_the_car/features/search/bloc/search_bloc.dart';
-import 'package:wheres_the_car/features/search/bloc/search_event.dart';
-import 'package:wheres_the_car/features/search/bloc/search_state.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 
 Future<PlannedPlace> resolveCurrentPlace() async {
@@ -33,12 +32,9 @@ Future<PlannedPlace?> showPlaceSearchSheet(
     isScrollControlled: true,
     useSafeArea: true,
     backgroundColor: Colors.transparent,
-    builder: (_) => BlocProvider(
-      create: (_) => SearchBloc(),
-      child: _PlaceSearchSheet(
-        fieldLabel: fieldLabel,
-        allowCurrentLocation: allowCurrentLocation,
-      ),
+    builder: (_) => _PlaceSearchSheet(
+      fieldLabel: fieldLabel,
+      allowCurrentLocation: allowCurrentLocation,
     ),
   );
 }
@@ -59,7 +55,14 @@ class _PlaceSearchSheet extends StatefulWidget {
 class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
+  // One session token per sheet lifetime bills autocomplete + the final
+  // details lookup as a single Google Places session.
+  final String _sessionToken = const Uuid().v4();
+  Timer? _debounce;
+  List<PlaceSuggestion> _results = const [];
+  bool _loading = false;
   bool _resolvingLocation = false;
+  bool _picking = false;
 
   @override
   void initState() {
@@ -71,9 +74,47 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _onQueryChanged(String value) {
+    _debounce?.cancel();
+    final query = value.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _results = const [];
+        _loading = false;
+      });
+      return;
+    }
+    setState(() => _loading = true);
+    _debounce = Timer(
+      const Duration(milliseconds: 300),
+      () => _search(query),
+    );
+  }
+
+  Future<void> _search(String query) async {
+    try {
+      final results = await PlacesRepository.instance.autocomplete(
+        query,
+        _sessionToken,
+      );
+      if (!mounted) return;
+      setState(() {
+        _results = results;
+        _loading = false;
+      });
+    } on Object catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _results = const [];
+        _loading = false;
+      });
+    }
   }
 
   Future<void> _useCurrentLocation() async {
@@ -92,24 +133,26 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     } on Object catch (_) {
       if (!mounted) return;
       setState(() => _resolvingLocation = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('無法取得目前位置'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      AppSnackbar.show(context, '無法取得目前位置', type: SnackType.error);
     }
   }
 
-  void _pick(SearchResult result) {
-    if (result.lat == null || result.lon == null) return;
+  Future<void> _pick(PlaceSuggestion suggestion) async {
+    if (_picking) return;
     unawaited(HapticService.instance.lightTap());
-    Navigator.of(context).pop(
-      PlannedPlace(
-        name: result.name,
-        latLng: LatLng(result.lat!, result.lon!),
-      ),
-    );
+    setState(() => _picking = true);
+    try {
+      final place = await PlacesRepository.instance.details(
+        suggestion.placeId,
+        _sessionToken,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop(place);
+    } on Object catch (_) {
+      if (!mounted) return;
+      setState(() => _picking = false);
+      AppSnackbar.show(context, '無法取得地點資訊', type: SnackType.error);
+    }
   }
 
   @override
@@ -167,9 +210,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
                                   color: cs.onSurfaceVariant,
                                 ),
                               ),
-                              onChanged: (v) => context.read<SearchBloc>().add(
-                                SearchQueryChanged(v),
-                              ),
+                              onChanged: _onQueryChanged,
                             ),
                           ),
                         ],
@@ -196,31 +237,26 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
               ),
             ),
             Expanded(
-              child: BlocBuilder<SearchBloc, SearchState>(
-                builder: (context, state) {
-                  return ListView(
-                    padding: const EdgeInsets.only(bottom: 24),
-                    children: [
-                      if (widget.allowCurrentLocation &&
-                          _controller.text.isEmpty)
-                        _CurrentLocationRow(
-                          loading: _resolvingLocation,
-                          onTap: _useCurrentLocation,
-                        ),
-                      if (state.loading && state.results.isEmpty)
-                        const _PlaceSkeleton()
-                      else if (state.query.isNotEmpty && state.results.isEmpty)
-                        const _PlaceEmpty()
-                      else
-                        for (final r in state.results)
-                          _PlaceResultRow(
-                            result: r,
-                            enabled: r.lat != null && r.lon != null,
-                            onTap: () => _pick(r),
-                          ),
-                    ],
-                  );
-                },
+              child: ListView(
+                padding: const EdgeInsets.only(bottom: 24),
+                children: [
+                  if (widget.allowCurrentLocation && _controller.text.isEmpty)
+                    _CurrentLocationRow(
+                      loading: _resolvingLocation,
+                      onTap: _useCurrentLocation,
+                    ),
+                  if (_loading && _results.isEmpty)
+                    const _PlaceSkeleton()
+                  else if (_controller.text.trim().isNotEmpty &&
+                      _results.isEmpty)
+                    const _PlaceEmpty()
+                  else
+                    for (final r in _results)
+                      _PlaceResultRow(
+                        result: r,
+                        onTap: () => _pick(r),
+                      ),
+                ],
               ),
             ),
           ],
@@ -270,61 +306,53 @@ class _CurrentLocationRow extends StatelessWidget {
 }
 
 class _PlaceResultRow extends StatelessWidget {
-  const _PlaceResultRow({
-    required this.result,
-    required this.enabled,
-    required this.onTap,
-  });
+  const _PlaceResultRow({required this.result, required this.onTap});
 
-  final SearchResult result;
-  final bool enabled;
+  final PlaceSuggestion result;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Opacity(
-      opacity: enabled ? 1 : 0.4,
-      child: Pressable(
-        onTap: enabled ? onTap : null,
-        semanticLabel: result.name,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Row(
-            children: [
-              Icon(
-                Icons.place_outlined,
-                size: 22,
-                color: cs.onSurfaceVariant,
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
+    return Pressable(
+      onTap: onTap,
+      semanticLabel: result.primaryText,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Icon(
+              Icons.place_outlined,
+              size: 22,
+              color: cs.onSurfaceVariant,
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    result.primaryText,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppTextStyles.bodyLarge.copyWith(
+                      color: cs.onSurface,
+                    ),
+                  ),
+                  if (result.secondaryText.isNotEmpty)
                     Text(
-                      result.name,
+                      result.secondaryText,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: AppTextStyles.bodyLarge.copyWith(
-                        color: cs.onSurface,
+                      style: AppTextStyles.bodySmall.copyWith(
+                        color: cs.onSurfaceVariant,
                       ),
                     ),
-                    if (result.subtitle.isNotEmpty)
-                      Text(
-                        result.subtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppTextStyles.bodySmall.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                      ),
-                  ],
-                ),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

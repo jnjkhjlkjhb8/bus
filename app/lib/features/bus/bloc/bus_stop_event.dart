@@ -1,6 +1,6 @@
 import 'package:equatable/equatable.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/repositories/bus_stop_eta_repository.dart';
+import 'package:wheres_the_car/data/models/bus_models.dart';
 
 sealed class BusStopEvent extends Equatable {
   const BusStopEvent();
@@ -21,6 +21,15 @@ class BusStopArrivalsUpdated extends BusStopEvent {
   final List<BusStopArrival> arrivals;
   @override
   List<Object?> get props => [arrivals];
+}
+
+/// Selects a member stop to filter the arrivals list and centre the map on it;
+/// a null [stationUid] clears the filter back to 全部.
+class BusStopStationSelected extends BusStopEvent {
+  const BusStopStationSelected(this.stationUid);
+  final String? stationUid;
+  @override
+  List<Object?> get props => [stationUid];
 }
 
 class BusStopFailed extends BusStopEvent {

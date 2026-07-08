@@ -6,16 +6,9 @@ class _RecentSearches extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final recentItems = HiveStore.recentSearches
-        .map(
-          (m) => SearchResult(
-            type: SearchResultType.values.byName(m['type'] as String),
-            uid: m['uid'] as String,
-            name: m['name'] as String,
-            subtitle: (m['subtitle'] as String?) ?? '',
-          ),
-        )
-        .toList();
+    final recentItems = context.select<SearchBloc, List<SearchResult>>(
+      (bloc) => bloc.state.recentResults,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -54,80 +47,101 @@ class _RecentSearches extends StatelessWidget {
                   ),
                   itemBuilder: (context, index) {
                     final result = recentItems[index];
-                    return Pressable(
-                      onTap: () {
-                        context.read<SearchBloc>().add(
-                          SearchResultSelected(result),
+                    return Dismissible(
+                      key: ValueKey('recent-${result.type.name}-${result.uid}'),
+                      direction: DismissDirection.endToStart,
+                      onDismissed: (_) {
+                        unawaited(HapticService.instance.lightTap());
+                        final bloc = context.read<SearchBloc>()
+                          ..add(SearchRecentRemoved(result));
+                        AppSnackbar.show(
+                          context,
+                          '已移除搜尋紀錄',
+                          action: '復原',
+                          onAction: () =>
+                              bloc.add(SearchResultSelected(result)),
                         );
-                        _navigateToResult(context, result);
                       },
-                      child: Container(
-                        constraints: const BoxConstraints(minHeight: 56),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 11,
+                      background: Container(
+                        color: cs.errorContainer,
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.symmetric(horizontal: 24),
+                        child: Icon(
+                          Icons.delete_rounded,
+                          color: cs.onErrorContainer,
+                          size: 22,
                         ),
-                        decoration: BoxDecoration(
-                          color: cs.brightness == Brightness.light
-                              ? Colors.white
-                              : cs.surfaceContainerLow,
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 34,
-                              height: 34,
-                              decoration: BoxDecoration(
-                                color: cs.surface,
-                                borderRadius: BorderRadius.circular(9),
-                              ),
-                              child: Center(
-                                child: Icon(
-                                  Icons.access_time_rounded,
-                                  size: 16,
-                                  color: cs.outline,
+                      ),
+                      child: Pressable(
+                        onTap: () => _navigateToResult(context, result),
+                        child: Container(
+                          constraints: const BoxConstraints(minHeight: 56),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 11,
+                          ),
+                          decoration: BoxDecoration(
+                            color: cs.brightness == Brightness.light
+                                ? Colors.white
+                                : cs.surfaceContainerLow,
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 34,
+                                height: 34,
+                                decoration: BoxDecoration(
+                                  color: cs.surface,
+                                  borderRadius: BorderRadius.circular(9),
+                                ),
+                                child: Center(
+                                  child: Icon(
+                                    Icons.access_time_rounded,
+                                    size: 16,
+                                    color: cs.outline,
+                                  ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    result.name,
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w600,
-                                      color: cs.onSurface,
-                                      height: 1.3,
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      result.name,
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600,
+                                        color: cs.onSurface,
+                                        height: 1.3,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Text(
-                                    result.subtitle,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w400,
-                                      color: cs.onSurfaceVariant,
-                                      height: 1.3,
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      result.subtitle,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w400,
+                                        color: cs.onSurfaceVariant,
+                                        height: 1.3,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
-                            Icon(
-                              Icons.chevron_right_rounded,
-                              size: 24,
-                              color: cs.outline,
-                            ),
-                          ],
+                              const SizedBox(width: 8),
+                              Icon(
+                                Icons.chevron_right_rounded,
+                                size: 24,
+                                color: cs.outline,
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     );

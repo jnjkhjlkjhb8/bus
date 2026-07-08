@@ -4,33 +4,40 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_car/features/rail/rail_navigation_request.dart';
 import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';
+import 'package:wheres_the_car/features/rail/view/tra_station_board_view.dart';
 import 'package:wheres_the_car/features/search/bloc/search_bloc.dart';
 import 'package:wheres_the_car/features/search/bloc/search_event.dart';
 import 'package:wheres_the_car/features/search/bloc/search_state.dart';
 import 'package:wheres_the_car/features/search/genui/view/genui_sheet.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
-import 'package:wheres_the_car/shared/widgets/line_badge.dart';
 import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
 
 part '../widgets/search_ai_button.dart';
 part '../widgets/search_result_row.dart';
 part '../widgets/recent_searches.dart';
 
+String _todayIso() {
+  final now = DateTime.now();
+  final m = now.month.toString().padLeft(2, '0');
+  final d = now.day.toString().padLeft(2, '0');
+  return '${now.year}-$m-$d';
+}
+
 void _navigateToResult(BuildContext context, SearchResult result) {
   unawaited(HapticService.instance.lightTap());
-  unawaited(
-    HiveStore.addRecentSearch({
-      'type': result.type.name,
-      'uid': result.uid,
-      'name': result.name,
-      'subtitle': result.subtitle,
-    }),
-  );
+  // Persist the selection through the recent-search repository (owned by
+  // SearchBloc) so every entry point — result rows, recents, and AI — records
+  // history in one place instead of writing storage directly.
+  context.read<SearchBloc>().add(SearchResultSelected(result));
   switch (result.type) {
     case SearchResultType.busRoute:
       unawaited(context.push('/bus/route/${result.uid}'));
@@ -52,26 +59,34 @@ void _navigateToResult(BuildContext context, SearchResult result) {
     case SearchResultType.mrtStation:
       unawaited(context.push('/metro'));
     case SearchResultType.traStation:
+      unawaited(
+        BottomSheetShell.show(
+          context: context,
+          child: TraStationBoardView(
+            stationId: result.uid,
+            name: result.name,
+          ),
+        ),
+      );
     case SearchResultType.thsrStation:
+      // THSR has no through-station live board, so route to the O/D query
+      // screen with this station preset as the origin (user picks the dest).
+      RailNavigationRequest.set(
+        stationId: result.uid,
+        stationName: result.name,
+        system: RailSystem.thsr,
+      );
       unawaited(context.push('/rail'));
     case SearchResultType.traTrain:
     case SearchResultType.thsrTrain:
       unawaited(
         Navigator.push(
           context,
-          PageRouteBuilder<void>(
-            pageBuilder: (_, _, _) => RailTrainScreen(
+          MaterialPageRoute<void>(
+            builder: (_) => RailTrainScreen(
               type: result.type == SearchResultType.traTrain ? '台鐵' : '高鐵',
               trainNo: result.uid,
-            ),
-            transitionsBuilder: (_, animation, _, child) => SlideTransition(
-              position: animation.drive(
-                Tween(
-                  begin: const Offset(1, 0),
-                  end: Offset.zero,
-                ).chain(CurveTween(curve: Curves.easeOut)),
-              ),
-              child: child,
+              date: _todayIso(),
             ),
           ),
         ),
@@ -128,12 +143,19 @@ class _SearchViewState extends State<_SearchView> {
   }
 
   Future<void> _openGenUi() async {
-    final query = await showGenUiSheet(context, initialQuery: _controller.text);
-    if (!mounted || query == null || query.trim().isEmpty) return;
-    _controller.text = query;
-    _controller.selection = TextSelection.collapsed(offset: query.length);
-    context.read<SearchBloc>().add(SearchQueryChanged(query));
-    _focusNode.requestFocus();
+    final result =
+        await showGenUiSheet(context, initialQuery: _controller.text);
+    if (!mounted || result == null) return;
+    switch (result) {
+      case GenUiSheetOpen(:final result):
+        _navigateToResult(context, result);
+      case GenUiSheetQuery(:final query):
+        if (query.trim().isEmpty) return;
+        _controller.text = query;
+        _controller.selection = TextSelection.collapsed(offset: query.length);
+        context.read<SearchBloc>().add(SearchQueryChanged(query));
+        _focusNode.requestFocus();
+    }
   }
 
   TransportType _transportType(SearchResultType type) => switch (type) {
@@ -273,8 +295,10 @@ class _SearchViewState extends State<_SearchView> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 10),
-                _AiButton(onTap: _openGenUi),
+                if (FirebaseGate.enabled) ...[
+                  const SizedBox(width: 10),
+                  _AiButton(onTap: _openGenUi),
+                ],
               ],
             ),
           ),
@@ -348,12 +372,8 @@ class _SearchViewState extends State<_SearchView> {
                                 return _SearchResultRow(
                                   result: result,
                                   transportType: _transportType(result.type),
-                                  onTap: () {
-                                    context.read<SearchBloc>().add(
-                                      SearchResultSelected(result),
-                                    );
-                                    _navigateToResult(context, result);
-                                  },
+                                  onTap: () =>
+                                      _navigateToResult(context, result),
                                 );
                               },
                             ),

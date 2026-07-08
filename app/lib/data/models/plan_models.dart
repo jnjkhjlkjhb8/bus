@@ -21,6 +21,7 @@ class PlanRoute extends Equatable {
     required this.endTime,
     required this.transfers,
     required this.sections,
+    this.totalFare = 0,
   });
 
   factory PlanRoute.fromProto(maas.Route proto) => PlanRoute(
@@ -28,6 +29,7 @@ class PlanRoute extends Equatable {
     startTime: proto.startTime,
     endTime: proto.endTime,
     transfers: proto.transfers,
+    totalFare: proto.totalFare,
     sections: [
       for (final section in proto.sections) PlanSection.fromProto(section),
     ],
@@ -37,6 +39,9 @@ class PlanRoute extends Equatable {
   final String startTime;
   final String endTime;
   final int transfers;
+
+  /// Sum of resolved section fares (NT$); 0 when no fare could be resolved.
+  final int totalFare;
   final List<PlanSection> sections;
 
   PlanPoint? firstPoint({int leg = 0}) {
@@ -68,6 +73,7 @@ class PlanRoute extends Equatable {
     startTime,
     endTime,
     transfers,
+    totalFare,
     sections,
   ];
 }
@@ -80,6 +86,8 @@ class PlanSection extends Equatable {
     required this.arrival,
     required this.transport,
     required this.intermediateStops,
+    this.identity = const PlanIdentity.empty(),
+    this.fare = 0,
   });
 
   factory PlanSection.fromProto(maas.Section proto) => PlanSection(
@@ -91,6 +99,8 @@ class PlanSection extends Equatable {
     intermediateStops: [
       for (final stop in proto.intermediateStops) PlanStop.fromProto(stop),
     ],
+    identity: PlanIdentity.fromProto(proto.notificationIdentity),
+    fare: proto.fare,
   );
 
   final String type;
@@ -99,6 +109,10 @@ class PlanSection extends Equatable {
   final PlanPlace arrival;
   final PlanTransport transport;
   final List<PlanStop> intermediateStops;
+  final PlanIdentity identity;
+
+  /// Adult full fare for this section (NT$); 0 when unresolved.
+  final int fare;
 
   @override
   List<Object?> get props => [
@@ -108,6 +122,54 @@ class PlanSection extends Equatable {
     arrival,
     transport,
     intermediateStops,
+    identity,
+    fare,
+  ];
+}
+
+class PlanIdentity extends Equatable {
+  const PlanIdentity({
+    required this.routeType,
+    required this.routeKey,
+    required this.direction,
+    required this.departureStopKey,
+    required this.arrivalStopKey,
+    required this.supported,
+  });
+
+  const PlanIdentity.empty()
+    : routeType = '',
+      routeKey = '',
+      direction = '',
+      departureStopKey = '',
+      arrivalStopKey = '',
+      supported = false;
+
+  factory PlanIdentity.fromProto(maas.NotificationIdentity proto) =>
+      PlanIdentity(
+        routeType: proto.routeType,
+        routeKey: proto.routeKey,
+        direction: proto.direction,
+        departureStopKey: proto.departureStopKey,
+        arrivalStopKey: proto.arrivalStopKey,
+        supported: proto.supported,
+      );
+
+  final String routeType;
+  final String routeKey;
+  final String direction;
+  final String departureStopKey;
+  final String arrivalStopKey;
+  final bool supported;
+
+  @override
+  List<Object?> get props => [
+    routeType,
+    routeKey,
+    direction,
+    departureStopKey,
+    arrivalStopKey,
+    supported,
   ];
 }
 

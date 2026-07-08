@@ -232,6 +232,7 @@ const _feedback = [
   _UiKitItem('Spinner', Icons.refresh_rounded, '/ui-kit/spinner'),
   _UiKitItem('Progress Bar', Icons.linear_scale_rounded, '/ui-kit/progress'),
   _UiKitItem('Tooltip', Icons.info_rounded, '/ui-kit/tooltip'),
+  _UiKitItem('Snackbar', Icons.chat_bubble_outline_rounded, '/ui-kit/snackbar'),
   _UiKitItem('Badge', Icons.badge_rounded, '/ui-kit/badge'),
 ];
 
@@ -261,11 +262,6 @@ const _display = [
   _UiKitItem('Chat', Icons.chat_bubble_rounded, '/ui-kit/chat'),
   _UiKitItem('Scrollbar', Icons.more_vert_rounded, '/ui-kit/scrollbar'),
   _UiKitItem(
-    'Route Mini Track',
-    Icons.timeline_rounded,
-    '/ui-kit/route-mini-track',
-  ),
-  _UiKitItem(
     'Availability Gauge',
     Icons.pedal_bike_rounded,
     '/ui-kit/availability-gauge',
@@ -275,11 +271,6 @@ const _display = [
     'Filter Chip Group',
     Icons.filter_alt_rounded,
     '/ui-kit/filter-chip-group',
-  ),
-  _UiKitItem(
-    'Origin → Dest Field',
-    Icons.swap_vert_rounded,
-    '/ui-kit/origin-dest-field',
   ),
   _UiKitItem('Leg Ribbon', Icons.route_rounded, '/ui-kit/leg-ribbon'),
   _UiKitItem('Time Picker', Icons.schedule_rounded, '/ui-kit/time-picker'),

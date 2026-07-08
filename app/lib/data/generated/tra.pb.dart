@@ -16,9 +16,11 @@ import 'package:protobuf/protobuf.dart' as $pb;
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
 
+/// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+/// marshaled tra_LiveBoards, now typed for the interface.
 class Resp_tra_live_board extends $pb.GeneratedMessage {
   factory Resp_tra_live_board({
-    $core.List<$core.int>? data,
+    tra_LiveBoards? data,
   }) {
     final result = create();
     if (data != null) result.data = data;
@@ -37,8 +39,8 @@ class Resp_tra_live_board extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Resp_tra_live_board',
       createEmptyInstance: create)
-    ..a<$core.List<$core.int>>(
-        1, _omitFieldNames ? '' : 'data', $pb.PbFieldType.OY)
+    ..aOM<tra_LiveBoards>(1, _omitFieldNames ? '' : 'data',
+        subBuilder: tra_LiveBoards.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -61,18 +63,22 @@ class Resp_tra_live_board extends $pb.GeneratedMessage {
   static Resp_tra_live_board? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $core.List<$core.int> get data => $_getN(0);
+  tra_LiveBoards get data => $_getN(0);
   @$pb.TagNumber(1)
-  set data($core.List<$core.int> value) => $_setBytes(0, value);
+  set data(tra_LiveBoards value) => $_setField(1, value);
   @$pb.TagNumber(1)
   $core.bool hasData() => $_has(0);
   @$pb.TagNumber(1)
   void clearData() => $_clearField(1);
+  @$pb.TagNumber(1)
+  tra_LiveBoards ensureData() => $_ensure(0);
 }
 
+/// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+/// marshaled tra_delays (both the system-wide and per-train delay RPCs).
 class Resp_tra_delay extends $pb.GeneratedMessage {
   factory Resp_tra_delay({
-    $core.List<$core.int>? data,
+    tra_delays? data,
   }) {
     final result = create();
     if (data != null) result.data = data;
@@ -91,8 +97,8 @@ class Resp_tra_delay extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Resp_tra_delay',
       createEmptyInstance: create)
-    ..a<$core.List<$core.int>>(
-        1, _omitFieldNames ? '' : 'data', $pb.PbFieldType.OY)
+    ..aOM<tra_delays>(1, _omitFieldNames ? '' : 'data',
+        subBuilder: tra_delays.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -115,13 +121,15 @@ class Resp_tra_delay extends $pb.GeneratedMessage {
   static Resp_tra_delay? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $core.List<$core.int> get data => $_getN(0);
+  tra_delays get data => $_getN(0);
   @$pb.TagNumber(1)
-  set data($core.List<$core.int> value) => $_setBytes(0, value);
+  set data(tra_delays value) => $_setField(1, value);
   @$pb.TagNumber(1)
   $core.bool hasData() => $_has(0);
   @$pb.TagNumber(1)
   void clearData() => $_clearField(1);
+  @$pb.TagNumber(1)
+  tra_delays ensureData() => $_ensure(0);
 }
 
 class ask_detain extends $pb.GeneratedMessage {

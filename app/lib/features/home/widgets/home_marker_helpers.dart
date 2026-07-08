@@ -1,14 +1,23 @@
 part of '../home_screen.dart';
 
 const _kLargeDotZoomThreshold = 13.0;
+const _kIconZoomThreshold = 15.5;
 const _kSmallDotSize = 7.0;
 const _kLargeDotSize = 10.0;
+const _kIconMarkerSize = 32.0;
+const _kHighlightIconMarkerSize = 44.0;
 const _kMapMarkerLimit = 60;
-const _kFallbackRadiusMeters = 900;
 
-enum _MarkerStyle { largeDot, smallDot }
+/// Radius used when the map controller isn't ready yet and we can't measure the
+/// visible viewport. Remote-tunable so ops can widen/narrow the cold-start
+/// nearby query without a release.
+int get _fallbackRadiusMeters =>
+    AppConfig.getInt('nearby_fallback_radius_m');
+
+enum _MarkerStyle { icon, largeDot, smallDot }
 
 _MarkerStyle _markerStyle(double zoom) {
+  if (zoom >= _kIconZoomThreshold) return _MarkerStyle.icon;
   if (zoom >= _kLargeDotZoomThreshold) return _MarkerStyle.largeDot;
   return _MarkerStyle.smallDot;
 }
@@ -38,8 +47,15 @@ double _dotMarkerSize(_MarkerStyle style) =>
 
 Future<BitmapDescriptor> _markerIcon(
   NearStationViewModel s,
-  _MarkerStyle style,
-) {
+  _MarkerStyle style, {
+  bool highlighted = false,
+}) {
+  if (highlighted) {
+    return MapMarkers.svgAsset(_iconAsset(s), size: _kHighlightIconMarkerSize);
+  }
+  if (style == _MarkerStyle.icon) {
+    return MapMarkers.svgAsset(_iconAsset(s), size: _kIconMarkerSize);
+  }
   final dotSize = _dotMarkerSize(style);
   switch (s.type) {
     case NearStationType.bus:
@@ -51,6 +67,40 @@ Future<BitmapDescriptor> _markerIcon(
     case NearStationType.tra:
     case NearStationType.thsr:
       return MapMarkers.dot(const Color(0xFF285FF4), size: dotSize);
+  }
+}
+
+String _iconAsset(NearStationViewModel s) {
+  switch (s.type) {
+    case NearStationType.bus:
+      return 'assets/marker/Bus.svg';
+    case NearStationType.bike:
+      return 'assets/marker/bike.svg';
+    case NearStationType.mrt:
+      return _mrtIconAsset(s.stationId);
+    case NearStationType.tra:
+      return 'assets/rails/TRA.svg';
+    case NearStationType.thsr:
+      return 'assets/rails/THSR.svg';
+  }
+}
+
+String _mrtIconAsset(String stationId) {
+  final code = stationId.split(RegExp(r'[_\d]')).first.toUpperCase();
+  switch (code) {
+    // system; they get the TRTC icon until stationId encodes the system.
+    case 'BL':
+    case 'BR':
+    case 'G':
+    case 'O':
+    case 'R':
+    case 'Y':
+    case 'K':
+      return 'assets/mrt/TRTC/$code.svg';
+    case 'C':
+      return 'assets/mrt/KLRT/C.svg';
+    default:
+      return 'assets/mrt/TRTC/R.svg';
   }
 }
 

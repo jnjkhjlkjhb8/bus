@@ -39,7 +39,9 @@ class FavoritesBloc extends Bloc<FavoritesEvent, FavoritesState> {
 
   void _start() {
     add(const FavoritesRefreshed());
-    _sub = _repo.watch().listen(
+    // Consume the repository's coalesced change signal: one user action (even
+    // an N-item reorder) yields a single refresh instead of one per box event.
+    _sub = _repo.changes().listen(
       (_) => add(const FavoritesRefreshed()),
       onError: CrashReporter.record,
     );

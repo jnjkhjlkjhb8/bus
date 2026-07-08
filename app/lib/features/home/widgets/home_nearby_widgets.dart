@@ -4,7 +4,9 @@ enum NearbyFilter {
   all,
   mrt,
   bus,
-  youbike;
+  youbike,
+  tra,
+  thsr;
 
   String get label {
     switch (this) {
@@ -16,6 +18,10 @@ enum NearbyFilter {
         return '公車';
       case NearbyFilter.youbike:
         return 'YouBike';
+      case NearbyFilter.tra:
+        return '台鐵';
+      case NearbyFilter.thsr:
+        return '高鐵';
     }
   }
 }
@@ -32,14 +38,15 @@ class _FilterButtonGroup extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Padding(
+    const filters = NearbyFilter.values;
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       child: Row(
         spacing: 8,
-        children: NearbyFilter.values.map((filter) {
-          final isSelected = filter == selectedFilter;
-          return Expanded(
-            child: Pressable(
+        children: [
+          for (final filter in filters)
+            Pressable(
               onTap: () {
                 unawaited(HapticService.instance.lightTap());
                 onFilterChanged(filter);
@@ -48,30 +55,38 @@ class _FilterButtonGroup extends StatelessWidget {
                 duration: const Duration(milliseconds: 150),
                 curve: Curves.easeInOut,
                 height: 36,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: BoxDecoration(
-                  color: isSelected ? cs.primary : cs.surfaceContainerHighest,
+                  color: filter == selectedFilter
+                      ? cs.primary
+                      : cs.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(8),
                 ),
                 alignment: Alignment.center,
                 child: Text(
                   filter.label,
                   style: TextStyle(
-                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
+                    fontWeight: filter == selectedFilter
+                        ? FontWeight.w600
+                        : FontWeight.w400,
                     fontSize: 13,
-                    color: isSelected ? cs.onPrimary : cs.onSurface,
+                    color: filter == selectedFilter
+                        ? cs.onPrimary
+                        : cs.onSurface,
                   ),
                 ),
               ),
             ),
-          );
-        }).toList(),
+        ],
       ),
     );
   }
 }
 
 class _NearbyStationsTab extends StatefulWidget {
-  const _NearbyStationsTab();
+  const _NearbyStationsTab({required this.onStationTap});
+
+  final ValueChanged<NearStationViewModel> onStationTap;
 
   @override
   State<_NearbyStationsTab> createState() => _NearbyStationsTabState();
@@ -90,6 +105,10 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
         return s.type == NearStationType.bus;
       case NearbyFilter.youbike:
         return s.type == NearStationType.bike;
+      case NearbyFilter.tra:
+        return s.type == NearStationType.tra;
+      case NearbyFilter.thsr:
+        return s.type == NearStationType.thsr;
     }
   }
 
@@ -109,21 +128,28 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
           child: BlocBuilder<NearbyBloc, NearbyState>(
             builder: (context, state) {
               if (state.loading && state.stations.isEmpty) {
-                return ListView(
-                  padding: const EdgeInsets.only(top: 8),
-                  children: const [
-                    ShimmerRow(height: 62),
-                    ShimmerRow(height: 62),
-                    ShimmerRow(height: 62),
-                    ShimmerRow(height: 62),
-                  ],
+                return LayoutBuilder(
+                  builder: (context, constraints) {
+                    // Each ShimmerRow is height + 8 (vertical margin); fill
+                    // the viewport so the skeleton reads as a full list.
+                    const rowExtent = 62 + 8.0;
+                    final count = (constraints.maxHeight / rowExtent).ceil();
+                    return ListView(
+                      padding: const EdgeInsets.only(top: 4),
+                      physics: const NeverScrollableScrollPhysics(),
+                      children: [
+                        for (var i = 0; i < count; i++)
+                          const ShimmerRow(height: 62),
+                      ],
+                    );
+                  },
                 );
               }
               if (state.error != null) {
                 return ErrorStateView(
                   error: state.error!,
                   onRetry: () => context.read<NearbyBloc>().add(
-                    const NearbyRequested(radius: _kFallbackRadiusMeters),
+                    NearbyRequested(radius: _fallbackRadiusMeters),
                   ),
                 );
               }
@@ -133,9 +159,16 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
               }
               return ListView(
                 padding: EdgeInsets.zero,
-                children: items
-                    .map((s) => _NearbyStationRow(station: s))
-                    .toList(),
+                children: [
+                  for (var i = 0; i < items.length; i++)
+                    StaggerItem(
+                      index: i,
+                      child: _NearbyStationRow(
+                        station: items[i],
+                        onStationTap: widget.onStationTap,
+                      ),
+                    ),
+                ],
               );
             },
           ),
@@ -165,43 +198,24 @@ class _NearbyEmpty extends StatelessWidget {
 class _NearbyStationRow extends StatelessWidget {
   const _NearbyStationRow({
     required this.station,
+    required this.onStationTap,
   });
 
   final NearStationViewModel station;
+  final ValueChanged<NearStationViewModel> onStationTap;
 
   void _onTap(BuildContext context) {
     unawaited(HapticService.instance.lightTap());
-    switch (station.type) {
-      case NearStationType.bus:
-        unawaited(
-          context.push(
-            '/bus/stop',
-            extra: {
-              'stopName': station.stationName,
-              'stopId': station.stationId,
-            },
-          ),
-        );
-      case NearStationType.bike:
-        unawaited(
-          context.push(
-            '/bike/station',
-            extra: {'stationUid': station.stationId},
-          ),
-        );
-      case NearStationType.mrt:
-        unawaited(context.push('/metro'));
-      case NearStationType.tra:
-      case NearStationType.thsr:
-        unawaited(context.push('/rail'));
-    }
+    onStationTap(station);
   }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final details =
-        '步行 ${station.walkingMinutes} 分 · ${station.distanceMeters}m';
+    final distance = station.routed
+        ? formatNearDistance(station.distanceMeters)
+        : '約 ${formatNearDistance(station.distanceMeters)}';
+    final details = '步行 ${station.walkingMinutes} 分 · $distance';
     return Pressable(
       onTap: () => _onTap(context),
       semanticLabel: '${station.stationName} $details',

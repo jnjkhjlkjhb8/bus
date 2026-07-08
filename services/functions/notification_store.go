@@ -68,6 +68,28 @@ func (s notificationStore) activeReminders(ctx context.Context, routeType, route
 	return out, rows.Err()
 }
 
+// dueScheduledReminders returns pending reminders whose scheduled fire_at has
+// arrived (rail: fire_at = arrival − lead), joined to a push-enabled device
+// token. Bus reminders leave fire_at NULL and are excluded — they fire off the
+// live ETA via activeReminders instead. expires_at>now drops trains that have
+// already arrived so a late tick doesn't send a stale "arriving" push.
+func (s notificationStore) dueScheduledReminders(ctx context.Context, now time.Time) ([]arrivalReminder, error) {
+	rows, err := s.db.Query(ctx, `SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes FROM firebase_arrival_reminder r JOIN firebase_device d ON d.install_id=r.install_id WHERE r.status='pending' AND r.fire_at IS NOT NULL AND r.fire_at<=$1 AND r.expires_at>$1 AND d.push_enabled AND d.fcm_token<>''`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []arrivalReminder
+	for rows.Next() {
+		var v arrivalReminder
+		if err := rows.Scan(&v.id, &v.token, &v.routeType, &v.routeKey, &v.stopKey, &v.direction, &v.leadMinutes); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // rowsChanged reports whether a conditional UPDATE affected exactly its one
 // target row, which is how the claim/fire/release state transitions detect
 // whether they actually won the race. The input error is passed through.

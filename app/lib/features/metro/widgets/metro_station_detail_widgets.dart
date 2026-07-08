@@ -1,14 +1,18 @@
-part of '../view/metro_screen.dart';
+part of '../view/metro_station_detail_view.dart';
 
 class _StationDetailSheet extends StatelessWidget {
   const _StationDetailSheet({
+    required this.system,
     required this.station,
-    required this.onClose,
-    super.key,
+    this.onClose,
   });
 
+  final String system;
   final MetroMapStation station;
-  final VoidCallback onClose;
+
+  /// 關閉鈕的回呼；省略時不顯示關閉鈕（第二層 sheet 的關閉由 PagedSheet
+  /// 返回手勢處理）。`/metro` 地圖內的站點面板仍會傳入此參數以顯示關閉鈕。
+  final VoidCallback? onClose;
 
   List<String> _lines() =>
       station.id.split('_').map((p) => p.replaceAll(_digits, '')).toList();
@@ -20,7 +24,7 @@ class _StationDetailSheet extends StatelessWidget {
 
     return RefreshIndicator(
       onRefresh: () async {
-        context.read<MetroEtaBloc>().add(LoadMetroEta('TRTC', station.id));
+        context.read<MetroEtaBloc>().add(LoadMetroEta(system, station.id));
       },
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
@@ -28,6 +32,23 @@ class _StationDetailSheet extends StatelessWidget {
         children: [
           Row(
             children: [
+              if (onClose == null)
+                Pressable(
+                  onTap: () {
+                    unawaited(HapticService.instance.lightTap());
+                    unawaited(Navigator.of(context).maybePop());
+                  },
+                  semanticLabel: '返回',
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      size: 18,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                ),
               for (final line in lines)
                 Padding(
                   padding: const EdgeInsets.only(right: 4),
@@ -43,11 +64,12 @@ class _StationDetailSheet extends StatelessWidget {
                 ),
               ),
               _MetroFavButton(station: station),
-              IconButton(
-                icon: const Icon(Icons.close_rounded),
-                onPressed: onClose,
-                visualDensity: VisualDensity.compact,
-              ),
+              if (onClose != null)
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: onClose,
+                  visualDensity: VisualDensity.compact,
+                ),
             ],
           ),
           const SizedBox(height: 12),
@@ -62,13 +84,27 @@ class _StationDetailSheet extends StatelessWidget {
                   children: [ShimmerRow(), ShimmerRow(), ShimmerRow()],
                 );
               }
+              if (arrivals.isEmpty) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    '目前無列車資訊',
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              }
               return Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   for (final (i, a) in arrivals.indexed) ...[
                     StaggerItem(
+                      // Stable identity (feed upsert key) so a re-sort keeps
+                      // each row paired with its own stagger delay.
+                      key: ValueKey('${a.line}:${a.destination}'),
                       index: i,
-                      child: _ArrivalRow(arrival: a),
+                      child: MetroArrivalTile(arrival: a),
                     ),
                     Divider(
                       height: 20,
@@ -91,6 +127,13 @@ class _StationDetailSheet extends StatelessWidget {
             ),
           ),
           BlocBuilder<MetroEtaBloc, MetroEtaState>(
+            // First/last-train data is loaded once and never changes per arrival
+            // frame; rebuild only when the schedule itself (or its shimmer
+            // condition) changes, not on every live ETA push.
+            buildWhen: (p, n) =>
+                p.schedule != n.schedule ||
+                (p.loading && p.schedule.isEmpty) !=
+                    (n.loading && n.schedule.isEmpty),
             builder: (context, state) {
               if (state.loading && state.schedule.isEmpty) {
                 return const Column(
@@ -102,7 +145,10 @@ class _StationDetailSheet extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   for (final s in state.schedule) ...[
-                    _MetroScheduleItem(schedule: s),
+                    _MetroScheduleItem(
+                      key: ValueKey('${s.destination}:${s.firstTime}'),
+                      schedule: s,
+                    ),
                     Divider(
                       height: 20,
                       color: cs.outlineVariant.withValues(alpha: 0.5),
@@ -161,37 +207,37 @@ class _MetroFavButton extends StatelessWidget {
   }
 }
 
-class _ArrivalRow extends StatelessWidget {
-  const _ArrivalRow({required this.arrival});
+/// A single metro arrival row, rendered through the shared [EtaListTile] in its
+/// bare, roundel-lead configuration: line roundel leading, 往-destination in
+/// heading2, and the status through the shared time column. Metro keeps its own
+/// list chrome (divider-separated rows, no coming-soon highlight or tap
+/// target), so it uses the tile's `bare` variant.
+class MetroArrivalTile extends StatelessWidget {
+  const MetroArrivalTile({required this.arrival, super.key});
 
   final MetroArrival arrival;
 
   @override
   Widget build(BuildContext context) {
-    final status = arrival.approaching
-        ? EtaStatus.approaching()
-        : EtaStatus.minutes(arrival.estimateMinutes);
-    return Row(
-      children: [
-        TransportIcon(type: _getTransportType(arrival.line)),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            '往 ${arrival.destination}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: AppTextStyles.heading2,
-          ),
-        ),
-        const SizedBox(width: 12),
-        EtaValue(status: status),
-      ],
+    // Status mapping goes through the shared ArrivalDisplay contract so metro
+    // stops re-implementing the approaching/minutes rule.
+    final display = ArrivalDisplay.fromMetro(
+      line: arrival.line,
+      destination: arrival.destination,
+      estimateMinutes: arrival.estimateMinutes,
+      approaching: arrival.approaching,
+    );
+    return EtaListTile.fromDisplay(
+      display,
+      leading: TransportIcon(type: _getTransportType(arrival.line)),
+      destinationStyle: AppTextStyles.heading2,
+      bare: true,
     );
   }
 }
 
 class _MetroScheduleItem extends StatelessWidget {
-  const _MetroScheduleItem({required this.schedule});
+  const _MetroScheduleItem({required this.schedule, super.key});
   final MetroSchedule schedule;
 
   @override

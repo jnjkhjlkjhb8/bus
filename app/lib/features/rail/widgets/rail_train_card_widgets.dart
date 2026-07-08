@@ -10,6 +10,7 @@ class _TrainCard extends StatefulWidget {
     required this.duration,
     required this.origin,
     required this.destination,
+    required this.date,
   });
 
   final String type;
@@ -20,6 +21,7 @@ class _TrainCard extends StatefulWidget {
   final String duration;
   final String origin;
   final String destination;
+  final String date;
 
   @override
   State<_TrainCard> createState() => _TrainCardState();
@@ -46,19 +48,11 @@ class _TrainCardState extends State<_TrainCard> {
         unawaited(
           Navigator.push(
             context,
-            PageRouteBuilder<void>(
-              pageBuilder: (_, _, _) => RailTrainScreen(
+            MaterialPageRoute<void>(
+              builder: (_) => RailTrainScreen(
                 type: widget.type,
                 trainNo: widget.number,
-              ),
-              transitionsBuilder: (_, animation, _, child) => SlideTransition(
-                position: animation.drive(
-                  Tween(
-                    begin: const Offset(1, 0),
-                    end: Offset.zero,
-                  ).chain(CurveTween(curve: Curves.easeOut)),
-                ),
-                child: child,
+                date: widget.date,
               ),
             ),
           ),
@@ -111,13 +105,9 @@ class _TrainCardState extends State<_TrainCard> {
                     Pressable(
                       onTap: () {
                         unawaited(HapticService.instance.lightTap());
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              '已為您開啟 ${widget.type} ${widget.number} 車次訂票系統',
-                            ),
-                            duration: const Duration(seconds: 2),
-                          ),
+                        AppSnackbar.show(
+                          context,
+                          '已為您開啟 ${widget.type} ${widget.number} 車次訂票系統',
                         );
                       },
                       child: Container(

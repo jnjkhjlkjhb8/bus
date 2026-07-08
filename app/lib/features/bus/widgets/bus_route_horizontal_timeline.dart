@@ -1,5 +1,7 @@
 part of '../view/bus_route_screen.dart';
 
+const _busSpriteSize = 44.0;
+
 class _HorizontalRouteTimeline extends StatelessWidget {
   const _HorizontalRouteTimeline({
     required this.stops,
@@ -79,6 +81,19 @@ class _HorizontalRouteTimeline extends StatelessWidget {
                     ),
                   ),
                 ),
+
+                if (vehicle != null && !isLast)
+                  Positioned(
+                    left: 60 + 60 * vehicle.progress - _busSpriteSize / 2,
+                    top: 52 - _busSpriteSize / 2,
+                    child: IgnorePointer(
+                      child: Image.asset(
+                        busSpriteAsset(90),
+                        width: _busSpriteSize,
+                        height: _busSpriteSize,
+                      ),
+                    ),
+                  ),
 
                 Positioned(
                   top: 8,
@@ -310,35 +325,8 @@ class _HorizontalTimelinePainter extends CustomPainter {
 
     if (vehicleProgress != null && !isLast) {
       final vx = cx + (size.width - cx) * vehicleProgress!;
-      final vehicleRect = RRect.fromRectAndRadius(
-        Rect.fromCenter(center: Offset(vx, cy), width: 22, height: 14),
-        const Radius.circular(5),
-      );
-
-      canvas
-        ..drawRRect(
-          vehicleRect,
-          Paint()
-            ..color = Colors.black.withValues(alpha: 0.08)
-            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5),
-        )
-        ..drawRRect(
-          vehicleRect,
-          Paint()..color = Colors.black,
-        )
-        ..drawRRect(
-          vehicleRect,
-          Paint()
-            ..color = Colors.white
-            ..strokeWidth = 1.2
-            ..style = PaintingStyle.stroke,
-        )
-        ..drawCircle(
-          Offset(vx - 4, cy),
-          1.5,
-          Paint()..color = Colors.white,
-        );
-
+      // Vehicle body is drawn as a sprite widget in the Stack above;
+      // only the plate label is painted here.
       if (vehiclePlate != null && vehiclePlate!.isNotEmpty) {
         final textPainter = TextPainter(
           text: TextSpan(

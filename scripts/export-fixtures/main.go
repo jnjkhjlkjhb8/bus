@@ -1,5 +1,5 @@
 // Command export-fixtures dumps one raw_tdx dataset/partition to a JSON file for
-// deterministic loader replay tests (ADR-0005: "Local tests replay exported
+// deterministic loader replay tests
 // raw_tdx fixtures — deterministic, no network"). It is read-only: it never
 // writes to the database, only to the -out file.
 //

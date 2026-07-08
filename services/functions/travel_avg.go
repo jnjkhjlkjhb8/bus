@@ -11,15 +11,22 @@ import (
 )
 
 // cleanupBusHistory deletes bus_eta_history rows older than 30 days (the
-// retention window). A failure is wrapped as transient so runDaily retries it.
+// retention window) and, piggybacking on the same job, the prediction-error rows
+// past the same window. A failure is wrapped as transient so runDaily retries.
 func cleanupBusHistory(ctx context.Context, db *pgxpool.Pool) error {
 	tag, err := db.Exec(ctx, `DELETE FROM bus_eta_history WHERE recorded_at < NOW() - INTERVAL '30 days'`)
 	if err != nil {
 		log.Infof("[ETA_HISTORY] cleanup error: %v", err)
 		return obs.Transient(fmt.Errorf("cleanup bus history: %w", err))
-	} else {
-		log.Infof("[ETA_HISTORY] cleanup deleted %d rows", tag.RowsAffected())
 	}
+	log.Infof("[ETA_HISTORY] cleanup deleted %d rows", tag.RowsAffected())
+
+	perrTag, err := db.Exec(ctx, `DELETE FROM bus_eta_prediction_error WHERE predicted_at < NOW() - INTERVAL '30 days'`)
+	if err != nil {
+		log.Infof("[ETA_ERROR] cleanup error: %v", err)
+		return obs.Transient(fmt.Errorf("cleanup prediction error: %w", err))
+	}
+	log.Infof("[ETA_ERROR] cleanup deleted %d rows", perrTag.RowsAffected())
 	return nil
 }
 
@@ -85,19 +92,31 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 	type depKey struct {
 		subRouteUID string
 		direction   int16
+		dayOfWeek   int16
 	}
 	depCache := make(map[depKey][]time.Time)
 	getDepTimes := func(key depKey) []time.Time {
 		if cached, ok := depCache[key]; ok {
 			return cached
 		}
+		// Origin-stop departures of each timetable trip that runs on this
+		// day of week. type=false rows are the per-stop timetable; the origin
+		// is the lowest stopsequence per trip (DISTINCT ON tripid). Frequency
+		// rows (type=true, stopsequence=-1) are windows, not observed trips, so
+		// they are excluded from travel-average computation. service_day is a
+		// Mon..Sun bitmask (Monday=bit0); day_of_week follows time.Weekday
+		// (Sunday=0), hence 1 << ((dow+6)%7).
+		mask := int16(1) << uint16((key.dayOfWeek+6)%7)
 		drows, err := db.Query(ctx, `
-			SELECT "arrival_time/StartTime"
-			FROM bus_schedule
-			WHERE sub_route_uid = $1 AND direction = $2
-			  AND type = true AND stopsequence = 0
-			ORDER BY "arrival_time/StartTime"`,
-			key.subRouteUID, key.direction)
+			SELECT dep FROM (
+				SELECT DISTINCT ON (tripid) "arrival_time/StartTime" AS dep
+				FROM bus_schedule
+				WHERE sub_route_uid = $1 AND direction = $2
+				  AND type = false AND service_day & $3 <> 0
+				ORDER BY tripid, stopsequence
+			) t
+			ORDER BY dep`,
+			key.subRouteUID, key.direction, mask)
 		if err != nil {
 			log.Infof("[TRAVEL_AVG] dep query error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
 			depCache[key] = []time.Time{}
@@ -125,7 +144,7 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 	samples := make(map[aggKey][]int)
 
 	for _, c := range crossings {
-		dkey := depKey{subRouteUID: c.subRouteUID, direction: c.direction}
+		dkey := depKey{subRouteUID: c.subRouteUID, direction: c.direction, dayOfWeek: c.dayOfWeek}
 		depTimes := getDepTimes(dkey)
 		if len(depTimes) == 0 {
 			continue

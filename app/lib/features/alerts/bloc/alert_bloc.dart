@@ -2,17 +2,44 @@ import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import 'package:wheres_the_car/core/grpc/live_data.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'package:wheres_the_car/core/firebase/remote_config.dart';
+import 'package:wheres_the_car/data/live/arrival_feed.dart';
 import 'package:wheres_the_car/data/models/alert_models.dart';
 import 'package:wheres_the_car/data/repositories/alert_repository.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
 
-const _kReadKey = 'read_alerts';
+/// Parses the `alert_sources` remote-config value: comma-separated tagged
+/// tokens `metro:<system>` and `bus:<city>`. Malformed or unknown-kind tokens
+/// are dropped so a bad remote value can't break alert startup. TRA/THSR are
+/// nationwide rail and stay wired directly, not listed here.
+({List<String> metro, List<String> bus}) parseAlertSources(String csv) {
+  final metro = <String>[];
+  final bus = <String>[];
+  for (final raw in csv.split(',')) {
+    final token = raw.trim();
+    final sep = token.indexOf(':');
+    if (sep <= 0) continue;
+    final value = token.substring(sep + 1).trim();
+    if (value.isEmpty) continue;
+    switch (token.substring(0, sep)) {
+      case 'metro':
+        metro.add(value);
+      case 'bus':
+        bus.add(value);
+    }
+  }
+  return (metro: metro, bus: bus);
+}
 
 class AlertBloc extends Bloc<AlertEvent, AlertState> {
-  AlertBloc() : super(AlertState(readMessages: _loadRead())) {
+  AlertBloc({AlertRepository? repository})
+    : _repository = repository ?? AlertRepository.instance,
+      super(
+        AlertState(
+          readMessages: (repository ?? AlertRepository.instance).readAlerts(),
+        ),
+      ) {
     on<AlertStarted>(_onStarted);
     on<AlertReceived>(_onReceived);
     on<AlertDismissed>(_onDismissed);
@@ -24,18 +51,13 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
     on<AlertStreamRecovered>(_onStreamRecovered);
   }
 
-  static Set<String> _loadRead() {
-    if (!HiveStore.settingsReady) return {};
-    final list = HiveStore.settings.get(_kReadKey, defaultValue: <String>[]);
-    return {...(list as List).cast<String>()};
-  }
+  final AlertRepository _repository;
 
   void _persistRead(Set<String> read) {
-    if (!HiveStore.settingsReady) return;
-    unawaited(HiveStore.settings.put(_kReadKey, read.toList()));
+    unawaited(_repository.persistReadAlerts(read));
   }
 
-  final List<LiveData<AlertViewModel>> _subs = [];
+  final List<StreamSubscription<AlertViewModel>> _subs = [];
 
   bool get hasActiveSubscriptions => _subs.isNotEmpty;
 
@@ -47,19 +69,23 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
 
     void listen(Stream<AlertViewModel> Function() source) {
       _subs.add(
-        LiveData<AlertViewModel>.watch(
+        ArrivalFeed.passthrough(
           source: source,
-          onData: (vm) => add(AlertReceived(vm)),
           onFailure: (e) => add(AlertStreamFailed(e)),
           onRecovered: () => add(const AlertStreamRecovered()),
-        ),
+        ).listen((vm) => add(AlertReceived(vm))),
       );
     }
 
-    listen(AlertRepository.instance.traAlert);
-    listen(AlertRepository.instance.thsrAlert);
-    listen(() => AlertRepository.instance.metroAlert('TRTC'));
-    listen(() => AlertRepository.instance.busNews('Taipei'));
+    listen(_repository.traAlert);
+    listen(_repository.thsrAlert);
+    final sources = parseAlertSources(AppConfig.getString('alert_sources'));
+    for (final system in sources.metro) {
+      listen(() => _repository.metroAlert(system));
+    }
+    for (final city in sources.bus) {
+      listen(() => _repository.busNews(city));
+    }
   }
 
   void _onReceived(AlertReceived event, Emitter<AlertState> emit) {

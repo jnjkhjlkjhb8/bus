@@ -16,9 +16,11 @@ import 'package:protobuf/protobuf.dart' as $pb;
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
 
+/// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+/// marshaled Mrt_live, now typed for the interface.
 class Resp_Mrt_eta extends $pb.GeneratedMessage {
   factory Resp_Mrt_eta({
-    $core.List<$core.int>? data,
+    Mrt_live? data,
   }) {
     final result = create();
     if (data != null) result.data = data;
@@ -37,8 +39,8 @@ class Resp_Mrt_eta extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Resp_Mrt_eta',
       createEmptyInstance: create)
-    ..a<$core.List<$core.int>>(
-        1, _omitFieldNames ? '' : 'data', $pb.PbFieldType.OY)
+    ..aOM<Mrt_live>(1, _omitFieldNames ? '' : 'data',
+        subBuilder: Mrt_live.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -61,13 +63,15 @@ class Resp_Mrt_eta extends $pb.GeneratedMessage {
   static Resp_Mrt_eta? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $core.List<$core.int> get data => $_getN(0);
+  Mrt_live get data => $_getN(0);
   @$pb.TagNumber(1)
-  set data($core.List<$core.int> value) => $_setBytes(0, value);
+  set data(Mrt_live value) => $_setField(1, value);
   @$pb.TagNumber(1)
   $core.bool hasData() => $_has(0);
   @$pb.TagNumber(1)
   void clearData() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Mrt_live ensureData() => $_ensure(0);
 }
 
 class Ask_mrt extends $pb.GeneratedMessage {

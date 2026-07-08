@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -83,27 +83,18 @@ const busSubroutesUpsertSQL = `
 			DO UPDATE SET city = excluded.city,geometry = EXCLUDED.geometry,stops = EXCLUDED.stops,depart = EXCLUDED.depart,destin = EXCLUDED.destin,schedule = EXCLUDED.schedule,operators = EXCLUDED.operators,updated_at = NOW();
 			`
 
-// busScheduleUpsertSQL upserts bus timetable and frequency rows from temp_bus
-// into bus_schedule. The dual-purpose column names (e.g.
+// busScheduleInsertSQL inserts bus timetable and frequency rows from temp_bus
+// into bus_schedule after saveschedule has deleted the city's partition in the
+// same transaction (partition-replace). No DISTINCT ON and no ON CONFLICT: the
+// natural key (sub_route_uid, direction, type, service_day, tripid,
+// "stop_uid/MinHeadwayMins") is not unique in real data — a circular route
+// visits the same stop twice in one trip — so every raw row must survive rather
+// than be collapsed. The dual-purpose column names (e.g.
 // "stop_uid/MinHeadwayMins") hold either a fixed timetable stop or a
 // frequency-based headway depending on the type flag.
-const busScheduleUpsertSQL = `INSERT INTO bus_schedule (sub_route_uid, direction, type, tripid, islowfloor, stopsequence, "stop_uid/MinHeadwayMins", "stop_name/MaxHeadwayMins", "arrival_time/StartTime", "departure_time/EndTime", service_day, updated_at)
-				SELECT DISTINCT ON (uid, dir, type, sdays, id, stopuid)
-					uid, dir, type, id, floor, seq, stopuid, stopname, arrival::time, departure::time, sdays, NOW()
-				FROM temp_bus
-				ORDER BY uid, dir, type, sdays, id, stopuid
-				ON CONFLICT (sub_route_uid, direction, type, service_day, tripid, "stop_uid/MinHeadwayMins")
-				DO UPDATE SET islowfloor = EXCLUDED.islowfloor, stopsequence = EXCLUDED.stopsequence,
-					"stop_name/MaxHeadwayMins" = EXCLUDED."stop_name/MaxHeadwayMins",
-					"arrival_time/StartTime" = EXCLUDED."arrival_time/StartTime",
-					"departure_time/EndTime" = EXCLUDED."departure_time/EndTime",
-					updated_at = NOW()`
-
-// busRouteEtaKey returns the Redis key holding (and the channel publishing) the
-// per-subroute ETA snapshot consumed by the router's route-arrival stream.
-func busRouteEtaKey(subRouteUID string) string {
-	return fmt.Sprintf("bus_eta_route:%s", subRouteUID)
-}
+const busScheduleInsertSQL = `INSERT INTO bus_schedule (sub_route_uid, direction, type, tripid, islowfloor, stopsequence, "stop_uid/MinHeadwayMins", "stop_name/MaxHeadwayMins", "arrival_time/StartTime", "departure_time/EndTime", service_day, updated_at)
+				SELECT uid, dir, type, id, floor, seq, stopuid, stopname, arrival::time, departure::time, sdays, NOW()
+				FROM temp_bus`
 
 // rawBusRoute decodes a TDX Bus/Route element: a route and its per-direction
 // subroutes, operators, and first/last service times.
@@ -291,37 +282,8 @@ type rawBusShape struct {
 	UpdateTime  string `json:"UpdateTime"`
 }
 
-// rawBusStation decodes a TDX Bus/Station element: a physical station and its
-// optional group membership, used to build station groups.
-type rawBusStation struct {
-	StationUID     string `json:"StationUID"`
-	StationID      string `json:"StationID"`
-	StationGroupID string `json:"StationGroupID"`
-	StationName    struct {
-		Zhtw string `json:"Zh_tw"`
-	} `json:"StationName"`
-	StationPosition struct {
-		PositionLon float64 `json:"PositionLon"`
-		PositionLat float64 `json:"PositionLat"`
-	} `json:"StationPosition"`
-}
-
-// rawBusStationGroup decodes a TDX Bus/StationGroup element: a named group of
-// nearby stations sharing one position.
-type rawBusStationGroup struct {
-	StationGroupUID  string `json:"StationGroupUID"`
-	StationGroupID   string `json:"StationGroupID"`
-	StationGroupName struct {
-		Zhtw string `json:"Zh_tw"`
-	} `json:"StationGroupName"`
-	StationGroupPosition struct {
-		PositionLon float64 `json:"PositionLon"`
-		PositionLat float64 `json:"PositionLat"`
-	} `json:"StationGroupPosition"`
-}
-
 // rawBusOperator decodes a TDX Bus/Operator element and doubles as the row shape
-// for the DB fallback in busOperators.
+// for the DB fallback in busOperatorsFromDB.
 type rawBusOperator struct {
 	OperatorID   string `json:"OperatorID"`
 	OperatorName struct {
@@ -356,7 +318,7 @@ func busDailyTimetableSkip(city string) bool {
 // timetable TDX does not serve. Runs both at boot and in the 03:00 static cron.
 // The fetch wrapper only owns the TDX call; the decoder-side assembly and Redis
 // writes are shared with the loader path via loadBusDailyTimetable.
-func busDailyroute(client *resty.Client, rc *redis.Client) {
+func busDailyroute(tdx *shared.TDXClient, rc *redis.Client) {
 	log.Infof("[bus] action=bus_dailyroute event=start")
 	for _, city := range cities {
 		if busDailyTimetableSkip(city) {
@@ -369,7 +331,7 @@ func busDailyroute(client *resty.Client, rc *redis.Client) {
 			url = fmt.Sprintf("/v2/Bus/DailyTimeTable/City/%s", city)
 		}
 		log.Infof("[bus] action=bus_dailyroute city=%s event=city_start", city)
-		dec, comp, err, flipopen := callApi(client, rc, url, "DailyTimeTable"+city)
+		dec, comp, flipopen, err := tdx.Get(url, "DailyTimeTable"+city)
 		if err != nil {
 			log.Infof("[bus] action=bus_dailyroute city=%s event=skip reason=api_error,error=%s", city, err)
 			continue
@@ -402,24 +364,24 @@ func loadBusDailyTimetable(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool
 		return err
 	}
 	pipe := rc.Pipeline()
-	mp := make(map[string]map[int32]*models.Temp, 300)
+	mp := make(map[string]map[int32]*models.Bus_DirectionTimetable, 300)
 	var temp rawBusDailytimetable
 	for dec.More() {
 		temp = rawBusDailytimetable{}
 		if err := dec.Decode(&temp); err == nil {
-			uid, dir := makethatsame(city, temp.SubRouteUID, temp.Direction)
+			uid, dir := shared.CanonicalSubroute(city, temp.SubRouteUID, temp.Direction)
 			if _, exists := mp[uid]; !exists {
-				mp[uid] = make(map[int32]*models.Temp, 4)
+				mp[uid] = make(map[int32]*models.Bus_DirectionTimetable, 4)
 			}
 			if _, exists := mp[uid][int32(dir)]; !exists {
-				mp[uid][int32(dir)] = &models.Temp{
+				mp[uid][int32(dir)] = &models.Bus_DirectionTimetable{
 					DailyTimetables: make([]*models.Bus_DailyTimetable, 0, 64),
 				}
 			}
 			for _, t := range temp.Timetables {
-				stop := make([]*models.Temp_StopTimes, len(t.StopTimes))
+				stop := make([]*models.Bus_StopTime, len(t.StopTimes))
 				for i, st := range t.StopTimes {
-					stop[i] = &models.Temp_StopTimes{
+					stop[i] = &models.Bus_StopTime{
 						StopSequence:  int32(st.StopSequence),
 						ArrivalTime:   st.ArrivalTime,
 						DepartureTime: st.DepartureTime,
@@ -444,7 +406,7 @@ func loadBusDailyTimetable(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool
 			log.Infof("[bus] action=bus_dailyroute subRouteUID=%s event=marshal_error error=%v", subRouteUID, err)
 			continue
 		}
-		pipe.Set(fmt.Sprintf("bus_daily_timetable:%s", subRouteUID), pb, 23*time.Hour+30*time.Minute)
+		pipe.Set(shared.BusDailyTimetableKey(subRouteUID), pb, 23*time.Hour+30*time.Minute)
 	}
 	_, _ = pipe.Exec()
 	log.Infof("[BUS] action=bus_dailyroute event=complete city=%s", city)
@@ -460,49 +422,21 @@ func jsonOrNil(r json.RawMessage) []byte {
 	return r
 }
 
-// cloneBusFare deep-copies a fare and stamps it with subRouteUID, so a
-// route-wide fare shared across subroutes can be attached to each without
-// aliasing the same proto message. Returns nil for a nil input.
-func cloneBusFare(f *models.Bus_Fare, subRouteUID string) *models.Bus_Fare {
+// cloneBusFare deep-copies a fare so a route-wide fare shared across subroutes
+// can be attached to each without aliasing the same proto message. Returns nil
+// for a nil input.
+func cloneBusFare(f *models.Bus_Fare) *models.Bus_Fare {
 	if f == nil {
 		return nil
 	}
-	cloned := proto.Clone(f).(*models.Bus_Fare)
-	cloned.SubRouteUid = subRouteUID
-	return cloned
+	return proto.Clone(f).(*models.Bus_Fare)
 }
 
-// cityFares fetches a city's route fares and returns two lookups: fares keyed by
-// subroute UID, and route-wide fares (IsForAllSubRoutes) keyed by route UID for
-// subroutes without their own fare. Returns nil, nil on fetch/decode failure.
-// It deletes the IMS cache first so fares are always refetched.
-func cityFares(ctx context.Context, client *resty.Client, rc *redis.Client, city string) (map[string]*models.Bus_Fare, map[string]*models.Bus_Fare) {
-	url := fmt.Sprintf("/v2/Bus/RouteFare/City/%s", city)
-	if city == "InterCity" {
-		url = "/v2/Bus/RouteFare/InterCity"
-	}
-	cacheKey := "bus_RouteFare" + city
-	if err := rc.Del("LastTimeGet_" + cacheKey).Err(); err != nil {
-		log.Infof("[BUS_FARE] action=bus_fare city=%s event=cache_delete_error error=%v", city, err)
-	}
-	dec, comp, err, flipopen := callApi(client, rc, url, cacheKey)
-	if err != nil || !comp {
-		log.Infof("[BUS_FARE] action=bus_fare city=%s event=skip reason=api_error", city)
-		return nil, nil
-	}
-	defer flipopen()
-	bySub, byRoute, loadErr := loadBusFares(dec, city)
-	if loadErr != nil {
-		return nil, nil
-	}
-	return bySub, byRoute
-}
-
-// loadBusFares parses a city's route fares from an already-opened decoder (from
-// callApi or the raw_tdx loader) into the two lookups cityFares returns: fares
-// keyed by subroute UID, and route-wide fares (IsForAllSubRoutes) keyed by route
-// UID. Pure parsing — no SQL; the fare protos are embedded into bus_subroutes /
-// bus_static by the downstream upserts.
+// loadBusFares parses a city's route fares from an already-opened decoder (the
+// raw_tdx loader, via loadBusFareMaps) into two lookups: fares keyed by subroute
+// UID, and route-wide fares (IsForAllSubRoutes) keyed by route UID. Pure parsing
+// — no SQL; the fare protos are embedded into bus_subroutes / bus_static by the
+// downstream upserts.
 func loadBusFares(dec *json.Decoder, city string) (map[string]*models.Bus_Fare, map[string]*models.Bus_Fare, error) {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[BUS_FARE] action=bus_fare city=%s event=decode_error error=%v", city, err)
@@ -525,7 +459,6 @@ func loadBusFares(dec *json.Decoder, city string) (map[string]*models.Bus_Fare, 
 		}
 		if f.SubRouteID != "" {
 			uid := pre + f.SubRouteID
-			fare.SubRouteUid = uid
 			bySub[uid] = fare
 		}
 		if f.IsForAllSubRoutes == 1 && f.RouteID != "" {
@@ -534,26 +467,6 @@ func loadBusFares(dec *json.Decoder, city string) (map[string]*models.Bus_Fare, 
 	}
 	log.Infof("[BUS_FARE] action=bus_fare city=%s event=success sub_count=%d route_count=%d", city, len(bySub), len(byRoute))
 	return bySub, byRoute, nil
-}
-
-// busOperators returns a city's operators keyed by OperatorID, fetching from TDX
-// and upserting into bus_operators. If the fetch fails or returns no update, it
-// falls back to reading the previously stored operators from the DB so a
-// transient TDX outage does not blank out operator detail on routes.
-func busOperators(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool, city string) map[string]rawBusOperator {
-	var url string
-	if city == "InterCity" {
-		url = "/v2/Bus/Operator/InterCity"
-	} else {
-		url = fmt.Sprintf("/v2/Bus/Operator/City/%s", city)
-	}
-	dec, comp, err, flipopen := callApi(client, rc, url, "bus_Operator"+city)
-	if err != nil || !comp {
-		return busOperatorsFromDB(ctx, db, city)
-	}
-	defer flipopen()
-	result, _ := loadBusOperators(ctx, dec, db, city)
-	return result
 }
 
 // busOperatorsFromDB reads a city's previously stored operators from
@@ -579,7 +492,7 @@ func busOperatorsFromDB(ctx context.Context, db *pgxpool.Pool, city string) map[
 }
 
 // loadBusOperators decodes a city's operators from an already-opened decoder
-// (from callApi or the raw_tdx loader), upserts them into bus_operators, and
+// (the raw_tdx loader reconstructs it), upserts them into bus_operators, and
 // returns them keyed by OperatorID for the subroute assembly. The temp_op COPY
 // and ON CONFLICT (operator_id, authority_code) upsert are byte-identical to
 // the legacy fetch-coupled body. The map is returned even on a write error so

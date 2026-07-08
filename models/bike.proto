@@ -8,8 +8,10 @@ service Bike_Service{
 message Bike_request{
   string StationUID = 1;
 }
+// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+// marshaled Bike_eta, now typed for the interface.
 message Resp_Bike_eta{
-  bytes data = 1;
+  Bike_eta data = 1;
 }
 message Bike_static{
   string StationUID = 1;

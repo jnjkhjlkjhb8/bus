@@ -7,13 +7,6 @@ sealed class MetroEvent extends Equatable {
   List<Object?> get props => [];
 }
 
-class MetroDisplayModeChanged extends MetroEvent {
-  const MetroDisplayModeChanged(this.mode);
-  final MetroDisplayMode mode;
-  @override
-  List<Object?> get props => [mode];
-}
-
 class MetroStationTapped extends MetroEvent {
   const MetroStationTapped({required this.stationId});
   final String stationId;
@@ -31,5 +24,3 @@ class MetroJourneyMatrixLoaded extends MetroEvent {
   @override
   List<Object?> get props => [matrix];
 }
-
-enum MetroDisplayMode { travelTime, fare }

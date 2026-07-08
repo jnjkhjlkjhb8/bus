@@ -28,6 +28,13 @@ const MaasPlanRequest$json = {
     {'1': 'arriveBy', '3': 7, '4': 1, '5': 8, '10': 'arriveBy'},
     {'1': 'gc', '3': 8, '4': 1, '5': 1, '10': 'gc'},
     {'1': 'transitModes', '3': 9, '4': 3, '5': 5, '10': 'transitModes'},
+    {'1': 'top', '3': 10, '4': 1, '5': 5, '10': 'top'},
+    {'1': 'transferTimeMin', '3': 11, '4': 1, '5': 5, '10': 'transferTimeMin'},
+    {'1': 'transferTimeMax', '3': 12, '4': 1, '5': 5, '10': 'transferTimeMax'},
+    {'1': 'firstMileMode', '3': 13, '4': 1, '5': 5, '10': 'firstMileMode'},
+    {'1': 'firstMileTime', '3': 14, '4': 1, '5': 5, '10': 'firstMileTime'},
+    {'1': 'lastMileMode', '3': 15, '4': 1, '5': 5, '10': 'lastMileMode'},
+    {'1': 'lastMileTime', '3': 16, '4': 1, '5': 5, '10': 'lastMileTime'},
   ],
 };
 
@@ -37,7 +44,11 @@ final $typed_data.Uint8List maasPlanRequestDescriptor = $convert.base64Decode(
     'IgASgBUgdmcm9tTG9uEhQKBXRvTGF0GAMgASgBUgV0b0xhdBIUCgV0b0xvbhgEIAEoAVIFdG9M'
     'b24SEgoEZGF0ZRgFIAEoCVIEZGF0ZRISCgR0aW1lGAYgASgJUgR0aW1lEhoKCGFycml2ZUJ5GA'
     'cgASgIUghhcnJpdmVCeRIOCgJnYxgIIAEoAVICZ2MSIgoMdHJhbnNpdE1vZGVzGAkgAygFUgx0'
-    'cmFuc2l0TW9kZXM=');
+    'cmFuc2l0TW9kZXMSEAoDdG9wGAogASgFUgN0b3ASKAoPdHJhbnNmZXJUaW1lTWluGAsgASgFUg'
+    '90cmFuc2ZlclRpbWVNaW4SKAoPdHJhbnNmZXJUaW1lTWF4GAwgASgFUg90cmFuc2ZlclRpbWVN'
+    'YXgSJAoNZmlyc3RNaWxlTW9kZRgNIAEoBVINZmlyc3RNaWxlTW9kZRIkCg1maXJzdE1pbGVUaW'
+    '1lGA4gASgFUg1maXJzdE1pbGVUaW1lEiIKDGxhc3RNaWxlTW9kZRgPIAEoBVIMbGFzdE1pbGVN'
+    'b2RlEiIKDGxhc3RNaWxlVGltZRgQIAEoBVIMbGFzdE1pbGVUaW1l');
 
 @$core.Deprecated('Use maasPlanResponseDescriptor instead')
 const MaasPlanResponse$json = {
@@ -67,6 +78,7 @@ const Route$json = {
       '6': '.Section',
       '10': 'sections'
     },
+    {'1': 'totalFare', '3': 6, '4': 1, '5': 5, '10': 'totalFare'},
   ],
 };
 
@@ -74,7 +86,8 @@ const Route$json = {
 final $typed_data.Uint8List routeDescriptor = $convert.base64Decode(
     'CgVSb3V0ZRIeCgp0cmF2ZWxUaW1lGAEgASgDUgp0cmF2ZWxUaW1lEhwKCXN0YXJ0VGltZRgCIA'
     'EoCVIJc3RhcnRUaW1lEhgKB2VuZFRpbWUYAyABKAlSB2VuZFRpbWUSHAoJdHJhbnNmZXJzGAQg'
-    'ASgFUgl0cmFuc2ZlcnMSJAoIc2VjdGlvbnMYBSADKAsyCC5TZWN0aW9uUghzZWN0aW9ucw==');
+    'ASgFUgl0cmFuc2ZlcnMSJAoIc2VjdGlvbnMYBSADKAsyCC5TZWN0aW9uUghzZWN0aW9ucxIcCg'
+    'l0b3RhbEZhcmUYBiABKAVSCXRvdGFsRmFyZQ==');
 
 @$core.Deprecated('Use sectionDescriptor instead')
 const Section$json = {
@@ -123,6 +136,7 @@ const Section$json = {
       '6': '.NotificationIdentity',
       '10': 'notificationIdentity'
     },
+    {'1': 'fare', '3': 9, '4': 1, '5': 5, '10': 'fare'},
   ],
 };
 
@@ -134,7 +148,7 @@ final $typed_data.Uint8List sectionDescriptor = $convert.base64Decode(
     'gLMgouVHJhbnNwb3J0Ugl0cmFuc3BvcnQSPwoRaW50ZXJtZWRpYXRlU3RvcHMYBiADKAsyES5J'
     'bnRlcm1lZGlhdGVTdG9wUhFpbnRlcm1lZGlhdGVTdG9wcxIfCgZhZ2VuY3kYByABKAsyBy5BZ2'
     'VuY3lSBmFnZW5jeRJKChVub3RpZmljYXRpb25faWRlbnRpdHkYCCABKAsyFS5Ob3RpZmljYXRp'
-    'b25JZGVudGl0eVIUbm90aWZpY2F0aW9uSWRlbnRpdHk=');
+    'b25JZGVudGl0eVIUbm90aWZpY2F0aW9uSWRlbnRpdHkSEgoEZmFyZRgJIAEoBVIEZmFyZQ==');
 
 @$core.Deprecated('Use notificationIdentityDescriptor instead')
 const NotificationIdentity$json = {

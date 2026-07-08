@@ -4,17 +4,29 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/grpc/live_data.dart';
+import 'package:wheres_the_car/core/firebase/firebase_telemetry.dart';
 import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
+import 'package:wheres_the_car/data/live/arrival_feed.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
+import 'package:wheres_the_car/data/reminders/reminder_toggle.dart';
 import 'package:wheres_the_car/data/repositories/bus_repository.dart';
+import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
+import 'package:wheres_the_car/data/repositories/reminders_repository.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
 
 class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
-  BusRouteBloc({required this.subRouteUid, bool autoStart = true})
-    : super(const BusRouteState()) {
+  BusRouteBloc({
+    required this.subRouteUid,
+    bool autoStart = true,
+    BusRepository? busRepository,
+    FirebaseRepository? firebaseRepository,
+    RemindersRepository? remindersRepository,
+  }) : _bus = busRepository ?? BusRepository.instance,
+       _firebase = firebaseRepository ?? FirebaseRepository.instance,
+       _reminders = remindersRepository ?? RemindersRepository.instance,
+       super(const BusRouteState()) {
     on<BusRouteStarted>(_onStarted);
     on<BusRouteDirectionToggled>(_onDirectionToggled);
     on<BusRouteEtaUpdated>(_onEtaUpdated);
@@ -26,7 +38,15 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   }
 
   final String subRouteUid;
-  LiveData<List<BusStopEtaViewModel>>? _etaSub;
+  final BusRepository _bus;
+  final FirebaseRepository _firebase;
+  final RemindersRepository _reminders;
+  // Replace policy + 15s decay live inside the feed; the bloc keys the emitted
+  // list into etaMap on arrival (etaKey), preserving the map-shaped state.
+  final _feed = ArrivalFeed<BusStopEtaViewModel>.replace(
+    decay: (e, now) => e.decayed(now),
+  );
+  StreamSubscription<List<BusStopEtaViewModel>>? _etaSub;
 
   static String etaKey(BusStopEtaViewModel eta) => eta.sequence > 0
       ? 'seq:${eta.direction}:${eta.sequence}'
@@ -38,9 +58,15 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   ) async {
     await _etaSub?.cancel();
     _etaSub = null;
-    emit(state.copyWith(loading: true, clearError: true));
+    emit(
+      state.copyWith(
+        loading: true,
+        clearError: true,
+        reminders: _reminders.active(subRouteUid),
+      ),
+    );
     try {
-      final route = await BusRepository.instance.routeStatic(subRouteUid);
+      final route = await _bus.routeStatic(subRouteUid);
       emit(
         state.copyWith(
           route: route,
@@ -50,16 +76,19 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
         ),
       );
 
-      _etaSub = LiveData<List<BusStopEtaViewModel>>.watch(
-        source: () => BusRepository.instance.routeEta(subRouteUid),
-        onData: (etaList) {
-          final map = {for (final e in etaList) etaKey(e): e};
-          if (map.isEmpty) return;
-          add(BusRouteEtaUpdated(map));
-        },
-        onFailure: (e) => add(BusRouteStreamFailed(e)),
-        onRecovered: () => add(const BusRouteStreamRecovered()),
-      );
+      _etaSub = _feed
+          .watch(
+            source: () => _bus.routeEta(subRouteUid),
+            onFailure: (e) => add(BusRouteStreamFailed(e)),
+            onRecovered: () => add(const BusRouteStreamRecovered()),
+          )
+          .listen(
+            (etaList) => add(
+              BusRouteEtaUpdated({
+                for (final e in etaList) etaKey(e): e,
+              }),
+            ),
+          );
 
       final details = await _loadDetails();
       if (details != null) {
@@ -79,7 +108,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   _loadDetails() async {
     BusDailyTimetable? daily;
     try {
-      daily = await BusRepository.instance.routeDaily(subRouteUid);
+      daily = await _bus.routeDaily(subRouteUid);
     } on Object catch (e, s) {
       CrashReporter.record(e, s);
       daily = null;
@@ -97,6 +126,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   }
 
   void _onEtaUpdated(BusRouteEtaUpdated event, Emitter<BusRouteState> emit) {
+    // The feed guards empty frames upstream; this stays a defensive no-op.
     if (event.etaMap.isEmpty && state.etaMap.isNotEmpty) return;
     emit(state.copyWith(etaMap: event.etaMap));
   }
@@ -114,18 +144,55 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     );
   }
 
-  void _onReminderToggled(
+  // Fixed lead until a per-user picker exists; remote-config
+  // 'arrival_lead_minutes' offers '1,3,5'.
+  static const _leadMinutes = 3;
+  static const _reminderTtl = Duration(hours: 2);
+
+  // The optimistic toggle choreography lives in the shared state machine; the
+  // bus wiring adds the local mirror (RemindersRepository) and telemetry that
+  // rail omits.
+  late final ReminderToggle _reminderToggle = ReminderToggle(
+    createReminder: ({
+      required stopKey,
+      required direction,
+      required expiresAt,
+    }) async {
+      final reminder = await _firebase.createArrivalReminder(
+        routeType: 'bus',
+        routeKey: subRouteUid,
+        stopKey: stopKey,
+        direction: direction,
+        leadMinutes: _leadMinutes,
+        expiresAt: expiresAt,
+      );
+      return reminder.reminderId;
+    },
+    cancelReminder: _firebase.cancelArrivalReminder,
+    persistArm: (stopKey, reminderId, expiresAt) =>
+        _reminders.put(subRouteUid, stopKey, reminderId, expiresAt),
+    persistDisarm: (stopKey) => _reminders.remove(subRouteUid, stopKey),
+    onToggled: ({required enabled}) => unawaited(
+      FirebaseTelemetry.instance.arrivalReminderChanged(
+        routeType: 'bus',
+        routeKey: subRouteUid,
+        enabled: enabled,
+        leadMinutes: _leadMinutes,
+      ),
+    ),
+  );
+
+  Future<void> _onReminderToggled(
     BusRouteReminderToggled event,
     Emitter<BusRouteState> emit,
-  ) {
-    final updated = Set<String>.from(state.reminders);
-    if (updated.contains(event.stopUid)) {
-      updated.remove(event.stopUid);
-    } else {
-      updated.add(event.stopUid);
-    }
-    emit(state.copyWith(reminders: updated));
-  }
+  ) => _reminderToggle.run(
+    readReminders: () => state.reminders,
+    emit: (next) => emit(state.copyWith(reminders: next)),
+    isDone: () => emit.isDone,
+    key: event.stopUid,
+    direction: '${state.direction}',
+    armAt: DateTime.now().add(_reminderTtl),
+  );
 
   void _onStreamFailed(
     BusRouteStreamFailed event,

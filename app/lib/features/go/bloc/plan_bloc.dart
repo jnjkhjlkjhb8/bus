@@ -4,8 +4,8 @@ import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
 
 class PlanBloc extends Bloc<PlanEvent, PlanState> {
-  PlanBloc({MaasRepository repository = MaasRepository.instance})
-    : _repository = repository,
+  PlanBloc({MaasRepository? repository})
+    : _repository = repository ?? MaasRepository.instance,
       super(const PlanState()) {
     on<PlanSearchRequested>(_onSearch);
     on<RouteSelected>(_onRouteSelected);
@@ -32,6 +32,13 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
         arriveBy: event.arriveBy,
         gc: event.gc,
         transitModes: event.transitModes,
+        top: event.top,
+        transferMin: event.transferMin,
+        transferMax: event.transferMax,
+        firstMileMode: event.firstMileMode,
+        firstMileTime: event.firstMileTime,
+        lastMileMode: event.lastMileMode,
+        lastMileTime: event.lastMileTime,
       );
       emit(state.copyWith(status: PlanStatus.success, result: result));
     } on Object catch (e) {

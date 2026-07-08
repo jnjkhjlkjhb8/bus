@@ -49,4 +49,27 @@ void main() {
 
     expect(state.error, isA<OfflineError>());
   });
+
+  test(
+    'RailSystemChanged + RailQueryChanged retains THSR system and O/D names',
+    () async {
+      // Guards the rail_screen hand-off: _dispatchSearch re-establishes a
+      // RailLiveBoardLoaded before each request so _onTimetableRequested reads
+      // the right system (else a repeat THSR query falls back to TRA).
+      final bloc = RailBloc();
+      addTearDown(bloc.close);
+
+      bloc
+        ..add(const RailSystemChanged(RailSystem.thsr))
+        ..add(const RailQueryChanged(originName: '南港', destName: '左營'));
+      await Future<void>.delayed(Duration.zero);
+
+      final state = bloc.state;
+      expect(state, isA<RailLiveBoardLoaded>());
+      state as RailLiveBoardLoaded;
+      expect(state.system, RailSystem.thsr);
+      expect(state.queryOriginName, '南港');
+      expect(state.queryDestName, '左營');
+    },
+  );
 }

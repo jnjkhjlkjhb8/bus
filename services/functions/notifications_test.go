@@ -12,10 +12,15 @@ import (
 type fakeNotificationStore struct {
 	tokens                                                  []deviceToken
 	reminders                                               []arrivalReminder
+	due                                                     []arrivalReminder
 	claimed                                                 map[string]bool
 	firedIDs                                                []string
 	invalidated                                             []string
 	wantRouteType, wantRouteKey, wantStopKey, wantDirection string
+}
+
+func (s *fakeNotificationStore) dueScheduledReminders(context.Context, time.Time) ([]arrivalReminder, error) {
+	return s.due, nil
 }
 
 func (s *fakeNotificationStore) subscribedTokens(_ context.Context, routeType, routeKey string) ([]deviceToken, error) {
@@ -116,22 +121,67 @@ func TestRouteAlertsRequireIdentity(t *testing.T) {
 	}
 }
 
-func TestDispatcherRejectsNonBusIdentity(t *testing.T) {
+func TestRouteAlertStaysBusOnly(t *testing.T) {
+	// Service-alert pushes remain bus-only; a non-bus routeAlert is a no-op.
 	store := &fakeNotificationStore{
 		tokens:        []deviceToken{{"token"}},
-		reminders:     []arrivalReminder{{id: "r1", token: "token", leadMinutes: 5}},
 		claimed:       map[string]bool{},
 		wantRouteType: "tra",
 		wantRouteKey:  "123",
-		wantStopKey:   "1000",
-		wantDirection: "0",
 	}
 	sender := &fakeFCM{}
-	dispatcher := newNotificationDispatcher(store, sender)
-	dispatcher.routeAlert(context.Background(), "tra", "123", "延誤")
-	dispatcher.arrival(context.Background(), "tra", "123", "1000", "0", 60)
+	newNotificationDispatcher(store, sender).routeAlert(context.Background(), "tra", "123", "延誤")
 	if len(sender.messages) != 0 {
-		t.Fatalf("non-bus notifications sent=%d", len(sender.messages))
+		t.Fatalf("non-bus route alert sent=%d", len(sender.messages))
+	}
+}
+
+func TestArrivalFiresForNonBusTypes(t *testing.T) {
+	// Arrival reminders are transport-agnostic: metro/TRA/THSR fire the same way
+	// as bus once their ETA source computes a usable etaSeconds.
+	for _, routeType := range []string{"mrt", "tra", "thsr"} {
+		t.Run(routeType, func(t *testing.T) {
+			store := &fakeNotificationStore{
+				claimed:       map[string]bool{},
+				reminders:     []arrivalReminder{{id: "r1", token: "t", routeType: routeType, routeKey: "R", stopKey: "S", direction: "0", leadMinutes: 5}},
+				wantRouteType: routeType,
+				wantRouteKey:  "R",
+				wantStopKey:   "S",
+				wantDirection: "0",
+			}
+			sender := &fakeFCM{}
+			d := newNotificationDispatcher(store, sender)
+			d.arrival(context.Background(), routeType, "R", "S", "0", 60)
+			if len(sender.messages) != 1 || len(store.firedIDs) != 1 {
+				t.Fatalf("sent=%d fired=%v", len(sender.messages), store.firedIDs)
+			}
+			if store.firedIDs[0] != "r1" || sender.messages[0].Data["route_type"] != routeType {
+				t.Fatalf("message=%+v fired=%v", sender.messages[0].Data, store.firedIDs)
+			}
+		})
+	}
+}
+
+func TestFireScheduledClaimsSendsAndFires(t *testing.T) {
+	store := &fakeNotificationStore{
+		claimed: map[string]bool{},
+		due:     []arrivalReminder{{id: "r1", token: "t", routeType: "tra", routeKey: "1120", stopKey: "南港", direction: "0", leadMinutes: 3}},
+	}
+	sender := &fakeFCM{}
+	d := newNotificationDispatcher(store, sender)
+	d.fireScheduled(context.Background())
+	if len(sender.messages) != 1 || len(store.firedIDs) != 1 {
+		t.Fatalf("sent=%d fired=%v", len(sender.messages), store.firedIDs)
+	}
+	m := sender.messages[0]
+	if m.Data["kind"] != "arrival_reminder" || m.Data["route_type"] != "tra" || m.Notification.Title != "即將到站" {
+		t.Fatalf("message=%+v", m.Data)
+	}
+	// A later tick that still sees the (unremoved) reminder must not resend it:
+	// the claim guard prevents duplicate pushes across ticks.
+	d.fireScheduled(context.Background())
+	if len(sender.messages) != 1 {
+		t.Fatalf("resent claimed reminder: sent=%d", len(sender.messages))
 	}
 }
 

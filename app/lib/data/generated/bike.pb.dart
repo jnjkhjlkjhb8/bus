@@ -69,9 +69,11 @@ class Bike_request extends $pb.GeneratedMessage {
   void clearStationUID() => $_clearField(1);
 }
 
+/// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+/// marshaled Bike_eta, now typed for the interface.
 class Resp_Bike_eta extends $pb.GeneratedMessage {
   factory Resp_Bike_eta({
-    $core.List<$core.int>? data,
+    Bike_eta? data,
   }) {
     final result = create();
     if (data != null) result.data = data;
@@ -90,8 +92,8 @@ class Resp_Bike_eta extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Resp_Bike_eta',
       createEmptyInstance: create)
-    ..a<$core.List<$core.int>>(
-        1, _omitFieldNames ? '' : 'data', $pb.PbFieldType.OY)
+    ..aOM<Bike_eta>(1, _omitFieldNames ? '' : 'data',
+        subBuilder: Bike_eta.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -114,13 +116,15 @@ class Resp_Bike_eta extends $pb.GeneratedMessage {
   static Resp_Bike_eta? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $core.List<$core.int> get data => $_getN(0);
+  Bike_eta get data => $_getN(0);
   @$pb.TagNumber(1)
-  set data($core.List<$core.int> value) => $_setBytes(0, value);
+  set data(Bike_eta value) => $_setField(1, value);
   @$pb.TagNumber(1)
   $core.bool hasData() => $_has(0);
   @$pb.TagNumber(1)
   void clearData() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Bike_eta ensureData() => $_ensure(0);
 }
 
 class Bike_static extends $pb.GeneratedMessage {

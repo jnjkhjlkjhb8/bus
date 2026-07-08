@@ -121,6 +121,13 @@ class _FakeMaasRepository implements MaasRepository {
     bool arriveBy = false,
     double gc = 0.0,
     List<int> transitModes = const [3, 4, 5, 6, 7, 8, 9],
+    int top = 5,
+    int transferMin = 15,
+    int transferMax = 60,
+    int firstMileMode = 0,
+    int firstMileTime = 10,
+    int lastMileMode = 0,
+    int lastMileTime = 10,
   }) async {
     final error = this.error;
     if (error != null) throw error;

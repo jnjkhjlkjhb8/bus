@@ -10,9 +10,9 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -52,9 +52,9 @@ type bikeAvailability struct {
 // bikeStatic is the daily static-ingestion entry point for bike-share stations.
 // It always returns nil; failures are logged per-city inside getbikeStation so
 // one city's error does not fail the whole daily run.
-func bikeStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) error {
+func bikeStatic(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) error {
 	log.Infof("[BIKE] action=bike_static event=start")
-	getbikeStation(ctx, client, rc, db)
+	getbikeStation(ctx, tdx, rc, db)
 	log.Infof("[BIKE] action=bike_static event=complete")
 	return nil
 }
@@ -63,14 +63,14 @@ func bikeStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db 
 // via a per-city temp-table COPY then ON CONFLICT upsert. Cities with no public
 // bike-share feed are skipped (the inline list mirrors ingestBikeSkip). The
 // "YouBike2.0_" name prefix is stripped before storing.
-func getbikeStation(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
+func getbikeStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
 	log.Infof("[BIKE] action=getbike_station event=start")
 	for _, city := range cities {
 		if city == "Keelung" || city == "HsinchuCounty" || city == "NantouCounty" || city == "YilanCounty" || city == "PenghuCounty" || city == "KinmenCounty" || city == "LienchiangCounty" || city == "InterCity" || city == "HualienCounty" {
 			continue
 		}
 		log.Infof("[BIKE] action=getbike_station city=%s event=city_start", city)
-		dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Bike/Station/City/%s", city), "bike_stations"+city)
+		dec, comp, flipopen, err := tdx.Get(fmt.Sprintf("/v2/Bike/Station/City/%s", city), "bike_stations"+city)
 		func() {
 			if flipopen != nil {
 				defer flipopen()
@@ -166,18 +166,29 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
 	return nil
 }
 
+// bikeHistorySampleGate is the process-wide 5-minute-per-station gate shared
+// across bikeEta rounds, so history sampling survives between 30s ticks.
+var bikeHistorySampleGate bikeHistorySampler
+
 // bikeEta refreshes live bike availability into Redis every 30s. For each
 // non-skipped city it fetches TDX Bike/Availability and pipelines a protobuf
 // BikeEta per station under bike_availability:<StationUID> with a 2-minute TTL,
-// so stale data expires if a city stops updating.
-func bikeEta(client *resty.Client, rc *redis.Client) {
+// so stale data expires if a city stops updating. Alongside the Redis refresh it
+// samples each station's rentable/returnable counts into
+// bike_availability_history at most once per 5 minutes per station
+// (bikeHistorySampleGate), building the training data for future availability
+// prediction. A nil db skips history collection so the realtime path can run
+// without a database.
+func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) {
 	log.Infof("[BIKE_ETA] action=bike_eta event=start")
+	now := time.Now()
+	var historyRows [][]interface{}
 	for _, city := range cities {
 		if city == "Keelung" || city == "HsinchuCounty" || city == "NantouCounty" || city == "YilanCounty" || city == "PenghuCounty" || city == "KinmenCounty" || city == "LienchiangCounty" || city == "InterCity" || city == "HualienCounty" {
 			continue
 		}
 		log.Infof("[BIKE_ETA] action=bike_eta city=%s event=city_start", city)
-		dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
+		dec, comp, flipopen, err := fetch(ctx, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
 		if !comp {
 			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=no updated", city)
 			continue
@@ -192,10 +203,11 @@ func bikeEta(client *resty.Client, rc *redis.Client) {
 		}
 		func() {
 			defer flipopen()
-			pipe := rc.Pipeline()
+			pipe := sink.pipeline()
 			for dec.More() {
 				var temp bikeAvailability
 				if err := dec.Decode(&temp); err == nil {
+					availableRent := int(temp.AvailableRentBikesDetail.GeneralBikes) + int(temp.AvailableRentBikesDetail.ElectricBikes)
 					raw := &models.BikeEta{
 						StationUID:           temp.StationUID,
 						ServiceStatus:        int32(temp.ServiceStatus),
@@ -208,12 +220,21 @@ func bikeEta(client *resty.Client, rc *redis.Client) {
 					if err != nil {
 						continue
 					}
-					pipe.Set(fmt.Sprintf("bike_availability:%s", temp.StationUID), pb, 2*time.Minute)
+					pipe.Set(shared.BikeAvailabilityKey(temp.StationUID), pb, 2*time.Minute)
+					// Sample into history at most once per 5 minutes per station.
+					if db != nil && bikeHistorySampleGate.shouldSample(temp.StationUID, now) {
+						historyRows = append(historyRows, []interface{}{
+							temp.StationUID, availableRent, int(temp.AvailableReturnBikes), now,
+						})
+					}
 				}
 			}
-			_, _ = pipe.Exec()
+			_ = pipe.Exec()
 			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)
 		}()
+	}
+	if db != nil {
+		saveBikeAvailabilityHistory(ctx, db, historyRows)
 	}
 	log.Infof("[BIKE_ETA] action=bike_eta event=complete")
 }

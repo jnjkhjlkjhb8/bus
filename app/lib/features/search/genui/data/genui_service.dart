@@ -1,10 +1,21 @@
 import 'package:firebase_ai/firebase_ai.dart';
 import 'package:wheres_the_car/data/repositories/search_repository.dart';
+import 'package:wheres_the_car/features/search/bloc/search_state.dart';
 import 'package:wheres_the_car/features/search/genui/model/genui_node.dart';
 
+/// AI 回覆的處理階段,供 UI 顯示進度文字。
+enum GenUiPhase { thinking, searching, composing }
+
+/// AI 最終回覆:UI 節點與其引用的真實查詢結果(uid → result)。
+class GenUiAnswer {
+  const GenUiAnswer({required this.nodes, required this.refs});
+  final List<GenUiNode> nodes;
+  final Map<String, SearchResult> refs;
+}
+
 class GenUiService {
-  const GenUiService._();
-  static const instance = GenUiService._();
+  const GenUiService();
+  static const instance = GenUiService();
   static const _model = 'gemini-3.5-flash';
   static const _maxTurns = 6;
   static const _systemPrompt =
@@ -14,7 +25,10 @@ class GenUiService {
       '取得資料後,你只能透過呼叫 renderUI 工具回覆,把結果整理成精簡的卡片節點。 '
       '用 heading 當區塊標題,text 寫一兩句說明,route 呈現路線或轉乘建議, '
       'step 列出搭乘步驟,chip 提供可點擊的後續搜尋(query 必須是可直接搜尋的站名或路線), '
-      'divider 分隔區塊。內容務必簡短,全部使用繁體中文。';
+      'divider 分隔區塊。route 與 chip 若對應某筆 searchTransit 查詢結果, '
+      '必須把該筆結果的 uid 原樣放進 refUid,不可自行編造 uid。 '
+      '內容務必簡短,全部使用繁體中文。';
+
   GenerativeModel _build() {
     final node = Schema.object(
       properties: {
@@ -35,6 +49,9 @@ class GenUiService {
         ),
         'label': Schema.string(description: 'chip 顯示文字'),
         'query': Schema.string(description: 'chip 點擊後帶入搜尋框的字串'),
+        'refUid': Schema.string(
+          description: 'route / chip 對應的 searchTransit 結果 uid,原樣帶回',
+        ),
       },
       optionalProperties: [
         'text',
@@ -44,6 +61,7 @@ class GenUiService {
         'kind',
         'label',
         'query',
+        'refUid',
       ],
     );
 
@@ -74,7 +92,12 @@ class GenUiService {
     );
   }
 
-  Future<List<GenUiNode>> ask(String prompt) async {
+  Future<GenUiAnswer> ask(
+    String prompt, {
+    void Function(GenUiPhase phase, String? query)? onPhase,
+  }) async {
+    final refs = <String, SearchResult>{};
+    onPhase?.call(GenUiPhase.thinking, null);
     final chat = _build().startChat();
     var response = await chat.sendMessage(Content.text(prompt));
 
@@ -84,33 +107,46 @@ class GenUiService {
 
       for (final call in calls) {
         if (call.name == 'renderUI') {
-          return GenUiNode.listFrom(call.args['nodes']);
+          return GenUiAnswer(
+            nodes: GenUiNode.listFrom(call.args['nodes']),
+            refs: refs,
+          );
         }
       }
 
       final replies = <FunctionResponse>[];
       for (final call in calls) {
         replies.add(
-          FunctionResponse(call.name, await _dispatch(call)),
+          FunctionResponse(call.name, await _dispatch(call, refs, onPhase)),
         );
       }
+      onPhase?.call(GenUiPhase.composing, null);
       response = await chat.sendMessage(Content.functionResponses(replies));
     }
 
-    return const [];
+    return GenUiAnswer(nodes: const [], refs: refs);
   }
 
-  Future<Map<String, Object?>> _dispatch(FunctionCall call) async {
+  Future<Map<String, Object?>> _dispatch(
+    FunctionCall call,
+    Map<String, SearchResult> refs,
+    void Function(GenUiPhase phase, String? query)? onPhase,
+  ) async {
     if (call.name != 'searchTransit') {
       return {'error': 'unknown tool'};
     }
     try {
       final query = (call.args['query'] as String? ?? '').trim();
       if (query.isEmpty) return {'results': const []};
+      onPhase?.call(GenUiPhase.searching, query);
       final results = await SearchRepository.instance.search(query, limit: 8);
+      for (final r in results) {
+        if (r.uid.isNotEmpty) refs[r.uid] = r;
+      }
       return {
         'results': results
             .map((r) => {
+                  'uid': r.uid,
                   'type': r.type.name,
                   'name': r.name,
                   'subtitle': r.subtitle,

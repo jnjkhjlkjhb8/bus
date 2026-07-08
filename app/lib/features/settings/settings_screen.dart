@@ -11,9 +11,10 @@ import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/firebase/firebase_bootstrap.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 
 enum _Appearance {
   system('跟隨系統'),
@@ -34,15 +35,21 @@ enum _Language {
 }
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, this.updatePushPreference});
+  const SettingsScreen({super.key, this.updatePushPreference, this.settings});
 
   final Future<bool> Function({required bool requested})? updatePushPreference;
+
+  /// Injectable for tests; defaults to the shared repository instance.
+  final SettingsRepository? settings;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  SettingsRepository get _settings =>
+      widget.settings ?? SettingsRepository.instance;
+
   _Appearance _appearance = _Appearance.system;
   _Language _language = _Language.system;
   int _versionTaps = 0;
@@ -52,20 +59,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _analyticsEnabled;
   late bool _crashlyticsEnabled;
   late bool _largeText;
+  late bool _liveActivityEnabled;
+  late bool _navigationLocationEnabled;
 
   @override
   void initState() {
     super.initState();
-    _devMode = HiveStore.devModeEnabled;
-    _pushEnabled = HiveStore.pushEnabled;
-    _analyticsEnabled = HiveStore.analyticsEnabled;
-    _crashlyticsEnabled = HiveStore.crashlyticsEnabled;
-    _largeText = HiveStore.largeText;
+    _devMode = _settings.devModeEnabled;
+    _pushEnabled = _settings.pushEnabled;
+    _analyticsEnabled = _settings.analyticsEnabled;
+    _crashlyticsEnabled = _settings.crashlyticsEnabled;
+    _largeText = _settings.largeText;
+    _liveActivityEnabled = _settings.liveActivityEnabled;
+    _navigationLocationEnabled = _settings.navigationLocationEnabled;
   }
 
   Future<void> _setPush(bool value) async {
     if (_pushUpdating) return;
-    HiveStore.pushEnabled = value;
+    _settings.pushEnabled = value;
     setState(() {
       _pushEnabled = value;
       _pushUpdating = true;
@@ -78,7 +89,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } on Object catch (_) {
       enabled = false;
     } finally {
-      HiveStore.pushEnabled = enabled;
+      _settings.pushEnabled = enabled;
       if (mounted) {
         setState(() {
           _pushEnabled = enabled;
@@ -107,12 +118,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _onVersionTap() {
     _versionTaps++;
     if (_versionTaps >= 5 && !_devMode) {
-      HiveStore.devModeEnabled = true;
+      _settings.devModeEnabled = true;
       setState(() => _devMode = true);
       _versionTaps = 0;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('開發者模式已啟用')),
-      );
+      AppSnackbar.show(context, '開發者模式已啟用');
     }
   }
 
@@ -166,8 +175,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 label: '大字體模式',
                 value: _largeText,
                 onChanged: (v) {
-                  HiveStore.largeText = v;
+                  _settings.largeText = v;
                   setState(() => _largeText = v);
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _SettingsSection(
+            title: '導航',
+            children: [
+              _SettingsSwitchRow(
+                icon: Icons.dashboard_customize_outlined,
+                label: '即時動態',
+                subtitle: '鎖定畫面與動態島顯示導航資訊',
+                value: _liveActivityEnabled,
+                onChanged: (v) {
+                  _settings.liveActivityEnabled = v;
+                  setState(() => _liveActivityEnabled = v);
+                },
+              ),
+              _SettingsSwitchRow(
+                icon: Icons.my_location_outlined,
+                label: '導航自動定位',
+                subtitle: '用於自動上車提醒與車上進度；關閉後仍可手動操作',
+                value: _navigationLocationEnabled,
+                onChanged: (v) {
+                  _settings.navigationLocationEnabled = v;
+                  setState(() => _navigationLocationEnabled = v);
                 },
               ),
             ],
@@ -189,7 +224,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onChanged: (value) => _setCollection(
                   value: value,
                   persist: ({required value}) =>
-                      HiveStore.analyticsEnabled = value,
+                      _settings.analyticsEnabled = value,
                   update: ({required value}) => _analyticsEnabled = value,
                   setCollectionEnabled: ({required value}) => FirebaseAnalytics
                       .instance
@@ -203,7 +238,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onChanged: (value) => _setCollection(
                   value: value,
                   persist: ({required value}) =>
-                      HiveStore.crashlyticsEnabled = value,
+                      _settings.crashlyticsEnabled = value,
                   update: ({required value}) => _crashlyticsEnabled = value,
                   setCollectionEnabled: ({required value}) =>
                       FirebaseCrashlytics.instance
@@ -291,12 +326,14 @@ class _SettingsSwitchRow extends StatelessWidget {
     required this.value,
     required this.onChanged,
     this.icon,
+    this.subtitle,
   });
 
   final String label;
   final bool value;
   final ValueChanged<bool>? onChanged;
   final IconData? icon;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
@@ -333,9 +370,21 @@ class _SettingsSwitchRow extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(label, style: AppTextStyles.bodyLarge),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle!,
+                        style: AppTextStyles.bodySmall.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
+              // Subtitle-less rows keep the base layout (switch flush to the
+              // label column); only the taller subtitle rows get the gap.
+              if (subtitle != null) const SizedBox(width: 12),
               sw,
             ],
           ),

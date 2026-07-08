@@ -4,7 +4,7 @@ import ActivityKit
 class LiveActivityPlugin: NSObject, FlutterPlugin {
     static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
-            name: "com.jnjk.bus/live_activity",
+            name: "com.wheres.bus/live_activity",
             binaryMessenger: registrar.messenger()
         )
         registrar.addMethodCallDelegate(LiveActivityPlugin(), channel: channel)
@@ -28,7 +28,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
         let attrs = BusLiveActivityAttributes(
             routeOrTrain: args["routeOrTrain"] as? String ?? "",
             fromStation: args["fromStation"] as? String ?? "",
-            toStation: args["nextStation"] as? String ?? "",
+            toStation: args["alightStation"] as? String ?? "",
             type: args["type"] as? String ?? "tra"
         )
         do {
@@ -63,7 +63,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
               let activity = Activity<BusLiveActivityAttributes>.activities.first(where: { $0.id == id })
         else { result(nil); return }
         Task {
-            await activity.end(nil, dismissalPolicy: .immediate)
+            await activity.end(using: nil, dismissalPolicy: .immediate)
             activityID = nil
             result(nil)
         }
@@ -71,12 +71,16 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
 
     @available(iOS 16.1, *)
     private func contentState(from args: [String: Any]) -> BusLiveActivityAttributes.ContentState {
-        let ms = args["arrivalTimeMs"] as? Int ?? 0
+        let ms = (args["etaMs"] as? Int) ?? (args["arrivalTimeMs"] as? Int) ?? 0
         return BusLiveActivityAttributes.ContentState(
+            mode: args["mode"] as? String ?? "riding",
             nextStation: args["nextStation"] as? String ?? "",
             previousStation: args["previousStation"] as? String,
+            alightStation: args["alightStation"] as? String,
+            remainingStops: args["remainingStops"] as? Int,
             progressPercent: args["progressPercent"] as? Double ?? 0.0,
-            arrivalTime: Date(timeIntervalSince1970: Double(ms) / 1000)
+            etaDate: ms > 0 ? Date(timeIntervalSince1970: Double(ms) / 1000) : nil,
+            walkMinutes: args["walkMinutes"] as? Int ?? 0
         )
     }
 }

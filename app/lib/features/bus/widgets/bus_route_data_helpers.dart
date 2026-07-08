@@ -18,7 +18,8 @@ String? _etaLabel(BusStopEtaViewModel? eta) {
 
 bool _approaching(BusStopEtaViewModel? eta) {
   if (eta == null) return false;
-  return eta.estimateSeconds > 0 && eta.estimateSeconds <= 30;
+  return eta.estimateSeconds > 0 &&
+      eta.estimateSeconds <= AppConfig.getInt('eta_approaching_threshold_s');
 }
 
 String _markerEta(BusStopEtaViewModel? eta) {
@@ -29,6 +30,17 @@ String _markerEta(BusStopEtaViewModel? eta) {
     stopStatus: eta.stopStatus,
   );
   return status == BusStopDisplayStatus.arriving ? '即' : '–';
+}
+
+List<BusVehiclePosition> _vehiclePositionsFor(BusRouteState s) {
+  final byPlate = <String, BusVehiclePosition>{};
+  for (final eta in s.etaMap.values) {
+    if (eta.direction != s.direction) continue;
+    for (final v in eta.vehicles) {
+      byPlate[v.plate] = v;
+    }
+  }
+  return byPlate.values.toList();
 }
 
 LatLngBounds _boundsOf(List<LatLng> pts) {
@@ -48,7 +60,20 @@ LatLngBounds _boundsOf(List<LatLng> pts) {
   );
 }
 
+// Memoize the timeline-stop derivation per state instance so both eta-scoped
+// selectors (timeline + stop list) share one computation instead of rebuilding
+// the list once per widget rebuild.
+final Expando<List<TimelineStop>> _stopsCache = Expando('busRouteStops');
+
 List<TimelineStop> _stopsFor(BusRouteState s) {
+  final cached = _stopsCache[s];
+  if (cached != null) return cached;
+  final derived = _deriveStops(s);
+  _stopsCache[s] = derived;
+  return derived;
+}
+
+List<TimelineStop> _deriveStops(BusRouteState s) {
   final stops = s.direction == 0 ? s.route?.stopsGo : s.route?.stopsReturn;
   if (stops == null) return const [];
   BusStopEtaViewModel? etaFor(BusStopModel stop) =>
@@ -75,15 +100,13 @@ String _timeLabel(String value) {
 
 List<_DepartureInfo> _departuresFor(BusRouteState state) {
   final trips =
-      state.daily?.tripsForDirection(state.direction) ??
-      const <BusDailyTrip>[];
+      state.daily?.tripsForDirection(state.direction) ?? const <BusDailyTrip>[];
   final now = TimeOfDay.now();
   final rows = <String>[];
   for (final trip in trips) {
     if (trip.stopTimes.isEmpty) continue;
     final first = trip.stopTimes.reduce(
-      (a, b) =>
-          a.stopSequence <= b.stopSequence ? a : b,
+      (a, b) => a.stopSequence <= b.stopSequence ? a : b,
     );
     final time = first.departureTime.isNotEmpty
         ? first.departureTime
@@ -107,8 +130,7 @@ List<_DepartureInfo> _departuresFor(BusRouteState state) {
 
 List<_TimetableInfo> _timetableFor(BusRouteState state) {
   final trips =
-      state.daily?.tripsForDirection(state.direction) ??
-      const <BusDailyTrip>[];
+      state.daily?.tripsForDirection(state.direction) ?? const <BusDailyTrip>[];
   final destination = state.currentHeadsign.isNotEmpty
       ? state.currentHeadsign
       : (state.currentStops.isEmpty ? '-' : state.currentStops.last.stopName);
@@ -116,8 +138,7 @@ List<_TimetableInfo> _timetableFor(BusRouteState state) {
   for (final trip in trips.take(24)) {
     if (trip.stopTimes.isEmpty) continue;
     final first = trip.stopTimes.reduce(
-      (a, b) =>
-          a.stopSequence <= b.stopSequence ? a : b,
+      (a, b) => a.stopSequence <= b.stopSequence ? a : b,
     );
     final time = first.departureTime.isNotEmpty
         ? first.departureTime

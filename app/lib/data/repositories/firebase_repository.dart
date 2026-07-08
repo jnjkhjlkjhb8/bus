@@ -4,20 +4,27 @@ import 'package:wheres_the_car/core/firebase/firebase_call_options.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/firebase/install_identity.dart';
 import 'package:wheres_the_car/core/grpc/grpc_client.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/generated/firebase.pbgrpc.dart';
+import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 
 bool isFirebaseRouteType(String value) => value == 'bus';
 
-bool isArrivalReminderRouteType(String value) => value == 'bus';
+bool isArrivalReminderRouteType(String value) =>
+    value == 'bus' || value == 'tra' || value == 'thsr';
 
 class FirebaseRepository {
-  FirebaseRepository({Firebase_ServiceClient? client}) : _client = client;
+  FirebaseRepository({
+    Firebase_ServiceClient? client,
+    SettingsRepository? settings,
+  }) : _client = client,
+       _settings = settings ?? SettingsRepository.instance;
 
   static final instance = FirebaseRepository();
 
   Firebase_ServiceClient? _client;
   Firebase_ServiceClient get _grpc => _client ??= GrpcClient.instance.firebase;
+
+  final SettingsRepository _settings;
 
   Future<DeviceState> upsertDevice({required String fcmToken}) async {
     if (!FirebaseGate.enabled) return DeviceState();
@@ -34,10 +41,10 @@ class FirebaseRepository {
           ),
         ),
         prefs: DevicePrefs(
-          pushEnabled: HiveStore.pushEnabled,
-          analyticsEnabled: HiveStore.analyticsEnabled,
-          crashlyticsEnabled: HiveStore.crashlyticsEnabled,
-          performanceEnabled: HiveStore.performanceEnabled,
+          pushEnabled: _settings.pushEnabled,
+          analyticsEnabled: _settings.analyticsEnabled,
+          crashlyticsEnabled: _settings.crashlyticsEnabled,
+          performanceEnabled: _settings.performanceEnabled,
         ),
       ),
       options: await FirebaseCallOptions.build(),

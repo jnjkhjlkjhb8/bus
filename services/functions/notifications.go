@@ -14,6 +14,7 @@ import (
 type notificationStorage interface {
 	subscribedTokens(context.Context, string, string) ([]deviceToken, error)
 	activeReminders(context.Context, string, string, string, string, time.Time) ([]arrivalReminder, error)
+	dueScheduledReminders(context.Context, time.Time) ([]arrivalReminder, error)
 	claim(context.Context, string, time.Time) (bool, error)
 	release(context.Context, string) (bool, error)
 	fired(context.Context, string, time.Time) (bool, error)
@@ -82,13 +83,16 @@ func (d *notificationDispatcher) routeAlert(ctx context.Context, routeType, rout
 }
 
 // arrival fires arrival reminders for a stop when the live ETA falls within a
-// reminder's lead time. No-op for a nil dispatcher, non-bus types, or a negative
-// ETA. Each reminder is claimed before sending to avoid duplicate pushes across
+// reminder's lead time. It is transport-agnostic: bus arrivals come from the
+// live TDX ETA (busEta), metro from the Redis metro ETA cache, and TRA/THSR from
+// timetable data (see arrival_sources.go); each source computes etaSeconds and
+// calls this method the same way. No-op for a nil dispatcher or a negative ETA.
+// Each reminder is claimed before sending to avoid duplicate pushes across
 // concurrent ETA runs; on success it is marked fired, and an unregistered-token
 // send invalidates the token. etaSeconds is rounded up to whole minutes in the
 // message body.
 func (d *notificationDispatcher) arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32) {
-	if d == nil || routeType != "bus" || etaSeconds < 0 {
+	if d == nil || etaSeconds < 0 {
 		return
 	}
 	now := d.now()
@@ -115,6 +119,42 @@ func (d *notificationDispatcher) arrival(ctx context.Context, routeType, routeKe
 		}
 		if _, err = d.store.fired(ctx, r.id, now); err != nil {
 			log.Infof("[FCM] mark reminder fired: %v", err)
+		}
+	}
+}
+
+// fireScheduled sends arrival reminders whose scheduled fire time has arrived —
+// the rail path, where the arrival time is known so fire_at was set at creation
+// (arrival − lead) rather than derived from a live ETA. It claims each reminder
+// before sending to avoid duplicate pushes across ticks, marks it fired on
+// success, releases it to retry on a transient failure, and invalidates the
+// token when FCM reports it unregistered. No-op for a nil dispatcher.
+func (d *notificationDispatcher) fireScheduled(ctx context.Context) {
+	if d == nil {
+		return
+	}
+	now := d.now()
+	reminders, err := d.store.dueScheduledReminders(ctx, now)
+	if err != nil {
+		log.Infof("[FCM] scheduled reminders: %v", err)
+		return
+	}
+	for _, r := range reminders {
+		claimed, err := d.store.claim(ctx, r.id, now)
+		if err != nil || !claimed {
+			continue
+		}
+		msg := notificationMessage(r.token, "即將到站", fmt.Sprintf("預計 %d 分鐘後到站", r.leadMinutes), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
+		if err = d.sender.Send(ctx, msg); err != nil {
+			if isInvalidFCMToken(err) {
+				_ = d.store.invalidate(ctx, r.token)
+			} else {
+				_, _ = d.store.release(ctx, r.id)
+			}
+			continue
+		}
+		if _, err = d.store.fired(ctx, r.id, now); err != nil {
+			log.Infof("[FCM] mark scheduled reminder fired: %v", err)
 		}
 	}
 }

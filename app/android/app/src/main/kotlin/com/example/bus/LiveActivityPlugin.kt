@@ -22,7 +22,7 @@ import io.flutter.plugin.common.MethodChannel
 class LiveActivityPlugin(private val context: Context) {
 
     companion object {
-        private const val CHANNEL_NAME = "com.jnjk.bus/live_activity"
+        private const val CHANNEL_NAME = "com.wheres.bus/live_activity"
         private const val NOTIF_ID = 1001
         private const val NOTIF_CHANNEL_ID = "live_activity"
     }

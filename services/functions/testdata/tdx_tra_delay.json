@@ -1,0 +1,16 @@
+[
+  {
+    "TrainNo": "1234",
+    "StationID": "1000",
+    "StationName": { "Zh_tw": "臺北" },
+    "DelayTime": 5,
+    "SrcUpdateTime": "2026-07-07T08:00:00+08:00"
+  },
+  {
+    "TrainNo": "5678",
+    "StationID": "1010",
+    "StationName": { "Zh_tw": "板橋" },
+    "DelayTime": 0,
+    "SrcUpdateTime": "2026-07-07T08:00:00+08:00"
+  }
+]

@@ -6,24 +6,37 @@ service Bus_Route_Service{
   rpc eta(Bus_Ask_Route) returns (stream Resp_Bus_eta) {}
 }
 service Bus_Station_Service{
-  rpc eta(Bus_Ask_Route) returns (stream Resp_Bus_eta) {}
-  rpc group(Bus_Ask_Route) returns (Bus_StationGroup) {}
+  rpc eta(Bus_Ask_StationGroup) returns (stream Resp_Bus_station_eta) {}
+  rpc group(Bus_Ask_StationGroup) returns (Bus_StationGroup) {}
 }
 message Bus_Ask_Route {
   string SubRouteUID = 1;
+}
+message Bus_Ask_StationGroup {
+  string city = 1;
+  string group_uid = 2;
 }
 message Bus_Ask_Station {
   string StationName = 1;
   string city = 2;
 }
+// Wire-compatible with the former `bytes data = 1`: a length-delimited field 1
+// still carries a marshaled Bus_subroute, now typed for the interface.
 message Resp_Bus_static{
-  bytes data = 1;
+  Bus_subroute data = 1;
 }
+// Route ETA envelope. data is a Bus_RouteArrival (Bus_Route_Service.eta).
 message Resp_Bus_eta{
-  bytes data = 1;
+  Bus_RouteArrival data = 1;
+}
+// Station-group ETA envelope. data is a Bus_StationArrival
+// (Bus_Station_Service.eta). Split from Resp_Bus_eta so each RPC carries its
+// own payload schema.
+message Resp_Bus_station_eta{
+  Bus_StationArrival data = 1;
 }
 message Resp_Bus_daily_timetable{
-  bytes data = 1;
+  Bus_DailyTimetables data = 1;
 }
 message BusOperator {
   string operator_id    = 1;
@@ -66,6 +79,7 @@ message Bus_stop{
 }
 
 message RouteOfStop{
+  reserved 1;
   string SubRouteUID = 2;
   int32 Direction = 3;
   repeated Bus_stop Stops = 4;
@@ -101,6 +115,7 @@ message Bus_StationGroupMember{
 }
 
 message Bus_RouteArrival{
+  reserved 2;
   string sub_route_uid = 1;
   repeated Bus_RouteEstimate stops = 3;
 }
@@ -118,6 +133,7 @@ message Bus_RouteEstimate{
   string src_update_time = 6;
   repeated Bus_position Buses = 7;
   int32 StopSequence = 8;
+  int64 arrival_unix = 9;
 }
 message Bus_StopEstimate{
   string stop_uid = 1;
@@ -129,22 +145,19 @@ message Bus_StopEstimate{
   int32 Stop_status = 7;
   string src_update_time = 8;
   repeated Bus_position Buses = 9;
+  int64 arrival_unix = 10;
 }
 message Bus_position{
+  reserved 6, 7, 8;
+  reserved "DutyStatus", "BusStatus", "gps_time";
   string plate_numb = 1;
   double position_lon = 2;
   double position_lat = 3;
   int32 speed = 4;
   int32 azimuth = 5;
-  int32 DutyStatus = 6;
-  int32 BusStatus = 7;
-  string gps_time = 8;
-}
-message Bus_schedule {
-  repeated Bus_Schedule schedules = 1;
 }
 message Bus_Schedule {
-  bool type = 1;
+  bool is_timetable = 1;
   string tripid = 2;
   bool islowfloor = 3;
   string start_Time = 4;
@@ -154,25 +167,27 @@ message Bus_Schedule {
   int32 service_day = 8;
 }
 message Bus_DailyTimetables{
+  reserved 2;
   string SubRouteUID = 1;
-  map<int32,temp> direction = 3;
+  map<int32,Bus_DirectionTimetable> direction = 3;
 }
-message temp{
+message Bus_DirectionTimetable{
   repeated Bus_DailyTimetable DailyTimetables = 1;
 }
 message Bus_DailyTimetable{
   string TripID = 1;
   bool IsLowFloor = 2;
-  repeated temp_StopTimes StopTimes = 3;
+  repeated Bus_StopTime StopTimes = 3;
 }
-message temp_StopTimes{
+message Bus_StopTime{
   int32 StopSequence = 1;
   string ArrivalTime = 2;
   string DepartureTime = 3;
   string StopUID = 4;
 }
 message Bus_Fare {
-  string sub_route_uid = 1;
+  reserved 1;
+  reserved "sub_route_uid";
   int32 fare_pricing_type = 2;
   bool is_free_bus = 3;
   bytes section_fares_json = 4;

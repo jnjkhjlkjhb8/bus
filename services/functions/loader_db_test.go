@@ -207,14 +207,14 @@ func TestRunLoadThroughRawTDXSource(t *testing.T) {
 
 // provisionBusSinks creates the env-schema tables loadBus writes on the
 // operator/fare assertion path (stop composite type, bus_subroutes,
-// bus_operators, raw_bus_route staging, bus_static, bus_station_stop_map,
-// bus_schedule). The throwaway loader cluster is raw_tdx-only and has no
-// PostGIS, so bus_stations / bus_station_groups are intentionally omitted:
-// savestations / saveStationGroups run in their own transactions, log the
-// missing-relation error, and do not abort loadBus — the assertion path
-// (bus_subroutes + bus_operators + bus_static.pb) does not touch them. Column
-// shapes mirror the production upsert targets (busSubroutesUpsertSQL,
-// busScheduleUpsertSQL, savestatictodb, loadBusOperators).
+// bus_operators, bus_static, bus_station_stop_map, bus_schedule). The throwaway
+// loader cluster is raw_tdx-only and has no PostGIS, so bus_stations /
+// bus_station_groups are intentionally omitted: savestations / saveStationGroups
+// run in their own transactions, log the missing-relation error, and do not
+// abort loadBus — the assertion path (bus_subroutes + bus_operators +
+// bus_static.pb) does not touch them. Column shapes mirror the production upsert
+// targets (busSubroutesUpsertSQL, busScheduleInsertSQL, savestatictodb,
+// loadBusOperators).
 func provisionBusSinks(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	ddl := []string{
@@ -226,12 +226,6 @@ func provisionBusSinks(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 			operator_name text NOT NULL, operator_phone text, operator_url text,
 			updated_at timestamptz NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (operator_id, authority_code))`,
-		`CREATE TABLE IF NOT EXISTS raw_bus_route (
-			sub_route_uid text NOT NULL, direction smallint NOT NULL,
-			route_uid text, route_name text, sub_route_name text,
-			depart text, destin text, type text NOT NULL, content jsonb NOT NULL,
-			created_at timestamptz,
-			PRIMARY KEY (sub_route_uid, direction, type))`,
 		`CREATE TABLE IF NOT EXISTS bus_subroutes (
 			sub_route_uid text NOT NULL, route_uid text, direction smallint NOT NULL,
 			route_name text, sub_route_name text, city text, depart text, destin text,
@@ -247,13 +241,15 @@ func provisionBusSinks(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 			direction int, stop_uid text, stop_sequence int,
 			updated_at timestamptz NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (sub_route_uid, stop_uid, direction))`,
+		// No unique key: bus_schedule is partition-replace (DELETE by
+		// sub_route_uid prefix, then plain INSERT), and circular routes produce
+		// duplicate natural keys that must all survive.
 		`CREATE TABLE IF NOT EXISTS bus_schedule (
 			sub_route_uid text, direction smallint, type bool, tripid text,
 			islowfloor bool, stopsequence smallint,
 			"stop_uid/MinHeadwayMins" text, "stop_name/MaxHeadwayMins" text,
 			"arrival_time/StartTime" time, "departure_time/EndTime" time,
-			service_day smallint, updated_at timestamptz NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (sub_route_uid, direction, type, service_day, tripid, "stop_uid/MinHeadwayMins"))`,
+			service_day smallint, updated_at timestamptz NOT NULL DEFAULT NOW())`,
 	}
 	for _, s := range ddl {
 		if _, err := pool.Exec(ctx, s); err != nil {
@@ -285,8 +281,8 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	// "Miaoli"), so any operator path routed through citymap[city] — like a
 	// busOperatorsFromDB read filtering on authority_code — returns zero rows and
 	// operator enrichment silently blanks. This fixture proves loadBus enriches
-	// County-suffixed cities via the in-memory raw_tdx decode. makethatsame is
-	// identity for non-InterCity, so the subroute UID is the raw SubRouteUID
+	// County-suffixed cities via the in-memory raw_tdx decode. CanonicalSubroute
+	// is identity for non-InterCity, so the subroute UID is the raw SubRouteUID
 	// "MIA100"; the fare prefix citymap["MiaoliCounty"] is "", so the fare's
 	// SubRouteID carries the full "MIA100".
 	const city = "MiaoliCounty"
@@ -299,7 +295,6 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 		}
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_subroutes WHERE sub_route_uid=$1", subUID)
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_static WHERE sub_route_uid=$1", subUID)
-		_, _ = pool.Exec(ctx, "DELETE FROM raw_bus_route WHERE route_uid='MIA1'")
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_operators WHERE operator_id=$1", opID)
 	}
 	cleanup()

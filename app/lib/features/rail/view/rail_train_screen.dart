@@ -1,140 +1,59 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/timeline_stop.dart';
+import 'package:wheres_the_car/core/errors/app_error.dart';
+import 'package:wheres_the_car/core/haptics/haptic_service.dart';
+import 'package:wheres_the_car/features/rail/bloc/rail_train_bloc.dart';
+import 'package:wheres_the_car/features/rail/bloc/rail_train_event.dart';
+import 'package:wheres_the_car/features/rail/bloc/rail_train_state.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
 import 'package:wheres_the_car/shared/widgets/bookmark_button.dart';
+import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/route_tab_bar.dart';
+import 'package:wheres_the_car/shared/widgets/train_type_chip.dart';
 
-const _stubStops = [
-  TimelineStop(
-    uid: 'TW-0',
-    name: '台北',
-    secondaryTime: '07:00',
-    secondaryLabel: '出發',
-    lat: 25.0478,
-    lon: 121.5170,
-  ),
-  TimelineStop(
-    uid: 'TW-1',
-    name: '板橋',
-    primaryTime: '07:11',
-    primaryLabel: '抵達',
-    secondaryTime: '07:13',
-    secondaryLabel: '出發',
-    lat: 25.0143,
-    lon: 121.4628,
-  ),
-  TimelineStop(
-    uid: 'TW-2',
-    name: '桃園',
-    primaryTime: '07:31',
-    primaryLabel: '抵達',
-    secondaryTime: '07:33',
-    secondaryLabel: '出發',
-    lat: 24.9893,
-    lon: 121.3145,
-  ),
-  TimelineStop(
-    uid: 'TW-3',
-    name: '新竹',
-    primaryTime: '07:58',
-    primaryLabel: '抵達',
-    secondaryTime: '08:01',
-    secondaryLabel: '出發',
-    lat: 24.8017,
-    lon: 120.9716,
-  ),
-  TimelineStop(
-    uid: 'TW-4',
-    name: '苗栗',
-    primaryTime: '08:20',
-    primaryLabel: '抵達',
-    secondaryTime: '08:22',
-    secondaryLabel: '出發',
-    lat: 24.5603,
-    lon: 120.8213,
-  ),
-  TimelineStop(
-    uid: 'TW-5',
-    name: '台中',
-    primaryTime: '08:54',
-    primaryLabel: '抵達',
-    secondaryTime: '08:57',
-    secondaryLabel: '出發',
-    lat: 24.1369,
-    lon: 120.6853,
-    state: TimelineStopState.approaching,
-    active: true,
-  ),
-  TimelineStop(
-    uid: 'TW-6',
-    name: '彰化',
-    primaryTime: '09:08',
-    primaryLabel: '抵達',
-    secondaryTime: '09:10',
-    secondaryLabel: '出發',
-    lat: 24.0817,
-    lon: 120.5387,
-  ),
-  TimelineStop(
-    uid: 'TW-7',
-    name: '雲林',
-    primaryTime: '09:27',
-    primaryLabel: '抵達',
-    secondaryTime: '09:29',
-    secondaryLabel: '出發',
-    lat: 23.7565,
-    lon: 120.4719,
-  ),
-  TimelineStop(
-    uid: 'TW-8',
-    name: '嘉義',
-    primaryTime: '09:47',
-    primaryLabel: '抵達',
-    secondaryTime: '09:49',
-    secondaryLabel: '出發',
-    lat: 23.4803,
-    lon: 120.4497,
-  ),
-  TimelineStop(
-    uid: 'TW-9',
-    name: '台南',
-    primaryTime: '10:16',
-    primaryLabel: '抵達',
-    secondaryTime: '10:18',
-    secondaryLabel: '出發',
-    lat: 22.9972,
-    lon: 120.2122,
-  ),
-  TimelineStop(
-    uid: 'TW-10',
-    name: '高雄',
-    primaryTime: '10:45',
-    primaryLabel: '抵達',
-    lat: 22.6383,
-    lon: 120.2866,
-  ),
-];
+/// Trims the backend's `HH:mm:ss.ffffff` time strings down to `HH:mm`.
+String _hhmm(String t) => t.length >= 5 ? t.substring(0, 5) : t;
 
-const _stubFares = [
-  ('全票', r'$843'),
-  ('孩童', r'$421'),
-  ('敬老', r'$421'),
-  ('愛心', r'$421'),
-  ('愛陪', r'$421'),
-];
+/// The stop's scheduled arrival (falling back to departure) as a local DateTime
+/// on [serviceDate] (`yyyy-MM-dd`), or null when it can't be parsed.
+DateTime? _stopDateTime(String serviceDate, RailTrainStop stop) {
+  final time = stop.arrive.isNotEmpty ? stop.arrive : stop.depart;
+  final d = serviceDate.split('-');
+  final hm = time.split(':');
+  if (d.length != 3 || hm.length < 2) return null;
+  final year = int.tryParse(d[0]);
+  final month = int.tryParse(d[1]);
+  final day = int.tryParse(d[2]);
+  final hour = int.tryParse(hm[0]);
+  final minute = int.tryParse(hm[1]);
+  if (year == null ||
+      month == null ||
+      day == null ||
+      hour == null ||
+      minute == null) {
+    return null;
+  }
+  return DateTime(year, month, day, hour, minute);
+}
 
 class RailTrainScreen extends StatefulWidget {
   const RailTrainScreen({
     required this.type,
     required this.trainNo,
+    required this.date,
     super.key,
   });
 
   final String type;
   final String trainNo;
+
+  /// Service date in `yyyy-MM-dd`.
+  final String date;
 
   @override
   State<RailTrainScreen> createState() => _RailTrainScreenState();
@@ -143,50 +62,201 @@ class RailTrainScreen extends StatefulWidget {
 class _RailTrainScreenState extends State<RailTrainScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
+  late final RailTrainBloc _bloc;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _bloc = RailTrainBloc(
+      type: widget.type,
+      trainNo: widget.trainNo,
+      date: widget.date,
+    )..add(const RailTrainStarted());
   }
 
   @override
   void dispose() {
     _tabController.dispose();
+    unawaited(_bloc.close());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final dateStr =
-        '${now.year}/${now.month.toString().padLeft(2, '0')}/${now.day.toString().padLeft(2, '0')}';
+    final dateStr = widget.date.replaceAll('-', '/');
 
-    return Scaffold(
-      appBar: DetailAppBar(
-        title: '${widget.type} ${widget.trainNo}',
-        subtitle: dateStr,
-        actions: [
-          BookmarkButton(
-            routeType: widget.type,
-            routeKey: widget.trainNo,
-            routeLabel: '${widget.type} ${widget.trainNo}',
+    return BlocProvider.value(
+      value: _bloc,
+      child: Scaffold(
+        appBar: DetailAppBar(
+          title: '${widget.type} ${widget.trainNo}',
+          subtitle: dateStr,
+          actions: [
+            BookmarkButton(
+              routeType: widget.type,
+              routeKey: widget.trainNo,
+              routeLabel: '${widget.type} ${widget.trainNo}',
+            ),
+          ],
+        ),
+        body: BlocBuilder<RailTrainBloc, RailTrainState>(
+          builder: (context, state) {
+            switch (state.status) {
+              case RailTrainStatus.loading:
+                return const Center(child: CircularProgressIndicator());
+              case RailTrainStatus.error:
+                return ErrorStateView(
+                  error: state.error ?? const UnknownError(),
+                  onRetry: () => _bloc.add(const RailTrainStarted()),
+                );
+              case RailTrainStatus.empty:
+                return Center(
+                  child: Text(
+                    '查無此車次的停靠資訊',
+                    style: AppTextStyles.bodyRegular.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              case RailTrainStatus.loaded:
+                return Column(
+                  children: [
+                    RouteTabBar(
+                      controller: _tabController,
+                      tabs: const ['時刻表', '車次詳細資訊'],
+                    ),
+                    Expanded(
+                      child: TabBarView(
+                        controller: _tabController,
+                        children: [
+                          _TimetableTab(
+                            stops: state.stops,
+                            serviceDate: widget.date,
+                            reminders: state.reminders,
+                          ),
+                          _InfoTab(
+                            type: widget.type,
+                            trainNo: widget.trainNo,
+                            stops: state.stops,
+                            fullFare: state.fullFare,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+            }
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _TimetableTab extends StatelessWidget {
+  const _TimetableTab({
+    required this.stops,
+    required this.serviceDate,
+    required this.reminders,
+  });
+
+  final List<RailTrainStop> stops;
+  final String serviceDate;
+  final Map<String, String> reminders;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    return ListView.builder(
+      padding: EdgeInsets.zero,
+      itemCount: stops.length,
+      itemBuilder: (_, i) {
+        final stop = stops[i];
+        final scheduled = _stopDateTime(serviceDate, stop);
+        final reminder = reminders[stop.name];
+        // Offer a reminder only for stops still ahead of the train; an already
+        // departed stop can't be reminded, but an active one stays cancellable.
+        final canRemind =
+            reminder != null || (scheduled != null && scheduled.isAfter(now));
+        return _StopRow(
+          stop: stop,
+          reminder: reminder,
+          canRemind: canRemind,
+        );
+      },
+    );
+  }
+}
+
+class _StopRow extends StatelessWidget {
+  const _StopRow({
+    required this.stop,
+    required this.reminder,
+    required this.canRemind,
+  });
+
+  final RailTrainStop stop;
+
+  /// Null when off, `'pending'` while toggling, otherwise the reminder id.
+  final String? reminder;
+  final bool canRemind;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final active = reminder != null;
+
+    return Container(
+      constraints: const BoxConstraints(minHeight: 54),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 11),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              stop.name,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w400,
+                height: 1.3,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
+          const SizedBox(width: 12),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              if (stop.arrive.isNotEmpty) _time('抵達', stop.arrive, cs),
+              if (stop.depart.isNotEmpty) _time('開車', stop.depart, cs),
+            ],
+          ),
+          if (canRemind) ...[
+            const SizedBox(width: 12),
+            _ReminderBell(stopName: stop.name, active: active),
+          ],
         ],
       ),
-      body: Column(
+    );
+  }
+
+  Widget _time(String label, String value, ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 1),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          RouteTabBar(
-            controller: _tabController,
-            tabs: const ['時刻表', '車次詳細資訊'],
+          Text(
+            label,
+            style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
           ),
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                const _TimetableTab(),
-                _InfoTab(type: widget.type, trainNo: widget.trainNo),
-              ],
+          const SizedBox(width: 6),
+          Text(
+            _hhmm(value),
+            style: AppTextStyles.memo.copyWith(
+              fontSize: 14,
+              color: cs.onSurface,
             ),
           ),
         ],
@@ -195,109 +265,44 @@ class _RailTrainScreenState extends State<RailTrainScreen>
   }
 }
 
-class _TimetableTab extends StatelessWidget {
-  const _TimetableTab();
+/// Arrival-reminder toggle for one stop, mirroring the bus stop-list bell.
+class _ReminderBell extends StatelessWidget {
+  const _ReminderBell({required this.stopName, required this.active});
+
+  final String stopName;
+  final bool active;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final isLight = cs.brightness == Brightness.light;
-
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      itemCount: _stubStops.length,
-      itemBuilder: (_, i) {
-        final stop = _stubStops[i];
-        final isHighlighted =
-            stop.state == TimelineStopState.approaching || stop.active;
-
-        final row = Row(
-          children: [
-            Expanded(
-              child: Text(
-                stop.name,
-                style: AppTextStyles.bodyRegular.copyWith(
-                  fontWeight: isHighlighted ? FontWeight.w700 : FontWeight.w400,
-                ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(width: 12),
-            _times(stop, cs, isHighlighted),
-            const SizedBox(width: 12),
-            _bell(cs, isLight, isHighlighted),
-          ],
-        );
-
-        if (isHighlighted) {
-          return Container(
-            margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-            decoration: BoxDecoration(
-              color: cs.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(AppTheme.radiusCard),
-            ),
-            child: row,
-          );
-        }
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-          child: row,
-        );
-      },
-    );
-  }
-
-  Widget _times(TimelineStop stop, ColorScheme cs, bool isHighlighted) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        if (stop.primaryTime != null)
-          _timeRow('抵達', stop.primaryTime!, cs, isHighlighted),
-        if (stop.secondaryTime != null)
-          _timeRow('開車', stop.secondaryTime!, cs, isHighlighted),
-      ],
-    );
-  }
-
-  Widget _timeRow(String label, String time, ColorScheme cs, bool bold) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          label,
-          style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
-        ),
-        const SizedBox(width: 4),
-        Text(
-          time,
-          style: AppTextStyles.bodyRegular.copyWith(
-            fontWeight: bold ? FontWeight.w700 : FontWeight.w400,
-            fontFeatures: AppTextStyles.tabularFigures,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _bell(ColorScheme cs, bool isLight, bool isHighlighted) {
-    final bg = isHighlighted
-        ? cs.onSurface.withValues(alpha: 0.06)
+    final bg = cs.brightness == Brightness.light
+        ? cs.surface
         : cs.surfaceContainerHigh;
-    final color = isHighlighted ? cs.onSurface : cs.outline;
-    return Container(
-      width: 28,
-      height: 28,
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(7),
-      ),
-      child: Center(
-        child: Icon(
-          Icons.notifications_none_rounded,
-          size: 16,
-          color: color,
+    final idleColor = cs.brightness == Brightness.light
+        ? cs.outline
+        : cs.onSurfaceVariant;
+
+    return Pressable(
+      onTap: () {
+        unawaited(HapticService.instance.lightTap());
+        context.read<RailTrainBloc>().add(RailTrainReminderToggled(stopName));
+      },
+      semanticLabel: active ? '取消到站提醒' : '設定到站提醒',
+      child: Container(
+        width: 28,
+        height: 28,
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(7),
+        ),
+        child: Center(
+          child: Icon(
+            active
+                ? Icons.notifications_rounded
+                : Icons.notifications_none_rounded,
+            size: 16,
+            color: active ? cs.primary : idleColor,
+          ),
         ),
       ),
     );
@@ -305,10 +310,17 @@ class _TimetableTab extends StatelessWidget {
 }
 
 class _InfoTab extends StatelessWidget {
-  const _InfoTab({required this.type, required this.trainNo});
+  const _InfoTab({
+    required this.type,
+    required this.trainNo,
+    required this.stops,
+    required this.fullFare,
+  });
 
   final String type;
   final String trainNo;
+  final List<RailTrainStop> stops;
+  final int? fullFare;
 
   static const TextStyle _labelStyle = AppTextStyles.bodyLarge;
   static const TextStyle _valueStyle = AppTextStyles.heading2;
@@ -324,46 +336,40 @@ class _InfoTab extends StatelessWidget {
         spacing: 16,
         children: [
           _buildTrainInfo(cs),
-          _buildFares(cs),
+          if (fullFare != null) _buildFare(cs, fullFare!),
         ],
       ),
     );
   }
 
   Widget _buildTrainInfo(ColorScheme cs) {
+    final origin = stops.first;
+    final dest = stops.last;
+    final departTime = _hhmm(
+      origin.depart.isNotEmpty ? origin.depart : origin.arrive,
+    );
+    final arriveTime = _hhmm(
+      dest.arrive.isNotEmpty ? dest.arrive : dest.depart,
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 10,
       children: [
-        Row(
+        Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          spacing: 5,
+          spacing: 4,
           children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                spacing: 4,
-                children: [
-                  Text(
-                    '車次 / 車種',
-                    style: _labelStyle.copyWith(color: cs.onSurfaceVariant),
-                  ),
-                  Text('$trainNo / $type', style: _valueStyle),
-                ],
-              ),
+            Text(
+              '車次 / 車種',
+              style: _labelStyle.copyWith(color: cs.onSurfaceVariant),
             ),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                spacing: 4,
-                children: [
-                  Text(
-                    '方向',
-                    style: _labelStyle.copyWith(color: cs.onSurfaceVariant),
-                  ),
-                  const Text('南下', style: _valueStyle),
-                ],
-              ),
+            Row(
+              children: [
+                Text(trainNo, style: _valueStyle),
+                const SizedBox(width: 10),
+                TrainTypeChip(type: type),
+              ],
             ),
           ],
         ),
@@ -375,12 +381,12 @@ class _InfoTab extends StatelessWidget {
               '起迄站',
               style: _labelStyle.copyWith(color: cs.onSurfaceVariant),
             ),
-            const Row(
+            Row(
               spacing: 6,
               children: [
-                Text('台北', style: _valueStyle),
-                Text('→', style: _valueStyle),
-                Text('高雄', style: _valueStyle),
+                Text(origin.name, style: _valueStyle),
+                const Text('→', style: _valueStyle),
+                Text(dest.name, style: _valueStyle),
               ],
             ),
           ],
@@ -394,12 +400,12 @@ class _InfoTab extends StatelessWidget {
               '行駛時間',
               style: _labelStyle.copyWith(color: cs.onSurfaceVariant),
             ),
-            const Row(
+            Row(
               spacing: 6,
               children: [
-                Text('07:00', style: _valueStyle),
-                Text('→', style: _valueStyle),
-                Text('10:45', style: _valueStyle),
+                Text(departTime, style: _valueStyle),
+                const Text('→', style: _valueStyle),
+                Text(arriveTime, style: _valueStyle),
               ],
             ),
           ],
@@ -408,7 +414,7 @@ class _InfoTab extends StatelessWidget {
     );
   }
 
-  Widget _buildFares(ColorScheme cs) {
+  Widget _buildFare(ColorScheme cs, int fullFare) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 12,
@@ -423,45 +429,17 @@ class _InfoTab extends StatelessWidget {
             spacing: 4,
             children: [
               Text(
-                _stubFares.first.$1,
+                '全票',
                 style: AppTextStyles.bodySmall.copyWith(
                   color: cs.onSurfaceVariant,
                 ),
               ),
               Text(
-                _stubFares.first.$2,
+                '\$$fullFare',
                 style: AppTextStyles.heading1.copyWith(
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
-            ],
-          ),
-        ),
-        AppCard.filled(
-          child: Wrap(
-            spacing: 16,
-            runSpacing: 10,
-            children: [
-              for (final f in _stubFares.skip(1))
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  spacing: 6,
-                  children: [
-                    Text(
-                      f.$1,
-                      style: AppTextStyles.bodySmall.copyWith(
-                        color: cs.onSurfaceVariant,
-                      ),
-                    ),
-                    Text(
-                      f.$2,
-                      style: AppTextStyles.bodySmall.copyWith(
-                        color: cs.onSurface,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ),
             ],
           ),
         ),

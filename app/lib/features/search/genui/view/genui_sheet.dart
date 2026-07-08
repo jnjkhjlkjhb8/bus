@@ -4,16 +4,36 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
+import 'package:wheres_the_car/features/search/bloc/search_state.dart';
 import 'package:wheres_the_car/features/search/genui/bloc/genui_bloc.dart';
+import 'package:wheres_the_car/features/search/genui/data/genui_service.dart';
 import 'package:wheres_the_car/features/search/genui/view/genui_renderer.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 
-Future<String?> showGenUiSheet(
+/// GenUI sheet 關閉時帶回的結果。
+sealed class GenUiSheetResult {
+  const GenUiSheetResult();
+}
+
+/// 回填搜尋框後執行一般搜尋。
+class GenUiSheetQuery extends GenUiSheetResult {
+  const GenUiSheetQuery(this.query);
+  final String query;
+}
+
+/// 直接開啟某筆查詢結果的頁面。
+class GenUiSheetOpen extends GenUiSheetResult {
+  const GenUiSheetOpen(this.result);
+  final SearchResult result;
+}
+
+Future<GenUiSheetResult?> showGenUiSheet(
   BuildContext context, {
   String initialQuery = '',
 }) {
-  return BottomSheetShell.show<String>(
+  return BottomSheetShell.show<GenUiSheetResult>(
     context: context,
     initialOffset: const SheetOffset.proportionalToViewport(0.6),
     minOffset: const SheetOffset.proportionalToViewport(0.3),
@@ -59,6 +79,7 @@ class _GenUiSheetState extends State<_GenUiSheet> {
   void _submit(String value) {
     final text = value.trim();
     if (text.isEmpty) return;
+    if (context.read<GenUiBloc>().state.status == GenUiStatus.loading) return;
     _focusNode.unfocus();
     context.read<GenUiBloc>().add(GenUiAsked(text));
   }
@@ -79,7 +100,7 @@ class _GenUiSheetState extends State<_GenUiSheet> {
               Icon(Icons.auto_awesome_rounded, size: 18, color: cs.primary),
               const SizedBox(width: 8),
               Text(
-                'AI 助理',
+                '對話框',
                 style: TextStyle(
                   fontSize: 15,
                   fontWeight: FontWeight.w700,
@@ -113,22 +134,34 @@ class _GenUiSheetState extends State<_GenUiSheet> {
                     ),
                   ),
                 ),
-                Pressable(
-                  onTap: () => _submit(_controller.text),
-                  semanticLabel: '送出',
-                  child: Container(
-                    width: 34,
-                    height: 34,
-                    decoration: BoxDecoration(
-                      color: cs.primary,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      Icons.arrow_upward_rounded,
-                      size: 18,
-                      color: cs.onPrimary,
-                    ),
-                  ),
+                BlocBuilder<GenUiBloc, GenUiState>(
+                  buildWhen: (p, c) => p.status != c.status,
+                  builder: (context, state) {
+                    final loading = state.status == GenUiStatus.loading;
+                    return Pressable(
+                      onTap: () => loading
+                          ? context
+                              .read<GenUiBloc>()
+                              .add(const GenUiCancelled())
+                          : _submit(_controller.text),
+                      semanticLabel: loading ? '停止' : '送出',
+                      child: Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: cs.primary,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          loading
+                              ? Icons.stop_rounded
+                              : Icons.arrow_upward_rounded,
+                          size: 18,
+                          color: cs.onPrimary,
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ],
             ),
@@ -155,6 +188,11 @@ class _GenUiSheetState extends State<_GenUiSheet> {
       case GenUiStatus.idle:
         return const SizedBox(height: 8);
       case GenUiStatus.loading:
+        final label = switch (state.phase) {
+          GenUiPhase.thinking => 'AI 思考中…',
+          GenUiPhase.searching => '正在查詢「${state.phaseQuery ?? ''}」…',
+          GenUiPhase.composing => '整理結果中…',
+        };
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 24),
           child: Row(
@@ -168,9 +206,17 @@ class _GenUiSheetState extends State<_GenUiSheet> {
                 ),
               ),
               const SizedBox(width: 12),
-              Text(
-                'AI 思考中…',
-                style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant),
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: AppMotion.short,
+                  switchInCurve: AppMotion.easeOut,
+                  switchOutCurve: AppMotion.easeOut,
+                  child: Text(
+                    label,
+                    key: ValueKey(label),
+                    style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant),
+                  ),
+                ),
               ),
             ],
           ),
@@ -178,9 +224,35 @@ class _GenUiSheetState extends State<_GenUiSheet> {
       case GenUiStatus.error:
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 24),
-          child: Text(
-            'AI 暫時無法使用',
-            style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  state.errorKind == GenUiErrorKind.offline
+                      ? '沒有網路連線'
+                      : 'AI 暫時無法使用',
+                  style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant),
+                ),
+              ),
+              Pressable(
+                onTap: () => context
+                    .read<GenUiBloc>()
+                    .add(GenUiAsked(state.lastPrompt)),
+                semanticLabel: '重試',
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Text(
+                    '重試',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: cs.primary,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         );
       case GenUiStatus.content:
@@ -193,9 +265,16 @@ class _GenUiSheetState extends State<_GenUiSheet> {
             ),
           );
         }
-        return GenUiRenderer(
-          nodes: state.nodes,
-          onChip: (query) => Navigator.of(context).pop(query),
+        return KeyedSubtree(
+          key: ValueKey(identityHashCode(state.nodes)),
+          child: GenUiRenderer(
+            nodes: state.nodes,
+            refs: state.refs,
+            onChip: (query) =>
+                Navigator.of(context).pop(GenUiSheetQuery(query)),
+            onOpen: (result) =>
+                Navigator.of(context).pop(GenUiSheetOpen(result)),
+          ),
         );
     }
   }

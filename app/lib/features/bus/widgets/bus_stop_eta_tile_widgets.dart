@@ -1,39 +1,37 @@
-part of '../view/bus_stop_screen.dart';
+part of '../view/bus_stop_detail_view.dart';
 
 class _EtaChevronTile extends StatelessWidget {
   const _EtaChevronTile({
     required this.arrival,
     required this.highlighted,
-    required this.colorScheme,
   });
-  final _Arrival arrival;
+  final BusStopArrivalItem arrival;
   final bool highlighted;
-  final ColorScheme colorScheme;
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Row(
       children: [
         Expanded(
-          child: EtaListTile(
-            routeNo: arrival.routeNo,
-            destination: arrival.destination,
-            status: arrival.status,
+          child: EtaListTile.fromDisplay(
+            arrival.display,
             highlighted: highlighted,
             onTap: () {
               unawaited(HapticService.instance.lightTap());
-              unawaited(context.push('/bus/route/${arrival.routeNo}'));
+              final target = arrival.subRouteUid.isNotEmpty
+                  ? arrival.subRouteUid
+                  : arrival.display.label;
+              unawaited(context.push('/bus/route/$target'));
             },
           ),
         ),
         Padding(
-          padding: EdgeInsets.only(right: highlighted ? 20 : 12),
+          padding: const EdgeInsets.only(right: 12),
           child: Icon(
             Icons.chevron_right_rounded,
             size: 20,
-            color: highlighted
-                ? colorScheme.onPrimaryContainer.withValues(alpha: 0.6)
-                : colorScheme.outline,
+            color: cs.outline,
           ),
         ),
       ],

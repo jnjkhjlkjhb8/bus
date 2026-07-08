@@ -41,16 +41,15 @@ import 'package:wheres_the_car/features/ui_kit/view/pages/line_badge_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/menu_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/modal_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/motion_page.dart';
-import 'package:wheres_the_car/features/ui_kit/view/pages/origin_dest_field_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/pagination_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/progress_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/quantity_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/radio_page.dart';
-import 'package:wheres_the_car/features/ui_kit/view/pages/route_mini_track_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/scrollbar_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/segment_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/shadows_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/slider_page.dart';
+import 'package:wheres_the_car/features/ui_kit/view/pages/snackbar_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/spacing_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/spinner_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/stepper_page.dart';
@@ -262,6 +261,10 @@ class AppRouter {
               pageBuilder: (_, _) => _page(const TooltipPage()),
             ),
             GoRoute(
+              path: 'snackbar',
+              pageBuilder: (_, _) => _page(const SnackbarPage()),
+            ),
+            GoRoute(
               path: 'badge',
               pageBuilder: (_, _) => _page(const BadgePage()),
             ),
@@ -322,10 +325,6 @@ class AppRouter {
               pageBuilder: (_, _) => _page(const ScrollbarPage()),
             ),
             GoRoute(
-              path: 'route-mini-track',
-              pageBuilder: (_, _) => _page(const RouteMiniTrackPage()),
-            ),
-            GoRoute(
               path: 'availability-gauge',
               pageBuilder: (_, _) => _page(const AvailabilityGaugePage()),
             ),
@@ -336,10 +335,6 @@ class AppRouter {
             GoRoute(
               path: 'filter-chip-group',
               pageBuilder: (_, _) => _page(const FilterChipGroupPage()),
-            ),
-            GoRoute(
-              path: 'origin-dest-field',
-              pageBuilder: (_, _) => _page(const OriginDestFieldPage()),
             ),
             GoRoute(
               path: 'leg-ribbon',

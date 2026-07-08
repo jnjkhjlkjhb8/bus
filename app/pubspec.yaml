@@ -66,6 +66,7 @@ dependencies:
   hive_ce_flutter: ^1.1.0
   intl: ^0.20.2
   material_symbols_icons: ^4.2951.0
+  package_info_plus: ^10.2.0
   path: ^1.9.1
   path_provider: ^2.1.5
   powersync: ^2.2.0
@@ -103,7 +104,9 @@ flutter:
 
   # To add assets to your application, add an assets section, like this:
   assets:
+    - assets/grpc.crt
     - assets/marker/
+    - assets/sprites/
     - assets/rails/
     - assets/mrt/
     - assets/mrt/TRTC/

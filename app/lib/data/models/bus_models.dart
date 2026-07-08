@@ -4,6 +4,23 @@ import 'package:wheres_the_car/data/models/eta_format.dart';
 
 enum BusArrivalStatus { arriving, approaching, minutes, unknown }
 
+class BusVehiclePosition extends Equatable {
+  const BusVehiclePosition({
+    required this.plate,
+    required this.lat,
+    required this.lon,
+    required this.azimuth,
+  });
+
+  final String plate;
+  final double lat;
+  final double lon;
+  final int azimuth;
+
+  @override
+  List<Object?> get props => [plate, lat, lon, azimuth];
+}
+
 class BusStopEtaViewModel extends Equatable {
   const BusStopEtaViewModel({
     required this.stopUid,
@@ -13,6 +30,8 @@ class BusStopEtaViewModel extends Equatable {
     required this.nextBusTime,
     required this.stopStatus,
     required this.vehiclePlates,
+    this.arrivalUnix = 0,
+    this.vehicles = const [],
   });
 
   final String stopUid;
@@ -22,8 +41,37 @@ class BusStopEtaViewModel extends Equatable {
   final String nextBusTime;
   final int stopStatus;
   final List<String> vehiclePlates;
+  final int arrivalUnix;
+  final List<BusVehiclePosition> vehicles;
 
   int get estimateMinutes => etaCeilMinutes(estimateSeconds);
+
+  /// Re-derives [estimateSeconds] from [arrivalUnix] against [now] so the
+  /// displayed countdown decays between server frames. When [arrivalUnix] is 0
+  /// the server-sent [estimateSeconds] is kept unchanged. Negatives clamp to 0
+  /// so a just-passed arrival instant with stopStatus 0 still reads 進站中.
+  BusStopEtaViewModel decayed(DateTime now) {
+    if (arrivalUnix <= 0) return this;
+    return copyWith(
+      estimateSeconds: etaRemainingSeconds(
+        arrivalUnix: arrivalUnix,
+        serverEstimateSeconds: estimateSeconds,
+        now: now,
+      ),
+    );
+  }
+
+  BusStopEtaViewModel copyWith({int? estimateSeconds}) => BusStopEtaViewModel(
+    stopUid: stopUid,
+    direction: direction,
+    sequence: sequence,
+    estimateSeconds: estimateSeconds ?? this.estimateSeconds,
+    nextBusTime: nextBusTime,
+    stopStatus: stopStatus,
+    vehiclePlates: vehiclePlates,
+    arrivalUnix: arrivalUnix,
+    vehicles: vehicles,
+  );
 
   String? get displayLabel => busStopDisplayLabel(
     estimateSeconds: estimateSeconds,
@@ -51,6 +99,111 @@ class BusStopEtaViewModel extends Equatable {
     nextBusTime,
     stopStatus,
     vehiclePlates,
+    arrivalUnix,
+    vehicles,
+  ];
+}
+
+/// A member stop of a station group, resolved to the fields the stop screen
+/// reads. A validated domain type: no proto leaks past the decoder.
+class BusStationMember {
+  const BusStationMember({
+    required this.stationUid,
+    required this.stationId,
+    required this.stationName,
+    required this.lat,
+    required this.lon,
+  });
+
+  final String stationUid;
+  final String stationId;
+  final String stationName;
+  final double lat;
+  final double lon;
+}
+
+/// One route's arrival at a member stop of a station group. The countdown and
+/// every display label derive from [estimateSeconds] + [stopStatus] through the
+/// one shared mapping in eta_format.dart; [decayed] re-derives the estimate
+/// from [arrivalUnix] locally so the countdown stays accurate between frames.
+class BusStopArrival extends Equatable {
+  const BusStopArrival({
+    required this.stationId,
+    required this.subRouteUid,
+    required this.routeName,
+    required this.destination,
+    required this.estimateSeconds,
+    this.nextBusTime = '',
+    this.stopStatus = 0,
+    this.arrivalUnix = 0,
+  });
+
+  final String stationId;
+  final String subRouteUid;
+  final String routeName;
+  final String destination;
+  final int estimateSeconds;
+  final String nextBusTime;
+
+  /// TDX StopStatus (0 = normal, 1 = not departed, 2 = traffic control,
+  /// 3 = last bus passed, 4 = not operating today).
+  final int stopStatus;
+
+  /// Absolute arrival instant (Unix seconds), or 0 when the server sent none.
+  final int arrivalUnix;
+
+  /// Remaining whole minutes (ceil), or null when no positive estimate exists.
+  int? get minutes {
+    final m = etaCeilMinutes(estimateSeconds);
+    return m > 0 ? m : null;
+  }
+
+  BusStopDisplayStatus get displayStatus => busStopDisplayStatus(
+    estimateSeconds: estimateSeconds,
+    stopStatus: stopStatus,
+  );
+
+  /// User-facing label ('2分', '進站中', a clock time, or a service state), or
+  /// null when nothing is known.
+  String? get displayLabel => busStopDisplayLabel(
+    estimateSeconds: estimateSeconds,
+    stopStatus: stopStatus,
+    nextBusTime: nextBusTime,
+  );
+
+  bool get isArriving => displayStatus == BusStopDisplayStatus.arriving;
+
+  /// Re-derives [estimateSeconds] from [arrivalUnix] against [now] so the
+  /// countdown decays between server pushes. Leaves the arrival unchanged when
+  /// no absolute instant was sent.
+  BusStopArrival decayed(DateTime now) {
+    if (arrivalUnix <= 0) return this;
+    return BusStopArrival(
+      stationId: stationId,
+      subRouteUid: subRouteUid,
+      routeName: routeName,
+      destination: destination,
+      estimateSeconds: etaRemainingSeconds(
+        arrivalUnix: arrivalUnix,
+        serverEstimateSeconds: estimateSeconds,
+        now: now,
+      ),
+      nextBusTime: nextBusTime,
+      stopStatus: stopStatus,
+      arrivalUnix: arrivalUnix,
+    );
+  }
+
+  @override
+  List<Object?> get props => [
+    stationId,
+    subRouteUid,
+    routeName,
+    destination,
+    estimateSeconds,
+    nextBusTime,
+    stopStatus,
+    arrivalUnix,
   ];
 }
 

@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
@@ -30,6 +31,54 @@ class MapMarkers {
           ..drawPicture(info.picture);
       });
       info.picture.dispose();
+      return _toBitmap(image);
+    });
+  }
+
+  /// Live-vehicle marker: the bus sprite grounded with a soft contact shadow
+  /// so it sits on the map instead of floating. Works with the existing
+  /// turntable sprites; shape/scale are untouched.
+  static Future<BitmapDescriptor> busMarker(
+    String asset, {
+    double size = 54,
+  }) {
+    return _memo('bus:$asset:$size', () async {
+      final data = await rootBundle.load(asset);
+      final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+      final sprite = (await codec.getNextFrame()).image;
+      final px = (size * _dpr).round();
+      final image = await _record(px, (canvas) {
+        // Contact shadow: soft ellipse under the bus.
+        canvas.drawOval(
+          Rect.fromCenter(
+            center: Offset(px * 0.5, px * 0.72),
+            width: px * 0.68,
+            height: px * 0.15,
+          ),
+          Paint()
+            ..color = const Color(0x50000000)
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, px * 0.035),
+        );
+        // Sprite, nudged up so its wheels meet the shadow.
+        final side = px * 0.98;
+        canvas.drawImageRect(
+          sprite,
+          Rect.fromLTWH(
+            0,
+            0,
+            sprite.width.toDouble(),
+            sprite.height.toDouble(),
+          ),
+          Rect.fromLTWH(
+            (px - side) / 2,
+            (px - side) / 2 - px * 0.02,
+            side,
+            side,
+          ),
+          Paint()..filterQuality = FilterQuality.high,
+        );
+      });
+      sprite.dispose();
       return _toBitmap(image);
     });
   }

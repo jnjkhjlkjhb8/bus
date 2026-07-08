@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/data/models/arrival_display.dart';
+import 'package:wheres_the_car/data/models/eta_status.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+
+export 'package:wheres_the_car/data/models/eta_status.dart';
 
 @Preview(name: 'EtaListTile — arriving', group: 'ETA')
 @Preview(name: 'EtaListTile — minutes', group: 'ETA')
@@ -40,31 +44,6 @@ Widget etaListTilePreviews() {
   );
 }
 
-sealed class EtaStatus {
-  const EtaStatus();
-  factory EtaStatus.arriving() = _Arriving;
-  factory EtaStatus.approaching() = _Approaching;
-  factory EtaStatus.minutes(int m) = _Minutes;
-  factory EtaStatus.unknown() = _Unknown;
-}
-
-final class _Arriving extends EtaStatus {
-  const _Arriving();
-}
-
-final class _Approaching extends EtaStatus {
-  const _Approaching();
-}
-
-final class _Minutes extends EtaStatus {
-  const _Minutes(this.value);
-  final int value;
-}
-
-final class _Unknown extends EtaStatus {
-  const _Unknown();
-}
-
 class EtaListTile extends StatelessWidget {
   const EtaListTile({
     required this.routeNo,
@@ -75,7 +54,43 @@ class EtaListTile extends StatelessWidget {
     this.onTap,
     this.highlighted = false,
     this.track,
+    this.leading,
+    this.destinationStyle,
+    this.bare = false,
   });
+
+  /// Builds a tile straight from the shared [ArrivalDisplay] contract. The
+  /// caller decides [highlighted] from the list position and
+  /// [ArrivalDisplay.isComingSoon] so at most the soonest row lights up; modes
+  /// without the coming-soon highlight (metro) leave it false.
+  ///
+  /// [leading] replaces the [routeNo] text with a custom lead (metro's line
+  /// roundel); [destinationStyle] overrides the default destination text style;
+  /// [bare] drops the tap/highlight/min-height chrome, leaving just the row so
+  /// a caller can supply its own list chrome (metro's divider-separated rows).
+  factory EtaListTile.fromDisplay(
+    ArrivalDisplay display, {
+    Key? key,
+    String? direction,
+    VoidCallback? onTap,
+    bool highlighted = false,
+    Widget? track,
+    Widget? leading,
+    TextStyle? destinationStyle,
+    bool bare = false,
+  }) => EtaListTile(
+    key: key,
+    routeNo: display.label,
+    status: display.status,
+    destination: display.destination,
+    direction: direction,
+    onTap: onTap,
+    highlighted: highlighted,
+    track: track,
+    leading: leading,
+    destinationStyle: destinationStyle,
+    bare: bare,
+  );
 
   final String routeNo;
   final EtaStatus status;
@@ -85,23 +100,34 @@ class EtaListTile extends StatelessWidget {
   final bool highlighted;
   final Widget? track;
 
+  /// Custom leading widget in place of the [routeNo] text (a line roundel).
+  final Widget? leading;
+
+  /// Overrides the destination text style; defaults to `bodyRegular`.
+  final TextStyle? destinationStyle;
+
+  /// When true, renders only the row (no Pressable, highlight, min-height, or
+  /// padding), letting the caller own the surrounding list chrome.
+  final bool bare;
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final routeColor = highlighted ? cs.onPrimaryContainer : cs.onSurface;
-    final destColor = highlighted
-        ? cs.onPrimaryContainer.withValues(alpha: 0.8)
-        : cs.onSurfaceVariant;
+    // The coming-soon highlight is achromatic: same Ink text as every other
+    // row, emphasis carried by the surface-highlight background alone.
+    final routeColor = cs.onSurface;
+    final destColor = cs.onSurfaceVariant;
 
     final row = Row(
       children: [
-        Text(
-          routeNo,
-          style: AppTextStyles.bodyLarge.copyWith(
-            fontWeight: FontWeight.w700,
-            color: routeColor,
-          ),
-        ),
+        leading ??
+            Text(
+              routeNo,
+              style: AppTextStyles.bodyLarge.copyWith(
+                fontWeight: FontWeight.w700,
+                color: routeColor,
+              ),
+            ),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
@@ -112,7 +138,12 @@ class EtaListTile extends StatelessWidget {
                 '往 $destination',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: AppTextStyles.bodyRegular.copyWith(color: destColor),
+                // A custom destination style (metro's heading2) is used
+                // verbatim, keeping its own colour; the default path carries
+                // the muted destination colour.
+                style:
+                    destinationStyle ??
+                    AppTextStyles.bodyRegular.copyWith(color: destColor),
               ),
               if (direction != null)
                 Text(
@@ -129,6 +160,15 @@ class EtaListTile extends StatelessWidget {
       ],
     );
 
+    // Bare mode: just the row (plus any track), so the caller owns list chrome.
+    if (bare) {
+      if (track == null) return row;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [row, const SizedBox(height: 6), track!],
+      );
+    }
+
     final content = Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -144,16 +184,23 @@ class EtaListTile extends StatelessWidget {
       onTap: onTap,
       semanticLabel: '$routeNo 往 $destination',
       child: Container(
+        // Margin + padding sum to 16 on each side either way, so the highlight
+        // tint insets without shifting the row's content off the 16px column.
         margin: highlighted
-            ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6)
+            ? const EdgeInsets.symmetric(horizontal: 8, vertical: 6)
             : EdgeInsets.zero,
         decoration: highlighted
             ? BoxDecoration(
-                color: cs.primaryContainer,
+                color: cs.brightness == Brightness.light
+                    ? AppTheme.surfaceHighlightLight
+                    : AppTheme.surfaceHighlightDark,
                 borderRadius: BorderRadius.circular(AppTheme.radiusCard),
               )
             : null,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: EdgeInsets.symmetric(
+          horizontal: highlighted ? 8 : 16,
+          vertical: 10,
+        ),
         child: content,
       ),
     );
@@ -168,21 +215,21 @@ class EtaValue extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return switch (status) {
-      _Arriving() => Text(
+      EtaArriving() => Text(
         '進站中',
         style: AppTextStyles.heading2.copyWith(
           fontWeight: FontWeight.w700,
           color: AppTheme.statusArrivingText,
         ),
       ),
-      _Approaching() => Text(
+      EtaApproaching() => Text(
         '即將進站',
         style: AppTextStyles.heading2.copyWith(
           fontWeight: FontWeight.w700,
           color: AppTheme.etaApproaching,
         ),
       ),
-      _Minutes(:final value) => Row(
+      EtaMinutes(:final value) => Row(
         textBaseline: TextBaseline.alphabetic,
         crossAxisAlignment: CrossAxisAlignment.baseline,
         mainAxisSize: MainAxisSize.min,
@@ -203,7 +250,14 @@ class EtaValue extends StatelessWidget {
           ),
         ],
       ),
-      _Unknown() => Text(
+      EtaLabel(:final text) => Text(
+        text,
+        style: AppTextStyles.bodyLarge.copyWith(
+          fontWeight: FontWeight.w600,
+          color: cs.onSurfaceVariant,
+        ),
+      ),
+      EtaUnknown() => Text(
         '—',
         semanticsLabel: '目前無到站資訊',
         style: AppTextStyles.bodyLarge.copyWith(color: cs.outline),

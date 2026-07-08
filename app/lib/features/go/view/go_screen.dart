@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -9,17 +10,31 @@ import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
+import 'package:wheres_the_car/core/live_activity/pip_mode.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
+import 'package:wheres_the_car/features/go/model/plan_options.dart';
 import 'package:wheres_the_car/features/go/model/planned_place.dart';
 import 'package:wheres_the_car/features/go/view/place_search_sheet.dart';
 import 'package:wheres_the_car/features/go/widgets/route_option_card.dart';
 import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
+import 'package:wheres_the_car/shared/widgets/app_button.dart';
+import 'package:wheres_the_car/shared/widgets/app_quantity_selector.dart';
+import 'package:wheres_the_car/shared/widgets/app_range_slider.dart';
+import 'package:wheres_the_car/shared/widgets/app_slider.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_car/shared/widgets/filter_chip_group.dart';
 
 part '../widgets/go_planner_widgets.dart';
 part '../widgets/go_navigation_widgets.dart';
@@ -38,6 +53,16 @@ class _GoScreenState extends State<GoScreen> {
   late final SheetController _sheet;
   PlannedPlace? _origin;
   PlannedPlace? _dest;
+  PlanOptions _options = const PlanOptions();
+
+  // Memoized map overlays. Building the polyline/marker sets walks every
+  // section and intermediate stop, so cache them and reuse while the inputs
+  // (selected route, active leg, theme colors) are unchanged.
+  PlanRoute? _overlayRoute;
+  int? _overlayLeg;
+  ColorScheme? _overlayScheme;
+  Set<Polyline> _overlayPolylines = const {};
+  Set<Marker> _overlayMarkers = const {};
 
   @override
   void initState() {
@@ -105,12 +130,29 @@ class _GoScreenState extends State<GoScreen> {
         toLon: to.latLng.longitude,
         date: '${now.year}-${two(now.month)}-${two(now.day)}',
         time: '${two(now.hour)}:${two(now.minute)}',
+        gc: _options.gc,
+        transitModes: _options.transitModes,
+        top: _options.top,
+        transferMin: _options.transferMin,
+        transferMax: _options.transferMax,
+        firstMileMode: _options.firstMileMode,
+        firstMileTime: _options.firstMileTime,
+        lastMileMode: _options.lastMileMode,
+        lastMileTime: _options.lastMileTime,
       ),
     );
   }
 
   void _retry() {
     unawaited(HapticService.instance.lightTap());
+    _maybePlan();
+  }
+
+  Future<void> _adjustOptions() async {
+    unawaited(HapticService.instance.lightTap());
+    final picked = await showOptionsSheet(context, current: _options);
+    if (picked == null || !mounted || picked == _options) return;
+    setState(() => _options = picked);
     _maybePlan();
   }
 
@@ -121,6 +163,11 @@ class _GoScreenState extends State<GoScreen> {
     bloc
       ..add(RouteSelected(index: routes.indexOf(route)))
       ..add(const NavigationStarted());
+    final legs = JourneyLeg.legsFromRoute(route);
+    if (legs.isNotEmpty && SettingsRepository.instance.liveActivityEnabled) {
+      context.read<JourneySessionBloc>().add(JourneyStarted(legs: legs));
+      unawaited(PipMode.instance.setNavigating(true));
+    }
     final start = _firstPoint(route);
     final map = _map;
     if (start != null && map != null) {
@@ -139,13 +186,9 @@ class _GoScreenState extends State<GoScreen> {
     final bloc = context.read<PlanBloc>();
     if (activeLeg >= route.sections.length - 1) {
       bloc.add(const NavigationEnded());
+      _stopJourneySession();
       _resetCamera();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('已抵達目的地'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      AppSnackbar.show(context, '已抵達目的地', type: SnackType.success);
       return;
     }
     bloc.add(StopArrived(legIndex: activeLeg + 1, stopIndex: 0));
@@ -159,7 +202,16 @@ class _GoScreenState extends State<GoScreen> {
   void _endNav() {
     unawaited(HapticService.instance.lightTap());
     context.read<PlanBloc>().add(const NavigationEnded());
+    _stopJourneySession();
     _resetCamera();
+  }
+
+  /// User-initiated end of navigation: tear down the journey session and the
+  /// picture-in-picture navigating flag. Safe to call when no session is
+  /// active (JourneyCancelled is a no-op from the idle phase).
+  void _stopJourneySession() {
+    context.read<JourneySessionBloc>().add(const JourneyCancelled());
+    unawaited(PipMode.instance.setNavigating(false));
   }
 
   void _resetCamera() {
@@ -264,11 +316,52 @@ class _GoScreenState extends State<GoScreen> {
     };
   }
 
+  // Recomputes the cached overlays only when the route identity, active leg,
+  // or theme colors change; identical inputs reuse the previous sets.
+  void _ensureOverlays(PlanRoute route, int? activeLeg, ColorScheme cs) {
+    if (identical(_overlayRoute, route) &&
+        _overlayLeg == activeLeg &&
+        identical(_overlayScheme, cs)) {
+      return;
+    }
+    _overlayRoute = route;
+    _overlayLeg = activeLeg;
+    _overlayScheme = cs;
+    _overlayPolylines = _polylines(route, activeLeg: activeLeg);
+    _overlayMarkers = _markers(route);
+  }
+
   @override
   Widget build(BuildContext context) {
+    // The session can reach `done` on its own (last leg alighted, or the 8h
+    // ActivityKit cap). Mirror that back into PlanBloc + PiP so the panel
+    // reverts even when the user didn't tap 結束導航.
+    return BlocListener<JourneySessionBloc, JourneySessionState>(
+      listenWhen: (p, c) => p.phase != c.phase && c.phase == JourneyPhase.done,
+      listener: (context, _) {
+        unawaited(PipMode.instance.setNavigating(false));
+        final plan = context.read<PlanBloc>();
+        if (plan.state.activeLegIndex != null) {
+          plan.add(const NavigationEnded());
+          _resetCamera();
+        }
+      },
+      child: _buildPlanner(),
+    );
+  }
+
+  Widget _buildPlanner() {
     return BlocConsumer<PlanBloc, PlanState>(
       listenWhen: (p, c) =>
           p.status != c.status && c.status == PlanStatus.success,
+      // activeStopIndex advances within a leg as the user progresses but does
+      // not affect this subtree, so skip those emissions.
+      buildWhen: (p, c) =>
+          p.status != c.status ||
+          p.result != c.result ||
+          p.error != c.error ||
+          p.selectedRouteIndex != c.selectedRouteIndex ||
+          p.activeLegIndex != c.activeLegIndex,
       listener: (context, state) {
         final route = _activeRoute(state);
         if (route != null && state.activeLegIndex == null) _fitTo(route);
@@ -276,6 +369,13 @@ class _GoScreenState extends State<GoScreen> {
       builder: (context, state) {
         final navigating = state.activeLegIndex != null;
         final route = _activeRoute(state);
+        if (route != null) {
+          _ensureOverlays(
+            route,
+            navigating ? state.activeLegIndex : null,
+            Theme.of(context).colorScheme,
+          );
+        }
         return PopScope(
           canPop: !navigating,
           onPopInvokedWithResult: (didPop, _) {
@@ -300,13 +400,8 @@ class _GoScreenState extends State<GoScreen> {
                     zoomControlsEnabled: false,
                     compassEnabled: false,
                     mapToolbarEnabled: false,
-                    polylines: route == null
-                        ? const {}
-                        : _polylines(
-                            route,
-                            activeLeg: navigating ? state.activeLegIndex : null,
-                          ),
-                    markers: route == null ? const {} : _markers(route),
+                    polylines: route == null ? const {} : _overlayPolylines,
+                    markers: route == null ? const {} : _overlayMarkers,
                   ),
                 ),
                 Positioned(
@@ -349,6 +444,7 @@ class _GoScreenState extends State<GoScreen> {
                     onSelect: _selectRoute,
                     onRetry: _retry,
                     onPickDestination: () => _editField(origin: false),
+                    onAdjustOptions: _adjustOptions,
                   ),
               ],
             ),

@@ -10,6 +10,7 @@ import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
@@ -18,6 +19,7 @@ import 'package:wheres_the_car/data/models/timeline_stop.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
+import 'package:wheres_the_car/shared/map/bus_sprite.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/map/wkt.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
@@ -42,6 +44,10 @@ const _kDefaultCamera = CameraPosition(
   zoom: 14,
 );
 
+// Map overlays repaint on live ETA/vehicle churn; holding them in a notifier
+// keeps that repaint scoped to the GoogleMap layer instead of the whole screen.
+typedef _MapLayer = ({Set<Marker> markers, Set<Polyline> polylines});
+
 class BusRouteScreen extends StatefulWidget {
   const BusRouteScreen({required this.subRouteUid, super.key});
   final String subRouteUid;
@@ -57,8 +63,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   final _scrollController = ScrollController();
   GoogleMapController? _mapController;
 
-  Set<Marker> _markers = {};
-  Set<Polyline> _polylines = {};
+  final ValueNotifier<_MapLayer> _mapLayer = ValueNotifier(
+    (markers: <Marker>{}, polylines: <Polyline>{}),
+  );
   List<LatLng> _routePts = [];
   String _mapSig = '';
   String? _geomSig;
@@ -82,9 +89,13 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     final stops = s.direction == 0 ? route.stopsGo : route.stopsReturn;
     if (stops.isEmpty) return;
 
+    final vehicles = _vehiclePositionsFor(s);
     final sig =
         '${route.subRouteUid}:${s.direction}:${stops.length}:'
-        '${stops.map((st) => _markerEta(_etaFor(s, st))).join(',')}';
+        '${stops.map((st) => _markerEta(_etaFor(s, st))).join(',')}:'
+        '${vehicles.map(
+          (v) => '${v.plate}@${v.lat},${v.lon},${v.azimuth}',
+        ).join(';')}';
     if (sig == _mapSig) return;
     _mapSig = sig;
 
@@ -121,7 +132,10 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     final markers = <Marker>{};
     for (final st in stops) {
       if (st.lat == 0 && st.lon == 0) continue;
-      final icon = await MapMarkers.etaStop(_markerEta(_etaFor(s, st)));
+      final icon = await MapMarkers.etaStop(
+        _markerEta(_etaFor(s, st)),
+        size: 32,
+      );
       markers.add(
         Marker(
           markerId: MarkerId(st.stopUid),
@@ -133,12 +147,27 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       );
     }
 
+    for (final v in vehicles) {
+      final icon = await MapMarkers.busMarker(
+        busSpriteAsset(v.azimuth.toDouble()),
+      );
+      markers.add(
+        Marker(
+          markerId: MarkerId('bus:${v.plate}'),
+          position: LatLng(v.lat, v.lon),
+          icon: icon,
+          anchor: const Offset(0.5, 0.5),
+          zIndexInt: 1,
+          infoWindow: InfoWindow(title: v.plate),
+        ),
+      );
+    }
+
     if (!mounted) return;
-    setState(() {
-      _markers = markers;
-      _polylines = polylines;
-      _routePts = stopPts;
-    });
+    _routePts = stopPts;
+    // Repaints only the GoogleMap layer via its ValueListenableBuilder; the
+    // surrounding chrome/sheet is untouched.
+    _mapLayer.value = (markers: markers, polylines: polylines);
     _maybeFit();
   }
 
@@ -173,6 +202,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     _tabController.dispose();
     _sheetController.dispose();
     _scrollController.dispose();
+    _mapLayer.dispose();
     super.dispose();
   }
 
@@ -188,10 +218,12 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     return BlocProvider(
       create: (_) => BusRouteBloc(subRouteUid: widget.subRouteUid),
       child: BlocConsumer<BusRouteBloc, BusRouteState>(
+        // etaMap is deliberately excluded: live ETA frames must not rebuild the
+        // static chrome (map, app bar, FAB, sheet skeleton). ETA-consuming
+        // subtrees observe etaMap through their own BlocSelectors instead.
         buildWhen: (prev, curr) =>
             prev.route != curr.route ||
             prev.direction != curr.direction ||
-            prev.etaMap != curr.etaMap ||
             prev.fare != curr.fare ||
             prev.bufferSequences != curr.bufferSequences ||
             prev.daily != curr.daily ||
@@ -200,7 +232,6 @@ class _BusRouteScreenState extends State<BusRouteScreen>
             prev.error != curr.error,
         listener: (context, state) => _syncMap(state),
         builder: (context, state) {
-          final stops = _stopsFor(state);
           final routeName = state.route?.routeName ?? widget.subRouteUid;
           final dirNames = [
             state.route?.headsignGo ?? '',
@@ -213,18 +244,21 @@ class _BusRouteScreenState extends State<BusRouteScreen>
             body: Stack(
               children: [
                 Positioned.fill(
-                  child: GoogleMap(
-                    initialCameraPosition: _kDefaultCamera,
-                    myLocationEnabled: true,
-                    myLocationButtonEnabled: false,
-                    zoomControlsEnabled: false,
-                    mapToolbarEnabled: false,
-                    markers: _markers,
-                    polylines: _polylines,
-                    onMapCreated: (controller) {
-                      _mapController = controller;
-                      _maybeFit();
-                    },
+                  child: ValueListenableBuilder<_MapLayer>(
+                    valueListenable: _mapLayer,
+                    builder: (context, layer, _) => GoogleMap(
+                      initialCameraPosition: _kDefaultCamera,
+                      myLocationEnabled: true,
+                      myLocationButtonEnabled: false,
+                      zoomControlsEnabled: false,
+                      mapToolbarEnabled: false,
+                      markers: layer.markers,
+                      polylines: layer.polylines,
+                      onMapCreated: (controller) {
+                        _mapController = controller;
+                        _maybeFit();
+                      },
+                    ),
                   ),
                 ),
 
@@ -282,7 +316,6 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                       tabController: _tabController,
                       sheetController: _sheetController,
                       scrollController: _scrollController,
-                      stops: stops,
                       vehicles: const [],
                       direction: state.direction,
                       isLoading: state.loading,

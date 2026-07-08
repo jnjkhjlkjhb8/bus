@@ -2,13 +2,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/go-redis/redis"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -24,11 +23,7 @@ func (s *BusRouteserver) Static(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.
 // Daily implements the Daily RPC, returning the cached daily timetable payload
 // produced by BusDailytable wrapped in the RPC's response type.
 func (s *BusRouteserver) Daily(_ context.Context, in *pb.Bus_Ask_Route) (*pb.Resp_BusDailyTimetable, error) {
-	resp, err := s.BusDailytable(in)
-	if err != nil {
-		return nil, err
-	}
-	return &pb.Resp_BusDailyTimetable{Data: resp.Data}, nil
+	return s.BusDailytable(in)
 }
 
 // Eta implements the Bus_Route_Service Eta streaming RPC by delegating to
@@ -38,15 +33,20 @@ func (s *BusRouteserver) Eta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_Service_E
 }
 
 // BusRouteStatic returns the pre-serialized static payload for a bus route.
-// The requested sub-route UID is normalized with makethatsame so THB direction
-// variants collapse to one row. Results are memoized in the in-process cache for
-// an hour; a missing row maps to NotFound via grpcStatusFor.
+// The requested sub-route UID is used as-is: canonical subroute identity is
+// produced at the 03:30 load (ADR-0006), so requests arrive already canonical
+// and the router does no normalization. Results are memoized in the in-process
+// cache for an hour; a missing row maps to NotFound via grpcStatusFor.
 func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.Resp_BusStatic, error) {
 	log.Infof("call bus_static %s", in.SubRouteUID)
-	route := makethatsame(in.SubRouteUID)
+	route := in.SubRouteUID
 	if s.cache != nil {
 		if data, ok := s.cache.get("bus_static:" + route); ok {
-			return &pb.Resp_BusStatic{Data: data}, nil
+			sub, err := decodePayload(data, &pb.BusSubroute{})
+			if err != nil {
+				return nil, err
+			}
+			return &pb.Resp_BusStatic{Data: sub}, nil
 		}
 	}
 	var data []byte
@@ -58,7 +58,11 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 	if s.cache != nil {
 		s.cache.set("bus_static:"+route, data, time.Hour)
 	}
-	return &pb.Resp_BusStatic{Data: data}, nil
+	sub, err := decodePayload(data, &pb.BusSubroute{})
+	if err != nil {
+		return nil, err
+	}
+	return &pb.Resp_BusStatic{Data: sub}, nil
 }
 
 // BusRouteEta streams live ETA for a bus route. It subscribes to the route's
@@ -67,30 +71,32 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 // client disconnects. Payloads failing usableBusEtaPayload are skipped.
 func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_Service_EtaServer) error {
 	log.Infof("call Bus_route_eta %s", in.SubRouteUID)
-	key := busRouteEtaKey(in.SubRouteUID)
+	key := shared.BusRouteEtaKey(in.SubRouteUID)
 	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 		usable:   usableBusEtaPayload,
 	}, func(data []byte) error {
-		return stream.Send(&pb.Resp_BusEta{Data: data})
+		arrival, err := decodePayload(data, &pb.Bus_RouteArrival{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.Resp_BusEta{Data: arrival})
 	})
 }
 
-// BusStationEta streams live ETA for a station group. The request's SubRouteUID
-// field carries a "city:group_uid" pair; when the city is omitted it is looked
-// up from bus_station_groups. It returns InvalidArgument when neither a city nor
-// a resolvable group_uid is available. Like BusRouteEta it seeds the stream from
+// BusStationEta streams live ETA for a station group. The request carries the
+// group_uid and, optionally, its city; when the city is omitted it is looked up
+// from bus_station_groups. It returns InvalidArgument when neither a city nor a
+// resolvable group_uid is available. Like BusRouteEta it seeds the stream from
 // the cached value, then forwards Redis Pub/Sub updates, skipping empty payloads.
-func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_Route, stream pb.Bus_Station_Service_EtaServer) error {
-	log.Infof("call Bus_station_eta %s", in.SubRouteUID)
-	city, groupUID, ok := strings.Cut(in.SubRouteUID, ":")
-	if !ok {
-		groupUID = in.SubRouteUID
-	}
+func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
+	log.Infof("call Bus_station_eta %s:%s", in.City, in.GroupUid)
+	groupUID := in.GroupUid
 	if groupUID == "" {
 		return status.Error(codes.InvalidArgument, "station eta key must include group_uid")
 	}
+	city := in.City
 	if city == "" && s.db != nil {
 		var dbCity string
 		if err := s.db.QueryRow(stream.Context(), `SELECT city FROM bus_station_groups WHERE group_uid = $1`, groupUID).Scan(&dbCity); err == nil {
@@ -100,45 +106,51 @@ func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_Route, stream pb.Bus_Stati
 	if city == "" {
 		return status.Error(codes.InvalidArgument, "station eta key must include city or known group_uid")
 	}
-	key := fmt.Sprintf("bus_eta_station:%s:%s", city, groupUID)
+	key := shared.BusStationEtaKey(city, groupUID)
 	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 		usable:   usableBusEtaPayload,
 	}, func(data []byte) error {
-		return stream.Send(&pb.Resp_BusEta{Data: data})
+		arrival, err := decodePayload(data, &pb.Bus_StationArrival{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.Resp_BusStationEta{Data: arrival})
 	})
 }
 
 // BusDailytable returns the daily timetable payload cached in Redis for a route.
-// The sub-route UID is normalized with makethatsame; a missing key maps to
-// NotFound via grpcStatusFor.
-func (s *BusRouteserver) BusDailytable(in *pb.Bus_Ask_Route) (*pb.Resp_BusEta, error) {
-	log.Infof("call Bus_route_eta %s", in.SubRouteUID)
-	route := makethatsame(in.SubRouteUID)
-	val, err := s.rc.Get(fmt.Sprintf("bus_daily_timetable:%s", route)).Result()
+// The sub-route UID is used as-is: canonical subroute identity is produced at
+// the 03:30 load (ADR-0006), so requests arrive already canonical. A missing key
+// maps to NotFound via grpcStatusFor.
+func (s *BusRouteserver) BusDailytable(in *pb.Bus_Ask_Route) (*pb.Resp_BusDailyTimetable, error) {
+	log.Infof("call Bus_dailytable %s", in.SubRouteUID)
+	route := in.SubRouteUID
+	val, err := s.rc.Get(shared.BusDailyTimetableKey(route)).Result()
 	if err != nil {
 		log.Infof("[gRPC] action=bus_dailytable event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "timetable not found")
 	}
-	resp := &pb.Resp_BusEta{
-		Data: []byte(val),
+	tt, err := decodePayload([]byte(val), &pb.Bus_DailyTimetables{})
+	if err != nil {
+		return nil, err
 	}
-	return resp, nil
+	return &pb.Resp_BusDailyTimetable{Data: tt}, nil
 }
 
 // Eta implements the Bus_Station_Service Eta streaming RPC. The station-ETA
 // logic lives on BusRouteserver, so it forwards to a transient BusRouteserver
 // sharing this server's db and rc handles (no cache is needed for a stream).
-func (s *BusStationserver) Eta(in *pb.Bus_Ask_Route, stream pb.Bus_Station_Service_EtaServer) error {
+func (s *BusStationserver) Eta(in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
 	return (&BusRouteserver{db: s.db, rc: s.rc}).BusStationEta(in, stream)
 }
 
 // Group returns a station group and its member stops from PostgreSQL. It
 // returns InvalidArgument for an empty group_uid and NotFound when the group
 // does not exist.
-func (s *BusStationserver) Group(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.Bus_StationGroup, error) {
-	groupUID := in.SubRouteUID
+func (s *BusStationserver) Group(ctx context.Context, in *pb.Bus_Ask_StationGroup) (*pb.Bus_StationGroup, error) {
+	groupUID := in.GroupUid
 	if groupUID == "" {
 		return nil, status.Error(codes.InvalidArgument, "group_uid required")
 	}
@@ -221,12 +233,16 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 // skipped, so a client with no cached value receives no seed frame.
 func (s *BikeServer) bikeEta(in *pb.BikeRequest, stream pb.Bike_Service_EtaServer) error {
 	log.Infof("call bike_eta %s", in.StationUID)
-	key := fmt.Sprintf("bike_availability:%s", in.StationUID)
+	key := shared.BikeAvailabilityKey(in.StationUID)
 	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
-		return stream.Send(&pb.Resp_BikeEta{Data: data})
+		eta, err := decodePayload(data, &pb.BikeEta{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.Resp_BikeEta{Data: eta})
 	})
 }
 
@@ -242,12 +258,16 @@ func (s *MrtServer) Eta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 // client disconnects.
 func (s *MrtServer) MrtEta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 	log.Infof("call Mrt_eta %s %s", in.System, in.StationID)
-	channel := fmt.Sprintf("mrt_live:%s:%s", in.System, in.StationID)
+	channel := shared.MrtLiveChannel(in.System, in.StationID)
 	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
 		channel:  channel,
-		seedScan: channel + ":*",
+		seedScan: shared.MrtLiveSeedPattern(in.System, in.StationID),
 	}, func(data []byte) error {
-		return stream.Send(&pb.Resp_MrtEta{Data: data})
+		live, err := decodePayload(data, &pb.MrtLive{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.Resp_MrtEta{Data: live})
 	})
 }
 
@@ -263,12 +283,16 @@ func (s *Tra_StationServer) LiveBoard(in *pb.AskStaiton, stream pb.TRAStationSer
 // is skipped rather than sent as a seed frame.
 func (s *Tra_StationServer) traLiveboard(in *pb.AskStaiton, stream pb.TRAStationService_LiveBoardServer) error {
 	log.Infof("call tra_liveboard %s", in.StationId)
-	key := fmt.Sprintf("tra:liveboard:%s", in.StationId)
+	key := shared.TraLiveboardKey(in.StationId)
 	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
-		return stream.Send(&pb.RespTraLiveBoard{Data: data})
+		board, err := decodePayload(data, &pb.Tra_LiveBoards{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.RespTraLiveBoard{Data: board})
 	})
 }
 
@@ -329,10 +353,14 @@ func (s *Tra_TimetableServer) Timetable(ctx context.Context, in *pb.AskRoute) (*
 func (s *Tra_TimetableServer) traDelay(stream pb.TRATimetableService_DelayServer) error {
 	log.Infof("call tra_delay")
 	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
-		channel:  "tra:delay:all",
-		seedKeys: []string{"tra:delay:all"},
+		channel:  shared.TraDelayAllKey,
+		seedKeys: []string{shared.TraDelayAllKey},
 	}, func(data []byte) error {
-		return stream.Send(&pb.RespTraDelay{Data: data})
+		delays, err := decodePayload(data, &pb.TraDelays{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.RespTraDelay{Data: delays})
 	})
 }
 
@@ -362,12 +390,19 @@ func (s *Tra_DetainServer) Stops(ctx context.Context, in *pb.AskDetain) (*pb.Tra
 // empty cached value is skipped rather than sent as a seed frame.
 func (s *Tra_DetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainService_DelayServer) error {
 	log.Infof("call tra_delay %s", in.Trainno)
-	key := fmt.Sprintf("tra:delay:%s", in.Trainno)
+	// ponytail: no writer publishes this channel yet (functions only writes the
+	// delay hash and the :all snapshot), so this stream stays silent — see
+	// shared.TraDelayTrainChannel.
+	key := shared.TraDelayTrainChannel(in.Trainno)
 	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
-		return stream.Send(&pb.RespTraDelay{Data: data})
+		delays, err := decodePayload(data, &pb.TraDelays{})
+		if err != nil {
+			return err
+		}
+		return stream.Send(&pb.RespTraDelay{Data: delays})
 	})
 }
 
@@ -400,7 +435,7 @@ func (s *ThsrServer) Fare(ctx context.Context, in *pb.Ask_Thsr) (*pb.ThsaFare, e
 // parsed as RFC3339 and reduced to a date for the TDX refresh.
 func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreamingServer[pb.RespThsrSeats]) error {
 	log.Infof("[gRPC] action=thsr_available_seats date=%s", in.Date)
-	channel := fmt.Sprintf("thsr_seats:%s:*", in.Date)
+	channel := shared.ThsrSeatsPattern(in.Date)
 	var cursor uint64
 	for {
 		if err := stream.Context().Err(); err != nil {
@@ -415,19 +450,22 @@ func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreaming
 			if err != nil {
 				continue
 			}
-			resp := &pb.RespThsrSeats{Data: val}
-			if err = stream.Send(resp); err != nil {
+			seats, err := decodePayload(val, &pb.ThsrAvailableSeats{})
+			if err != nil {
+				return err
+			}
+			if err = stream.Send(&pb.RespThsrSeats{Data: seats}); err != nil {
 				return err
 			}
 		}
 		cursor = next
 		if cursor == 0 {
-			t, _ := time.Parse(time.RFC3339, in.Date)
-			get_thsr_availableseatstatus(s.client, s.rc, t.Format(time.DateOnly))
+			t := parseRailDate(in.Date)
+			get_thsr_availableseatstatus(s.tdx, s.rc, t.Format(time.DateOnly))
 			break
 		}
 	}
-	sub := s.rc.PSubscribe(fmt.Sprintf("thsr_seats:%s:*", in.Date))
+	sub := s.rc.PSubscribe(shared.ThsrSeatsPattern(in.Date))
 	defer func(sub *redis.PubSub) { _ = sub.Close() }(sub)
 	for {
 		select {
@@ -439,8 +477,11 @@ func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreaming
 		if err != nil {
 			return err
 		}
-		resp := &pb.RespThsrSeats{Data: []byte(m.Payload)}
-		if err = stream.Send(resp); err != nil {
+		seats, err := decodePayload([]byte(m.Payload), &pb.ThsrAvailableSeats{})
+		if err != nil {
+			return err
+		}
+		if err = stream.Send(&pb.RespThsrSeats{Data: seats}); err != nil {
 			return err
 		}
 	}

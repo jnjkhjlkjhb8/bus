@@ -1,5 +1,5 @@
 # Build context: repo root
-# docker build -f server/router/Dockerfile -t wheres_the_car-router .
+# docker build -f services/router/Dockerfile -t wheres_the_car-router .
 
 FROM golang:1.26.3-alpine3.23 AS builder
 RUN apk add --no-cache git protobuf-dev
@@ -13,9 +13,10 @@ COPY models/ ./models/
 RUN protoc --go_out=paths=source_relative:models \
            --go-grpc_out=paths=source_relative:models \
            -I models models/*.proto
-COPY server/obs/ ./server/obs/
-COPY server/router/ ./server/router/
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o router ./server/router
+COPY services/obs/ ./services/obs/
+COPY services/shared/ ./services/shared/
+COPY services/router/ ./services/router/
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o router ./services/router
 FROM alpine:3.23
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /root/

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/generated/maas.pb.dart';
+import 'package:wheres_the_car/data/models/plan_models.dart';
 
 class RouteTimeline extends StatelessWidget {
   const RouteTimeline({
@@ -11,7 +11,7 @@ class RouteTimeline extends StatelessWidget {
     super.key,
   });
 
-  final List<Section> sections;
+  final List<PlanSection> sections;
   final int totalDuration;
   final double canvasHeight;
 
@@ -33,9 +33,9 @@ class RouteTimeline extends StatelessWidget {
     }
   }
 
-  double _segmentHeight(Section s) {
+  double _segmentHeight(PlanSection s) {
     if (totalDuration == 0) return 32;
-    final ratio = s.travelSummary.duration.toInt() / totalDuration;
+    final ratio = s.travelSummary.duration / totalDuration;
     return (ratio * canvasHeight).clamp(32, double.infinity);
   }
 
@@ -66,7 +66,7 @@ class _Segment extends StatelessWidget {
     required this.color,
   });
 
-  final Section section;
+  final PlanSection section;
   final double height;
   final Color color;
 

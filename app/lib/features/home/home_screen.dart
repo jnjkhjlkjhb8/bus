@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -11,6 +12,7 @@ import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/location/location_service.dart';
 import 'package:wheres_the_car/data/models/near_models.dart';
@@ -24,8 +26,12 @@ import 'package:wheres_the_car/features/favorites/widgets/favorite_tile.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_bloc.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_event.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_state.dart';
+import 'package:wheres_the_car/features/home/widgets/home_station_detail.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/motion/stagger.dart';
+import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/route_tab_bar.dart';
@@ -50,6 +56,8 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   GoogleMapController? _mapController;
   late final SheetController _sheetController;
+  final GlobalKey<NavigatorState> _sheetNavigatorKey =
+      GlobalKey<NavigatorState>();
   late final TabController _tabController;
   LatLng _center = _kDefaultPosition;
   LatLng _camCenter = _kDefaultPosition;
@@ -61,12 +69,28 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _mapReady = false;
   bool _tabApplied = false;
 
+  String? _highlightedKey;
+
+  /// Latest nearby stations, mirrored from [NearbyBloc] by the listener in
+  /// [build]. Focus/unfocus read this instead of `context.read<NearbyBloc>()`
+  /// because those run on the State's context, which sits above the provider.
+  List<NearStationViewModel> _stations = const [];
+
+  /// True while a manual "locate me" tap is acquiring the GPS fix — drives the
+  /// recenter FAB's spinner so the button never reads as doing nothing.
+  bool _locating = false;
+  /// Fires a one-shot sonar ring at the user's on-screen position after a
+  /// manual recenter. Null until the first ping.
+  final ValueNotifier<_Ping?> _ping = ValueNotifier<_Ping?>(null);
+
   Future<void> _rebuildMarkers(List<NearStationViewModel> stations) async {
     final revision = ++_markerRevision;
     final style = _markerStyle(_zoom);
     final markers = await Future.wait(
       stations.take(_kMapMarkerLimit).map((s) async {
-        final icon = await _markerIcon(s, style);
+        final key = '${s.type.name}:${s.stationId}';
+        final highlighted = key == _highlightedKey;
+        final icon = await _markerIcon(s, style, highlighted: highlighted);
         return Marker(
           markerId: MarkerId('${s.type.name}:${s.stationId}'),
           position: LatLng(s.lat, s.lon),
@@ -81,6 +105,50 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _markerStyleCache = style;
       _markers = markers.toSet();
     });
+  }
+
+  void _openStationDetail(NearStationViewModel station) {
+    _focusStationOnMap(station);
+    final navigator = _sheetNavigatorKey.currentState;
+    if (navigator == null) return;
+    unawaited(
+      navigator
+          .push(
+            PagedSheetRoute<void>(
+              scrollConfiguration: const SheetScrollConfiguration(),
+              initialOffset: const SheetOffset.proportionalToViewport(0.55),
+              snapGrid: const SheetSnapGrid(
+                snaps: [
+                  SheetOffset.proportionalToViewport(0.30),
+                  SheetOffset.proportionalToViewport(0.55),
+                  SheetOffset.proportionalToViewport(1),
+                ],
+              ),
+              builder: (_) => stationDetailPage(station),
+            ),
+          )
+          .then((_) => _unfocusStationOnMap()),
+    );
+  }
+
+  void _focusStationOnMap(NearStationViewModel station) {
+    final key = '${station.type.name}:${station.stationId}';
+    setState(() => _highlightedKey = key);
+    final controller = _mapController;
+    if (controller != null) {
+      unawaited(
+        controller.animateCamera(
+          CameraUpdate.newLatLngZoom(LatLng(station.lat, station.lon), 16.5),
+        ),
+      );
+    }
+    unawaited(_rebuildMarkers(_stations));
+  }
+
+  void _unfocusStationOnMap() {
+    if (!mounted) return;
+    setState(() => _highlightedKey = null);
+    unawaited(_rebuildMarkers(_stations));
   }
 
   double _distanceMeters(LatLng a, LatLng b) {
@@ -100,7 +168,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   Future<int> _visibleRadiusMeters() async {
     final controller = _mapController;
-    if (controller == null) return _kFallbackRadiusMeters;
+    if (controller == null) return _fallbackRadiusMeters;
     final bounds = await controller.getVisibleRegion();
     final northEast = bounds.northeast;
     final southWest = bounds.southwest;
@@ -198,6 +266,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _locateUser() async {
+    if (mounted) setState(() => _locating = true);
     try {
       final pos = await LocationService.instance.currentPosition();
       final target = LatLng(pos.latitude, pos.longitude);
@@ -205,14 +274,30 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       setState(() {
         _center = target;
         _camCenter = target;
+        _locating = false;
       });
       final controller = _mapController;
-      if (controller != null) {
-        unawaited(controller.animateCamera(CameraUpdate.newLatLng(target)));
-      }
+      if (controller == null) return;
+      unawaited(controller.animateCamera(CameraUpdate.newLatLng(target)));
+      await _playPing(target);
     } on Object catch (e, s) {
+      if (mounted) setState(() => _locating = false);
       CrashReporter.record(e, s);
     }
+  }
+
+  /// Emits a single expanding ring at the user's screen position once the
+  /// recenter camera move has settled. `getScreenCoordinate` returns physical
+  /// pixels, so divide by the device ratio for logical layout coordinates.
+  Future<void> _playPing(LatLng target) async {
+    if (!mounted || MediaQuery.disableAnimationsOf(context)) return;
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    final controller = _mapController;
+    if (!mounted || controller == null) return;
+    final coord = await controller.getScreenCoordinate(target);
+    if (!mounted) return;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    _ping.value = _Ping(Offset(coord.x / dpr, coord.y / dpr));
   }
 
   void _recenter() {
@@ -226,6 +311,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     App.isInitialized.removeListener(_onFavoritesReady);
     _sheetController.dispose();
     _tabController.dispose();
+    _ping.dispose();
     super.dispose();
   }
 
@@ -238,10 +324,19 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       child: Builder(
         builder: (context) => BlocListener<NearbyBloc, NearbyState>(
           listenWhen: (p, c) => p.stations != c.stations,
-          listener: (_, state) => unawaited(_rebuildMarkers(state.stations)),
+          listener: (_, state) {
+            _stations = state.stations;
+            unawaited(_rebuildMarkers(state.stations));
+          },
           child: _buildScaffold(context, cs),
         ),
       ),
     );
   }
 }
+
+@visibleForTesting
+Widget buildNearbyRowForTest({
+  required NearStationViewModel station,
+  required ValueChanged<NearStationViewModel> onStationTap,
+}) => _NearbyStationRow(station: station, onStationTap: onStationTap);

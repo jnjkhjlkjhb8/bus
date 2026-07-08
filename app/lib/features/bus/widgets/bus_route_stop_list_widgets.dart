@@ -10,7 +10,7 @@ class _StopListTab extends StatelessWidget {
 
   final List<TimelineStop> stops;
   final ScrollController scrollController;
-  final Set<String> reminders;
+  final Map<String, String> reminders;
   final void Function(String) onReminderToggled;
 
   @override
@@ -30,7 +30,7 @@ class _StopListTab extends StatelessWidget {
             stop: stop,
             index: i,
             totalStops: stops.length,
-            isReminderActive: reminders.contains(stop.uid),
+            isReminderActive: reminders.containsKey(stop.uid),
             onReminderToggled: () => onReminderToggled(stop.uid),
           );
         },

@@ -1,30 +1,94 @@
-import 'dart:typed_data';
 import 'package:wheres_the_car/data/generated/bus.pb.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
+import 'package:wheres_the_car/data/models/eta_format.dart';
 
-/// 公車資料解碼
 class BusDecoder {
   const BusDecoder._();
   static const BusDecoder instance = BusDecoder._();
 
-  List<BusStopEtaViewModel> decodeRouteEta(Uint8List data) {
-    final arrival = Bus_RouteArrival.fromBuffer(data);
+  List<BusStopEtaViewModel> decodeRouteEta(
+    Bus_RouteArrival arrival, {
+    DateTime? now,
+  }) {
+    final at = now ?? DateTime.now();
     return arrival.stops.map((s) {
+      final arrivalUnix = s.arrivalUnix.toInt();
+      // Derive the countdown from the absolute arrival instant when the server
+      // sent one, else fall back to the server estimate. A just-passed instant
+      // clamps to 0, which stopStatus 0 reads as 進站中.
+      final estimateSeconds = etaRemainingSeconds(
+        arrivalUnix: arrivalUnix,
+        serverEstimateSeconds: s.estimate,
+        now: at,
+      );
       return BusStopEtaViewModel(
         stopUid: s.stopUid,
         direction: s.direction,
         sequence: s.stopSequence,
-        estimateSeconds: s.estimate,
+        estimateSeconds: estimateSeconds,
         nextBusTime: s.nextBusTime,
         stopStatus: s.stopStatus,
+        arrivalUnix: arrivalUnix,
         vehiclePlates: s.buses.map((b) => b.plateNumb).toList(),
+        vehicles: [
+          for (final b in s.buses)
+            if (b.positionLat != 0 || b.positionLon != 0)
+              BusVehiclePosition(
+                plate: b.plateNumb,
+                lat: b.positionLat,
+                lon: b.positionLon,
+                azimuth: b.azimuth,
+              ),
+        ],
       );
     }).toList();
   }
 
-  BusRouteViewModel decodeStatic(Uint8List data) {
-    final route = Bus_subroute.fromBuffer(data);
+  /// Decodes a station-group ETA frame into per-route arrivals. [now] is
+  /// injectable for deterministic decode; production passes the wall clock.
+  List<BusStopArrival> decodeStationEta(
+    Resp_Bus_station_eta resp, {
+    DateTime? now,
+  }) {
+    final at = now ?? DateTime.now();
+    return resp.data.routes.map((r) {
+      final arrivalUnix = r.arrivalUnix.toInt();
+      final estimateSeconds = etaRemainingSeconds(
+        arrivalUnix: arrivalUnix,
+        serverEstimateSeconds: r.estimate,
+        now: at,
+      );
+      return BusStopArrival(
+        stationId: r.stopUid,
+        subRouteUid: r.subRouteUid,
+        routeName: r.routeName,
+        destination: r.direction == 1 ? '返程' : '去程',
+        estimateSeconds: estimateSeconds,
+        nextBusTime: r.nextBusTime,
+        stopStatus: r.stopStatus,
+        arrivalUnix: arrivalUnix,
+      );
+    }).toList();
+  }
+
+  /// Decodes a station group's member stops. An empty [group] members list
+  /// yields an empty list rather than throwing.
+  List<BusStationMember> decodeStationMembers(Bus_StationGroup group) {
+    return group.members
+        .map(
+          (m) => BusStationMember(
+            stationUid: m.stationUid,
+            stationId: m.stationId,
+            stationName: m.stationName,
+            lat: m.positionLat,
+            lon: m.positionLon,
+          ),
+        )
+        .toList();
+  }
+
+  BusRouteViewModel decodeStatic(Bus_subroute route) {
     final dir0 = route.directions[0];
     final dir1 = route.directions[1];
     return BusRouteViewModel(
@@ -61,8 +125,7 @@ class BusDecoder {
     lon: s.positionLon,
   );
 
-  BusDailyTimetable decodeDaily(Uint8List data) {
-    final proto = Bus_DailyTimetables.fromBuffer(data);
+  BusDailyTimetable decodeDaily(Bus_DailyTimetables proto) {
     return BusDailyTimetable(
       directions: {
         for (final entry in proto.direction.entries)

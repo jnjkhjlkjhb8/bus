@@ -14,10 +14,11 @@ class ErrorStateView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 48, 24, 48),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 48, 24, 48),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
         children: [
           Icon(error.icon, size: 40, color: cs.outline),
           const SizedBox(height: 16),
@@ -60,6 +61,7 @@ class ErrorStateView extends StatelessWidget {
             ),
           ],
         ],
+        ),
       ),
     );
   }

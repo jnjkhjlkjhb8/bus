@@ -42,7 +42,19 @@ TransportType _metroLine(String id) {
 void openFavorite(BuildContext context, Favorite fav) {
   switch (fav.type) {
     case FavoriteType.busStop:
-      unawaited(context.push('/bus/stop', extra: {'stopName': fav.refId}));
+      // refId holds the station group_uid, subtitle the city; title is the
+      // display name. Legacy favorites saved name-as-refId still open (the
+      // stop screen surfaces an empty state when the id is not a group_uid).
+      unawaited(
+        context.push(
+          '/bus/stop',
+          extra: {
+            'stopName': fav.title,
+            'stopId': fav.refId,
+            'city': fav.subtitle,
+          },
+        ),
+      );
     case FavoriteType.busRoute:
       unawaited(context.push('/bus/route/${fav.refId}'));
     case FavoriteType.metroStation:

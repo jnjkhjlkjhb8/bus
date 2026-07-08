@@ -106,8 +106,10 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 		!validText(request.GetRouteKey(), 256) || !validText(request.GetStopKey(), 256) || !validText(request.GetDirection(), 32) {
 		return nil, status.Error(codes.InvalidArgument, "install_id, route, stop, and direction are required")
 	}
-	if request.RouteType != "bus" {
-		return nil, status.Error(codes.FailedPrecondition, "arrival reminders are supported for bus routes only")
+	switch request.RouteType {
+	case "bus", "tra", "thsr":
+	default:
+		return nil, status.Error(codes.FailedPrecondition, "arrival reminders are supported for bus and rail routes only")
 	}
 	if request.Direction != "0" && request.Direction != "1" {
 		return nil, status.Error(codes.InvalidArgument, "direction must be 0 or 1")
@@ -134,6 +136,13 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 		ReminderID: reminderID, InstallID: request.InstallId, RouteType: request.RouteType, RouteKey: request.RouteKey,
 		StopKey: request.StopKey, Direction: request.Direction, LeadMinutes: request.LeadMinutes,
 		ExpiresAt: expiresAt, Status: reminderPending,
+	}
+	// Rail arrival times are known at creation, so fire on a schedule (arrival
+	// minus lead). Bus has no known arrival time and fires off the live ETA, so
+	// it leaves fire_at NULL and is dispatched from busEta instead.
+	if request.RouteType == "tra" || request.RouteType == "thsr" {
+		fireAt := expiresAt.Add(-time.Duration(request.LeadMinutes) * time.Minute)
+		stored.FireAt = &fireAt
 	}
 	if err := s.store.CreateArrivalReminder(ctx, stored); err != nil {
 		return nil, status.Error(codes.Internal, "failed to save arrival reminder")

@@ -7,6 +7,22 @@ library;
 /// never round or floor. Non-positive seconds mean "no estimate" -> 0.
 int etaCeilMinutes(int seconds) => seconds > 0 ? (seconds / 60).ceil() : 0;
 
+/// The one arrival-instant decay derivation, shared by decode (fresh frame) and
+/// local decay (between frames). Given the canonical [arrivalUnix] (absolute
+/// wall-clock arrival, Unix seconds) it derives remaining seconds against [now]
+/// so the countdown stays accurate without a new server frame; a just-passed
+/// instant clamps to 0. When [arrivalUnix] is non-positive (server sent no
+/// absolute instant) the server-provided [serverEstimateSeconds] is used as-is.
+int etaRemainingSeconds({
+  required int arrivalUnix,
+  required int serverEstimateSeconds,
+  required DateTime now,
+}) {
+  if (arrivalUnix <= 0) return serverEstimateSeconds;
+  final seconds = arrivalUnix - now.millisecondsSinceEpoch ~/ 1000;
+  return seconds > 0 ? seconds : 0;
+}
+
 /// Exhaustive interpretation of a bus stop's estimate + TDX stop-status code.
 enum BusStopDisplayStatus {
   arriving,

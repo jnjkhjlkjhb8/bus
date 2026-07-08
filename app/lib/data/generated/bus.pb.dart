@@ -12,6 +12,7 @@
 
 import 'dart:core' as $core;
 
+import 'package:fixnum/fixnum.dart' as $fixnum;
 import 'package:protobuf/protobuf.dart' as $pb;
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
@@ -67,6 +68,71 @@ class Bus_Ask_Route extends $pb.GeneratedMessage {
   $core.bool hasSubRouteUID() => $_has(0);
   @$pb.TagNumber(1)
   void clearSubRouteUID() => $_clearField(1);
+}
+
+class Bus_Ask_StationGroup extends $pb.GeneratedMessage {
+  factory Bus_Ask_StationGroup({
+    $core.String? city,
+    $core.String? groupUid,
+  }) {
+    final result = create();
+    if (city != null) result.city = city;
+    if (groupUid != null) result.groupUid = groupUid;
+    return result;
+  }
+
+  Bus_Ask_StationGroup._();
+
+  factory Bus_Ask_StationGroup.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory Bus_Ask_StationGroup.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'Bus_Ask_StationGroup',
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'city')
+    ..aOS(2, _omitFieldNames ? '' : 'groupUid')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  Bus_Ask_StationGroup clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  Bus_Ask_StationGroup copyWith(void Function(Bus_Ask_StationGroup) updates) =>
+      super.copyWith((message) => updates(message as Bus_Ask_StationGroup))
+          as Bus_Ask_StationGroup;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static Bus_Ask_StationGroup create() => Bus_Ask_StationGroup._();
+  @$core.override
+  Bus_Ask_StationGroup createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static Bus_Ask_StationGroup getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<Bus_Ask_StationGroup>(create);
+  static Bus_Ask_StationGroup? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get city => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set city($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasCity() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearCity() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get groupUid => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set groupUid($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasGroupUid() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearGroupUid() => $_clearField(2);
 }
 
 class Bus_Ask_Station extends $pb.GeneratedMessage {
@@ -134,9 +200,11 @@ class Bus_Ask_Station extends $pb.GeneratedMessage {
   void clearCity() => $_clearField(2);
 }
 
+/// Wire-compatible with the former `bytes data = 1`: a length-delimited field 1
+/// still carries a marshaled Bus_subroute, now typed for the interface.
 class Resp_Bus_static extends $pb.GeneratedMessage {
   factory Resp_Bus_static({
-    $core.List<$core.int>? data,
+    Bus_subroute? data,
   }) {
     final result = create();
     if (data != null) result.data = data;
@@ -155,8 +223,8 @@ class Resp_Bus_static extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Resp_Bus_static',
       createEmptyInstance: create)
-    ..a<$core.List<$core.int>>(
-        1, _omitFieldNames ? '' : 'data', $pb.PbFieldType.OY)
+    ..aOM<Bus_subroute>(1, _omitFieldNames ? '' : 'data',
+        subBuilder: Bus_subroute.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -179,18 +247,21 @@ class Resp_Bus_static extends $pb.GeneratedMessage {
   static Resp_Bus_static? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $core.List<$core.int> get data => $_getN(0);
+  Bus_subroute get data => $_getN(0);
   @$pb.TagNumber(1)
-  set data($core.List<$core.int> value) => $_setBytes(0, value);
+  set data(Bus_subroute value) => $_setField(1, value);
   @$pb.TagNumber(1)
   $core.bool hasData() => $_has(0);
   @$pb.TagNumber(1)
   void clearData() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Bus_subroute ensureData() => $_ensure(0);
 }
 
+/// Route ETA envelope. data is a Bus_RouteArrival (Bus_Route_Service.eta).
 class Resp_Bus_eta extends $pb.GeneratedMessage {
   factory Resp_Bus_eta({
-    $core.List<$core.int>? data,
+    Bus_RouteArrival? data,
   }) {
     final result = create();
     if (data != null) result.data = data;
@@ -209,8 +280,8 @@ class Resp_Bus_eta extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Resp_Bus_eta',
       createEmptyInstance: create)
-    ..a<$core.List<$core.int>>(
-        1, _omitFieldNames ? '' : 'data', $pb.PbFieldType.OY)
+    ..aOM<Bus_RouteArrival>(1, _omitFieldNames ? '' : 'data',
+        subBuilder: Bus_RouteArrival.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -233,18 +304,79 @@ class Resp_Bus_eta extends $pb.GeneratedMessage {
   static Resp_Bus_eta? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $core.List<$core.int> get data => $_getN(0);
+  Bus_RouteArrival get data => $_getN(0);
   @$pb.TagNumber(1)
-  set data($core.List<$core.int> value) => $_setBytes(0, value);
+  set data(Bus_RouteArrival value) => $_setField(1, value);
   @$pb.TagNumber(1)
   $core.bool hasData() => $_has(0);
   @$pb.TagNumber(1)
   void clearData() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Bus_RouteArrival ensureData() => $_ensure(0);
+}
+
+/// Station-group ETA envelope. data is a Bus_StationArrival
+/// (Bus_Station_Service.eta). Split from Resp_Bus_eta so each RPC carries its
+/// own payload schema.
+class Resp_Bus_station_eta extends $pb.GeneratedMessage {
+  factory Resp_Bus_station_eta({
+    Bus_StationArrival? data,
+  }) {
+    final result = create();
+    if (data != null) result.data = data;
+    return result;
+  }
+
+  Resp_Bus_station_eta._();
+
+  factory Resp_Bus_station_eta.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory Resp_Bus_station_eta.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'Resp_Bus_station_eta',
+      createEmptyInstance: create)
+    ..aOM<Bus_StationArrival>(1, _omitFieldNames ? '' : 'data',
+        subBuilder: Bus_StationArrival.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  Resp_Bus_station_eta clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  Resp_Bus_station_eta copyWith(void Function(Resp_Bus_station_eta) updates) =>
+      super.copyWith((message) => updates(message as Resp_Bus_station_eta))
+          as Resp_Bus_station_eta;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static Resp_Bus_station_eta create() => Resp_Bus_station_eta._();
+  @$core.override
+  Resp_Bus_station_eta createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static Resp_Bus_station_eta getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<Resp_Bus_station_eta>(create);
+  static Resp_Bus_station_eta? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  Bus_StationArrival get data => $_getN(0);
+  @$pb.TagNumber(1)
+  set data(Bus_StationArrival value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasData() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearData() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Bus_StationArrival ensureData() => $_ensure(0);
 }
 
 class Resp_Bus_daily_timetable extends $pb.GeneratedMessage {
   factory Resp_Bus_daily_timetable({
-    $core.List<$core.int>? data,
+    Bus_DailyTimetables? data,
   }) {
     final result = create();
     if (data != null) result.data = data;
@@ -263,8 +395,8 @@ class Resp_Bus_daily_timetable extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Resp_Bus_daily_timetable',
       createEmptyInstance: create)
-    ..a<$core.List<$core.int>>(
-        1, _omitFieldNames ? '' : 'data', $pb.PbFieldType.OY)
+    ..aOM<Bus_DailyTimetables>(1, _omitFieldNames ? '' : 'data',
+        subBuilder: Bus_DailyTimetables.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -288,13 +420,15 @@ class Resp_Bus_daily_timetable extends $pb.GeneratedMessage {
   static Resp_Bus_daily_timetable? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $core.List<$core.int> get data => $_getN(0);
+  Bus_DailyTimetables get data => $_getN(0);
   @$pb.TagNumber(1)
-  set data($core.List<$core.int> value) => $_setBytes(0, value);
+  set data(Bus_DailyTimetables value) => $_setField(1, value);
   @$pb.TagNumber(1)
   $core.bool hasData() => $_has(0);
   @$pb.TagNumber(1)
   void clearData() => $_clearField(1);
+  @$pb.TagNumber(1)
+  Bus_DailyTimetables ensureData() => $_ensure(0);
 }
 
 class BusOperator extends $pb.GeneratedMessage {
@@ -1397,6 +1531,7 @@ class Bus_RouteEstimate extends $pb.GeneratedMessage {
     $core.String? srcUpdateTime,
     $core.Iterable<Bus_position>? buses,
     $core.int? stopSequence,
+    $fixnum.Int64? arrivalUnix,
   }) {
     final result = create();
     if (stopUid != null) result.stopUid = stopUid;
@@ -1407,6 +1542,7 @@ class Bus_RouteEstimate extends $pb.GeneratedMessage {
     if (srcUpdateTime != null) result.srcUpdateTime = srcUpdateTime;
     if (buses != null) result.buses.addAll(buses);
     if (stopSequence != null) result.stopSequence = stopSequence;
+    if (arrivalUnix != null) result.arrivalUnix = arrivalUnix;
     return result;
   }
 
@@ -1431,6 +1567,7 @@ class Bus_RouteEstimate extends $pb.GeneratedMessage {
     ..pPM<Bus_position>(7, _omitFieldNames ? '' : 'Buses',
         protoName: 'Buses', subBuilder: Bus_position.create)
     ..aI(8, _omitFieldNames ? '' : 'StopSequence', protoName: 'StopSequence')
+    ..aInt64(9, _omitFieldNames ? '' : 'arrivalUnix')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1517,6 +1654,15 @@ class Bus_RouteEstimate extends $pb.GeneratedMessage {
   $core.bool hasStopSequence() => $_has(7);
   @$pb.TagNumber(8)
   void clearStopSequence() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $fixnum.Int64 get arrivalUnix => $_getI64(8);
+  @$pb.TagNumber(9)
+  set arrivalUnix($fixnum.Int64 value) => $_setInt64(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasArrivalUnix() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearArrivalUnix() => $_clearField(9);
 }
 
 class Bus_StopEstimate extends $pb.GeneratedMessage {
@@ -1530,6 +1676,7 @@ class Bus_StopEstimate extends $pb.GeneratedMessage {
     $core.int? stopStatus,
     $core.String? srcUpdateTime,
     $core.Iterable<Bus_position>? buses,
+    $fixnum.Int64? arrivalUnix,
   }) {
     final result = create();
     if (stopUid != null) result.stopUid = stopUid;
@@ -1541,6 +1688,7 @@ class Bus_StopEstimate extends $pb.GeneratedMessage {
     if (stopStatus != null) result.stopStatus = stopStatus;
     if (srcUpdateTime != null) result.srcUpdateTime = srcUpdateTime;
     if (buses != null) result.buses.addAll(buses);
+    if (arrivalUnix != null) result.arrivalUnix = arrivalUnix;
     return result;
   }
 
@@ -1566,6 +1714,7 @@ class Bus_StopEstimate extends $pb.GeneratedMessage {
     ..aOS(8, _omitFieldNames ? '' : 'srcUpdateTime')
     ..pPM<Bus_position>(9, _omitFieldNames ? '' : 'Buses',
         protoName: 'Buses', subBuilder: Bus_position.create)
+    ..aInt64(10, _omitFieldNames ? '' : 'arrivalUnix')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1661,6 +1810,15 @@ class Bus_StopEstimate extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(9)
   $pb.PbList<Bus_position> get buses => $_getList(8);
+
+  @$pb.TagNumber(10)
+  $fixnum.Int64 get arrivalUnix => $_getI64(9);
+  @$pb.TagNumber(10)
+  set arrivalUnix($fixnum.Int64 value) => $_setInt64(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasArrivalUnix() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearArrivalUnix() => $_clearField(10);
 }
 
 class Bus_position extends $pb.GeneratedMessage {
@@ -1670,9 +1828,6 @@ class Bus_position extends $pb.GeneratedMessage {
     $core.double? positionLat,
     $core.int? speed,
     $core.int? azimuth,
-    $core.int? dutyStatus,
-    $core.int? busStatus,
-    $core.String? gpsTime,
   }) {
     final result = create();
     if (plateNumb != null) result.plateNumb = plateNumb;
@@ -1680,9 +1835,6 @@ class Bus_position extends $pb.GeneratedMessage {
     if (positionLat != null) result.positionLat = positionLat;
     if (speed != null) result.speed = speed;
     if (azimuth != null) result.azimuth = azimuth;
-    if (dutyStatus != null) result.dutyStatus = dutyStatus;
-    if (busStatus != null) result.busStatus = busStatus;
-    if (gpsTime != null) result.gpsTime = gpsTime;
     return result;
   }
 
@@ -1703,9 +1855,6 @@ class Bus_position extends $pb.GeneratedMessage {
     ..aD(3, _omitFieldNames ? '' : 'positionLat')
     ..aI(4, _omitFieldNames ? '' : 'speed')
     ..aI(5, _omitFieldNames ? '' : 'azimuth')
-    ..aI(6, _omitFieldNames ? '' : 'DutyStatus', protoName: 'DutyStatus')
-    ..aI(7, _omitFieldNames ? '' : 'BusStatus', protoName: 'BusStatus')
-    ..aOS(8, _omitFieldNames ? '' : 'gpsTime')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1771,86 +1920,11 @@ class Bus_position extends $pb.GeneratedMessage {
   $core.bool hasAzimuth() => $_has(4);
   @$pb.TagNumber(5)
   void clearAzimuth() => $_clearField(5);
-
-  @$pb.TagNumber(6)
-  $core.int get dutyStatus => $_getIZ(5);
-  @$pb.TagNumber(6)
-  set dutyStatus($core.int value) => $_setSignedInt32(5, value);
-  @$pb.TagNumber(6)
-  $core.bool hasDutyStatus() => $_has(5);
-  @$pb.TagNumber(6)
-  void clearDutyStatus() => $_clearField(6);
-
-  @$pb.TagNumber(7)
-  $core.int get busStatus => $_getIZ(6);
-  @$pb.TagNumber(7)
-  set busStatus($core.int value) => $_setSignedInt32(6, value);
-  @$pb.TagNumber(7)
-  $core.bool hasBusStatus() => $_has(6);
-  @$pb.TagNumber(7)
-  void clearBusStatus() => $_clearField(7);
-
-  @$pb.TagNumber(8)
-  $core.String get gpsTime => $_getSZ(7);
-  @$pb.TagNumber(8)
-  set gpsTime($core.String value) => $_setString(7, value);
-  @$pb.TagNumber(8)
-  $core.bool hasGpsTime() => $_has(7);
-  @$pb.TagNumber(8)
-  void clearGpsTime() => $_clearField(8);
-}
-
-class Bus_schedule extends $pb.GeneratedMessage {
-  factory Bus_schedule({
-    $core.Iterable<Bus_Schedule>? schedules,
-  }) {
-    final result = create();
-    if (schedules != null) result.schedules.addAll(schedules);
-    return result;
-  }
-
-  Bus_schedule._();
-
-  factory Bus_schedule.fromBuffer($core.List<$core.int> data,
-          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
-      create()..mergeFromBuffer(data, registry);
-  factory Bus_schedule.fromJson($core.String json,
-          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
-      create()..mergeFromJson(json, registry);
-
-  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
-      _omitMessageNames ? '' : 'Bus_schedule',
-      createEmptyInstance: create)
-    ..pPM<Bus_Schedule>(1, _omitFieldNames ? '' : 'schedules',
-        subBuilder: Bus_Schedule.create)
-    ..hasRequiredFields = false;
-
-  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
-  Bus_schedule clone() => deepCopy();
-  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
-  Bus_schedule copyWith(void Function(Bus_schedule) updates) =>
-      super.copyWith((message) => updates(message as Bus_schedule))
-          as Bus_schedule;
-
-  @$core.override
-  $pb.BuilderInfo get info_ => _i;
-
-  @$core.pragma('dart2js:noInline')
-  static Bus_schedule create() => Bus_schedule._();
-  @$core.override
-  Bus_schedule createEmptyInstance() => create();
-  @$core.pragma('dart2js:noInline')
-  static Bus_schedule getDefault() => _defaultInstance ??=
-      $pb.GeneratedMessage.$_defaultFor<Bus_schedule>(create);
-  static Bus_schedule? _defaultInstance;
-
-  @$pb.TagNumber(1)
-  $pb.PbList<Bus_Schedule> get schedules => $_getList(0);
 }
 
 class Bus_Schedule extends $pb.GeneratedMessage {
   factory Bus_Schedule({
-    $core.bool? type,
+    $core.bool? isTimetable,
     $core.String? tripid,
     $core.bool? islowfloor,
     $core.String? startTime,
@@ -1860,7 +1934,7 @@ class Bus_Schedule extends $pb.GeneratedMessage {
     $core.int? serviceDay,
   }) {
     final result = create();
-    if (type != null) result.type = type;
+    if (isTimetable != null) result.isTimetable = isTimetable;
     if (tripid != null) result.tripid = tripid;
     if (islowfloor != null) result.islowfloor = islowfloor;
     if (startTime != null) result.startTime = startTime;
@@ -1885,7 +1959,7 @@ class Bus_Schedule extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Bus_Schedule',
       createEmptyInstance: create)
-    ..aOB(1, _omitFieldNames ? '' : 'type')
+    ..aOB(1, _omitFieldNames ? '' : 'isTimetable')
     ..aOS(2, _omitFieldNames ? '' : 'tripid')
     ..aOB(3, _omitFieldNames ? '' : 'islowfloor')
     ..aOS(4, _omitFieldNames ? '' : 'startTime', protoName: 'start_Time')
@@ -1917,13 +1991,13 @@ class Bus_Schedule extends $pb.GeneratedMessage {
   static Bus_Schedule? _defaultInstance;
 
   @$pb.TagNumber(1)
-  $core.bool get type => $_getBF(0);
+  $core.bool get isTimetable => $_getBF(0);
   @$pb.TagNumber(1)
-  set type($core.bool value) => $_setBool(0, value);
+  set isTimetable($core.bool value) => $_setBool(0, value);
   @$pb.TagNumber(1)
-  $core.bool hasType() => $_has(0);
+  $core.bool hasIsTimetable() => $_has(0);
   @$pb.TagNumber(1)
-  void clearType() => $_clearField(1);
+  void clearIsTimetable() => $_clearField(1);
 
   @$pb.TagNumber(2)
   $core.String get tripid => $_getSZ(1);
@@ -1992,7 +2066,8 @@ class Bus_Schedule extends $pb.GeneratedMessage {
 class Bus_DailyTimetables extends $pb.GeneratedMessage {
   factory Bus_DailyTimetables({
     $core.String? subRouteUID,
-    $core.Iterable<$core.MapEntry<$core.int, temp>>? direction,
+    $core.Iterable<$core.MapEntry<$core.int, Bus_DirectionTimetable>>?
+        direction,
   }) {
     final result = create();
     if (subRouteUID != null) result.subRouteUID = subRouteUID;
@@ -2013,12 +2088,13 @@ class Bus_DailyTimetables extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'Bus_DailyTimetables',
       createEmptyInstance: create)
     ..aOS(1, _omitFieldNames ? '' : 'SubRouteUID', protoName: 'SubRouteUID')
-    ..m<$core.int, temp>(3, _omitFieldNames ? '' : 'direction',
+    ..m<$core.int, Bus_DirectionTimetable>(
+        3, _omitFieldNames ? '' : 'direction',
         entryClassName: 'Bus_DailyTimetables.DirectionEntry',
         keyFieldType: $pb.PbFieldType.O3,
         valueFieldType: $pb.PbFieldType.OM,
-        valueCreator: temp.create,
-        valueDefaultOrMaker: temp.getDefault)
+        valueCreator: Bus_DirectionTimetable.create,
+        valueDefaultOrMaker: Bus_DirectionTimetable.getDefault)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2050,11 +2126,11 @@ class Bus_DailyTimetables extends $pb.GeneratedMessage {
   void clearSubRouteUID() => $_clearField(1);
 
   @$pb.TagNumber(3)
-  $pb.PbMap<$core.int, temp> get direction => $_getMap(1);
+  $pb.PbMap<$core.int, Bus_DirectionTimetable> get direction => $_getMap(1);
 }
 
-class temp extends $pb.GeneratedMessage {
-  factory temp({
+class Bus_DirectionTimetable extends $pb.GeneratedMessage {
+  factory Bus_DirectionTimetable({
     $core.Iterable<Bus_DailyTimetable>? dailyTimetables,
   }) {
     final result = create();
@@ -2062,39 +2138,41 @@ class temp extends $pb.GeneratedMessage {
     return result;
   }
 
-  temp._();
+  Bus_DirectionTimetable._();
 
-  factory temp.fromBuffer($core.List<$core.int> data,
+  factory Bus_DirectionTimetable.fromBuffer($core.List<$core.int> data,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromBuffer(data, registry);
-  factory temp.fromJson($core.String json,
+  factory Bus_DirectionTimetable.fromJson($core.String json,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromJson(json, registry);
 
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
-      _omitMessageNames ? '' : 'temp',
+      _omitMessageNames ? '' : 'Bus_DirectionTimetable',
       createEmptyInstance: create)
     ..pPM<Bus_DailyTimetable>(1, _omitFieldNames ? '' : 'DailyTimetables',
         protoName: 'DailyTimetables', subBuilder: Bus_DailyTimetable.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
-  temp clone() => deepCopy();
+  Bus_DirectionTimetable clone() => deepCopy();
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
-  temp copyWith(void Function(temp) updates) =>
-      super.copyWith((message) => updates(message as temp)) as temp;
+  Bus_DirectionTimetable copyWith(
+          void Function(Bus_DirectionTimetable) updates) =>
+      super.copyWith((message) => updates(message as Bus_DirectionTimetable))
+          as Bus_DirectionTimetable;
 
   @$core.override
   $pb.BuilderInfo get info_ => _i;
 
   @$core.pragma('dart2js:noInline')
-  static temp create() => temp._();
+  static Bus_DirectionTimetable create() => Bus_DirectionTimetable._();
   @$core.override
-  temp createEmptyInstance() => create();
+  Bus_DirectionTimetable createEmptyInstance() => create();
   @$core.pragma('dart2js:noInline')
-  static temp getDefault() =>
-      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<temp>(create);
-  static temp? _defaultInstance;
+  static Bus_DirectionTimetable getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<Bus_DirectionTimetable>(create);
+  static Bus_DirectionTimetable? _defaultInstance;
 
   @$pb.TagNumber(1)
   $pb.PbList<Bus_DailyTimetable> get dailyTimetables => $_getList(0);
@@ -2104,7 +2182,7 @@ class Bus_DailyTimetable extends $pb.GeneratedMessage {
   factory Bus_DailyTimetable({
     $core.String? tripID,
     $core.bool? isLowFloor,
-    $core.Iterable<temp_StopTimes>? stopTimes,
+    $core.Iterable<Bus_StopTime>? stopTimes,
   }) {
     final result = create();
     if (tripID != null) result.tripID = tripID;
@@ -2127,8 +2205,8 @@ class Bus_DailyTimetable extends $pb.GeneratedMessage {
       createEmptyInstance: create)
     ..aOS(1, _omitFieldNames ? '' : 'TripID', protoName: 'TripID')
     ..aOB(2, _omitFieldNames ? '' : 'IsLowFloor', protoName: 'IsLowFloor')
-    ..pPM<temp_StopTimes>(3, _omitFieldNames ? '' : 'StopTimes',
-        protoName: 'StopTimes', subBuilder: temp_StopTimes.create)
+    ..pPM<Bus_StopTime>(3, _omitFieldNames ? '' : 'StopTimes',
+        protoName: 'StopTimes', subBuilder: Bus_StopTime.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -2169,11 +2247,11 @@ class Bus_DailyTimetable extends $pb.GeneratedMessage {
   void clearIsLowFloor() => $_clearField(2);
 
   @$pb.TagNumber(3)
-  $pb.PbList<temp_StopTimes> get stopTimes => $_getList(2);
+  $pb.PbList<Bus_StopTime> get stopTimes => $_getList(2);
 }
 
-class temp_StopTimes extends $pb.GeneratedMessage {
-  factory temp_StopTimes({
+class Bus_StopTime extends $pb.GeneratedMessage {
+  factory Bus_StopTime({
     $core.int? stopSequence,
     $core.String? arrivalTime,
     $core.String? departureTime,
@@ -2187,17 +2265,17 @@ class temp_StopTimes extends $pb.GeneratedMessage {
     return result;
   }
 
-  temp_StopTimes._();
+  Bus_StopTime._();
 
-  factory temp_StopTimes.fromBuffer($core.List<$core.int> data,
+  factory Bus_StopTime.fromBuffer($core.List<$core.int> data,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromBuffer(data, registry);
-  factory temp_StopTimes.fromJson($core.String json,
+  factory Bus_StopTime.fromJson($core.String json,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromJson(json, registry);
 
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
-      _omitMessageNames ? '' : 'temp_StopTimes',
+      _omitMessageNames ? '' : 'Bus_StopTime',
       createEmptyInstance: create)
     ..aI(1, _omitFieldNames ? '' : 'StopSequence', protoName: 'StopSequence')
     ..aOS(2, _omitFieldNames ? '' : 'ArrivalTime', protoName: 'ArrivalTime')
@@ -2206,23 +2284,23 @@ class temp_StopTimes extends $pb.GeneratedMessage {
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
-  temp_StopTimes clone() => deepCopy();
+  Bus_StopTime clone() => deepCopy();
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
-  temp_StopTimes copyWith(void Function(temp_StopTimes) updates) =>
-      super.copyWith((message) => updates(message as temp_StopTimes))
-          as temp_StopTimes;
+  Bus_StopTime copyWith(void Function(Bus_StopTime) updates) =>
+      super.copyWith((message) => updates(message as Bus_StopTime))
+          as Bus_StopTime;
 
   @$core.override
   $pb.BuilderInfo get info_ => _i;
 
   @$core.pragma('dart2js:noInline')
-  static temp_StopTimes create() => temp_StopTimes._();
+  static Bus_StopTime create() => Bus_StopTime._();
   @$core.override
-  temp_StopTimes createEmptyInstance() => create();
+  Bus_StopTime createEmptyInstance() => create();
   @$core.pragma('dart2js:noInline')
-  static temp_StopTimes getDefault() => _defaultInstance ??=
-      $pb.GeneratedMessage.$_defaultFor<temp_StopTimes>(create);
-  static temp_StopTimes? _defaultInstance;
+  static Bus_StopTime getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<Bus_StopTime>(create);
+  static Bus_StopTime? _defaultInstance;
 
   @$pb.TagNumber(1)
   $core.int get stopSequence => $_getIZ(0);
@@ -2263,7 +2341,6 @@ class temp_StopTimes extends $pb.GeneratedMessage {
 
 class Bus_Fare extends $pb.GeneratedMessage {
   factory Bus_Fare({
-    $core.String? subRouteUid,
     $core.int? farePricingType,
     $core.bool? isFreeBus,
     $core.List<$core.int>? sectionFaresJson,
@@ -2271,7 +2348,6 @@ class Bus_Fare extends $pb.GeneratedMessage {
     $core.List<$core.int>? odFaresJson,
   }) {
     final result = create();
-    if (subRouteUid != null) result.subRouteUid = subRouteUid;
     if (farePricingType != null) result.farePricingType = farePricingType;
     if (isFreeBus != null) result.isFreeBus = isFreeBus;
     if (sectionFaresJson != null) result.sectionFaresJson = sectionFaresJson;
@@ -2292,7 +2368,6 @@ class Bus_Fare extends $pb.GeneratedMessage {
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
       _omitMessageNames ? '' : 'Bus_Fare',
       createEmptyInstance: create)
-    ..aOS(1, _omitFieldNames ? '' : 'subRouteUid')
     ..aI(2, _omitFieldNames ? '' : 'farePricingType')
     ..aOB(3, _omitFieldNames ? '' : 'isFreeBus')
     ..a<$core.List<$core.int>>(
@@ -2321,57 +2396,48 @@ class Bus_Fare extends $pb.GeneratedMessage {
       _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<Bus_Fare>(create);
   static Bus_Fare? _defaultInstance;
 
-  @$pb.TagNumber(1)
-  $core.String get subRouteUid => $_getSZ(0);
-  @$pb.TagNumber(1)
-  set subRouteUid($core.String value) => $_setString(0, value);
-  @$pb.TagNumber(1)
-  $core.bool hasSubRouteUid() => $_has(0);
-  @$pb.TagNumber(1)
-  void clearSubRouteUid() => $_clearField(1);
-
   @$pb.TagNumber(2)
-  $core.int get farePricingType => $_getIZ(1);
+  $core.int get farePricingType => $_getIZ(0);
   @$pb.TagNumber(2)
-  set farePricingType($core.int value) => $_setSignedInt32(1, value);
+  set farePricingType($core.int value) => $_setSignedInt32(0, value);
   @$pb.TagNumber(2)
-  $core.bool hasFarePricingType() => $_has(1);
+  $core.bool hasFarePricingType() => $_has(0);
   @$pb.TagNumber(2)
   void clearFarePricingType() => $_clearField(2);
 
   @$pb.TagNumber(3)
-  $core.bool get isFreeBus => $_getBF(2);
+  $core.bool get isFreeBus => $_getBF(1);
   @$pb.TagNumber(3)
-  set isFreeBus($core.bool value) => $_setBool(2, value);
+  set isFreeBus($core.bool value) => $_setBool(1, value);
   @$pb.TagNumber(3)
-  $core.bool hasIsFreeBus() => $_has(2);
+  $core.bool hasIsFreeBus() => $_has(1);
   @$pb.TagNumber(3)
   void clearIsFreeBus() => $_clearField(3);
 
   @$pb.TagNumber(4)
-  $core.List<$core.int> get sectionFaresJson => $_getN(3);
+  $core.List<$core.int> get sectionFaresJson => $_getN(2);
   @$pb.TagNumber(4)
-  set sectionFaresJson($core.List<$core.int> value) => $_setBytes(3, value);
+  set sectionFaresJson($core.List<$core.int> value) => $_setBytes(2, value);
   @$pb.TagNumber(4)
-  $core.bool hasSectionFaresJson() => $_has(3);
+  $core.bool hasSectionFaresJson() => $_has(2);
   @$pb.TagNumber(4)
   void clearSectionFaresJson() => $_clearField(4);
 
   @$pb.TagNumber(5)
-  $core.List<$core.int> get stageFaresJson => $_getN(4);
+  $core.List<$core.int> get stageFaresJson => $_getN(3);
   @$pb.TagNumber(5)
-  set stageFaresJson($core.List<$core.int> value) => $_setBytes(4, value);
+  set stageFaresJson($core.List<$core.int> value) => $_setBytes(3, value);
   @$pb.TagNumber(5)
-  $core.bool hasStageFaresJson() => $_has(4);
+  $core.bool hasStageFaresJson() => $_has(3);
   @$pb.TagNumber(5)
   void clearStageFaresJson() => $_clearField(5);
 
   @$pb.TagNumber(6)
-  $core.List<$core.int> get odFaresJson => $_getN(5);
+  $core.List<$core.int> get odFaresJson => $_getN(4);
   @$pb.TagNumber(6)
-  set odFaresJson($core.List<$core.int> value) => $_setBytes(5, value);
+  set odFaresJson($core.List<$core.int> value) => $_setBytes(4, value);
   @$pb.TagNumber(6)
-  $core.bool hasOdFaresJson() => $_has(5);
+  $core.bool hasOdFaresJson() => $_has(4);
   @$pb.TagNumber(6)
   void clearOdFaresJson() => $_clearField(6);
 }

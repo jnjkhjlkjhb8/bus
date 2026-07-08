@@ -22,7 +22,15 @@ class BusRouteState extends Equatable {
   final BusFareInfo? fare;
   final Set<int> bufferSequences;
   final int direction;
-  final Set<String> reminders;
+
+  /// Active arrival reminders on this route: stopUid -> server reminderId.
+  ///
+  // Mirrored locally (RemindersRepository) so the bell survives navigation and
+  // restart.
+  // Reminders stay one-shot: the backend marks one fired after sending the
+  // push but never tells the app (no listReminders RPC), so a fired reminder
+  // can still read as active until its local TTL lapses.
+  final Map<String, String> reminders;
   final bool loading;
   final AppError? error;
 
@@ -40,7 +48,7 @@ class BusRouteState extends Equatable {
     BusFareInfo? fare,
     Set<int>? bufferSequences,
     int? direction,
-    Set<String>? reminders,
+    Map<String, String>? reminders,
     bool? loading,
     AppError? error,
     bool clearError = false,

@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 
@@ -18,17 +16,20 @@ class FilterChipGroup<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final entry in options.entries)
-          _Chip(
-            label: entry.value,
-            selected: selected.contains(entry.key),
-            onTap: () => onToggle(entry.key),
-          ),
-      ],
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        spacing: 8,
+        children: [
+          for (final entry in options.entries)
+            _Chip(
+              label: entry.value,
+              selected: selected.contains(entry.key),
+              onTap: () => onToggle(entry.key),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -54,21 +55,19 @@ class _Chip extends StatelessWidget {
       child: AnimatedContainer(
         duration: reduceMotion ? Duration.zero : AppMotion.short,
         curve: AppMotion.easeOut,
-        constraints: const BoxConstraints(minHeight: 36),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        height: 30,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: selected ? cs.primaryContainer : cs.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(AppTheme.radiusStadium),
-          border: Border.all(
-            color: selected ? cs.primaryContainer : cs.outlineVariant,
-          ),
+          color: selected ? cs.primary : cs.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
         ),
         child: Text(
           label,
-          style: AppTextStyles.bodySmall.copyWith(
-            fontWeight: FontWeight.w600,
-            color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+            color: selected ? cs.onPrimary : cs.onSurface,
           ),
         ),
       ),

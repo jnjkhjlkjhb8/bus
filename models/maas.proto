@@ -15,6 +15,13 @@ message MaasPlanRequest {
   bool   arriveBy         = 7;
   double gc               = 8;
   repeated int32 transitModes = 9;
+  int32  top              = 10;  // route count, 1..10 (default 5)
+  int32  transferTimeMin  = 11;  // preferred transfer window min, minutes
+  int32  transferTimeMax  = 12;  // preferred transfer window max, minutes
+  int32  firstMileMode    = 13;  // 0 walk,1 bike,2 car,3 shared-bike
+  int32  firstMileTime    = 14;  // first-mile max minutes (default 10)
+  int32  lastMileMode     = 15;  // 0 walk,1 bike,2 car,3 shared-bike
+  int32  lastMileTime     = 16;  // last-mile max minutes (default 10)
 }
 
 message MaasPlanResponse {
@@ -27,6 +34,9 @@ message Route {
   string          endTime       = 3;
   int32           transfers     = 4;
   repeated Section sections    = 5;
+  // Sum of every resolved section fare (NT$). 0 when no section fare was
+  // found; a partial sum when only some sections resolved.
+  int32           totalFare     = 6;
 }
 
 message Section {
@@ -38,6 +48,9 @@ message Section {
   repeated IntermediateStop intermediateStops = 6;
   Agency agency = 7;
   NotificationIdentity notification_identity = 8;
+  // Adult full fare for this section (NT$). Unset (0) when no fare could be
+  // resolved; a missing fare never fails the plan.
+  int32 fare = 9;
 }
 
 message NotificationIdentity {

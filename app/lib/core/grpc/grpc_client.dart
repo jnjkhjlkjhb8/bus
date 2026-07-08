@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:grpc/grpc.dart';
 import 'package:wheres_the_car/core/grpc/grpc_error_interceptor.dart';
 import 'package:wheres_the_car/data/generated/alert.pbgrpc.dart';
@@ -19,13 +22,23 @@ class GrpcClient {
   );
   static const _port = int.fromEnvironment('GRPC_PORT', defaultValue: 50051);
   static const _tls = bool.fromEnvironment('GRPC_TLS');
+  static Uint8List? _caBytes;
+
+  /// Loads the pinned self-signed CA before the channel is first built.
+  /// Must be awaited during startup when [_tls] is true. The cert must carry
+  /// the target IP in its SAN, or the TLS handshake fails on hostname check.
+  static Future<void> init() async {
+    if (!_tls) return;
+    _caBytes = (await rootBundle.load('assets/grpc.crt')).buffer.asUint8List();
+  }
+
   late final ClientChannel _channel = ClientChannel(
     _host,
     port: _port,
-    options: const ChannelOptions(
+    options: ChannelOptions(
       credentials: _tls
-          ? ChannelCredentials.secure()
-          : ChannelCredentials.insecure(),
+          ? ChannelCredentials.secure(certificates: _caBytes)
+          : const ChannelCredentials.insecure(),
     ),
   );
 

@@ -28,6 +28,15 @@ class SearchRecentRepository {
     await HiveStore.settings.put(_key, next);
   }
 
+  Future<void> remove(SearchResult result) async {
+    if (!HiveStore.settingsReady) return;
+    final next = all()
+        .where((r) => r.type != result.type || r.uid != result.uid)
+        .map(_toMap)
+        .toList();
+    await HiveStore.settings.put(_key, next);
+  }
+
   Future<void> clear() async {
     if (!HiveStore.settingsReady) return;
     await HiveStore.settings.delete(_key);

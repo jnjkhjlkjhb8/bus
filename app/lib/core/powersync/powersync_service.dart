@@ -4,6 +4,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:powersync/powersync.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/http/http_client.dart';
+import 'package:wheres_the_car/core/powersync/local_db.dart';
 
 const String _envPowersyncUrl = String.fromEnvironment(
   'POWERSYNC_URL',
@@ -40,8 +41,8 @@ const _schema = Schema([
     Column.text('from_station_id'),
     Column.text('to_station_id'),
     Column.text('system'),
-    Column.integer('travel_time_min'),
     Column.integer('fare_nt'),
+    Column.integer('travel_time_min'),
   ]),
   Table('mrt_schedule', [
     Column.text('station_id'),
@@ -53,7 +54,7 @@ const _schema = Schema([
   ]),
 ]);
 
-class PowerSyncService {
+class PowerSyncService implements LocalDb {
   PowerSyncService._();
   static final PowerSyncService instance = PowerSyncService._();
   late final PowerSyncDatabase _db;
@@ -98,6 +99,16 @@ class PowerSyncService {
   PowerSyncDatabase get db {
     assert(_initialized, 'PowerSyncService.init() must be called before db');
     return _db;
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> getAll(
+    String sql, [
+    List<Object?> parameters = const [],
+  ]) async {
+    final result = await db.getAll(sql, parameters);
+    // Detach rows from the sqlite ResultSet so callers hold plain maps.
+    return [for (final row in result) Map<String, dynamic>.of(row)];
   }
 
   Future<void> close() async {

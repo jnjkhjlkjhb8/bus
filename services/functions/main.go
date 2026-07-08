@@ -8,12 +8,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,8 +20,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -47,9 +43,15 @@ func main() {
 	log.Infof("[BOOT] action=start role=%q", role)
 
 	r := cron.New(cron.WithSeconds())
-	c := resty.New()
 	rc := shared.ConnectRedis()
-	db := shared.ConnectDB("FUNCTIONS_DB_MAX_CONNS", 10)
+	// The ingestor is a nightly batch (≤3-way concurrency); give it its own small
+	// pool so its 03:00 burst can never eat more than a handful of the shared
+	// 50-slot Azure server's connections, independent of the realtime functions pool.
+	maxConnsEnv, maxConnsDefault := "FUNCTIONS_DB_MAX_CONNS", int32(10)
+	if role == "ingestor" {
+		maxConnsEnv, maxConnsDefault = "INGEST_DB_MAX_CONNS", 10
+	}
+	db := shared.ConnectDB(maxConnsEnv, maxConnsDefault)
 	ingestDB = db
 	defer func(rc *redis.Client) {
 		if cerr := rc.Close(); cerr != nil {
@@ -57,16 +59,20 @@ func main() {
 		}
 	}(rc)
 	defer db.Close()
-	configureTDXClient(c, rc)
+	tdx := shared.NewTDXClient(shared.TDXConfig{
+		Store:         shared.RedisTDXStore{RC: rc},
+		IMSKey:        imsCacheKey,
+		SinceFallback: sinceFallback,
+	})
 
 	switch mode {
 	case modeIngestor:
-		registerIngestorCrons(r, c, rc)
+		registerIngestorCrons(r, tdx)
 		r.Start()
 		defer r.Stop()
 		waitForShutdown()
 	case modeLegacyProd:
-		runLegacyProd(r, c, rc, db)
+		runLegacyProd(r, tdx, rc, db)
 	}
 }
 
@@ -129,17 +135,17 @@ func runDaily(name string, d time.Duration, job func(context.Context) error) {
 // runLegacyProd is the current prod path: Firebase, notification dispatcher, all
 // transform/realtime crons, and MQTT. Only ROLE="" reaches here — the ingestor
 // never initializes any of it.
-func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
+func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
 	sender, err := newFirebaseSender(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
 	dispatcher := newNotificationDispatcher(notificationStore{db: db}, sender)
-	busDailyroute(c, rc)
+	busDailyroute(tdx, rc)
 	loadHolidays()
 	loadModel()
-	// The four legacy direct-fetch static jobs (busStatic/bikeStatic/mrtStatic/
-	// railStatic) no longer run here: the ingestor lands raw_tdx at 03:00 and the
+	// The legacy direct-fetch static jobs (bikeStatic/mrtStatic/railStatic; the
+	// bus one is deleted) no longer run here: the ingestor lands raw_tdx at 03:00 and the
 	// 03:30 loader cron (registerLoaderCrons) transforms it into this env's schema.
 	// changetovector reads the tables the loader fills, so it moves to 03:45 to run
 	// after the 03:30 load rather than racing the retired 03:00 static writes.
@@ -150,32 +156,19 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 		})
 	})
 	registerLoaderCrons(r, db, rc)
-	_, _ = r.AddFunc("@every 2m", func() {
-		log.Infoln("[crontab] action=tra event=start")
-		traEta(c, rc)
-		log.Infoln("[crontab] action=tra event=end")
-	})
-	_, _ = r.AddFunc("@every 30s", func() {
-		log.Infoln("[crontab] action=bus&bike event=start")
-		bikeEta(c, rc)
-		withTimeout(25*time.Second, func(ctx context.Context) {
-			busEta(ctx, c, rc, db, dispatcher)
-		})
-		log.Infoln("[crontab] action=bus&bike event=end")
-	})
-	_, _ = r.AddFunc("@every 10s", func() {
-		log.Infoln("[crontab] action=mrt event=start")
-		mrtEta(c, rc)
-		log.Infoln("[crontab] action=mrt event=end")
-	})
+	registerLiveCrons(r, tdx, rc, db, dispatcher)
 	_, _ = r.AddFunc("@every 10m", func() {
 		weatherSync(rc)
 	})
 	_, _ = r.AddFunc("0 0 4 * * *", func() {
 		runDaily("computeTravelAvg", 15*time.Minute, func(ctx context.Context) error { return computeTravelAvg(ctx, db) })
 	})
+	_, _ = r.AddFunc("0 15 4 * * *", func() {
+		runDaily("measurePredictionError", 10*time.Minute, func(ctx context.Context) error { return measurePredictionError(ctx, db) })
+	})
 	_, _ = r.AddFunc("0 30 4 * * *", func() {
 		runDaily("cleanupBusHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBusHistory(ctx, db) })
+		runDaily("cleanupBikeHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBikeHistory(ctx, db) })
 	})
 	r.Start()
 	defer r.Stop()
@@ -184,38 +177,6 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 		defer mqttClient.Disconnect(500)
 	}
 	waitForShutdown()
-}
-
-// configureTDXClient sets the shared resty client up for the TDX basic API:
-// base URL, Brotli/gzip decoding left to the caller (responses are not parsed),
-// retries on transport errors and HTTP 429, and a per-request bearer token from
-// Redis. On 401 it deletes the cached token keys so the retry re-fetches a fresh
-// token. TDX API docs: https://tdx.transportdata.tw/
-func configureTDXClient(c *resty.Client, rc *redis.Client) {
-	c.SetBaseURL("https://tdx.transportdata.tw/api/basic").
-		SetHeader("Content-Type", "application/json").
-		SetHeader("Content-Encoding", "br,gzip").
-		SetDoNotParseResponse(true).
-		SetTimeout(30 * time.Second).
-		SetRetryCount(5).
-		SetRetryWaitTime(1 * time.Second).
-		SetRetryMaxWaitTime(5 * time.Second).
-		AddRetryCondition(
-			func(r *resty.Response, err error) bool {
-				if err != nil {
-					return true
-				}
-				if r.StatusCode() == 401 {
-					rc.Del(tdxTokenKey, tdxTokenKeyLegacy)
-					return true
-				}
-				return r.StatusCode() == 429
-			},
-		).
-		OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
-			req.SetAuthToken(getToken(rc))
-			return nil
-		})
 }
 
 // waitForShutdown blocks until SIGINT or SIGTERM, letting deferred cleanup
@@ -236,21 +197,14 @@ var ingestDB *pgxpool.Pool
 // prod transform path never writes raw_tdx.
 var rawDumpEnabled bool
 
-// Redis is one DB namespaced by key prefix. TDX/raw cache keys live under
-// shared:*. Legacy bare keys are read as fallback; new writes are namespaced.
-const (
-	tdxTokenKey       = "shared:tdx:access_token"
-	tdxTokenKeyLegacy = "TDX_Token"
-)
-
 // imsCacheKey is the If-Modified-Since cache key for a fetch target. The ingestor
 // writes namespaced shared:raw:* keys; the default prod path keeps its legacy key
-// so prod behavior is unchanged.
+// so prod behavior is unchanged. Both key forms live in shared/keys.go.
 func imsCacheKey(name string) string {
 	if rawDumpEnabled {
-		return "shared:raw:last_modified:" + name
+		return shared.TDXRawIMSKey(name)
 	}
-	return "LastTimeGet_" + name
+	return shared.TDXLegacyIMSKey(name)
 }
 
 // dbSince derives an If-Modified-Since value from the latest updated_at of the
@@ -309,63 +263,15 @@ func dbSince(name string) string {
 // raw_tdx would strand the landing table permanently empty.
 func dbSinceFallbackAllowed() bool { return !rawDumpEnabled }
 
-// callApi fetches a TDX endpoint using an If-Modified-Since guard and returns a
-// streaming JSON decoder over the response body. The bool reports whether new
-// data is present: false means a 304 Not-Modified or nothing to process. The
-// returned func closes the response body and must be called (it is nil when
-// there is nothing to close). In ingestor mode the body is buffered and landed
-// into raw_tdx before the Last-Modified cache advances, so a failed dump refetches
-// next run instead of being masked by a later 304; in legacy prod mode the body
-// is streamed and the cache is written immediately.
-func callApi(client *resty.Client, rc *redis.Client, url string, name string) (*json.Decoder, bool, error, func()) {
-	since, _ := rc.Get(imsCacheKey(name)).Result()
-	if since == "" && dbSinceFallbackAllowed() {
-		since = dbSince(name)
+// sinceFallback is the shared TDX client's cold-cache If-Modified-Since source:
+// in the legacy prod path it derives the value from the backing table's
+// updated_at (dbSince); in ingestor mode it returns "" so an empty raw_tdx is
+// never masked by a table-derived 304.
+func sinceFallback(name string) string {
+	if dbSinceFallbackAllowed() {
+		return dbSince(name)
 	}
-	resp, err := client.R().
-		SetHeader("If-Modified-Since", since).
-		Get(url)
-	if err != nil {
-		return &json.Decoder{}, false, err, nil
-	}
-	if resp.StatusCode() == 304 {
-		err := resp.RawResponse.Body.Close()
-		if err != nil {
-			return &json.Decoder{}, false, err, nil
-		}
-		log.Infof("[RUN] action=no update=%s", name)
-		return &json.Decoder{}, false, nil, nil
-	}
-	if resp.StatusCode() >= 400 {
-		_ = resp.RawResponse.Body.Close()
-		return &json.Decoder{}, false, fmt.Errorf("tdx %s: status %d", name, resp.StatusCode()), nil
-	}
-	lastMod := resp.Header().Get("Last-Modified")
-
-	if !rawDumpEnabled {
-		// legacy prod: unchanged — cache IMS immediately, stream the body.
-		rc.Set(imsCacheKey(name), lastMod, 0)
-		return json.NewDecoder(resp.RawResponse.Body), true, nil, func() {
-			if cerr := resp.RawResponse.Body.Close(); cerr != nil {
-				log.Infof("[RUN] action=fail-close-response error=%v", cerr)
-			}
-		}
-	}
-
-	// ingestor: land raw_tdx first; only cache IMS after the dump succeeds so a
-	// failed dump refetches next run instead of being masked by a 304.
-	body, err := io.ReadAll(resp.RawResponse.Body)
-	_ = resp.RawResponse.Body.Close()
-	if err != nil {
-		return &json.Decoder{}, false, err, nil
-	}
-	if table, partCol, partVal, ok := rawDumpTarget(url); ok {
-		if derr := dumpRawTDX(context.Background(), table, partCol, partVal, body); derr != nil {
-			return &json.Decoder{}, false, fmt.Errorf("%w: %s: %v", errRawDump, name, derr), func() {}
-		}
-	}
-	rc.Set(imsCacheKey(name), lastMod, 0)
-	return json.NewDecoder(bytes.NewReader(body)), true, nil, func() {}
+	return ""
 }
 
 // rawDumpTarget maps a TDX static endpoint path to its raw_tdx landing table and
@@ -477,15 +383,17 @@ func rawDeleteSQL(table, partCol string) string {
 
 // rawInsertSQL lowercases each object's top-level keys (PascalCase TDX → lowercase
 // columns), preserves nested objects/arrays as jsonb, injects context columns, and
-// coerces types by column name. COALESCE(...,'[]') makes an empty TDX array a
-// clean 0-row insert instead of a NULL-populate error.
+// coerces types by column name. It streams the array element-by-element through a
+// LATERAL jsonb_populate_record rather than materialising one giant lowercased
+// jsonb_agg array and re-parsing it in a single jsonb_populate_recordset — that
+// intermediate is O(payload) memory and was the long pole on the largest table
+// (tra_odfare, ~every station pair): the single-statement build overran the landing
+// deadline. An empty TDX array yields zero elements → a clean 0-row insert.
 func rawInsertSQL(table string) string {
 	return fmt.Sprintf(`INSERT INTO raw_tdx.%s
-SELECT * FROM jsonb_populate_recordset(NULL::raw_tdx.%s,
-  COALESCE(
-    (SELECT jsonb_agg((SELECT jsonb_object_agg(lower(e.k), e.v) FROM jsonb_each(elem) AS e(k,v)) || $1::jsonb)
-     FROM jsonb_array_elements($2::jsonb) elem),
-    '[]'::jsonb))`, table, table)
+SELECT r.* FROM jsonb_array_elements($2::jsonb) elem,
+  LATERAL jsonb_populate_record(NULL::raw_tdx.%s,
+    (SELECT jsonb_object_agg(lower(e.k), e.v) FROM jsonb_each(elem) AS e(k,v)) || $1::jsonb) r`, table, table)
 }
 
 // dumpRawTDX lands a raw TDX JSON array into raw_tdx.<table>. Partitioned tables
@@ -503,11 +411,38 @@ func dumpRawTDX(ctx context.Context, table, partCol, partVal string, body []byte
 	if len(body) == 0 {
 		body = []byte("[]")
 	}
+	return obs.Retry(ctx, 3, 2*time.Second, func() error {
+		return obs.Transient(landRawTDX(ctx, table, partCol, partVal, body))
+	})
+}
+
+// landRawTDX runs one raw_tdx landing transaction, bounded by its own timeout so
+// a dead Azure peer cannot block the pgx socket read indefinitely (there is no
+// server statement_timeout, and TCP keepalive is too slow to notice). On timeout
+// pgx cancels the query; dumpRawTDX retries, and if all attempts fail the caller
+// leaves the IMS cache un-advanced so this partition refetches next run.
+func landRawTDX(ctx context.Context, table, partCol, partVal string, body []byte) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
 	tx, err := ingestDB.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: begin: %v", errRawDump, err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	// Roll back on a context independent of ctx: if this attempt was cancelled by
+	// the deadline above, a Rollback(ctx) would be a no-op and the TRUNCATE/DELETE's
+	// lock would linger, blocking the next retry's TRUNCATE until its own deadline.
+	defer func() {
+		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rbCtx)
+	}()
+
+	// Bound lock waits so a held lock fails this attempt fast (retryable) instead of
+	// stalling TRUNCATE/DELETE for the full landing deadline.
+	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '20s'"); err != nil {
+		return fmt.Errorf("%w: set lock_timeout: %v", errRawDump, err)
+	}
 
 	inject := "{}"
 	if partCol != "" {
@@ -567,263 +502,6 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 		return nil, err
 	}
 	return list, nil
-}
-
-// makethatsame normalizes InterCity subroute UIDs so both travel directions map
-// to one canonical UID. InterCity TDX data encodes direction as a "01"/"02"
-// suffix on the SubRouteUID (and other UIDs carry a trailing digit); this strips
-// it and returns the derived direction. Non-InterCity cities are returned
-// unchanged. Keeping the two directions under one UID is what lets ETAs and
-// static rows join. The unusual name and string-slicing are legacy — do not rely
-// on the exact suffix format beyond what TDX emits.
-func makethatsame(city string, subRouteUID string, Direction uint8) (string, uint8) {
-	if city == "InterCity" {
-		temp := subRouteUID[len(subRouteUID)-2:]
-		if temp == "01" {
-			return subRouteUID[:len(subRouteUID)-2], 0
-		}
-		if temp == "02" {
-			return subRouteUID[:len(subRouteUID)-2], 1
-		}
-		return subRouteUID[:len(subRouteUID)-1], Direction
-	}
-	return subRouteUID, Direction
-}
-
-// getToken returns a TDX OAuth bearer token, preferring the cached value in
-// Redis (namespaced key, then legacy key). On a cache miss it does a
-// client_credentials exchange against the TDX auth server using TDX_CLIENT_ID /
-// TDX_CLIENT_SECRET and caches the token for 6 hours. Any failure is logged and
-// returns "" — the caller then sends an unauthenticated request that TDX rejects
-// with 401, which triggers a token refresh on retry. Token endpoint:
-// https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token
-func getToken(rc *redis.Client) string {
-	if val, err := rc.Get(tdxTokenKey).Result(); err == nil && val != "" {
-		return val
-	}
-	if val, err := rc.Get(tdxTokenKeyLegacy).Result(); err == nil && val != "" {
-		return val
-	}
-	authClient := resty.New()
-	resp, err := authClient.R().
-		SetHeader("content-type", "application/x-www-form-urlencoded").
-		SetFormData(map[string]string{
-			"grant_type":    "client_credentials",
-			"client_id":     os.Getenv("TDX_CLIENT_ID"),
-			"client_secret": os.Getenv("TDX_CLIENT_SECRET"),
-		}).
-		Post("https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token")
-	if err != nil {
-		log.Infof("[TDX] token fetch error: %v", err)
-		return ""
-	}
-	var mp map[string]interface{}
-	if err = json.Unmarshal(resp.Body(), &mp); err != nil {
-		log.Infof("[TDX] token parse error: %v", err)
-		return ""
-	}
-	token, ok := mp["access_token"].(string)
-	if !ok || token == "" {
-		log.Infof("[TDX] access_token missing from response")
-		return ""
-	}
-	if err = rc.Set(tdxTokenKey, token, 6*time.Hour).Err(); err != nil {
-		log.Infof("[TDX] token cache error: %v", err)
-	}
-	return token
-}
-
-// processStatic fetches one TDX static bus endpoint for a city, invokes processer
-// on each raw JSON element (for in-memory accumulation by the caller), and for the
-// route-shaped endpoints also COPYs a normalized row set into a temp table and
-// upserts it into raw_bus_route. force deletes the IMS cache first so the fetch is
-// unconditional. It returns true when data was fetched and processed, false on a
-// 304, an error, or a decode failure. api selects both the URL and the row layout.
-func processStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool, city string, api string, force bool, processer func([]byte)) bool {
-	var target string
-	if city == "InterCity" {
-		target = fmt.Sprintf("/v2/Bus/%s/InterCity", api)
-	} else {
-		target = fmt.Sprintf("/v2/Bus/%s/City/%s", api, city)
-	}
-	log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=api_call", city, api)
-	cacheKey := "bus_" + api + city
-	if force {
-		if err := rc.Del("LastTimeGet_" + cacheKey).Err(); err != nil {
-			log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=cache_delete_error error=%v", city, api, err)
-		}
-	}
-	dec, comp, err, flipopen := callApi(client, rc, target, cacheKey)
-	if err != nil {
-		log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=error error=%v", city, api, err)
-		return false
-	}
-	if !comp {
-		log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=skip reason=not_modified", city, api)
-		return false
-	}
-	defer flipopen()
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=decode_error error=%v", city, api, err)
-		return false
-	}
-	var rawRows [][]interface{}
-	for dec.More() {
-		var raw json.RawMessage
-		if err := dec.Decode(&raw); err != nil {
-			continue
-		}
-		processer(raw)
-		switch api {
-		case "Route":
-			var r rawBusRoute
-			err := json.Unmarshal(raw, &r)
-			if err != nil {
-				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=unmarshal_error error=%v", city, api, err)
-			}
-			for _, sub := range r.SubRoutes {
-				dep, dest := sub.DepartureStopNameZh, sub.DestinationStopNameZh
-				if dep == "" {
-					dep = r.DepartureStopNameZh
-				}
-				if dest == "" {
-					dest = r.DestinationStopNameZh
-				}
-				uid, dir := makethatsame(city, sub.SubRouteUID, sub.Direction)
-				rawRows = append(rawRows, []interface{}{
-					uid, dir, r.RouteUID, r.RouteName.Zhtw, sub.SubRouteName.Zhtw, dep, dest, api, raw,
-				})
-			}
-		case "StopOfRoute":
-			var s rawStopofroute
-			err := json.Unmarshal(raw, &s)
-			if err != nil {
-				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=unmarshal_error error=%v", city, api, err)
-			}
-			uid, dir := makethatsame(city, s.SubRouteUID, s.Direction)
-			rawRows = append(rawRows, []interface{}{
-				uid, dir, s.RouteUID, "", "", "", city, api, raw,
-			})
-		case "Shape":
-			var s rawBusShape
-			err := json.Unmarshal(raw, &s)
-			if err != nil {
-				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=unmarshal_error error=%v", city, api, err)
-			}
-			var uid string
-			var dir uint8
-			if s.SubRouteUID == "" {
-				uid, dir = makethatsame(city, s.RouteUID, s.Direction)
-			} else {
-				uid, dir = makethatsame(city, s.SubRouteUID, s.Direction)
-			}
-			rawRows = append(rawRows, []interface{}{
-				uid, dir, s.RouteUID, "", "", "", city, api, raw,
-			})
-		case "Schedule":
-			var t rawBusSchedule
-			err := json.Unmarshal(raw, &t)
-			if err != nil {
-				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=unmarshal_error error=%v", city, api, err)
-			}
-			uid, dir := makethatsame(city, t.SubRouteUID, t.Direction)
-			rawRows = append(rawRows, []interface{}{
-				uid, dir, t.RouteUID, "", "", "", city, api, raw,
-			})
-		case "Station":
-			var t rawBusStation
-			err := json.Unmarshal(raw, &t)
-			if err != nil {
-				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=unmarshal_error error=%v", city, api, err)
-			}
-			rawRows = append(rawRows, []interface{}{
-				t.StationUID, -1, t.StationID, t.StationName.Zhtw, "", city, "", api, raw,
-			})
-		case "StationGroup":
-			var t rawBusStationGroup
-			err := json.Unmarshal(raw, &t)
-			if err != nil {
-				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=unmarshal_error error=%v", city, api, err)
-			}
-			rawRows = append(rawRows, []interface{}{
-				t.StationGroupUID, -1, t.StationGroupID, t.StationGroupName.Zhtw, "", city, "", api, raw,
-			})
-		}
-	}
-	if len(rawRows) > 0 {
-		c1 := `CREATE TEMP TABLE temp_bus (
-							sub_route_uid  text  not null,
-							direction      smallint not null,
-							route_uid      text  not null,
-							route_name     text,
-							sub_route_name text,
-							depart         text,
-							destin         text,
-							type           text  not null,
-							content        jsonb not null
-				) ON COMMIT DROP;`
-		c2 := `INSERT INTO raw_bus_route (
-							sub_route_uid,
-							direction,
-							route_uid,
-							route_name,
-							sub_route_name,
-							depart,
-							destin,
-							type,
-							content,
-							created_at
-						)
-						SELECT DISTINCT ON (sub_route_uid,direction,type) sub_route_uid, direction, route_uid, route_name,sub_route_name, depart,destin,type,content,NOW() FROM temp_bus
-						ON CONFLICT (sub_route_uid,direction,type) DO UPDATE SET route_uid = EXCLUDED.route_uid,route_name = excluded.route_name,sub_route_name = EXCLUDED.sub_route_name,depart = excluded.depart,destin = excluded.destin,type = excluded.type,content = excluded.content,created_at = NOW();`
-		b, err := db.Begin(ctx)
-		if err != nil {
-			log.Infof("[BUS] action=process_static city=%s api=%s event=begin_error error=%v", city, api, err)
-			return false
-		}
-		defer func(b pgx.Tx, ctx context.Context) {
-			_ = b.Rollback(ctx)
-		}(b, ctx)
-		if _, err := b.Exec(ctx, c1); err != nil {
-			log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=create_temp_error error=%v", city, api, err)
-			return false
-		}
-		from, err := b.CopyFrom(ctx, pgx.Identifier{"temp_bus"}, []string{"sub_route_uid", "direction", "route_uid", "route_name", "sub_route_name", "depart", "destin", "type", "content"}, pgx.CopyFromRows(rawRows))
-		if err == nil {
-			if _, execErr := b.Exec(ctx, c2); execErr != nil {
-				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=exec_error error=%v", city, api, execErr)
-			}
-			if commitErr := b.Commit(ctx); commitErr != nil {
-				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=commit_error error=%v", city, api, commitErr)
-			} else {
-				log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=success station_count=%d", city, api, from)
-			}
-		} else {
-			log.Infof("[BUS_STATIC] action=process_static city=%s api=%s event=copyfrom_error error=%v", city, api, err)
-			_ = b.Rollback(ctx)
-		}
-	}
-	return true
-}
-
-// Completeness rule: "complete" = city has subroutes and none is missing stops.
-// Empty geometry/schedule isn't treated as incomplete (legitimately empty for
-// some routes); tighten the filter if those gaps ever need to trigger a refetch.
-const busCityCompleteSQL = `SELECT COUNT(*),
-	COUNT(*) FILTER (WHERE stops IS NULL OR cardinality(stops) = 0)
-	FROM bus_subroutes WHERE city = $1`
-
-// busCityComplete reports whether a city's stored subroutes are complete enough
-// to skip a forced full refetch (see busCityCompleteSQL for the exact rule). On a
-// query error it returns true — treating the city as complete — to avoid
-// hammering TDX with a forced refetch when the check itself is the thing failing.
-func busCityComplete(ctx context.Context, db *pgxpool.Pool, city string) bool {
-	var total, missing int
-	if err := db.QueryRow(ctx, busCityCompleteSQL, city).Scan(&total, &missing); err != nil {
-		log.Infof("[BUS_STATIC] action=city_complete city=%s event=query_error error=%v", city, err)
-		return true
-	}
-	return total > 0 && missing == 0
 }
 
 // clearBusStaticCache deletes the legacy IMS cache keys for every bus static

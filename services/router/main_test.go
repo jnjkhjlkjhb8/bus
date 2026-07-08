@@ -11,30 +11,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestMakeThatSame(t *testing.T) {
-	cases := []struct {
-		input, want string
-	}{
-		{"THB123401", "THB1234"},
-		{"THB123402", "THB1234"},
-		{"TPE1234", "TPE1234"},
-	}
-	for _, tc := range cases {
-		got := makethatsame(tc.input)
-		if got != tc.want {
-			t.Errorf("makethatsame(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-}
-
-func TestBusRouteEtaKeyUsesNormalizedRouteUID(t *testing.T) {
-	got := busRouteEtaKey("THB123401")
-	want := "bus_eta_route:THB1234"
-	if got != want {
-		t.Fatalf("busRouteEtaKey() = %q, want %q", got, want)
-	}
-}
-
 func TestUsableBusEtaPayloadRejectsEmptyPayload(t *testing.T) {
 	if usableBusEtaPayload(nil) {
 		t.Fatal("nil payload should not be sent")

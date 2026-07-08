@@ -1,6 +1,6 @@
 import 'package:equatable/equatable.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:wheres_the_car/data/generated/near.pb.dart';
+import 'package:wheres_the_car/data/models/near_models.dart';
 
 sealed class MapEvent extends Equatable {
   const MapEvent();
@@ -24,11 +24,11 @@ class MapFilterChanged extends MapEvent {
 }
 
 class MapNearUpdated extends MapEvent {
-  const MapNearUpdated(this.position, this.nearResp);
+  const MapNearUpdated(this.position, this.stations);
   final LatLng position;
-  final resp_near nearResp;
+  final List<NearStationViewModel> stations;
   @override
-  List<Object?> get props => [position, nearResp];
+  List<Object?> get props => [position, stations];
 }
 
 class MapLocateFailed extends MapEvent {

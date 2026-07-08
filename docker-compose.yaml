@@ -74,11 +74,11 @@ services:
     env_file: ${BUS_ENV_FILE:-./.env}
     environment:
       TZ: Asia/Taipei
-      GOMEMLIMIT: ${FUNCTIONS_GOMEMLIMIT:-315MiB}
+      GOMEMLIMIT: ${FUNCTIONS_GOMEMLIMIT:-896MiB}
       REDIS_ADDR: redis:6379
     volumes:
       - ./secrets:/run/secrets:ro
-    mem_limit: ${FUNCTIONS_MEM_LIMIT:-350m}
+    mem_limit: ${FUNCTIONS_MEM_LIMIT:-1g}
     depends_on:
       redis:
         condition: service_healthy
@@ -91,13 +91,12 @@ services:
     env_file: ${BUS_ENV_FILE:-./.env}
     environment:
       TZ: Asia/Taipei
-      GOMEMLIMIT: ${INGESTOR_GOMEMLIMIT:-230MiB}
+      GOMEMLIMIT: ${INGESTOR_GOMEMLIMIT:-460MiB}
       REDIS_ADDR: redis:6379
       ROLE: ingestor
-      INGEST_ON_BOOT: "${INGEST_ON_BOOT:-false}"
     volumes:
       - ./secrets:/run/secrets:ro
-    mem_limit: ${INGESTOR_MEM_LIMIT:-256m}
+    mem_limit: ${INGESTOR_MEM_LIMIT:-512m}
     depends_on:
       redis:
         condition: service_healthy

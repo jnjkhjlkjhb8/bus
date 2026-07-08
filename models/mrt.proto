@@ -3,8 +3,10 @@ option go_package = "github.com/jnjkhjlkjhb8/wheres_the_car/models";
 service Mrt_Service{
   rpc eta(Ask_mrt) returns (stream Resp_Mrt_eta) {}
 }
+// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
+// marshaled Mrt_live, now typed for the interface.
 message Resp_Mrt_eta{
-  bytes data = 1;
+  Mrt_live data = 1;
 }
 message Ask_mrt{
   string system = 1;

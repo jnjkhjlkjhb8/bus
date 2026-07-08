@@ -28,6 +28,13 @@ class MaasPlanRequest extends $pb.GeneratedMessage {
     $core.bool? arriveBy,
     $core.double? gc,
     $core.Iterable<$core.int>? transitModes,
+    $core.int? top,
+    $core.int? transferTimeMin,
+    $core.int? transferTimeMax,
+    $core.int? firstMileMode,
+    $core.int? firstMileTime,
+    $core.int? lastMileMode,
+    $core.int? lastMileTime,
   }) {
     final result = create();
     if (fromLat != null) result.fromLat = fromLat;
@@ -39,6 +46,13 @@ class MaasPlanRequest extends $pb.GeneratedMessage {
     if (arriveBy != null) result.arriveBy = arriveBy;
     if (gc != null) result.gc = gc;
     if (transitModes != null) result.transitModes.addAll(transitModes);
+    if (top != null) result.top = top;
+    if (transferTimeMin != null) result.transferTimeMin = transferTimeMin;
+    if (transferTimeMax != null) result.transferTimeMax = transferTimeMax;
+    if (firstMileMode != null) result.firstMileMode = firstMileMode;
+    if (firstMileTime != null) result.firstMileTime = firstMileTime;
+    if (lastMileMode != null) result.lastMileMode = lastMileMode;
+    if (lastMileTime != null) result.lastMileTime = lastMileTime;
     return result;
   }
 
@@ -64,6 +78,15 @@ class MaasPlanRequest extends $pb.GeneratedMessage {
     ..aD(8, _omitFieldNames ? '' : 'gc')
     ..p<$core.int>(9, _omitFieldNames ? '' : 'transitModes', $pb.PbFieldType.K3,
         protoName: 'transitModes')
+    ..aI(10, _omitFieldNames ? '' : 'top')
+    ..aI(11, _omitFieldNames ? '' : 'transferTimeMin',
+        protoName: 'transferTimeMin')
+    ..aI(12, _omitFieldNames ? '' : 'transferTimeMax',
+        protoName: 'transferTimeMax')
+    ..aI(13, _omitFieldNames ? '' : 'firstMileMode', protoName: 'firstMileMode')
+    ..aI(14, _omitFieldNames ? '' : 'firstMileTime', protoName: 'firstMileTime')
+    ..aI(15, _omitFieldNames ? '' : 'lastMileMode', protoName: 'lastMileMode')
+    ..aI(16, _omitFieldNames ? '' : 'lastMileTime', protoName: 'lastMileTime')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -159,6 +182,69 @@ class MaasPlanRequest extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(9)
   $pb.PbList<$core.int> get transitModes => $_getList(8);
+
+  @$pb.TagNumber(10)
+  $core.int get top => $_getIZ(9);
+  @$pb.TagNumber(10)
+  set top($core.int value) => $_setSignedInt32(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasTop() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearTop() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $core.int get transferTimeMin => $_getIZ(10);
+  @$pb.TagNumber(11)
+  set transferTimeMin($core.int value) => $_setSignedInt32(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasTransferTimeMin() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearTransferTimeMin() => $_clearField(11);
+
+  @$pb.TagNumber(12)
+  $core.int get transferTimeMax => $_getIZ(11);
+  @$pb.TagNumber(12)
+  set transferTimeMax($core.int value) => $_setSignedInt32(11, value);
+  @$pb.TagNumber(12)
+  $core.bool hasTransferTimeMax() => $_has(11);
+  @$pb.TagNumber(12)
+  void clearTransferTimeMax() => $_clearField(12);
+
+  @$pb.TagNumber(13)
+  $core.int get firstMileMode => $_getIZ(12);
+  @$pb.TagNumber(13)
+  set firstMileMode($core.int value) => $_setSignedInt32(12, value);
+  @$pb.TagNumber(13)
+  $core.bool hasFirstMileMode() => $_has(12);
+  @$pb.TagNumber(13)
+  void clearFirstMileMode() => $_clearField(13);
+
+  @$pb.TagNumber(14)
+  $core.int get firstMileTime => $_getIZ(13);
+  @$pb.TagNumber(14)
+  set firstMileTime($core.int value) => $_setSignedInt32(13, value);
+  @$pb.TagNumber(14)
+  $core.bool hasFirstMileTime() => $_has(13);
+  @$pb.TagNumber(14)
+  void clearFirstMileTime() => $_clearField(14);
+
+  @$pb.TagNumber(15)
+  $core.int get lastMileMode => $_getIZ(14);
+  @$pb.TagNumber(15)
+  set lastMileMode($core.int value) => $_setSignedInt32(14, value);
+  @$pb.TagNumber(15)
+  $core.bool hasLastMileMode() => $_has(14);
+  @$pb.TagNumber(15)
+  void clearLastMileMode() => $_clearField(15);
+
+  @$pb.TagNumber(16)
+  $core.int get lastMileTime => $_getIZ(15);
+  @$pb.TagNumber(16)
+  set lastMileTime($core.int value) => $_setSignedInt32(15, value);
+  @$pb.TagNumber(16)
+  $core.bool hasLastMileTime() => $_has(15);
+  @$pb.TagNumber(16)
+  void clearLastMileTime() => $_clearField(16);
 }
 
 class MaasPlanResponse extends $pb.GeneratedMessage {
@@ -215,6 +301,7 @@ class Route extends $pb.GeneratedMessage {
     $core.String? endTime,
     $core.int? transfers,
     $core.Iterable<Section>? sections,
+    $core.int? totalFare,
   }) {
     final result = create();
     if (travelTime != null) result.travelTime = travelTime;
@@ -222,6 +309,7 @@ class Route extends $pb.GeneratedMessage {
     if (endTime != null) result.endTime = endTime;
     if (transfers != null) result.transfers = transfers;
     if (sections != null) result.sections.addAll(sections);
+    if (totalFare != null) result.totalFare = totalFare;
     return result;
   }
 
@@ -243,6 +331,7 @@ class Route extends $pb.GeneratedMessage {
     ..aI(4, _omitFieldNames ? '' : 'transfers')
     ..pPM<Section>(5, _omitFieldNames ? '' : 'sections',
         subBuilder: Section.create)
+    ..aI(6, _omitFieldNames ? '' : 'totalFare', protoName: 'totalFare')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -301,6 +390,17 @@ class Route extends $pb.GeneratedMessage {
 
   @$pb.TagNumber(5)
   $pb.PbList<Section> get sections => $_getList(4);
+
+  /// Sum of every resolved section fare (NT$). 0 when no section fare was
+  /// found; a partial sum when only some sections resolved.
+  @$pb.TagNumber(6)
+  $core.int get totalFare => $_getIZ(5);
+  @$pb.TagNumber(6)
+  set totalFare($core.int value) => $_setSignedInt32(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasTotalFare() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearTotalFare() => $_clearField(6);
 }
 
 class Section extends $pb.GeneratedMessage {
@@ -313,6 +413,7 @@ class Section extends $pb.GeneratedMessage {
     $core.Iterable<IntermediateStop>? intermediateStops,
     Agency? agency,
     NotificationIdentity? notificationIdentity,
+    $core.int? fare,
   }) {
     final result = create();
     if (type != null) result.type = type;
@@ -325,6 +426,7 @@ class Section extends $pb.GeneratedMessage {
     if (agency != null) result.agency = agency;
     if (notificationIdentity != null)
       result.notificationIdentity = notificationIdentity;
+    if (fare != null) result.fare = fare;
     return result;
   }
 
@@ -354,6 +456,7 @@ class Section extends $pb.GeneratedMessage {
     ..aOM<NotificationIdentity>(
         8, _omitFieldNames ? '' : 'notificationIdentity',
         subBuilder: NotificationIdentity.create)
+    ..aI(9, _omitFieldNames ? '' : 'fare')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -451,6 +554,17 @@ class Section extends $pb.GeneratedMessage {
   void clearNotificationIdentity() => $_clearField(8);
   @$pb.TagNumber(8)
   NotificationIdentity ensureNotificationIdentity() => $_ensure(7);
+
+  /// Adult full fare for this section (NT$). Unset (0) when no fare could be
+  /// resolved; a missing fare never fails the plan.
+  @$pb.TagNumber(9)
+  $core.int get fare => $_getIZ(8);
+  @$pb.TagNumber(9)
+  set fare($core.int value) => $_setSignedInt32(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasFare() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearFare() => $_clearField(9);
 }
 
 class NotificationIdentity extends $pb.GeneratedMessage {

@@ -138,8 +138,8 @@ class Bus_Station_ServiceClient extends $grpc.Client {
 
   Bus_Station_ServiceClient(super.channel, {super.options, super.interceptors});
 
-  $grpc.ResponseStream<$0.Resp_Bus_eta> eta(
-    $0.Bus_Ask_Route request, {
+  $grpc.ResponseStream<$0.Resp_Bus_station_eta> eta(
+    $0.Bus_Ask_StationGroup request, {
     $grpc.CallOptions? options,
   }) {
     return $createStreamingCall(_$eta, $async.Stream.fromIterable([request]),
@@ -147,7 +147,7 @@ class Bus_Station_ServiceClient extends $grpc.Client {
   }
 
   $grpc.ResponseFuture<$0.Bus_StationGroup> group(
-    $0.Bus_Ask_Route request, {
+    $0.Bus_Ask_StationGroup request, {
     $grpc.CallOptions? options,
   }) {
     return $createUnaryCall(_$group, request, options: options);
@@ -155,14 +155,15 @@ class Bus_Station_ServiceClient extends $grpc.Client {
 
   // method descriptors
 
-  static final _$eta = $grpc.ClientMethod<$0.Bus_Ask_Route, $0.Resp_Bus_eta>(
-      '/Bus_Station_Service/eta',
-      ($0.Bus_Ask_Route value) => value.writeToBuffer(),
-      $0.Resp_Bus_eta.fromBuffer);
+  static final _$eta =
+      $grpc.ClientMethod<$0.Bus_Ask_StationGroup, $0.Resp_Bus_station_eta>(
+          '/Bus_Station_Service/eta',
+          ($0.Bus_Ask_StationGroup value) => value.writeToBuffer(),
+          $0.Resp_Bus_station_eta.fromBuffer);
   static final _$group =
-      $grpc.ClientMethod<$0.Bus_Ask_Route, $0.Bus_StationGroup>(
+      $grpc.ClientMethod<$0.Bus_Ask_StationGroup, $0.Bus_StationGroup>(
           '/Bus_Station_Service/group',
-          ($0.Bus_Ask_Route value) => value.writeToBuffer(),
+          ($0.Bus_Ask_StationGroup value) => value.writeToBuffer(),
           $0.Bus_StationGroup.fromBuffer);
 }
 
@@ -171,35 +172,39 @@ abstract class Bus_Station_ServiceBase extends $grpc.Service {
   $core.String get $name => 'Bus_Station_Service';
 
   Bus_Station_ServiceBase() {
-    $addMethod($grpc.ServiceMethod<$0.Bus_Ask_Route, $0.Resp_Bus_eta>(
-        'eta',
-        eta_Pre,
-        false,
-        true,
-        ($core.List<$core.int> value) => $0.Bus_Ask_Route.fromBuffer(value),
-        ($0.Resp_Bus_eta value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.Bus_Ask_Route, $0.Bus_StationGroup>(
-        'group',
-        group_Pre,
-        false,
-        false,
-        ($core.List<$core.int> value) => $0.Bus_Ask_Route.fromBuffer(value),
-        ($0.Bus_StationGroup value) => value.writeToBuffer()));
+    $addMethod(
+        $grpc.ServiceMethod<$0.Bus_Ask_StationGroup, $0.Resp_Bus_station_eta>(
+            'eta',
+            eta_Pre,
+            false,
+            true,
+            ($core.List<$core.int> value) =>
+                $0.Bus_Ask_StationGroup.fromBuffer(value),
+            ($0.Resp_Bus_station_eta value) => value.writeToBuffer()));
+    $addMethod(
+        $grpc.ServiceMethod<$0.Bus_Ask_StationGroup, $0.Bus_StationGroup>(
+            'group',
+            group_Pre,
+            false,
+            false,
+            ($core.List<$core.int> value) =>
+                $0.Bus_Ask_StationGroup.fromBuffer(value),
+            ($0.Bus_StationGroup value) => value.writeToBuffer()));
   }
 
-  $async.Stream<$0.Resp_Bus_eta> eta_Pre($grpc.ServiceCall $call,
-      $async.Future<$0.Bus_Ask_Route> $request) async* {
+  $async.Stream<$0.Resp_Bus_station_eta> eta_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.Bus_Ask_StationGroup> $request) async* {
     yield* eta($call, await $request);
   }
 
-  $async.Stream<$0.Resp_Bus_eta> eta(
-      $grpc.ServiceCall call, $0.Bus_Ask_Route request);
+  $async.Stream<$0.Resp_Bus_station_eta> eta(
+      $grpc.ServiceCall call, $0.Bus_Ask_StationGroup request);
 
-  $async.Future<$0.Bus_StationGroup> group_Pre(
-      $grpc.ServiceCall $call, $async.Future<$0.Bus_Ask_Route> $request) async {
+  $async.Future<$0.Bus_StationGroup> group_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.Bus_Ask_StationGroup> $request) async {
     return group($call, await $request);
   }
 
   $async.Future<$0.Bus_StationGroup> group(
-      $grpc.ServiceCall call, $0.Bus_Ask_Route request);
+      $grpc.ServiceCall call, $0.Bus_Ask_StationGroup request);
 }

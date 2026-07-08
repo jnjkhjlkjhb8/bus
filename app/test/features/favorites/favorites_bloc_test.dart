@@ -8,13 +8,18 @@ import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_event.dart';
 
+// Long enough to outlast the fake's coalesce window and let the queued
+// FavoritesRefreshed event drain.
+Future<void> _settle() =>
+    Future<void>.delayed(const Duration(milliseconds: 40));
+
 void main() {
   test('refresh loads repository items when ready', () async {
     final repo = _FakeFavoritesRepository(items: [_favorite('stop-1')]);
     final bloc = FavoritesBloc(repo, ValueNotifier(true));
     addTearDown(bloc.close);
 
-    await Future<void>.delayed(Duration.zero);
+    await _settle();
 
     expect(bloc.state.items, hasLength(1));
   });
@@ -25,8 +30,7 @@ void main() {
     addTearDown(bloc.close);
 
     bloc.add(FavoriteToggled(_favorite('stop-1')));
-    await Future<void>.delayed(Duration.zero);
-    await Future<void>.delayed(Duration.zero);
+    await _settle();
 
     expect(bloc.state.contains('busStop:stop-1'), isTrue);
   });
@@ -36,10 +40,9 @@ void main() {
     final bloc = FavoritesBloc(repo, ValueNotifier(true));
     addTearDown(bloc.close);
 
-    await Future<void>.delayed(Duration.zero);
+    await _settle();
     bloc.add(const FavoriteRemoved('busStop:stop-1'));
-    await Future<void>.delayed(Duration.zero);
-    await Future<void>.delayed(Duration.zero);
+    await _settle();
 
     expect(bloc.state.contains('busStop:stop-1'), isFalse);
   });
@@ -49,12 +52,38 @@ void main() {
     final bloc = FavoritesBloc(repo, ValueNotifier(true));
     addTearDown(bloc.close);
 
-    await Future<void>.delayed(Duration.zero);
+    await _settle();
     bloc.add(const FavoritePinChanged('busStop:stop-1', pinned: true));
-    await Future<void>.delayed(Duration.zero);
-    await Future<void>.delayed(Duration.zero);
+    await _settle();
 
     expect(bloc.state.pinned, hasLength(1));
+  });
+
+  test('reorder of N items produces a single coalesced refresh', () async {
+    final repo = _FakeFavoritesRepository(
+      items: [_favorite('a'), _favorite('b'), _favorite('c'), _favorite('d')],
+    );
+    final bloc = FavoritesBloc(repo, ValueNotifier(true));
+    addTearDown(bloc.close);
+
+    await _settle();
+    // Drop the initial refresh and count only reorder-driven emissions.
+    var refreshes = 0;
+    final sub = bloc.stream.listen((_) => refreshes++);
+    addTearDown(sub.cancel);
+
+    final reordered = [
+      repo.all()[3],
+      repo.all()[2],
+      repo.all()[1],
+      repo.all()[0],
+    ];
+    bloc.add(FavoritesReordered(reordered));
+    await _settle();
+
+    // 4 box writes -> 1 coalesced refresh, not 4.
+    expect(refreshes, 1);
+    expect(repo.all().map((f) => f.refId).toList(), ['d', 'c', 'b', 'a']);
   });
 }
 
@@ -66,13 +95,24 @@ Favorite _favorite(String refId) => Favorite(
 
 class _FakeFavoritesRepository implements FavoritesRepository {
   _FakeFavoritesRepository({List<Favorite> items = const []})
-    : _items = {for (final item in items) item.id: item};
+    : _items = {
+        for (final (i, item) in items.indexed)
+          item.id: item.copyWith(order: i),
+      };
 
   final Map<String, Favorite> _items;
   final _events = StreamController<BoxEvent>.broadcast();
+  final _changes = StreamController<void>.broadcast();
+  Timer? _coalesceTimer;
 
   void _notify(String id, {bool deleted = false}) {
     _events.add(BoxEvent(id, _items[id]?.toMap(), deleted));
+    // Mirror the real repository: collapse a burst of writes into one signal.
+    _coalesceTimer?.cancel();
+    _coalesceTimer = Timer(const Duration(milliseconds: 16), () {
+      _coalesceTimer = null;
+      _changes.add(null);
+    });
   }
 
   @override
@@ -80,6 +120,9 @@ class _FakeFavoritesRepository implements FavoritesRepository {
 
   @override
   Stream<BoxEvent> watch() => _events.stream;
+
+  @override
+  Stream<void> changes() => _changes.stream;
 
   @override
   List<Favorite> all() =>
