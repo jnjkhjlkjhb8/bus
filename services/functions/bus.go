@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -303,6 +305,14 @@ type busOperatorJSON struct {
 	URL   string `json:"url"`
 }
 
+var operatorPhoneRun = regexp.MustCompile(`\d[\d\-() ]*\d|\d`)
+func sanitizeOperatorPhone(s string) string {
+	if !strings.ContainsRune(s, '�') {
+		return s
+	}
+	return strings.Join(operatorPhoneRun.FindAllString(s, -1), " / ")
+}
+
 // busDailyTimetableSkip lists cities whose daily-timetable feed TDX does not
 // serve; both the legacy fetch path (busDailyroute) and the loader path
 // (loadBusDailyTimetable partitions) skip them so landed and loaded partitions
@@ -510,7 +520,7 @@ func loadBusOperators(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
 			continue
 		}
 		result[op.OperatorID] = op
-		copyRows = append(copyRows, []interface{}{op.OperatorID, op.AuthorityCode, op.OperatorName.Zhtw, op.OperatorPhone, op.OperatorUrl})
+		copyRows = append(copyRows, []interface{}{op.OperatorID, op.AuthorityCode, op.OperatorName.Zhtw, sanitizeOperatorPhone(op.OperatorPhone), op.OperatorUrl})
 	}
 	if len(copyRows) == 0 {
 		return result, nil

@@ -70,7 +70,7 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 				ops = append(ops, &models.BusOperator{
 					OperatorId:    detail.OperatorID,
 					OperatorName:  detail.OperatorName.Zhtw,
-					OperatorPhone: detail.OperatorPhone,
+					OperatorPhone: sanitizeOperatorPhone(detail.OperatorPhone),
 					OperatorUrl:   detail.OperatorUrl,
 				})
 			}
