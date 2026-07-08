@@ -198,7 +198,7 @@ func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal s
 	where := ""
 	args := []any{}
 	if partCol != "" {
-		where = fmt.Sprintf("WHERE %s = $1", partCol)
+		where = rawPartitionWhere(table, partCol)
 		args = append(args, partVal)
 	}
 	q := fmt.Sprintf(

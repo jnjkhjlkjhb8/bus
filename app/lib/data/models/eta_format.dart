@@ -42,19 +42,24 @@ BusStopDisplayStatus busStopDisplayStatus({
   required int estimateSeconds,
   required int stopStatus,
 }) {
-  if (stopStatus == 0 && estimateSeconds == 0) {
-    return BusStopDisplayStatus.arriving;
+  // Live-countdown semantics apply only when a bus is en route (status 0). A
+  // not-yet-departed stop (status 1) is scheduled, not tracked: the app decays
+  // its NextBusTime into a positive estimate, but it must still read as a clock
+  // time, so classify it by status and never as arriving/departingSoon/minutes.
+  if (stopStatus == 0) {
+    if (estimateSeconds == 0) return BusStopDisplayStatus.arriving;
+    if (estimateSeconds < 60) return BusStopDisplayStatus.departingSoon;
+    return BusStopDisplayStatus.minutes;
   }
-  if (estimateSeconds > 0 && estimateSeconds < 60) {
-    return BusStopDisplayStatus.departingSoon;
-  }
-  if (estimateSeconds > 0) return BusStopDisplayStatus.minutes;
   return switch (stopStatus) {
     1 => BusStopDisplayStatus.notDeparted,
     2 => BusStopDisplayStatus.trafficControl,
     3 => BusStopDisplayStatus.lastBusPassed,
     4 => BusStopDisplayStatus.notOperating,
-    _ => BusStopDisplayStatus.unknown,
+    _ =>
+      estimateSeconds > 0
+          ? BusStopDisplayStatus.minutes
+          : BusStopDisplayStatus.unknown,
   };
 }
 
@@ -66,8 +71,11 @@ String? busStopDisplayLabel({
   required int stopStatus,
   required String nextBusTime,
 }) {
-  if (estimateSeconds > 0) return '${etaCeilMinutes(estimateSeconds)}分';
-  if (stopStatus == 0 && estimateSeconds == 0) return '進站中';
+  // Only a live bus (status 0) shows the decaying countdown; a not-yet-departed
+  // stop shows its scheduled clock time (see busStopDisplayStatus).
+  if (stopStatus == 0) {
+    return estimateSeconds > 0 ? '${etaCeilMinutes(estimateSeconds)}分' : '進站中';
+  }
   return _clockLabel(nextBusTime) ??
       switch (stopStatus) {
         1 => '尚未發車',

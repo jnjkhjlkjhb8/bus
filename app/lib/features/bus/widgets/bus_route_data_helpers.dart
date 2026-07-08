@@ -24,13 +24,19 @@ bool _approaching(BusStopEtaViewModel? eta) {
 
 String _markerEta(BusStopEtaViewModel? eta) {
   if (eta == null) return '–';
-  if (eta.estimateSeconds > 0) return '${eta.estimateMinutes}';
   final status = busStopDisplayStatus(
     estimateSeconds: eta.estimateSeconds,
     stopStatus: eta.stopStatus,
   );
-  return status == BusStopDisplayStatus.arriving ? '即' : '–';
+  if (status == BusStopDisplayStatus.arriving) return '即';
+  if (eta.estimateSeconds > 0) return '${eta.estimateMinutes}';
+  return '–';
 }
+
+/// A not-yet-departed stop whose arrival is a scheduled clock time — the map
+/// marker shows a clock icon instead of a countdown number.
+bool _markerIsScheduled(BusStopEtaViewModel? eta) =>
+    eta != null && eta.stopStatus == 1 && eta.nextBusTime.isNotEmpty;
 
 List<BusVehiclePosition> _vehiclePositionsFor(BusRouteState s) {
   final byPlate = <String, BusVehiclePosition>{};

@@ -151,6 +151,54 @@ class MapMarkers {
     });
   }
 
+  /// Same ring as [etaStop] but painted with a Material [icon] glyph instead of
+  /// text — used for not-yet-departed stops, whose arrival is a scheduled clock
+  /// time rather than a live countdown.
+  static Future<BitmapDescriptor> etaStopIcon(
+    IconData icon, {
+    double size = 44,
+    Color ring = AppTheme.inkLight,
+    Color fill = Colors.white,
+    Color iconColor = AppTheme.inkLight,
+  }) {
+    final key = 'etaicon:${icon.codePoint}:$size:${ring.toARGB32()}';
+    return _memo(key, () async {
+      final px = (size * _dpr).round();
+      final center = Offset(px / 2, px / 2);
+      final stroke = px * (5 / 44);
+      final radius = px / 2 - stroke / 2;
+      final image = await _record(px, (canvas) {
+        canvas
+          ..drawCircle(center, radius, Paint()..color = fill)
+          ..drawCircle(
+            center,
+            radius,
+            Paint()
+              ..color = ring
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = stroke,
+          );
+        final painter = TextPainter(
+          text: TextSpan(
+            text: String.fromCharCode(icon.codePoint),
+            style: TextStyle(
+              color: iconColor,
+              fontSize: px * 0.5,
+              fontFamily: icon.fontFamily,
+              package: icon.fontPackage,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        painter.paint(
+          canvas,
+          center - Offset(painter.width / 2, painter.height / 2),
+        );
+      });
+      return _toBitmap(image);
+    });
+  }
+
   static Future<BitmapDescriptor> _memo(
     String key,
     Future<BitmapDescriptor> Function() build,

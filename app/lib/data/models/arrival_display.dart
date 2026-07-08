@@ -29,6 +29,7 @@ class ArrivalDisplay {
   /// (later minutes rank later), and every service-state row (尚未發車 / 末班已過
   /// / 交管不停靠 / scheduled clock time) last.
   factory ArrivalDisplay.fromBusStop(BusStopArrival a) {
+    final label = a.displayLabel;
     final (EtaStatus status, int rank) = switch (a.displayStatus) {
       BusStopDisplayStatus.arriving => (EtaStatus.arriving(), 0),
       BusStopDisplayStatus.departingSoon => (EtaStatus.approaching(), 1),
@@ -36,10 +37,17 @@ class ArrivalDisplay {
         EtaStatus.minutes(a.minutes ?? 0),
         (a.minutes ?? 0) + 2,
       ),
+      // Not-yet-departed with a scheduled clock time (HH:mm): show the clock
+      // but keep the time-based rank so it interleaves with live arrivals by
+      // when it actually comes, instead of sinking to the service-state floor.
+      BusStopDisplayStatus.notDeparted
+          when label != null && a.minutes != null =>
+        (
+          EtaStatus.label(label),
+          (a.minutes ?? 0) + 2,
+        ),
       _ => (
-        a.displayLabel != null
-            ? EtaStatus.label(a.displayLabel!)
-            : EtaStatus.unknown(),
+        label != null ? EtaStatus.label(label) : EtaStatus.unknown(),
         9999,
       ),
     };

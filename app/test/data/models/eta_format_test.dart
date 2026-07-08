@@ -85,6 +85,19 @@ void main() {
         BusStopDisplayStatus.minutes,
       );
     });
+    // A not-yet-departed stop (status 1) has its NextBusTime decayed into a
+    // positive estimate, but it must stay scheduled (clock time), never a
+    // live countdown. Guards the status-0 gate on the countdown branches.
+    test('status 1 stays notDeparted despite a positive decayed estimate', () {
+      expect(
+        busStopDisplayStatus(estimateSeconds: 300, stopStatus: 1),
+        BusStopDisplayStatus.notDeparted,
+      );
+      expect(
+        busStopDisplayStatus(estimateSeconds: 30, stopStatus: 1),
+        BusStopDisplayStatus.notDeparted,
+      );
+    });
     test('status codes map exhaustively', () {
       expect(
         busStopDisplayStatus(estimateSeconds: -1, stopStatus: 1),
@@ -169,6 +182,17 @@ void main() {
           nextBusTime: '8:05:00',
         ),
         '08:05',
+      );
+    });
+
+    test('status 1 shows the clock time, not the decayed countdown', () {
+      expect(
+        busStopDisplayLabel(
+          estimateSeconds: 300,
+          stopStatus: 1,
+          nextBusTime: '08:15',
+        ),
+        '08:15',
       );
     });
 

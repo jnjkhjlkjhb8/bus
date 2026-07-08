@@ -374,11 +374,25 @@ func validateRawTarget(table, partCol string) error {
 	return nil
 }
 
+// rawPartitionWhere builds the partition WHERE clause for a raw_tdx landing
+// table. Callers pass values already cleared by validateRawTarget, so table and
+// partCol are safe to interpolate. thsr_dailytimetable.traindate is timestamptz
+// landed at Taipei midnight (tra_dailytimetable.traindate is plain text), so
+// comparing it to a YYYY-MM-DD string under the services' UTC session matches
+// nothing; select by Taipei calendar date instead so the right partition is
+// found regardless of the session TimeZone.
+func rawPartitionWhere(table, partCol string) string {
+	if table == "thsr_dailytimetable" {
+		return "WHERE (traindate AT TIME ZONE 'Asia/Taipei')::date = $1::date"
+	}
+	return fmt.Sprintf("WHERE %s = $1", partCol)
+}
+
 // rawDeleteSQL builds the per-partition DELETE for a raw_tdx landing. table and
 // partCol are interpolated, so callers must pass values already cleared by
 // validateRawTarget.
 func rawDeleteSQL(table, partCol string) string {
-	return fmt.Sprintf("DELETE FROM raw_tdx.%s WHERE %s = $1", table, partCol)
+	return fmt.Sprintf("DELETE FROM raw_tdx.%s %s", table, rawPartitionWhere(table, partCol))
 }
 
 // rawInsertSQL lowercases each object's top-level keys (PascalCase TDX → lowercase
