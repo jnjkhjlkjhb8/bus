@@ -1,7 +1,8 @@
 // Package main is the functions binary: a TDX ingestion scheduler and MQTT
-// subscriber. One image runs in two modes selected by the ROLE env var
+// subscriber. One image runs in three modes selected by the ROLE env var
 // (resolveRole): ROLE=ingestor lands raw TDX payloads into raw_tdx on a daily
-// cron; empty ROLE runs the legacy prod path (Firebase notifications, all
+// cron; ROLE=loader transforms raw_tdx into this env's PG_SCHEMA at 03:30;
+// empty ROLE runs the legacy prod path (Firebase notifications, all
 // transform/realtime crons, MQTT alerts) that writes static data to PostgreSQL
 // and realtime ETAs to Redis. It also fills missing bus ETAs via schedule and
 // travel-average prediction.
@@ -49,8 +50,13 @@ func main() {
 	// pool so its 03:00 burst can never eat more than a handful of the shared
 	// 50-slot Azure server's connections, independent of the realtime functions pool.
 	maxConnsEnv, maxConnsDefault := "FUNCTIONS_DB_MAX_CONNS", int32(10)
-	if role == "ingestor" {
+	switch role {
+	case "ingestor":
 		maxConnsEnv, maxConnsDefault = "INGEST_DB_MAX_CONNS", 10
+	case "loader":
+		// The loader is a nightly transform batch like the ingestor; give it its
+		// own small pool so its 03:30 burst can't starve the realtime functions.
+		maxConnsEnv, maxConnsDefault = "LOAD_DB_MAX_CONNS", 5
 	}
 	db := shared.ConnectDB(maxConnsEnv, maxConnsDefault)
 	ingestDB = db
@@ -72,6 +78,11 @@ func main() {
 		r.Start()
 		defer r.Stop()
 		waitForShutdown()
+	case modeLoader:
+		registerLoaderCrons(r, db, rc)
+		r.Start()
+		defer r.Stop()
+		waitForShutdown()
 	case modeLegacyProd:
 		runLegacyProd(r, tdx, rc, db)
 	}
@@ -86,18 +97,21 @@ const (
 	modeInvalid appMode = iota
 	modeLegacyProd
 	modeIngestor
+	modeLoader
 )
 
 // resolveRole maps the ROLE env to a run mode. Unimplemented (eta/realtime) and
 // unknown roles are errors, so they can never silently fall into the legacy prod
-// flow. Empty ROLE preserves current prod behavior and now also owns the 03:30
-// loader cron (registerLoaderCrons); there is no separate etl role.
+// flow. Empty ROLE preserves current prod behavior; ROLE=loader owns the 03:30
+// loader cron (registerLoaderCrons) in its own container.
 func resolveRole(role string) (appMode, error) {
 	switch role {
 	case "":
 		return modeLegacyProd, nil
 	case "ingestor":
 		return modeIngestor, nil
+	case "loader":
+		return modeLoader, nil
 	case "eta", "realtime":
 		return modeInvalid, fmt.Errorf("ROLE=%s not implemented yet (Phase 2)", role)
 	default:
@@ -146,17 +160,16 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pg
 	loadHolidays()
 	loadModel()
 	// The legacy direct-fetch static jobs (bikeStatic/mrtStatic/railStatic; the
-	// bus one is deleted) no longer run here: the ingestor lands raw_tdx at 03:00 and the
-	// 03:30 loader cron (registerLoaderCrons) transforms it into this env's schema.
-	// changetovector reads the tables the loader fills, so it moves to 03:45 to run
-	// after the 03:30 load rather than racing the retired 03:00 static writes.
+	// bus one is deleted) no longer run here: the ingestor lands raw_tdx at 03:00
+	// and the ROLE=loader container transforms it into this env's schema at 03:30.
+	// changetovector reads the tables the loader fills, so it runs at 03:45 —
+	// cross-service coordination by clock, the same way loader trails ingestor.
 	_, _ = r.AddFunc("0 45 3 * * *", func() {
 		runDaily("changetovector", 10*time.Minute, func(ctx context.Context) error {
 			changetovector(ctx, rc, db)
 			return nil
 		})
 	})
-	registerLoaderCrons(r, db, rc)
 	registerLiveCrons(r, tdx, rc, db, dispatcher)
 	_, _ = r.AddFunc("@every 10m", func() {
 		weatherSync(rc)

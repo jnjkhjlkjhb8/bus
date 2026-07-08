@@ -2,13 +2,15 @@ package main
 
 import "testing"
 
-// Covers: ROLE="" → legacy prod, ROLE=ingestor → ingestor, and that eta/realtime/
-// etl/unknown all error out instead of falling into the legacy prod flow (so they
-// never initialize Firebase / dispatcher / MQTT, which live only in runLegacyProd).
+// Covers: ROLE="" → legacy prod, ROLE=ingestor → ingestor, ROLE=loader → loader,
+// and that eta/realtime/etl/unknown all error out instead of falling into the
+// legacy prod flow (so they never initialize Firebase / dispatcher / MQTT, which
+// live only in runLegacyProd).
 func TestResolveRole(t *testing.T) {
 	okCases := map[string]appMode{
 		"":         modeLegacyProd,
 		"ingestor": modeIngestor,
+		"loader":   modeLoader,
 	}
 	for role, want := range okCases {
 		got, err := resolveRole(role)

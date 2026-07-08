@@ -36,6 +36,13 @@ services:
       postgres:
         condition: service_healthy
 
+  loader:
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
   powersync:
     profiles: ["sync"]
 

@@ -102,6 +102,25 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+  loader:
+    build:
+      context: .
+      dockerfile: services/functions/Dockerfile
+    image: bus-functions
+    env_file: ${BUS_ENV_FILE:-./.env}
+    environment:
+      TZ: Asia/Taipei
+      GOMEMLIMIT: ${LOADER_GOMEMLIMIT:-460MiB}
+      REDIS_ADDR: redis:6379
+      ROLE: loader
+      LOAD_DB_MAX_CONNS: "1"
+    volumes:
+      - ./secrets:/run/secrets:ro
+    mem_limit: ${LOADER_MEM_LIMIT:-512m}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
   powersync:
     image: journeyapps/powersync-service:latest
     ports:
