@@ -105,13 +105,9 @@ class _TrainCardState extends State<_TrainCard> {
                     Pressable(
                       onTap: () {
                         unawaited(HapticService.instance.lightTap());
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              '已為您開啟 ${widget.type} ${widget.number} 車次訂票系統',
-                            ),
-                            duration: const Duration(seconds: 2),
-                          ),
+                        AppSnackbar.show(
+                          context,
+                          '已為您開啟 ${widget.type} ${widget.number} 車次訂票系統',
                         );
                       },
                       child: Container(

@@ -11,8 +11,8 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/live_activity/pip_mode.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
@@ -25,12 +25,14 @@ import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_button.dart';
 import 'package:wheres_the_car/shared/widgets/app_quantity_selector.dart';
 import 'package:wheres_the_car/shared/widgets/app_range_slider.dart';
 import 'package:wheres_the_car/shared/widgets/app_slider.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/filter_chip_group.dart';
 
@@ -153,7 +155,7 @@ class _GoScreenState extends State<GoScreen> {
       ..add(RouteSelected(index: routes.indexOf(route)))
       ..add(const NavigationStarted());
     final legs = JourneyLeg.legsFromRoute(route);
-    if (legs.isNotEmpty && HiveStore.liveActivityEnabled) {
+    if (legs.isNotEmpty && SettingsRepository.instance.liveActivityEnabled) {
       context.read<JourneySessionBloc>().add(JourneyStarted(legs: legs));
       unawaited(PipMode.instance.setNavigating(true));
     }
@@ -177,12 +179,7 @@ class _GoScreenState extends State<GoScreen> {
       bloc.add(const NavigationEnded());
       _stopJourneySession();
       _resetCamera();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('已抵達目的地'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      AppSnackbar.show(context, '已抵達目的地', type: SnackType.success);
       return;
     }
     bloc.add(StopArrived(legIndex: activeLeg + 1, stopIndex: 0));

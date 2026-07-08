@@ -11,7 +11,8 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/powersync/powersync_service.dart';
+import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
+import 'package:wheres_the_car/data/repositories/tra_repository.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_bloc.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
@@ -22,6 +23,7 @@ import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
 import 'package:wheres_the_car/shared/widgets/app_date_picker.dart';
 import 'package:wheres_the_car/shared/widgets/app_sliding_segment.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/app_time_picker.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
@@ -74,23 +76,13 @@ String _computeDuration(String depart, String arrive) {
   return '$h時$m分';
 }
 
-Future<String> _resolveTraStationId(String name) async {
-  final rows = await PowerSyncService.instance.db.getAll(
-    'SELECT station_id FROM tra_stations WHERE station_name = ? LIMIT 1',
-    [name],
-  );
-  if (rows.isEmpty) return name;
-  return rows.first['station_id'] as String? ?? name;
-}
+// Falls back to the name itself when the station is unknown, so the query
+// still carries a value the caller can display.
+Future<String> _resolveTraStationId(String name) async =>
+    await TraRepository.instance.stationId(name) ?? name;
 
-Future<String> _resolveThsrStationId(String name) async {
-  final rows = await PowerSyncService.instance.db.getAll(
-    'SELECT station_id FROM thsr_stations WHERE station_name = ? LIMIT 1',
-    [name],
-  );
-  if (rows.isEmpty) return name;
-  return rows.first['station_id'] as String? ?? name;
-}
+Future<String> _resolveThsrStationId(String name) async =>
+    await ThsrRepository.instance.stationId(name) ?? name;
 
 class RailScreen extends StatefulWidget {
   const RailScreen({super.key});

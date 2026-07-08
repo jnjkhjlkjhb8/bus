@@ -23,10 +23,6 @@ class BusStopArrivalsUpdated extends BusStopEvent {
   List<Object?> get props => [arrivals];
 }
 
-class BusStopDecayTicked extends BusStopEvent {
-  const BusStopDecayTicked();
-}
-
 /// Selects a member stop to filter the arrivals list and centre the map on it;
 /// a null [stationUid] clears the filter back to 全部.
 class BusStopStationSelected extends BusStopEvent {

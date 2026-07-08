@@ -2,13 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
 
-// TDX emits an empty mode (not "walk") for pedestrian sections, and the router
-// only populates Transport when mode is non-empty — so an unset/empty mode is a
-// walk. Must match services/router/maas.go isWalkMode.
-bool isWalk(PlanSection s) {
-  final mode = s.transport.mode.toLowerCase();
-  return mode.isEmpty || mode == 'walk';
-}
+// A section is a walk when TDX types it as anything other than transit
+// (pedestrian legs). Keying off `type` — not `transport.mode` — because TDX
+// still attaches a transport block to pedestrian sections, so a mode check
+// misclassifies them as transit. Mirrors journey_models' `type != 'transit'`.
+bool isWalk(PlanSection s) => s.type.toLowerCase() != 'transit';
+
+// Walk sections carry a (non-walk) transport mode, so branch on isWalk before
+// falling back to the transport mode for the glyph.
+IconData sectionIcon(PlanSection s) =>
+    isWalk(s) ? Icons.directions_walk_rounded : transitIcon(s.transport.mode);
 
 IconData transitIcon(String mode) => switch (mode.toLowerCase()) {
   'walk' => Icons.directions_walk_rounded,

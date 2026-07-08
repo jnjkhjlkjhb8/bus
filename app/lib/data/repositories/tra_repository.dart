@@ -1,11 +1,19 @@
 import 'package:wheres_the_car/core/grpc/grpc_client.dart';
+import 'package:wheres_the_car/core/powersync/local_db.dart';
+import 'package:wheres_the_car/core/powersync/powersync_service.dart';
 import 'package:wheres_the_car/data/decoders/tra_decoder.dart';
 import 'package:wheres_the_car/data/generated/tra.pb.dart';
 import 'package:wheres_the_car/data/models/tra_models.dart';
 
 class TraRepository {
-  const TraRepository._();
-  static const instance = TraRepository._();
+  TraRepository({LocalDb? localDb}) : _localDb = localDb;
+
+  static final TraRepository instance = TraRepository();
+
+  // Resolved lazily so tests that never touch the local DB can construct the
+  // repository without initializing PowerSync.
+  LocalDb? _localDb;
+  LocalDb get _db => _localDb ??= PowerSyncService.instance;
 
   /// Server-streaming: emits the decoded live departure/arrival board for
   /// [stationId] on [date] (format `'yyyy-MM-dd'`).
@@ -63,5 +71,16 @@ class TraRepository {
       ask_detain(date: date, trainno: trainNo),
     );
     return TraDecoder.instance.decodeStops(result);
+  }
+
+  /// Resolves a TRA station name to its id from the synced station table, or
+  /// null when the name is unknown. Reads the offline PowerSync mirror.
+  Future<String?> stationId(String name) async {
+    final rows = await _db.getAll(
+      'SELECT station_id FROM tra_stations WHERE station_name = ? LIMIT 1',
+      [name],
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['station_id'] as String?;
   }
 }

@@ -19,6 +19,7 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
     on<SearchQuerySubmitted>(_onQuerySubmitted);
     on<SearchCleared>(_onCleared);
     on<SearchRecentRequested>(_onRecentRequested);
+    on<SearchRecentRemoved>(_onRecentRemoved);
     on<SearchResultSelected>(_onResultSelected);
     add(const SearchRecentRequested());
   }
@@ -87,6 +88,14 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
     SearchRecentRequested _,
     Emitter<SearchState> emit,
   ) {
+    emit(state.copyWith(recentResults: _recentRepository.all()));
+  }
+
+  Future<void> _onRecentRemoved(
+    SearchRecentRemoved event,
+    Emitter<SearchState> emit,
+  ) async {
+    await _recentRepository.remove(event.result);
     emit(state.copyWith(recentResults: _recentRepository.all()));
   }
 

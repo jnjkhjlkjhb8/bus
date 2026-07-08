@@ -1,9 +1,23 @@
 import 'package:wheres_the_car/data/generated/tra.pb.dart';
+import 'package:wheres_the_car/data/models/rail_timetable_view.dart';
 import 'package:wheres_the_car/data/models/tra_models.dart';
 
 class TraDecoder {
   const TraDecoder._();
   static const TraDecoder instance = TraDecoder._();
+
+  /// Reshapes one timetable entry into the card-facing view model, preserving
+  /// the origin/destination station names and the display travel-time string
+  /// that the parsed-minutes [TraTimetableItem] does not carry.
+  RailTimetableView decodeTimetableCard(tra_timetable t) => RailTimetableView(
+    trainNo: t.trainNo,
+    trainType: t.trainTypeName,
+    originName: t.startingStationName,
+    destinationName: t.endingStationName,
+    departureTime: t.startingTime,
+    arrivalTime: t.endingTime,
+    travelTime: t.travelTime,
+  );
 
   List<TraLiveBoardItem> decodeLiveBoard(tra_LiveBoards board) {
     return board.items

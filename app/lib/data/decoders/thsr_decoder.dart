@@ -1,9 +1,23 @@
 import 'package:wheres_the_car/data/generated/thsr.pb.dart';
+import 'package:wheres_the_car/data/models/rail_timetable_view.dart';
 import 'package:wheres_the_car/data/models/thsr_models.dart';
 
 class ThsrDecoder {
   const ThsrDecoder._();
   static const ThsrDecoder instance = ThsrDecoder._();
+
+  /// Reshapes one THSR timetable entry into the card-facing view model. THSR
+  /// has a single service class, so the type label is fixed rather than
+  /// carried on the wire.
+  RailTimetableView decodeTimetableCard(thsa_timetable t) => RailTimetableView(
+    trainNo: t.trainNo,
+    trainType: '高鐵',
+    originName: t.startingStationName,
+    destinationName: t.endingStationName,
+    departureTime: t.startingTime,
+    arrivalTime: t.endingTime,
+    travelTime: t.travelTime,
+  );
 
   List<ThsrTimetableItem> decodeTimetable(thsr_timetables timetables) {
     return timetables.items

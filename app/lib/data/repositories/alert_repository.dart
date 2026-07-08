@@ -2,10 +2,21 @@ import 'package:wheres_the_car/core/grpc/grpc_client.dart';
 import 'package:wheres_the_car/data/decoders/alert_decoder.dart';
 import 'package:wheres_the_car/data/generated/alert.pb.dart';
 import 'package:wheres_the_car/data/models/alert_models.dart';
+import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 
 class AlertRepository {
-  const AlertRepository._();
-  static const instance = AlertRepository._();
+  AlertRepository({SettingsRepository? settings})
+    : _settings = settings ?? SettingsRepository.instance;
+
+  static final AlertRepository instance = AlertRepository();
+
+  final SettingsRepository _settings;
+
+  /// Alert message keys the user has already read, persisted across restarts.
+  Set<String> readAlerts() => _settings.readAlerts();
+
+  Future<void> persistReadAlerts(Set<String> read) =>
+      _settings.setReadAlerts(read);
 
   /// Server-streaming: emits bus service alerts for [city] until cancelled.
   Stream<AlertViewModel> busNews(String city) =>

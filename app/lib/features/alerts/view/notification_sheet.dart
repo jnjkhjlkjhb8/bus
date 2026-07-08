@@ -10,6 +10,7 @@ import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 
 Color severityColor(AlertSeverity level, ColorScheme cs) =>
@@ -52,14 +53,11 @@ class _NotificationSheet extends StatelessWidget {
 
   void _showUndo(BuildContext context, List<String> messages, String label) {
     final bloc = context.read<AlertBloc>();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(label),
-        action: SnackBarAction(
-          label: '復原',
-          onPressed: () => bloc.add(AlertRestored(messages)),
-        ),
-      ),
+    AppSnackbar.show(
+      context,
+      label,
+      action: '復原',
+      onAction: () => bloc.add(AlertRestored(messages)),
     );
   }
 

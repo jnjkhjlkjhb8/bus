@@ -12,6 +12,7 @@ import 'package:wheres_the_car/features/favorites/bloc/favorites_state.dart';
 import 'package:wheres_the_car/features/favorites/favorite_actions.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
 
 class FavoritesScreen extends StatelessWidget {
@@ -95,7 +96,14 @@ class _FavoriteListRow extends StatelessWidget {
       direction: DismissDirection.endToStart,
       onDismissed: (_) {
         unawaited(HapticService.instance.lightTap());
-        context.read<FavoritesBloc>().add(FavoriteRemoved(fav.id));
+        final bloc = context.read<FavoritesBloc>()
+          ..add(FavoriteRemoved(fav.id));
+        AppSnackbar.show(
+          context,
+          '已移除收藏',
+          action: '復原',
+          onAction: () => bloc.add(FavoriteToggled(fav)),
+        );
       },
       background: Container(
         color: cs.errorContainer,

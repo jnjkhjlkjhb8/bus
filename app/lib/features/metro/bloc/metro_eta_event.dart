@@ -16,8 +16,18 @@ final class LoadMetroEta extends MetroEtaEvent {
 }
 
 final class MetroEtaArrived extends MetroEtaEvent {
-  const MetroEtaArrived(this.arrival);
-  final MetroArrival arrival;
+  const MetroEtaArrived(this.arrivals);
+
+  /// The merged, sorted arrival list emitted by the arrival feed (dedup by
+  /// line+destination and sort by estimate now live in the feed).
+  final List<MetroArrival> arrivals;
   @override
-  List<Object?> get props => [arrival];
+  List<Object?> get props => [arrivals];
+}
+
+/// Emitted when the live seed grace period elapses without a first arrival, so
+/// the skeleton resolves to an empty state instead of waiting forever on a
+/// push that never comes (no incoming trains, or an env without a feed).
+final class MetroEtaSettled extends MetroEtaEvent {
+  const MetroEtaSettled();
 }

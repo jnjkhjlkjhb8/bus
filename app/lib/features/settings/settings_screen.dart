@@ -11,9 +11,10 @@ import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/firebase/firebase_bootstrap.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 
 enum _Appearance {
   system('跟隨系統'),
@@ -34,15 +35,21 @@ enum _Language {
 }
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key, this.updatePushPreference});
+  const SettingsScreen({super.key, this.updatePushPreference, this.settings});
 
   final Future<bool> Function({required bool requested})? updatePushPreference;
+
+  /// Injectable for tests; defaults to the shared repository instance.
+  final SettingsRepository? settings;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  SettingsRepository get _settings =>
+      widget.settings ?? SettingsRepository.instance;
+
   _Appearance _appearance = _Appearance.system;
   _Language _language = _Language.system;
   int _versionTaps = 0;
@@ -58,18 +65,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _devMode = HiveStore.devModeEnabled;
-    _pushEnabled = HiveStore.pushEnabled;
-    _analyticsEnabled = HiveStore.analyticsEnabled;
-    _crashlyticsEnabled = HiveStore.crashlyticsEnabled;
-    _largeText = HiveStore.largeText;
-    _liveActivityEnabled = HiveStore.liveActivityEnabled;
-    _navigationLocationEnabled = HiveStore.navigationLocationEnabled;
+    _devMode = _settings.devModeEnabled;
+    _pushEnabled = _settings.pushEnabled;
+    _analyticsEnabled = _settings.analyticsEnabled;
+    _crashlyticsEnabled = _settings.crashlyticsEnabled;
+    _largeText = _settings.largeText;
+    _liveActivityEnabled = _settings.liveActivityEnabled;
+    _navigationLocationEnabled = _settings.navigationLocationEnabled;
   }
 
   Future<void> _setPush(bool value) async {
     if (_pushUpdating) return;
-    HiveStore.pushEnabled = value;
+    _settings.pushEnabled = value;
     setState(() {
       _pushEnabled = value;
       _pushUpdating = true;
@@ -82,7 +89,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } on Object catch (_) {
       enabled = false;
     } finally {
-      HiveStore.pushEnabled = enabled;
+      _settings.pushEnabled = enabled;
       if (mounted) {
         setState(() {
           _pushEnabled = enabled;
@@ -111,12 +118,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _onVersionTap() {
     _versionTaps++;
     if (_versionTaps >= 5 && !_devMode) {
-      HiveStore.devModeEnabled = true;
+      _settings.devModeEnabled = true;
       setState(() => _devMode = true);
       _versionTaps = 0;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('開發者模式已啟用')),
-      );
+      AppSnackbar.show(context, '開發者模式已啟用');
     }
   }
 
@@ -170,7 +175,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 label: '大字體模式',
                 value: _largeText,
                 onChanged: (v) {
-                  HiveStore.largeText = v;
+                  _settings.largeText = v;
                   setState(() => _largeText = v);
                 },
               ),
@@ -186,7 +191,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: '鎖定畫面與動態島顯示導航資訊',
                 value: _liveActivityEnabled,
                 onChanged: (v) {
-                  HiveStore.liveActivityEnabled = v;
+                  _settings.liveActivityEnabled = v;
                   setState(() => _liveActivityEnabled = v);
                 },
               ),
@@ -196,7 +201,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 subtitle: '用於自動上車提醒與車上進度；關閉後仍可手動操作',
                 value: _navigationLocationEnabled,
                 onChanged: (v) {
-                  HiveStore.navigationLocationEnabled = v;
+                  _settings.navigationLocationEnabled = v;
                   setState(() => _navigationLocationEnabled = v);
                 },
               ),
@@ -219,7 +224,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onChanged: (value) => _setCollection(
                   value: value,
                   persist: ({required value}) =>
-                      HiveStore.analyticsEnabled = value,
+                      _settings.analyticsEnabled = value,
                   update: ({required value}) => _analyticsEnabled = value,
                   setCollectionEnabled: ({required value}) => FirebaseAnalytics
                       .instance
@@ -233,7 +238,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 onChanged: (value) => _setCollection(
                   value: value,
                   persist: ({required value}) =>
-                      HiveStore.crashlyticsEnabled = value,
+                      _settings.crashlyticsEnabled = value,
                   update: ({required value}) => _crashlyticsEnabled = value,
                   setCollectionEnabled: ({required value}) =>
                       FirebaseCrashlytics.instance

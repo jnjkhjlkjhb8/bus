@@ -109,6 +109,11 @@ class _FakeSearchRecentRepository implements SearchRecentRepository {
   }
 
   @override
+  Future<void> remove(SearchResult result) async {
+    _recents.removeWhere((r) => r.type == result.type && r.uid == result.uid);
+  }
+
+  @override
   Future<void> clear() async {
     _recents.clear();
   }

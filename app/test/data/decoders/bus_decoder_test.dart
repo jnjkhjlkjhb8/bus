@@ -334,7 +334,6 @@ void main() {
         routeName: '262',
         destination: '去程',
         estimateSeconds: 90,
-        stopStatus: 0,
         arrivalUnix: _nowUnix + 90,
       );
       expect(arrival.displayStatus, BusStopDisplayStatus.minutes);

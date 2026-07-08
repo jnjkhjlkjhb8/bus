@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/grpc/resilient_stream.dart';
+import 'package:wheres_the_car/data/live/arrival_feed.dart';
 import 'package:wheres_the_car/data/repositories/bus_stop_eta_repository.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
@@ -17,21 +17,20 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     on<BusStopStarted>(_onStarted);
     on<BusStopRetryRequested>(_onStarted);
     on<BusStopArrivalsUpdated>(_onUpdated);
-    on<BusStopDecayTicked>(_onDecayTicked);
     on<BusStopStationSelected>(_onStationSelected);
     on<BusStopFailed>(_onFailed);
     add(const BusStopStarted());
-    _decayTimer = Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => add(const BusStopDecayTicked()),
-    );
   }
 
   final String? stopId;
   final String? city;
   final BusStopEtaRepository _repository;
-  ResilientSubscription<List<BusStopArrival>>? _sub;
-  Timer? _decayTimer;
+  // Replace policy + 15s decay live inside the feed; the empty-frame guard the
+  // bloc used to run in _onUpdated is the feed's replace policy now.
+  final _feed = ArrivalFeed<BusStopArrival>.replace(
+    decay: (a, now) => a.decayed(now),
+  );
+  StreamSubscription<List<BusStopArrival>>? _sub;
 
   Future<void> _onStarted(BusStopEvent _, Emitter<BusStopState> emit) async {
     final id = stopId ?? '';
@@ -49,11 +48,12 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     } on Object catch (e, s) {
       CrashReporter.record(e, s);
     }
-    _sub = ResilientSubscription<List<BusStopArrival>>(
-      source: () => _repository.watchStop(id, city: city),
-      onData: (arrivals) => add(BusStopArrivalsUpdated(arrivals)),
-      onFailure: (e) => add(BusStopFailed(e)),
-    );
+    _sub = _feed
+        .watch(
+          source: () => _repository.watchStop(id, city: city),
+          onFailure: (e) => add(BusStopFailed(e)),
+        )
+        .listen((arrivals) => add(BusStopArrivalsUpdated(arrivals)));
   }
 
   void _onStationSelected(
@@ -68,7 +68,8 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
   }
 
   void _onUpdated(BusStopArrivalsUpdated event, Emitter<BusStopState> emit) {
-    if (event.arrivals.isEmpty && state.arrivals.isNotEmpty) return;
+    // The feed applies the empty-frame guard and decay upstream; the bloc keeps
+    // the status decision (empty only when no arrivals and no member stops).
     emit(
       state.copyWith(
         status: event.arrivals.isEmpty && state.members.isEmpty
@@ -81,23 +82,12 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     );
   }
 
-  void _onDecayTicked(BusStopDecayTicked _, Emitter<BusStopState> emit) {
-    if (state.arrivals.isEmpty) return;
-    final now = DateTime.now();
-    emit(
-      state.copyWith(
-        arrivals: [for (final a in state.arrivals) a.decayed(now)],
-      ),
-    );
-  }
-
   void _onFailed(BusStopFailed event, Emitter<BusStopState> emit) {
     emit(state.copyWith(status: BusStopStatus.error, error: event.error));
   }
 
   @override
   Future<void> close() async {
-    _decayTimer?.cancel();
     await _sub?.cancel();
     return super.close();
   }

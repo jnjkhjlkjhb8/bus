@@ -5,13 +5,13 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/firebase/firebase_telemetry.dart';
-import 'package:wheres_the_car/core/grpc/live_data.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
+import 'package:wheres_the_car/data/live/arrival_feed.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 import 'package:wheres_the_car/data/repositories/bus_repository.dart';
 import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
+import 'package:wheres_the_car/data/repositories/reminders_repository.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
 
@@ -20,12 +20,13 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     required this.subRouteUid,
     bool autoStart = true,
     FirebaseRepository? firebaseRepository,
+    RemindersRepository? remindersRepository,
   }) : _firebase = firebaseRepository ?? FirebaseRepository.instance,
+       _reminders = remindersRepository ?? RemindersRepository.instance,
        super(const BusRouteState()) {
     on<BusRouteStarted>(_onStarted);
     on<BusRouteDirectionToggled>(_onDirectionToggled);
     on<BusRouteEtaUpdated>(_onEtaUpdated);
-    on<BusRouteDecayTicked>(_onDecayTicked);
     on<BusRouteDetailsUpdated>(_onDetailsUpdated);
     on<BusRouteReminderToggled>(_onReminderToggled);
     on<BusRouteStreamFailed>(_onStreamFailed);
@@ -35,8 +36,13 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
 
   final String subRouteUid;
   final FirebaseRepository _firebase;
-  LiveData<List<BusStopEtaViewModel>>? _etaSub;
-  Timer? _decayTimer;
+  final RemindersRepository _reminders;
+  // Replace policy + 15s decay live inside the feed; the bloc keys the emitted
+  // list into etaMap on arrival (etaKey), preserving the map-shaped state.
+  final _feed = ArrivalFeed<BusStopEtaViewModel>.replace(
+    decay: (e, now) => e.decayed(now),
+  );
+  StreamSubscription<List<BusStopEtaViewModel>>? _etaSub;
 
   static String etaKey(BusStopEtaViewModel eta) => eta.sequence > 0
       ? 'seq:${eta.direction}:${eta.sequence}'
@@ -48,15 +54,11 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   ) async {
     await _etaSub?.cancel();
     _etaSub = null;
-    _decayTimer ??= Timer.periodic(
-      const Duration(seconds: 15),
-      (_) => add(const BusRouteDecayTicked()),
-    );
     emit(
       state.copyWith(
         loading: true,
         clearError: true,
-        reminders: HiveStore.activeReminders(subRouteUid),
+        reminders: _reminders.active(subRouteUid),
       ),
     );
     try {
@@ -70,16 +72,19 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
         ),
       );
 
-      _etaSub = LiveData<List<BusStopEtaViewModel>>.watch(
-        source: () => BusRepository.instance.routeEta(subRouteUid),
-        onData: (etaList) {
-          final map = {for (final e in etaList) etaKey(e): e};
-          if (map.isEmpty) return;
-          add(BusRouteEtaUpdated(map));
-        },
-        onFailure: (e) => add(BusRouteStreamFailed(e)),
-        onRecovered: () => add(const BusRouteStreamRecovered()),
-      );
+      _etaSub = _feed
+          .watch(
+            source: () => BusRepository.instance.routeEta(subRouteUid),
+            onFailure: (e) => add(BusRouteStreamFailed(e)),
+            onRecovered: () => add(const BusRouteStreamRecovered()),
+          )
+          .listen(
+            (etaList) => add(
+              BusRouteEtaUpdated({
+                for (final e in etaList) etaKey(e): e,
+              }),
+            ),
+          );
 
       final details = await _loadDetails();
       if (details != null) {
@@ -117,18 +122,9 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   }
 
   void _onEtaUpdated(BusRouteEtaUpdated event, Emitter<BusRouteState> emit) {
+    // The feed guards empty frames upstream; this stays a defensive no-op.
     if (event.etaMap.isEmpty && state.etaMap.isNotEmpty) return;
     emit(state.copyWith(etaMap: event.etaMap));
-  }
-
-  void _onDecayTicked(BusRouteDecayTicked _, Emitter<BusRouteState> emit) {
-    if (state.etaMap.isEmpty) return;
-    final now = DateTime.now();
-    final decayed = {
-      for (final entry in state.etaMap.entries)
-        entry.key: entry.value.decayed(now),
-    };
-    emit(state.copyWith(etaMap: decayed));
   }
 
   void _onDetailsUpdated(
@@ -166,7 +162,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
         if (!existing.startsWith('local:')) {
           await _firebase.cancelArrivalReminder(existing);
         }
-        await HiveStore.removeReminder(subRouteUid, event.stopUid);
+        await _reminders.remove(subRouteUid, event.stopUid);
         unawaited(
           FirebaseTelemetry.instance.arrivalReminderChanged(
             routeType: 'bus',
@@ -209,7 +205,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
             ..[event.stopUid] = reminder.reminderId,
         ),
       );
-      await HiveStore.putReminder(
+      await _reminders.put(
         subRouteUid,
         event.stopUid,
         reminder.reminderId,
@@ -250,7 +246,6 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
 
   @override
   Future<void> close() async {
-    _decayTimer?.cancel();
     await _etaSub?.cancel();
     return super.close();
   }

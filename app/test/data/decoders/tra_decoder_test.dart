@@ -95,4 +95,28 @@ void main() {
       expect(_decoder.decodeTimetable(tra_timetables()), isEmpty);
     });
   });
+
+  group('decodeTimetableCard', () {
+    test('carries station names, type, and the raw travel-time string', () {
+      final view = _decoder.decodeTimetableCard(
+        tra_timetable(
+          trainNo: '123',
+          trainTypeName: '自強',
+          startingStationName: '臺北',
+          endingStationName: '花蓮',
+          startingTime: '08:00',
+          endingTime: '10:30',
+          travelTime: '2:30',
+        ),
+      );
+      expect(view.trainNo, '123');
+      expect(view.trainType, '自強');
+      expect(view.originName, '臺北');
+      expect(view.destinationName, '花蓮');
+      expect(view.departureTime, '08:00');
+      expect(view.arrivalTime, '10:30');
+      // Kept verbatim, not parsed to minutes.
+      expect(view.travelTime, '2:30');
+    });
+  });
 }

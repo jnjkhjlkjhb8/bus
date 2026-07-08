@@ -25,7 +25,8 @@ class BusRouteState extends Equatable {
 
   /// Active arrival reminders on this route: stopUid -> server reminderId.
   ///
-  // Mirrored locally (HiveStore) so the bell survives navigation/restart.
+  // Mirrored locally (RemindersRepository) so the bell survives navigation and
+  // restart.
   // Reminders stay one-shot: the backend marks one fired after sending the
   // push but never tells the app (no listReminders RPC), so a fired reminder
   // can still read as active until its local TTL lapses.

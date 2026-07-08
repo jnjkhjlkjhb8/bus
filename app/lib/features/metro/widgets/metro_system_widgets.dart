@@ -101,12 +101,7 @@ class _SystemPillState extends State<_SystemPill> {
           setState(() => _isPickerOpen = false);
         }
         if (value != null && context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('$value 尚未支援'),
-              duration: const Duration(seconds: 2),
-            ),
-          );
+          AppSnackbar.show(context, '$value 尚未支援');
         }
       }),
     );

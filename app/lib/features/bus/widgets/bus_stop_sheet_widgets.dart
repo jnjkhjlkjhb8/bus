@@ -1,49 +1,20 @@
 part of '../view/bus_stop_detail_view.dart';
 
+/// Pairs the shared [ArrivalDisplay] (label/status/rank, mapped by the one
+/// status/rank rule in the data layer) with the routing identifiers the stop
+/// sheet still needs: [stationId] for per-stop grouping and [subRouteUid] for
+/// the tap target. The status/rank mapping lives in [ArrivalDisplay.fromBusStop].
 class _Arrival {
-  const _Arrival({
-    required this.stationId,
-    required this.subRouteUid,
-    required this.routeNo,
-    required this.destination,
-    required this.status,
-    required this.rank,
-  });
+  _Arrival(BusStopArrival a)
+    : stationId = a.stationId,
+      subRouteUid = a.subRouteUid,
+      display = ArrivalDisplay.fromBusStop(a);
+
   final String stationId;
   final String subRouteUid;
-  final String routeNo;
-  final String destination;
-  final EtaStatus status;
-  final int rank;
-}
+  final ArrivalDisplay display;
 
-/// Maps a decoded arrival onto the tile's display status via the one shared
-/// status mapping, so every service state (進站中 / 即將進站 / N分 / 尚未發車 /
-/// 末班已過 / 交管不停靠 / 發車時刻) renders faithfully. The rank sorts soonest
-/// first, service-state rows last.
-_Arrival _toArrival(BusStopArrival a) {
-  final (EtaStatus status, int rank) = switch (a.displayStatus) {
-    BusStopDisplayStatus.arriving => (EtaStatus.arriving(), 0),
-    BusStopDisplayStatus.departingSoon => (EtaStatus.approaching(), 1),
-    BusStopDisplayStatus.minutes => (
-      EtaStatus.minutes(a.minutes ?? 0),
-      (a.minutes ?? 0) + 2,
-    ),
-    _ => (
-      a.displayLabel != null
-          ? EtaStatus.label(a.displayLabel!)
-          : EtaStatus.unknown(),
-      9999,
-    ),
-  };
-  return _Arrival(
-    stationId: a.stationId,
-    subRouteUid: a.subRouteUid,
-    routeNo: a.routeName,
-    destination: a.destination,
-    status: status,
-    rank: rank,
-  );
+  int get rank => display.rank;
 }
 
 class _StopSheet extends StatelessWidget {
@@ -114,7 +85,7 @@ class _StopSheet extends StatelessWidget {
           ),
         ];
       case BusStopStatus.loaded:
-        final arrivals = [for (final a in state.arrivals) _toArrival(a)]
+        final arrivals = [for (final a in state.arrivals) _Arrival(a)]
           ..sort((a, b) => a.rank.compareTo(b.rank));
         final byStation = <String, List<_Arrival>>{};
         for (final a in arrivals) {
@@ -138,7 +109,7 @@ class _StopSheet extends StatelessWidget {
                 index: i,
                 child: _EtaChevronTile(
                   arrival: a,
-                  highlighted: i == 0 && a.rank <= 3,
+                  highlighted: i == 0 && a.display.isComingSoon,
                 ),
               )
           else
@@ -151,7 +122,7 @@ class _StopSheet extends StatelessWidget {
                   index: memberIndex * 10 + i,
                   child: _EtaChevronTile(
                     arrival: a,
-                    highlighted: i == 0 && a.rank <= 3,
+                    highlighted: i == 0 && a.display.isComingSoon,
                   ),
                 ),
                 if (i < (byStation[member.stationUid]?.length ?? 0) - 1)

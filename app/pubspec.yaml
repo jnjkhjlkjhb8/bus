@@ -66,12 +66,12 @@ dependencies:
   hive_ce_flutter: ^1.1.0
   intl: ^0.20.2
   material_symbols_icons: ^4.2951.0
+  package_info_plus: ^10.2.0
   path: ^1.9.1
   path_provider: ^2.1.5
   powersync: ^2.2.0
   pretty_dio_logger: ^1.4.0
   protobuf: ^6.0.0
-  package_info_plus: ^10.2.0
   smooth_sheets: ^1.0.2
   sqlite3: ^3.3.2
   sqlite3_flutter_libs: ^0.6.0+eol

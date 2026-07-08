@@ -232,6 +232,7 @@ const _feedback = [
   _UiKitItem('Spinner', Icons.refresh_rounded, '/ui-kit/spinner'),
   _UiKitItem('Progress Bar', Icons.linear_scale_rounded, '/ui-kit/progress'),
   _UiKitItem('Tooltip', Icons.info_rounded, '/ui-kit/tooltip'),
+  _UiKitItem('Snackbar', Icons.chat_bubble_outline_rounded, '/ui-kit/snackbar'),
   _UiKitItem('Badge', Icons.badge_rounded, '/ui-kit/badge'),
 ];
 

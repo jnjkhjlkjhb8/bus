@@ -45,7 +45,8 @@ bucket_definitions:
             from_station_id,
             to_station_id,
             system,
-            fare_nt
+            fare_nt,
+            travel_time_min
           FROM mrt_journey_matrix
       - SELECT
             station_id || ':' || lineid || ':' || destinationstaionid || ':' || serviceday || ':' || system AS id,

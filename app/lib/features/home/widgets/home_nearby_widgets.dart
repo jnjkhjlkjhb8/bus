@@ -128,14 +128,21 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
           child: BlocBuilder<NearbyBloc, NearbyState>(
             builder: (context, state) {
               if (state.loading && state.stations.isEmpty) {
-                return ListView(
-                  padding: const EdgeInsets.only(top: 4),
-                  children: const [
-                    _LocatingHeader(),
-                    ShimmerRow(height: 62),
-                    ShimmerRow(height: 62),
-                    ShimmerRow(height: 62),
-                  ],
+                return LayoutBuilder(
+                  builder: (context, constraints) {
+                    // Each ShimmerRow is height + 8 (vertical margin); fill
+                    // the viewport so the skeleton reads as a full list.
+                    const rowExtent = 62 + 8.0;
+                    final count = (constraints.maxHeight / rowExtent).ceil();
+                    return ListView(
+                      padding: const EdgeInsets.only(top: 4),
+                      physics: const NeverScrollableScrollPhysics(),
+                      children: [
+                        for (var i = 0; i < count; i++)
+                          const ShimmerRow(height: 62),
+                      ],
+                    );
+                  },
                 );
               }
               if (state.error != null) {
@@ -167,33 +174,6 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
           ),
         ),
       ],
-    );
-  }
-}
-
-/// Loading header shown above the shimmer while GPS + the nearby query run —
-/// turns the bare skeleton into an explicit "we're finding stations" cue.
-class _LocatingHeader extends StatelessWidget {
-  const _LocatingHeader();
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 14),
-      child: Row(
-        children: [
-          const AppSpinner(size: 14),
-          const SizedBox(width: 10),
-          Text(
-            '正在尋找附近站點…',
-            style: AppTextStyles.bodyRegular.copyWith(
-              fontSize: 13,
-              color: cs.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ),
     );
   }
 }

@@ -14,16 +14,14 @@ class _EtaChevronTile extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: EtaListTile(
-            routeNo: arrival.routeNo,
-            destination: arrival.destination,
-            status: arrival.status,
+          child: EtaListTile.fromDisplay(
+            arrival.display,
             highlighted: highlighted,
             onTap: () {
               unawaited(HapticService.instance.lightTap());
               final target = arrival.subRouteUid.isNotEmpty
                   ? arrival.subRouteUid
-                  : arrival.routeNo;
+                  : arrival.display.label;
               unawaited(context.push('/bus/route/$target'));
             },
           ),

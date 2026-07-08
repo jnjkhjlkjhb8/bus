@@ -84,6 +84,17 @@ class _StationDetailSheet extends StatelessWidget {
                   children: [ShimmerRow(), ShimmerRow(), ShimmerRow()],
                 );
               }
+              if (arrivals.isEmpty) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    '目前無列車資訊',
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
+                  ),
+                );
+              }
               return Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -190,23 +201,31 @@ class _ArrivalRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final status = arrival.approaching
-        ? EtaStatus.approaching()
-        : EtaStatus.minutes(arrival.estimateMinutes);
+    // Status mapping goes through the shared ArrivalDisplay contract so metro
+    // stops re-implementing the approaching/minutes rule; the time value still
+    // renders through the shared EtaValue (mono, tabular). Metro keeps its own
+    // row chrome — a line-coloured roundel lead, heading2 destination, and no
+    // coming-soon highlight or tap target — which the bus tile does not carry.
+    final display = ArrivalDisplay.fromMetro(
+      line: arrival.line,
+      destination: arrival.destination,
+      estimateMinutes: arrival.estimateMinutes,
+      approaching: arrival.approaching,
+    );
     return Row(
       children: [
         TransportIcon(type: _getTransportType(arrival.line)),
         const SizedBox(width: 12),
         Expanded(
           child: Text(
-            '往 ${arrival.destination}',
+            '往 ${display.destination}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: AppTextStyles.heading2,
           ),
         ),
         const SizedBox(width: 12),
-        EtaValue(status: status),
+        EtaValue(status: display.status),
       ],
     );
   }

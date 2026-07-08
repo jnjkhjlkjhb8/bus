@@ -1,44 +1,29 @@
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/generated/thsr.pb.dart';
-import 'package:wheres_the_car/data/generated/tra.pb.dart';
+import 'package:wheres_the_car/data/models/rail_timetable_view.dart';
 import 'package:wheres_the_car/shared/widgets/train_type_chip.dart';
 
-/// Summary card for one backend-shaped TRA or THSR timetable result.
+/// Summary card for one TRA or THSR timetable result. Consumes a decoded
+/// [RailTimetableView]; the backend proto never reaches this widget.
 class RailTimetableCard extends StatelessWidget {
-  const RailTimetableCard.tra({
-    required tra_timetable timetable,
+  const RailTimetableCard({
+    required this.timetable,
     this.delayMinutes = 0,
     this.onTap,
     super.key,
-  }) : _traTimetable = timetable,
-       _thsrTimetable = null;
+  });
 
-  const RailTimetableCard.thsr({
-    required thsa_timetable timetable,
-    this.delayMinutes = 0,
-    this.onTap,
-    super.key,
-  }) : _traTimetable = null,
-       _thsrTimetable = timetable;
-
-  final tra_timetable? _traTimetable;
-  final thsa_timetable? _thsrTimetable;
+  final RailTimetableView timetable;
   final int delayMinutes;
   final VoidCallback? onTap;
 
-  String get _trainNo => _traTimetable?.trainNo ?? _thsrTimetable!.trainNo;
-  String get _trainType => _traTimetable?.trainTypeName ?? '高鐵';
-  String get _origin =>
-      _traTimetable?.startingStationName ?? _thsrTimetable!.startingStationName;
-  String get _destination =>
-      _traTimetable?.endingStationName ?? _thsrTimetable!.endingStationName;
-  String get _departureTime =>
-      _clockTime(_traTimetable?.startingTime ?? _thsrTimetable!.startingTime);
-  String get _arrivalTime =>
-      _clockTime(_traTimetable?.endingTime ?? _thsrTimetable!.endingTime);
-  String get _travelTime =>
-      _traTimetable?.travelTime ?? _thsrTimetable!.travelTime;
+  String get _trainNo => timetable.trainNo;
+  String get _trainType => timetable.trainType;
+  String get _origin => timetable.originName;
+  String get _destination => timetable.destinationName;
+  String get _departureTime => _clockTime(timetable.departureTime);
+  String get _arrivalTime => _clockTime(timetable.arrivalTime);
+  String get _travelTime => timetable.travelTime;
 
   static String _clockTime(String value) {
     final match = RegExp(r'(?:T|^)(\d{2}:\d{2})').firstMatch(value);

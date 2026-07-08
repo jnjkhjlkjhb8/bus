@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/data/models/arrival_display.dart';
+import 'package:wheres_the_car/data/models/eta_status.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+
+export 'package:wheres_the_car/data/models/eta_status.dart';
 
 @Preview(name: 'EtaListTile — arriving', group: 'ETA')
 @Preview(name: 'EtaListTile — minutes', group: 'ETA')
@@ -40,39 +44,6 @@ Widget etaListTilePreviews() {
   );
 }
 
-sealed class EtaStatus {
-  const EtaStatus();
-  factory EtaStatus.arriving() = _Arriving;
-  factory EtaStatus.approaching() = _Approaching;
-  factory EtaStatus.minutes(int m) = _Minutes;
-  factory EtaStatus.label(String text) = _Label;
-  factory EtaStatus.unknown() = _Unknown;
-}
-
-final class _Arriving extends EtaStatus {
-  const _Arriving();
-}
-
-final class _Approaching extends EtaStatus {
-  const _Approaching();
-}
-
-final class _Minutes extends EtaStatus {
-  const _Minutes(this.value);
-  final int value;
-}
-
-/// A service-state label (e.g. 尚未發車, 末班已過, or a scheduled clock time)
-/// carried verbatim from the one status-label mapping in eta_format.dart.
-final class _Label extends EtaStatus {
-  const _Label(this.text);
-  final String text;
-}
-
-final class _Unknown extends EtaStatus {
-  const _Unknown();
-}
-
 class EtaListTile extends StatelessWidget {
   const EtaListTile({
     required this.routeNo,
@@ -84,6 +55,28 @@ class EtaListTile extends StatelessWidget {
     this.highlighted = false,
     this.track,
   });
+
+  /// Builds a tile straight from the shared [ArrivalDisplay] contract. The
+  /// caller decides [highlighted] from the list position and
+  /// [ArrivalDisplay.isComingSoon] so at most the soonest row lights up; modes
+  /// without the coming-soon highlight (metro) leave it false.
+  factory EtaListTile.fromDisplay(
+    ArrivalDisplay display, {
+    Key? key,
+    String? direction,
+    VoidCallback? onTap,
+    bool highlighted = false,
+    Widget? track,
+  }) => EtaListTile(
+    key: key,
+    routeNo: display.label,
+    status: display.status,
+    destination: display.destination,
+    direction: direction,
+    onTap: onTap,
+    highlighted: highlighted,
+    track: track,
+  );
 
   final String routeNo;
   final EtaStatus status;
@@ -183,21 +176,21 @@ class EtaValue extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return switch (status) {
-      _Arriving() => Text(
+      EtaArriving() => Text(
         '進站中',
         style: AppTextStyles.heading2.copyWith(
           fontWeight: FontWeight.w700,
           color: AppTheme.statusArrivingText,
         ),
       ),
-      _Approaching() => Text(
+      EtaApproaching() => Text(
         '即將進站',
         style: AppTextStyles.heading2.copyWith(
           fontWeight: FontWeight.w700,
           color: AppTheme.etaApproaching,
         ),
       ),
-      _Minutes(:final value) => Row(
+      EtaMinutes(:final value) => Row(
         textBaseline: TextBaseline.alphabetic,
         crossAxisAlignment: CrossAxisAlignment.baseline,
         mainAxisSize: MainAxisSize.min,
@@ -218,14 +211,14 @@ class EtaValue extends StatelessWidget {
           ),
         ],
       ),
-      _Label(:final text) => Text(
+      EtaLabel(:final text) => Text(
         text,
         style: AppTextStyles.bodyLarge.copyWith(
           fontWeight: FontWeight.w600,
           color: cs.onSurfaceVariant,
         ),
       ),
-      _Unknown() => Text(
+      EtaUnknown() => Text(
         '—',
         semanticsLabel: '目前無到站資訊',
         style: AppTextStyles.bodyLarge.copyWith(color: cs.outline),

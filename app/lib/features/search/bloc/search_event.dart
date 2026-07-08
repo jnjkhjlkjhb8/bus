@@ -29,6 +29,13 @@ class SearchRecentRequested extends SearchEvent {
   const SearchRecentRequested();
 }
 
+class SearchRecentRemoved extends SearchEvent {
+  const SearchRecentRemoved(this.result);
+  final SearchResult result;
+  @override
+  List<Object?> get props => [result];
+}
+
 class SearchQuerySubmitted extends SearchEvent {
   const SearchQuerySubmitted(this.query, this.requestId);
   final String query;

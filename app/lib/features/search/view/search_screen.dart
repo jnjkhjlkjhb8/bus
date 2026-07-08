@@ -6,7 +6,6 @@ import 'package:go_router/go_router.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';
 import 'package:wheres_the_car/features/search/bloc/search_bloc.dart';
 import 'package:wheres_the_car/features/search/bloc/search_event.dart';
@@ -14,6 +13,7 @@ import 'package:wheres_the_car/features/search/bloc/search_state.dart';
 import 'package:wheres_the_car/features/search/genui/view/genui_sheet.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
 
@@ -30,14 +30,10 @@ String _todayIso() {
 
 void _navigateToResult(BuildContext context, SearchResult result) {
   unawaited(HapticService.instance.lightTap());
-  unawaited(
-    HiveStore.addRecentSearch({
-      'type': result.type.name,
-      'uid': result.uid,
-      'name': result.name,
-      'subtitle': result.subtitle,
-    }),
-  );
+  // Persist the selection through the recent-search repository (owned by
+  // SearchBloc) so every entry point — result rows, recents, and AI — records
+  // history in one place instead of writing storage directly.
+  context.read<SearchBloc>().add(SearchResultSelected(result));
   switch (result.type) {
     case SearchResultType.busRoute:
       unawaited(context.push('/bus/route/${result.uid}'));
@@ -356,12 +352,8 @@ class _SearchViewState extends State<_SearchView> {
                                 return _SearchResultRow(
                                   result: result,
                                   transportType: _transportType(result.type),
-                                  onTap: () {
-                                    context.read<SearchBloc>().add(
-                                      SearchResultSelected(result),
-                                    );
-                                    _navigateToResult(context, result);
-                                  },
+                                  onTap: () =>
+                                      _navigateToResult(context, result),
                                 );
                               },
                             ),

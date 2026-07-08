@@ -10,6 +10,7 @@ import 'package:wheres_the_car/core/location/location_service.dart';
 import 'package:wheres_the_car/data/repositories/places_repository.dart';
 import 'package:wheres_the_car/features/go/model/planned_place.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 
 Future<PlannedPlace> resolveCurrentPlace() async {
@@ -132,12 +133,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     } on Object catch (_) {
       if (!mounted) return;
       setState(() => _resolvingLocation = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('無法取得目前位置'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      AppSnackbar.show(context, '無法取得目前位置', type: SnackType.error);
     }
   }
 
@@ -155,12 +151,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     } on Object catch (_) {
       if (!mounted) return;
       setState(() => _picking = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('無法取得地點資訊'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+      AppSnackbar.show(context, '無法取得地點資訊', type: SnackType.error);
     }
   }
 

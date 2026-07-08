@@ -4,13 +4,10 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/grpc/live_data.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/models/alert_models.dart';
 import 'package:wheres_the_car/data/repositories/alert_repository.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
-
-const _kReadKey = 'read_alerts';
 
 /// Parses the `alert_sources` remote-config value: comma-separated tagged
 /// tokens `metro:<system>` and `bus:<city>`. Malformed or unknown-kind tokens
@@ -36,7 +33,13 @@ const _kReadKey = 'read_alerts';
 }
 
 class AlertBloc extends Bloc<AlertEvent, AlertState> {
-  AlertBloc() : super(AlertState(readMessages: _loadRead())) {
+  AlertBloc({AlertRepository? repository})
+    : _repository = repository ?? AlertRepository.instance,
+      super(
+        AlertState(
+          readMessages: (repository ?? AlertRepository.instance).readAlerts(),
+        ),
+      ) {
     on<AlertStarted>(_onStarted);
     on<AlertReceived>(_onReceived);
     on<AlertDismissed>(_onDismissed);
@@ -48,15 +51,10 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
     on<AlertStreamRecovered>(_onStreamRecovered);
   }
 
-  static Set<String> _loadRead() {
-    if (!HiveStore.settingsReady) return {};
-    final list = HiveStore.settings.get(_kReadKey, defaultValue: <String>[]);
-    return {...(list as List).cast<String>()};
-  }
+  final AlertRepository _repository;
 
   void _persistRead(Set<String> read) {
-    if (!HiveStore.settingsReady) return;
-    unawaited(HiveStore.settings.put(_kReadKey, read.toList()));
+    unawaited(_repository.persistReadAlerts(read));
   }
 
   final List<LiveData<AlertViewModel>> _subs = [];
@@ -80,14 +78,14 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
       );
     }
 
-    listen(AlertRepository.instance.traAlert);
-    listen(AlertRepository.instance.thsrAlert);
+    listen(_repository.traAlert);
+    listen(_repository.thsrAlert);
     final sources = parseAlertSources(AppConfig.getString('alert_sources'));
     for (final system in sources.metro) {
-      listen(() => AlertRepository.instance.metroAlert(system));
+      listen(() => _repository.metroAlert(system));
     }
     for (final city in sources.bus) {
-      listen(() => AlertRepository.instance.busNews(city));
+      listen(() => _repository.busNews(city));
     }
   }
 

@@ -9,6 +9,7 @@ import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_event.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_state.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 
 /// Shared header for a second-layer station-detail sheet: a drag handle on
@@ -96,12 +97,11 @@ class _FavoriteButton extends StatelessWidget {
     unawaited(HapticService.instance.lightTap());
     final wasSaved = context.read<FavoritesBloc>().state.contains(favorite.id);
     context.read<FavoritesBloc>().add(FavoriteToggled(favorite));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(wasSaved ? '已取消收藏' : '已加入收藏'),
-        duration: const Duration(seconds: 3),
-        action: SnackBarAction(label: '復原', onPressed: () => _toggle(context)),
-      ),
+    AppSnackbar.show(
+      context,
+      wasSaved ? '已取消收藏' : '已加入收藏',
+      action: '復原',
+      onAction: () => _toggle(context),
     );
   }
 

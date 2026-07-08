@@ -27,14 +27,18 @@ class BusRepository {
           .eta(Bus_Ask_Route(subRouteUID: subRouteUid))
           .map((resp) => BusDecoder.instance.decodeRouteEta(resp.data));
 
-  /// Server-streaming: emits station-group ETA data. [city] may be empty; the
-  /// server resolves it from the group when omitted.
-  Stream<Resp_Bus_station_eta> stationEta(String city, String groupUid) =>
+  /// Server-streaming: emits decoded station-group ETAs until the stream is
+  /// cancelled. [city] may be empty; the server resolves it from the group
+  /// when omitted.
+  Stream<List<BusStopArrival>> stationEta(String city, String groupUid) =>
       GrpcClient.instance.busStation
-          .eta(Bus_Ask_StationGroup(city: city, groupUid: groupUid));
+          .eta(Bus_Ask_StationGroup(city: city, groupUid: groupUid))
+          .map(BusDecoder.instance.decodeStationEta);
 
-  Future<Bus_StationGroup> stationGroup(String groupUid) => GrpcClient
-      .instance
-      .busStation
-      .group(Bus_Ask_StationGroup(groupUid: groupUid));
+  /// Resolves a station group's member stops as decoded domain types.
+  Future<List<BusStationMember>> stationGroup(String groupUid) async {
+    final group = await GrpcClient.instance.busStation
+        .group(Bus_Ask_StationGroup(groupUid: groupUid));
+    return BusDecoder.instance.decodeStationMembers(group);
+  }
 }

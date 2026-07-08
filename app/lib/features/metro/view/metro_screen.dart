@@ -8,6 +8,7 @@ import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/data/models/favorite.dart';
+import 'package:wheres_the_car/data/models/journey_info.dart';
 import 'package:wheres_the_car/data/models/metro_map_models.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_car/features/metro/bloc/metro_bloc.dart';
@@ -19,6 +20,7 @@ import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_sliding_segment.dart';
+import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
@@ -140,14 +142,18 @@ class _MetroScreenState extends State<MetroScreen> {
     _metroBloc.add(MetroStationTapped(stationId: station.id));
   }
 
-  Map<String, String> _buildLabels(List<MetroMapStation> all) {
-    if (_selected == null) return const {};
+  Map<String, String> _buildLabels(
+    List<MetroMapStation> all,
+    Map<String, JourneyInfo>? matrix,
+  ) {
+    if (_selected == null || matrix == null) return const {};
     return {
       for (final s in all)
         if (s.id != _selected!.id)
-          s.id: _mode == _MapMode.time
-              ? '${(s.id.hashCode.abs() % 20) + 3}'
-              : '${((s.id.hashCode.abs() % 20) + 3) * 2 + 20}',
+          if (matrix[s.id] case final info?)
+            s.id: _mode == _MapMode.time
+                ? (info.travelTimeMin > 0 ? '${info.travelTimeMin}' : '—')
+                : '\$${info.fareNt}',
     };
   }
 
@@ -247,11 +253,16 @@ class _MetroScreenState extends State<MetroScreen> {
         body: Stack(
           fit: StackFit.expand,
           children: [
-            MetroSvgMap(
-              selectedStationId: _selected?.id,
-              onStationTap: _selectStation,
-              stationLabels: _buildLabels(metroMapStations),
-              animate: _prevSelected == null && _selected != null,
+            BlocBuilder<MetroBloc, MetroState>(
+              builder: (context, state) => MetroSvgMap(
+                selectedStationId: _selected?.id,
+                onStationTap: _selectStation,
+                stationLabels: _buildLabels(
+                  metroMapStations,
+                  state.journeyMatrix,
+                ),
+                animate: _prevSelected == null && _selected != null,
+              ),
             ),
             SafeArea(
               bottom: false,

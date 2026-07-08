@@ -16,17 +16,20 @@ class FilterChipGroup<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final entry in options.entries)
-          _Chip(
-            label: entry.value,
-            selected: selected.contains(entry.key),
-            onTap: () => onToggle(entry.key),
-          ),
-      ],
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        spacing: 8,
+        children: [
+          for (final entry in options.entries)
+            _Chip(
+              label: entry.value,
+              selected: selected.contains(entry.key),
+              onTap: () => onToggle(entry.key),
+            ),
+        ],
+      ),
     );
   }
 }
