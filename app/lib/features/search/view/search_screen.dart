@@ -9,7 +9,6 @@ import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/rail_navigation_request.dart';
 import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';
-import 'package:wheres_the_car/features/rail/view/tra_station_board_view.dart';
 import 'package:wheres_the_car/features/search/bloc/search_bloc.dart';
 import 'package:wheres_the_car/features/search/bloc/search_event.dart';
 import 'package:wheres_the_car/features/search/bloc/search_state.dart';
@@ -17,7 +16,6 @@ import 'package:wheres_the_car/features/search/genui/view/genui_sheet.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
-import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
 
@@ -60,12 +58,9 @@ void _navigateToResult(BuildContext context, SearchResult result) {
       unawaited(context.push('/metro'));
     case SearchResultType.traStation:
       unawaited(
-        BottomSheetShell.show(
-          context: context,
-          child: TraStationBoardView(
-            stationId: result.uid,
-            name: result.name,
-          ),
+        context.push(
+          '/rail/station',
+          extra: {'stationId': result.uid, 'name': result.name},
         ),
       );
     case SearchResultType.thsrStation:

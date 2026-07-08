@@ -76,7 +76,7 @@ class SheetDetailHeader extends StatelessWidget {
                   ),
                 ),
               ),
-              if (favorite != null) _FavoriteButton(favorite: favorite!),
+              if (favorite != null) FavoriteToggleButton(favorite: favorite!),
               // Mutually exclusive with favorite (see assert): when a favorite
               // is set, trailing is null and this adds nothing.
               ?trailing,
@@ -88,8 +88,11 @@ class SheetDetailHeader extends StatelessWidget {
   }
 }
 
-class _FavoriteButton extends StatelessWidget {
-  const _FavoriteButton({required this.favorite});
+/// Bookmark toggle for a [Favorite]: filled when saved, with an undo snackbar.
+/// Reused by [SheetDetailHeader] and by full-page detail app bars. Requires a
+/// [FavoritesBloc] above it in the tree.
+class FavoriteToggleButton extends StatelessWidget {
+  const FavoriteToggleButton({required this.favorite, super.key});
 
   final Favorite favorite;
 

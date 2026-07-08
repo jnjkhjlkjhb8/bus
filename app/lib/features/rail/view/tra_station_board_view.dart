@@ -11,6 +11,7 @@ import 'package:wheres_the_car/features/rail/bloc/tra_station_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/tra_station_state.dart';
 import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/sheet_detail_header.dart';
@@ -55,6 +56,42 @@ class TraStationBoardView extends StatelessWidget {
           ),
           Flexible(child: _Board(stationId: stationId, originName: name)),
         ],
+      ),
+    );
+  }
+}
+
+/// Full-page version of the station board, pushed from search (`/rail/station`).
+/// Same live board as [TraStationBoardView], hosted in a [Scaffold] with a
+/// back/favorite app bar instead of a bottom sheet.
+class TraStationScreen extends StatelessWidget {
+  const TraStationScreen({
+    required this.stationId,
+    required this.name,
+    super.key,
+  });
+
+  final String stationId;
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: DetailAppBar(
+        title: name,
+        actions: [
+          FavoriteToggleButton(
+            favorite: Favorite(
+              type: FavoriteType.railStation,
+              refId: stationId,
+              title: name,
+            ),
+          ),
+        ],
+      ),
+      body: BlocProvider(
+        create: (_) => TraStationBloc()..add(LoadTraStation(stationId)),
+        child: _Board(stationId: stationId, originName: name),
       ),
     );
   }
