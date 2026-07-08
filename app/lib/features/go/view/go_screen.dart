@@ -55,6 +55,15 @@ class _GoScreenState extends State<GoScreen> {
   PlannedPlace? _dest;
   PlanOptions _options = const PlanOptions();
 
+  // Memoized map overlays. Building the polyline/marker sets walks every
+  // section and intermediate stop, so cache them and reuse while the inputs
+  // (selected route, active leg, theme colors) are unchanged.
+  PlanRoute? _overlayRoute;
+  int? _overlayLeg;
+  ColorScheme? _overlayScheme;
+  Set<Polyline> _overlayPolylines = const {};
+  Set<Marker> _overlayMarkers = const {};
+
   @override
   void initState() {
     super.initState();
@@ -307,6 +316,21 @@ class _GoScreenState extends State<GoScreen> {
     };
   }
 
+  // Recomputes the cached overlays only when the route identity, active leg,
+  // or theme colors change; identical inputs reuse the previous sets.
+  void _ensureOverlays(PlanRoute route, int? activeLeg, ColorScheme cs) {
+    if (identical(_overlayRoute, route) &&
+        _overlayLeg == activeLeg &&
+        identical(_overlayScheme, cs)) {
+      return;
+    }
+    _overlayRoute = route;
+    _overlayLeg = activeLeg;
+    _overlayScheme = cs;
+    _overlayPolylines = _polylines(route, activeLeg: activeLeg);
+    _overlayMarkers = _markers(route);
+  }
+
   @override
   Widget build(BuildContext context) {
     // The session can reach `done` on its own (last leg alighted, or the 8h
@@ -330,6 +354,14 @@ class _GoScreenState extends State<GoScreen> {
     return BlocConsumer<PlanBloc, PlanState>(
       listenWhen: (p, c) =>
           p.status != c.status && c.status == PlanStatus.success,
+      // activeStopIndex advances within a leg as the user progresses but does
+      // not affect this subtree, so skip those emissions.
+      buildWhen: (p, c) =>
+          p.status != c.status ||
+          p.result != c.result ||
+          p.error != c.error ||
+          p.selectedRouteIndex != c.selectedRouteIndex ||
+          p.activeLegIndex != c.activeLegIndex,
       listener: (context, state) {
         final route = _activeRoute(state);
         if (route != null && state.activeLegIndex == null) _fitTo(route);
@@ -337,6 +369,13 @@ class _GoScreenState extends State<GoScreen> {
       builder: (context, state) {
         final navigating = state.activeLegIndex != null;
         final route = _activeRoute(state);
+        if (route != null) {
+          _ensureOverlays(
+            route,
+            navigating ? state.activeLegIndex : null,
+            Theme.of(context).colorScheme,
+          );
+        }
         return PopScope(
           canPop: !navigating,
           onPopInvokedWithResult: (didPop, _) {
@@ -361,13 +400,8 @@ class _GoScreenState extends State<GoScreen> {
                     zoomControlsEnabled: false,
                     compassEnabled: false,
                     mapToolbarEnabled: false,
-                    polylines: route == null
-                        ? const {}
-                        : _polylines(
-                            route,
-                            activeLeg: navigating ? state.activeLegIndex : null,
-                          ),
-                    markers: route == null ? const {} : _markers(route),
+                    polylines: route == null ? const {} : _overlayPolylines,
+                    markers: route == null ? const {} : _overlayMarkers,
                   ),
                 ),
                 Positioned(

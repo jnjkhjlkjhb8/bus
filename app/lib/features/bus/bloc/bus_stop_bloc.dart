@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/data/live/arrival_feed.dart';
@@ -71,12 +72,31 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
   void _onUpdated(BusStopArrivalsUpdated event, Emitter<BusStopState> emit) {
     // The feed applies the empty-frame guard and decay upstream; the bloc keeps
     // the status decision (empty only when no arrivals and no member stops).
+    final status = event.arrivals.isEmpty && state.members.isEmpty
+        ? BusStopStatus.empty
+        : BusStopStatus.loaded;
+    // An unchanged re-push (same values, new list instance) must leave the
+    // derived view-model and freshness time untouched so the state stays equal
+    // and the sheet does not rebuild. copyWith keeps the old values.
+    final arrivalsChanged = !listEquals(event.arrivals, state.arrivals);
+    if (!arrivalsChanged) {
+      emit(state.copyWith(status: status, clearError: true));
+      return;
+    }
+    // Arrivals moved: derive the sorted/grouped tile view-models here, off the
+    // widget build path. The sheet build becomes pure layout over this.
+    final displays = [for (final a in event.arrivals) BusStopArrivalItem(a)]
+      ..sort((a, b) => a.rank.compareTo(b.rank));
+    final byStation = <String, List<BusStopArrivalItem>>{};
+    for (final item in displays) {
+      byStation.putIfAbsent(item.stationId, () => []).add(item);
+    }
     emit(
       state.copyWith(
-        status: event.arrivals.isEmpty && state.members.isEmpty
-            ? BusStopStatus.empty
-            : BusStopStatus.loaded,
+        status: status,
         arrivals: event.arrivals,
+        displays: displays,
+        arrivalsByStation: byStation,
         updatedAt: DateTime.now(),
         clearError: true,
       ),

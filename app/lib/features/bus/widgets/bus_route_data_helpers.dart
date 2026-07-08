@@ -60,7 +60,20 @@ LatLngBounds _boundsOf(List<LatLng> pts) {
   );
 }
 
+// Memoize the timeline-stop derivation per state instance so both eta-scoped
+// selectors (timeline + stop list) share one computation instead of rebuilding
+// the list once per widget rebuild.
+final Expando<List<TimelineStop>> _stopsCache = Expando('busRouteStops');
+
 List<TimelineStop> _stopsFor(BusRouteState s) {
+  final cached = _stopsCache[s];
+  if (cached != null) return cached;
+  final derived = _deriveStops(s);
+  _stopsCache[s] = derived;
+  return derived;
+}
+
+List<TimelineStop> _deriveStops(BusRouteState s) {
   final stops = s.direction == 0 ? s.route?.stopsGo : s.route?.stopsReturn;
   if (stops == null) return const [];
   BusStopEtaViewModel? etaFor(BusStopModel stop) =>

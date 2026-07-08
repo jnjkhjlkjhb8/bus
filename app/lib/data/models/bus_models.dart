@@ -126,7 +126,7 @@ class BusStationMember {
 /// every display label derive from [estimateSeconds] + [stopStatus] through the
 /// one shared mapping in eta_format.dart; [decayed] re-derives the estimate
 /// from [arrivalUnix] locally so the countdown stays accurate between frames.
-class BusStopArrival {
+class BusStopArrival extends Equatable {
   const BusStopArrival({
     required this.stationId,
     required this.subRouteUid,
@@ -193,6 +193,18 @@ class BusStopArrival {
       arrivalUnix: arrivalUnix,
     );
   }
+
+  @override
+  List<Object?> get props => [
+    stationId,
+    subRouteUid,
+    routeName,
+    destination,
+    estimateSeconds,
+    nextBusTime,
+    stopStatus,
+    arrivalUnix,
+  ];
 }
 
 class BusStopModel extends Equatable {

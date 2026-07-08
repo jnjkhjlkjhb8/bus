@@ -1,7 +1,7 @@
 COMPOSE ?= docker compose
 MIGRATE ?= migrate
 
-.PHONY: up-test up-staging up-prod migrate-up-test migrate-up-staging migrate-up-prod migrate-force-staging run-test run-staging build-prod test test-go test-flutter proto-dart
+.PHONY: up-test up-staging up-prod up-ollama migrate-up-test migrate-up-staging migrate-up-prod migrate-force-staging run-test run-staging build-prod test test-go test-flutter proto-dart
 
 test: test-go test-flutter
 
@@ -24,6 +24,9 @@ up-staging:
 
 up-prod:
 	BUS_ENV_FILE=env/prod.env $(COMPOSE) --env-file env/prod.env -f docker-compose.yaml -f docker-compose.prod.yaml up -d --build
+
+up-ollama:
+	$(COMPOSE) -f docker-compose.yaml --profile gpu up -d --build ollama
 
 migrate-up-test:
 	$(MIGRATE) -path migrations -database "$${DATABASE_URL:-postgres://bus:bus@localhost:5432/bus_test?sslmode=disable}" up

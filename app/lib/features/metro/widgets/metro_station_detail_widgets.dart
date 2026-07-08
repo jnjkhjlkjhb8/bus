@@ -100,6 +100,9 @@ class _StationDetailSheet extends StatelessWidget {
                 children: [
                   for (final (i, a) in arrivals.indexed) ...[
                     StaggerItem(
+                      // Stable identity (feed upsert key) so a re-sort keeps
+                      // each row paired with its own stagger delay.
+                      key: ValueKey('${a.line}:${a.destination}'),
                       index: i,
                       child: MetroArrivalTile(arrival: a),
                     ),
@@ -124,6 +127,13 @@ class _StationDetailSheet extends StatelessWidget {
             ),
           ),
           BlocBuilder<MetroEtaBloc, MetroEtaState>(
+            // First/last-train data is loaded once and never changes per arrival
+            // frame; rebuild only when the schedule itself (or its shimmer
+            // condition) changes, not on every live ETA push.
+            buildWhen: (p, n) =>
+                p.schedule != n.schedule ||
+                (p.loading && p.schedule.isEmpty) !=
+                    (n.loading && n.schedule.isEmpty),
             builder: (context, state) {
               if (state.loading && state.schedule.isEmpty) {
                 return const Column(
@@ -135,7 +145,10 @@ class _StationDetailSheet extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   for (final s in state.schedule) ...[
-                    _MetroScheduleItem(schedule: s),
+                    _MetroScheduleItem(
+                      key: ValueKey('${s.destination}:${s.firstTime}'),
+                      schedule: s,
+                    ),
                     Divider(
                       height: 20,
                       color: cs.outlineVariant.withValues(alpha: 0.5),
@@ -224,7 +237,7 @@ class MetroArrivalTile extends StatelessWidget {
 }
 
 class _MetroScheduleItem extends StatelessWidget {
-  const _MetroScheduleItem({required this.schedule});
+  const _MetroScheduleItem({required this.schedule, super.key});
   final MetroSchedule schedule;
 
   @override

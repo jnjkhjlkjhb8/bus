@@ -42,6 +42,72 @@ void main() {
     );
   });
 
+  test('derives sorted displays and per-stop grouping from arrivals', () async {
+    final repository = _FakeBusRepository(
+      membersResult: const [
+        BusStationMember(
+          stationUid: 'stop-1',
+          stationId: 'stop-1',
+          stationName: '台北車站',
+          lat: 25,
+          lon: 121,
+        ),
+        BusStationMember(
+          stationUid: 'stop-2',
+          stationId: 'stop-2',
+          stationName: '公園',
+          lat: 25,
+          lon: 121,
+        ),
+      ],
+      // Out of rank order on purpose (10 分, 2 分, 5 分) across two stops.
+      arrivalsResult: const [
+        BusStopArrival(
+          stationId: 'stop-1',
+          subRouteUid: 'sub-a',
+          routeName: 'A',
+          destination: '往東',
+          estimateSeconds: 600,
+        ),
+        BusStopArrival(
+          stationId: 'stop-1',
+          subRouteUid: 'sub-b',
+          routeName: 'B',
+          destination: '往西',
+          estimateSeconds: 120,
+        ),
+        BusStopArrival(
+          stationId: 'stop-2',
+          subRouteUid: 'sub-c',
+          routeName: 'C',
+          destination: '往南',
+          estimateSeconds: 300,
+        ),
+      ],
+    );
+    final bloc = BusStopBloc(stopId: 'group-1', repository: repository);
+    addTearDown(bloc.close);
+
+    final state = await bloc.stream.firstWhere(
+      (s) => s.status == BusStopStatus.loaded && s.displays.isNotEmpty,
+    );
+
+    // Sorted soonest-first by rank (2 分, 5 分, 10 分).
+    expect(
+      state.displays.map((d) => d.subRouteUid).toList(),
+      ['sub-b', 'sub-c', 'sub-a'],
+    );
+    // Grouped by member stop (arrival stationId keys the map).
+    expect(
+      state.arrivalsByStation['stop-1']!.map((d) => d.subRouteUid).toList(),
+      ['sub-b', 'sub-a'],
+    );
+    expect(
+      state.arrivalsByStation['stop-2']!.map((d) => d.subRouteUid).toList(),
+      ['sub-c'],
+    );
+  });
+
   test('BusStopFailed sets AppError', () async {
     final bloc = BusStopBloc(
       stopId: 'group-1',

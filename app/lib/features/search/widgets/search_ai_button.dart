@@ -33,7 +33,7 @@ class _AiButtonState extends State<_AiButton>
     final cs = Theme.of(context).colorScheme;
     return Semantics(
       button: true,
-      label: 'AI 助理',
+      label: '對話框',
       child: GestureDetector(
         onTap: _handleTap,
         behavior: HitTestBehavior.opaque,

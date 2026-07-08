@@ -5,7 +5,7 @@ class _EtaChevronTile extends StatelessWidget {
     required this.arrival,
     required this.highlighted,
   });
-  final _Arrival arrival;
+  final BusStopArrivalItem arrival;
   final bool highlighted;
 
   @override

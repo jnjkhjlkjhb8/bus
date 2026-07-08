@@ -331,40 +331,55 @@ class _RailScreenState extends State<RailScreen> {
                         ],
                       );
                     }
+                    // The sheet offset changes every frame while the query
+                    // sheet is dragged, but it only feeds the list's bottom
+                    // inset. Hand the train list to the builder as a stable
+                    // child so only the trailing spacer sliver rebuilds per
+                    // frame instead of every visible card.
                     return ValueListenableBuilder<double?>(
                       valueListenable: _sheetController,
-                      builder: (context, offset, _) {
+                      child: SliverPadding(
+                        padding: EdgeInsets.fromLTRB(
+                          16,
+                          topPad + 68 + 12,
+                          16,
+                          0,
+                        ),
+                        sliver: SliverList.builder(
+                          itemCount: items.length,
+                          itemBuilder: (context, i) {
+                            final item = items[i];
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: _TrainCard(
+                                type: item.type,
+                                number: item.number,
+                                delay: item.delay,
+                                depart: item.depart,
+                                arrive: item.arrive,
+                                duration: _computeDuration(
+                                  item.depart,
+                                  item.arrive,
+                                ),
+                                origin: state.originName,
+                                destination: state.destName,
+                                date: state.date,
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      builder: (context, offset, listSliver) {
                         return RefreshIndicator(
                           onRefresh: () async => _dispatchSearch(),
-                          child: ListView.builder(
+                          child: CustomScrollView(
                             physics: const AlwaysScrollableScrollPhysics(),
-                            padding: EdgeInsets.fromLTRB(
-                              16,
-                              topPad + 68 + 12,
-                              16,
-                              (offset ?? 0.0) + 16,
-                            ),
-                            itemCount: items.length,
-                            itemBuilder: (context, i) {
-                              final item = items[i];
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 10),
-                                child: _TrainCard(
-                                  type: item.type,
-                                  number: item.number,
-                                  delay: item.delay,
-                                  depart: item.depart,
-                                  arrive: item.arrive,
-                                  duration: _computeDuration(
-                                    item.depart,
-                                    item.arrive,
-                                  ),
-                                  origin: state.originName,
-                                  destination: state.destName,
-                                  date: state.date,
-                                ),
-                              );
-                            },
+                            slivers: [
+                              listSliver!,
+                              SliverToBoxAdapter(
+                                child: SizedBox(height: (offset ?? 0.0) + 16),
+                              ),
+                            ],
                           ),
                         );
                       },

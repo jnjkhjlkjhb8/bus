@@ -8,7 +8,6 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/data/models/arrival_display.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/favorite.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';

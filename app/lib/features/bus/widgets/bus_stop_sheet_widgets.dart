@@ -1,60 +1,65 @@
 part of '../view/bus_stop_detail_view.dart';
 
-/// Pairs the shared [ArrivalDisplay] (label/status/rank, mapped by the one
-/// status/rank rule in the data layer) with the routing identifiers the stop
-/// sheet still needs: [stationId] for per-stop grouping and [subRouteUid] for
-/// the tap target. The status/rank mapping lives in [ArrivalDisplay.fromBusStop].
-class _Arrival {
-  _Arrival(BusStopArrival a)
-    : stationId = a.stationId,
-      subRouteUid = a.subRouteUid,
-      display = ArrivalDisplay.fromBusStop(a);
-
-  final String stationId;
-  final String subRouteUid;
-  final ArrivalDisplay display;
-
-  int get rank => display.rank;
-}
-
 class _StopSheet extends StatelessWidget {
   const _StopSheet();
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return BlocBuilder<BusStopBloc, BusStopState>(
-      builder: (context, state) {
-        return RefreshIndicator(
-          onRefresh: () async {
-            context.read<BusStopBloc>().add(const BusStopRetryRequested());
-          },
-          child: ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.only(bottom: 56),
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _StopMeta(state: state),
-                  ],
-                ),
-              ),
-              Divider(
-                height: 1,
-                indent: 16,
-                endIndent: 16,
-                color: cs.outlineVariant.withValues(alpha: 0.5),
-              ),
-              const SizedBox(height: 4),
-              ..._buildBody(context, state, cs),
-            ],
-          ),
-        );
+    return RefreshIndicator(
+      onRefresh: () async {
+        context.read<BusStopBloc>().add(const BusStopRetryRequested());
       },
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.only(bottom: 56),
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _StopMeta(),
+              ],
+            ),
+          ),
+          Divider(
+            height: 1,
+            indent: 16,
+            endIndent: 16,
+            color: cs.outlineVariant.withValues(alpha: 0.5),
+          ),
+          const SizedBox(height: 4),
+          const _StopBody(),
+        ],
+      ),
+    );
+  }
+}
+
+/// The arrival list section. Rebuilds only on the fields it renders — the
+/// derived tile view-models (recomputed in the bloc only when arrivals move),
+/// the member set, selection, status, and error — never on the freshness time,
+/// which the meta line owns. Build is pure layout over the bloc's derivation.
+class _StopBody extends StatelessWidget {
+  const _StopBody();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return BlocBuilder<BusStopBloc, BusStopState>(
+      buildWhen: (p, n) =>
+          p.status != n.status ||
+          p.selectedStationUid != n.selectedStationUid ||
+          p.error != n.error ||
+          !identical(p.members, n.members) ||
+          !identical(p.displays, n.displays),
+      builder: (context, state) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: _buildBody(context, state, cs),
+      ),
     );
   }
 
@@ -85,12 +90,10 @@ class _StopSheet extends StatelessWidget {
           ),
         ];
       case BusStopStatus.loaded:
-        final arrivals = [for (final a in state.arrivals) _Arrival(a)]
-          ..sort((a, b) => a.rank.compareTo(b.rank));
-        final byStation = <String, List<_Arrival>>{};
-        for (final a in arrivals) {
-          byStation.putIfAbsent(a.stationId, () => []).add(a);
-        }
+        // Sorted list + per-stop grouping are derived in the bloc; build only
+        // lays them out.
+        final arrivals = state.displays;
+        final byStation = state.arrivalsByStation;
         final members = state.members;
         final selected = state.selectedStationUid;
         final hasFilter = members.length > 1;
@@ -106,6 +109,7 @@ class _StopSheet extends StatelessWidget {
           if (members.isEmpty)
             for (final (i, a) in arrivals.indexed)
               StaggerItem(
+                key: ValueKey(a.itemKey),
                 index: i,
                 child: _EtaChevronTile(
                   arrival: a,
@@ -116,9 +120,11 @@ class _StopSheet extends StatelessWidget {
             for (final (memberIndex, member) in visibleMembers.indexed) ...[
               if (showHeaders) _StationSectionHeader(member: member),
               for (final (i, a)
-                  in (byStation[member.stationUid] ?? const <_Arrival>[])
+                  in (byStation[member.stationUid] ??
+                          const <BusStopArrivalItem>[])
                       .indexed) ...[
                 StaggerItem(
+                  key: ValueKey(a.itemKey),
                   index: memberIndex * 10 + i,
                   child: _EtaChevronTile(
                     arrival: a,
@@ -259,17 +265,22 @@ class _StationSectionHeader extends StatelessWidget {
 }
 
 class _StopMeta extends StatelessWidget {
-  const _StopMeta({required this.state});
-  final BusStopState state;
+  const _StopMeta();
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final updatedAt = state.updatedAt;
-    final label = updatedAt != null ? '更新於 ${_hhmm(updatedAt)}' : '即時動態';
-    return Text(
-      label,
-      style: AppTextStyles.bodyRegular.copyWith(color: cs.onSurfaceVariant),
+    // The freshness line is the only thing that cares about updatedAt, so it
+    // selects that field alone and rebuilds independently of the arrival list.
+    return BlocSelector<BusStopBloc, BusStopState, DateTime?>(
+      selector: (state) => state.updatedAt,
+      builder: (context, updatedAt) {
+        final label = updatedAt != null ? '更新於 ${_hhmm(updatedAt)}' : '即時動態';
+        return Text(
+          label,
+          style: AppTextStyles.bodyRegular.copyWith(color: cs.onSurfaceVariant),
+        );
+      },
     );
   }
 

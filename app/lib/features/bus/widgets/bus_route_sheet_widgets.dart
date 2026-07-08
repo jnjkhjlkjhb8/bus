@@ -5,7 +5,6 @@ class _RouteSheet extends StatelessWidget {
     required this.tabController,
     required this.sheetController,
     required this.scrollController,
-    required this.stops,
     required this.vehicles,
     required this.direction,
     required this.isLoading,
@@ -21,7 +20,6 @@ class _RouteSheet extends StatelessWidget {
   final TabController tabController;
   final SheetController sheetController;
   final ScrollController scrollController;
-  final List<TimelineStop> stops;
   final List<_BusVehicle> vehicles;
   final int direction;
   final bool isLoading;
@@ -37,11 +35,17 @@ class _RouteSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
 
-    final timeline = _HorizontalRouteTimeline(
-      stops: stops,
-      vehicles: vehicles,
-      direction: direction,
-    );
+    // Only the timeline observes live ETA churn; the sheet skeleton around it
+    // stays put across frames.
+    final timeline =
+        BlocSelector<BusRouteBloc, BusRouteState, List<TimelineStop>>(
+          selector: _stopsFor,
+          builder: (context, stops) => _HorizontalRouteTimeline(
+            stops: stops,
+            vehicles: vehicles,
+            direction: direction,
+          ),
+        );
 
     final tabsContent = Column(
       children: [
@@ -63,11 +67,16 @@ class _RouteSheet extends StatelessWidget {
                       context.read<BusRouteBloc>().add(const BusRouteStarted()),
                 )
               else
-                _StopListTab(
-                  stops: stops,
-                  scrollController: scrollController,
-                  reminders: reminders,
-                  onReminderToggled: onReminderToggled,
+                // Scoped to etaMap so a live frame repaints the stop rows only,
+                // not the tab bar or detail tab.
+                BlocSelector<BusRouteBloc, BusRouteState, List<TimelineStop>>(
+                  selector: _stopsFor,
+                  builder: (context, stops) => _StopListTab(
+                    stops: stops,
+                    scrollController: scrollController,
+                    reminders: reminders,
+                    onReminderToggled: onReminderToggled,
+                  ),
                 ),
               _RouteDetailTab(state: routeState),
             ],

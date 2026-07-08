@@ -100,7 +100,7 @@ class _GenUiSheetState extends State<_GenUiSheet> {
               Icon(Icons.auto_awesome_rounded, size: 18, color: cs.primary),
               const SizedBox(width: 8),
               Text(
-                'AI 助理',
+                '對話框',
                 style: TextStyle(
                   fontSize: 15,
                   fontWeight: FontWeight.w700,
