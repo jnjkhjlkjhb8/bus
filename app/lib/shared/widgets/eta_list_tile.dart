@@ -54,12 +54,20 @@ class EtaListTile extends StatelessWidget {
     this.onTap,
     this.highlighted = false,
     this.track,
+    this.leading,
+    this.destinationStyle,
+    this.bare = false,
   });
 
   /// Builds a tile straight from the shared [ArrivalDisplay] contract. The
   /// caller decides [highlighted] from the list position and
   /// [ArrivalDisplay.isComingSoon] so at most the soonest row lights up; modes
   /// without the coming-soon highlight (metro) leave it false.
+  ///
+  /// [leading] replaces the [routeNo] text with a custom lead (metro's line
+  /// roundel); [destinationStyle] overrides the default destination text style;
+  /// [bare] drops the tap/highlight/min-height chrome, leaving just the row so
+  /// a caller can supply its own list chrome (metro's divider-separated rows).
   factory EtaListTile.fromDisplay(
     ArrivalDisplay display, {
     Key? key,
@@ -67,6 +75,9 @@ class EtaListTile extends StatelessWidget {
     VoidCallback? onTap,
     bool highlighted = false,
     Widget? track,
+    Widget? leading,
+    TextStyle? destinationStyle,
+    bool bare = false,
   }) => EtaListTile(
     key: key,
     routeNo: display.label,
@@ -76,6 +87,9 @@ class EtaListTile extends StatelessWidget {
     onTap: onTap,
     highlighted: highlighted,
     track: track,
+    leading: leading,
+    destinationStyle: destinationStyle,
+    bare: bare,
   );
 
   final String routeNo;
@@ -85,6 +99,16 @@ class EtaListTile extends StatelessWidget {
   final VoidCallback? onTap;
   final bool highlighted;
   final Widget? track;
+
+  /// Custom leading widget in place of the [routeNo] text (a line roundel).
+  final Widget? leading;
+
+  /// Overrides the destination text style; defaults to `bodyRegular`.
+  final TextStyle? destinationStyle;
+
+  /// When true, renders only the row (no Pressable, highlight, min-height, or
+  /// padding), letting the caller own the surrounding list chrome.
+  final bool bare;
 
   @override
   Widget build(BuildContext context) {
@@ -96,13 +120,14 @@ class EtaListTile extends StatelessWidget {
 
     final row = Row(
       children: [
-        Text(
-          routeNo,
-          style: AppTextStyles.bodyLarge.copyWith(
-            fontWeight: FontWeight.w700,
-            color: routeColor,
-          ),
-        ),
+        leading ??
+            Text(
+              routeNo,
+              style: AppTextStyles.bodyLarge.copyWith(
+                fontWeight: FontWeight.w700,
+                color: routeColor,
+              ),
+            ),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
@@ -113,7 +138,12 @@ class EtaListTile extends StatelessWidget {
                 '往 $destination',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: AppTextStyles.bodyRegular.copyWith(color: destColor),
+                // A custom destination style (metro's heading2) is used
+                // verbatim, keeping its own colour; the default path carries
+                // the muted destination colour.
+                style:
+                    destinationStyle ??
+                    AppTextStyles.bodyRegular.copyWith(color: destColor),
               ),
               if (direction != null)
                 Text(
@@ -129,6 +159,15 @@ class EtaListTile extends StatelessWidget {
         EtaValue(status: status),
       ],
     );
+
+    // Bare mode: just the row (plus any track), so the caller owns list chrome.
+    if (bare) {
+      if (track == null) return row;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [row, const SizedBox(height: 6), track!],
+      );
+    }
 
     final content = Column(
       mainAxisSize: MainAxisSize.min,

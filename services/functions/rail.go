@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -196,23 +195,6 @@ func railMask(f railTrainFlags) uint16 {
 	return res
 }
 
-// fetchTraTimetable fetches one day's TRA daily timetable and upserts its stop
-// rows into tra_timetable via a temp-table COPY. Stop times parse as "15:04";
-// unparseable times become the zero time. On a 304/error/decode failure or no
-// data it logs and returns without writing.
-func fetchTraTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Client, rc *redis.Client, date string) {
-	log.Infof("[RAIL] action=tra_prefetch event=start date=%s", date)
-	dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Rail/TRA/DailyTimetable/TrainDate/%s", date), "tra_traindate_"+date)
-	if err != nil || !comp {
-		log.Infof("[RAIL] action=tra_prefetch event=skip date=%s reason=api_error", date)
-		return
-	}
-	defer flipopen()
-	if err := loadTraTimetable(ctx, dec, db, rc, date); err != nil {
-		log.Infof("[RAIL] action=tra_prefetch event=error date=%s error=%v", date, err)
-	}
-}
-
 // loadTraTimetable upserts one day's TRA daily timetable stop rows into
 // tra_timetable via a temp-table COPY. Stop times parse as "15:04"; unparseable
 // times become the zero time. It consumes an already-opened decoder; the
@@ -336,22 +318,6 @@ func loadTraTimetable(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
 	return nil
 }
 
-// fetchThsrTimetable fetches one day's THSR daily timetable and upserts its stop
-// rows into thsr_timetable via a temp-table COPY. On a 304/error/decode failure
-// or no data it logs and returns without writing.
-func fetchThsrTimetable(ctx context.Context, db *pgxpool.Pool, client *resty.Client, rc *redis.Client, date string) {
-	log.Infof("[RAIL] action=thsr_prefetch event=start date=%s", date)
-	dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Rail/THSR/DailyTimetable/TrainDate/%s", date), "thsr_traindate_"+date)
-	if err != nil || !comp {
-		log.Infof("[RAIL] action=thsr_prefetch event=skip date=%s reason=api_error", date)
-		return
-	}
-	defer flipopen()
-	if err := loadThsrTimetable(ctx, dec, db, rc, date); err != nil {
-		log.Infof("[RAIL] action=thsr_prefetch event=error date=%s error=%v", date, err)
-	}
-}
-
 // loadThsrTimetable upserts one day's THSR daily timetable stop rows into
 // thsr_timetable via a temp-table COPY. Stop times parse as "15:04"; unparseable
 // times become the zero time. It consumes an already-opened decoder;
@@ -458,68 +424,9 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool,
 	return nil
 }
 
-// railPreFetch warms the timetable tables for upcoming dates: the next 60 days
-// for TRA and 45 days for THSR, matching how far ahead each operator publishes
-// schedules. Per-date fetches are independent — one failing does not stop the rest.
-func railPreFetch(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
-	log.Infof("[RAIL] action=rail_prefetch event=start")
-	today := time.Now()
-	for i := 1; i <= 60; i++ {
-		fetchTraTimetable(ctx, db, client, rc, today.AddDate(0, 0, i).Format(time.DateOnly))
-	}
-	for i := 1; i <= 45; i++ {
-		fetchThsrTimetable(ctx, db, client, rc, today.AddDate(0, 0, i).Format(time.DateOnly))
-	}
-	log.Infof("[RAIL] action=rail_prefetch event=complete")
-}
-
-// railCleanup deletes timetable rows for past dates from both tra_timetable and
-// thsr_timetable so the prefetched tables do not accumulate stale days.
-func railCleanup(ctx context.Context, db *pgxpool.Pool) {
-	log.Infof("[RAIL] action=rail_cleanup event=start")
-	if _, err := db.Exec(ctx, `DELETE FROM tra_timetable WHERE train_date < CURRENT_DATE`); err != nil {
-		log.Infof("[RAIL] action=rail_cleanup event=tra_error error=%v", err)
-	}
-	if _, err := db.Exec(ctx, `DELETE FROM thsr_timetable WHERE train_date < CURRENT_DATE`); err != nil {
-		log.Infof("[RAIL] action=rail_cleanup event=thsr_error error=%v", err)
-	}
-	log.Infof("[RAIL] action=rail_cleanup event=complete")
-}
-
-// railStatic is the daily static-ingestion entry point for rail: TRA and THSR
-// stations and fares, then timetable prefetch and cleanup. It always returns nil;
-// step failures are logged inside each call.
-func railStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) error {
-	log.Infof("[RAIL] action=rail_static event=start")
-	traStation(ctx, client, rc, db)
-	thsrStation(ctx, client, rc, db)
-	traFare(ctx, client, rc, db)
-	thsrFare(ctx, client, rc, db)
-	railPreFetch(ctx, client, rc, db)
-	railCleanup(ctx, db)
-	log.Infof("[RAIL] action=rail_static event=complete")
-	return nil
-}
-
-// traStation is the legacy fetch wrapper: it opens the TDX feed and delegates
-// the transform to loadTraStation. It is no longer cron-wired (the loader reads
-// raw_tdx), but is kept for the legacy call site and returns nothing.
-func traStation(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
-	log.Infof("[RAIL] action=tra_station event=start")
-	dec, comp, err, flipopen := callApi(client, rc, "/v2/Rail/TRA/Station", "tra_stations")
-	if err != nil || !comp {
-		log.Infof("[RAIL] action=tra_station event=skip reason=api_error")
-		return
-	}
-	defer flipopen()
-	if err := loadTraStation(ctx, dec, db, rc, ""); err != nil {
-		log.Infof("[RAIL] action=tra_station event=error error=%v", err)
-	}
-}
-
 // loadTraStation upserts TRA stations into tra_stations via a temp-table COPY,
 // resolving the city from the station's LocationCityCode prefix. It consumes an
-// already-opened decoder (from callApi or the raw_tdx loader); the temp-table
+// already-opened decoder (the raw_tdx loader reconstructs it); the temp-table
 // COPY and ON CONFLICT (station_id) upsert are byte-identical to the legacy
 // transform. It returns the first hard error instead of logging-and-returning.
 func loadTraStation(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, _ string) error {
@@ -591,22 +498,6 @@ func loadTraStation(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ 
 	return nil
 }
 
-// thsrStation upserts THSR stations into thsr_stations using a batched
-// per-station INSERT (there are few HSR stations, so no temp table). On error or
-// no update it logs and returns.
-func thsrStation(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
-	log.Infof("[RAIL] action=thsr_station event=start")
-	dec, comp, err, flipopen := callApi(client, rc, "/v2/Rail/THSR/Station", "thsr_stations")
-	if err != nil || !comp {
-		log.Infof("[RAIL] action=thsr_station event=skip reason=api_error")
-		return
-	}
-	defer flipopen()
-	if err := loadThsrStation(ctx, dec, db, rc, ""); err != nil {
-		log.Infof("[RAIL] action=thsr_station event=error error=%v", err)
-	}
-}
-
 // loadThsrStation upserts THSR stations into thsr_stations using a batched
 // per-station INSERT (there are few HSR stations, so no temp table). It consumes
 // an already-opened decoder; the INSERT ... ON CONFLICT (station_id) and
@@ -638,22 +529,6 @@ func loadThsrStation(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _
 	_ = b.Close()
 	log.Infof("[RAIL] action=thsr_station event=complete")
 	return nil
-}
-
-// traFare upserts the TRA OD fare table into tra_fares via a temp-table COPY,
-// flattening each station pair's per-ticket-type fares into rows. On error or no
-// update it logs and returns.
-func traFare(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
-	log.Infof("[RAIL] action=tra_fare event=start")
-	dec, comp, err, flipopen := callApi(client, rc, "/v2/Rail/TRA/ODFare", "tra_fare")
-	if err != nil || !comp {
-		log.Infof("[RAIL] action=tra_fare event=skip reason=api_error | noupdate")
-		return
-	}
-	defer flipopen()
-	if err := loadTraFare(ctx, dec, db, rc, ""); err != nil {
-		log.Infof("[RAIL] action=tra_fare event=error error=%v", err)
-	}
 }
 
 // loadTraFare upserts the TRA OD fare table into tra_fares via a temp-table COPY,
@@ -720,22 +595,6 @@ func loadTraFare(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *re
 		return err
 	}
 	return nil
-}
-
-// thsrFare upserts the THSR OD fare table into thsr_fares via a temp-table COPY,
-// keyed by station pair plus ticket/fare/cabin class. On error or no update it
-// logs and returns.
-func thsrFare(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
-	log.Infof("[RAIL] action=thsr_fare event=start")
-	dec, comp, err, flipopen := callApi(client, rc, "/v2/Rail/THSR/ODFare", "thsr_fare")
-	if err != nil || !comp {
-		log.Infof("[RAIL] action=thsr_fare event=skip reason=api_error | noupdate")
-		return
-	}
-	defer flipopen()
-	if err := loadThsrFare(ctx, dec, db, rc, ""); err != nil {
-		log.Infof("[RAIL] action=thsr_fare event=error error=%v", err)
-	}
 }
 
 // loadThsrFare upserts the THSR OD fare table into thsr_fares via a temp-table

@@ -112,3 +112,39 @@ const AlertTraChannel = "mqtt:v3:Rail:TRA:Alert"
 
 // AlertThsrChannel is the channel carrying all THSR alerts.
 const AlertThsrChannel = "mqtt:v2:Rail:THSR:AlertInfo"
+
+// ThsrSeatsKey returns the key holding (and channel publishing) one THSR train's
+// available-seat snapshot for a date. functions/router write it via the realtime
+// seat refresh; the router's AvailableSeats stream reads it back by glob.
+func ThsrSeatsKey(date, trainNo string) string {
+	return fmt.Sprintf("thsr_seats:%s:%s", date, trainNo)
+}
+
+// ThsrSeatsPattern matches every THSR seat key (and channel) for one date, used
+// by the AvailableSeats stream's SCAN seed and PSubscribe.
+func ThsrSeatsPattern(date string) string {
+	return fmt.Sprintf("thsr_seats:%s:*", date)
+}
+
+// TDX credential keys. Redis is one DB namespaced by key prefix: the auth token
+// lives under the namespaced shared:* key, with the legacy bare key kept as a
+// read/delete fallback during the transition off it.
+const (
+	// TDXTokenKey is the namespaced TDX OAuth bearer-token cache key.
+	TDXTokenKey = "shared:tdx:access_token"
+	// TDXTokenKeyLegacy is the pre-namespacing token key, still read as a
+	// fallback and deleted alongside TDXTokenKey on a 401 re-auth.
+	TDXTokenKeyLegacy = "TDX_Token"
+)
+
+// TDXRawIMSKey returns the namespaced If-Modified-Since marker key for a raw_tdx
+// landing target (ingestor path).
+func TDXRawIMSKey(name string) string {
+	return "shared:raw:last_modified:" + name
+}
+
+// TDXLegacyIMSKey returns the legacy (bare) If-Modified-Since marker key used by
+// the prod transform path and the router's realtime THSR-seat fetch.
+func TDXLegacyIMSKey(name string) string {
+	return "LastTimeGet_" + name
+}

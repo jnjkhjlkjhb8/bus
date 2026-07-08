@@ -3,7 +3,7 @@ import 'package:wheres_the_car/data/models/journey_info.dart';
 import 'package:wheres_the_car/features/metro/bloc/metro_bloc.dart';
 import 'package:wheres_the_car/features/metro/bloc/metro_event.dart';
 
-const _info = JourneyInfo(toStationId: 'BL02', fareNt: 20);
+const _info = JourneyInfo(toStationId: 'BL02', fareNt: 20, travelTimeMin: 5);
 
 void main() {
   test('matrix loaded stores journey matrix', () async {

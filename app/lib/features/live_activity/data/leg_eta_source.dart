@@ -1,4 +1,4 @@
-import 'package:wheres_the_car/data/repositories/bus_stop_eta_repository.dart';
+import 'package:wheres_the_car/data/repositories/bus_repository.dart';
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 
 typedef LegEtaStream = Stream<Duration?> Function(JourneyLeg leg);
@@ -7,9 +7,12 @@ typedef LegEtaStream = Stream<Duration?> Function(JourneyLeg leg);
 /// leg counts down from its scheduled departure.
 // sources once the planner emits supported identities for them.
 Stream<Duration?> defaultLegEtaStream(JourneyLeg leg) {
-  if (leg.kind == JourneyLegKind.bus && leg.identity.supported) {
-    return BusStopEtaRepository.instance
-        .watchStop(leg.identity.departureStopKey)
+  final stopKey = leg.identity.departureStopKey;
+  if (leg.kind == JourneyLegKind.bus &&
+      leg.identity.supported &&
+      stopKey.isNotEmpty) {
+    return BusRepository.instance
+        .stationEta('', stopKey)
         .map((arrivals) {
           for (final a in arrivals) {
             if (leg.routeLabel.startsWith(a.routeName) && a.minutes != null) {

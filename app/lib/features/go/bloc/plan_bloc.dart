@@ -4,8 +4,8 @@ import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
 
 class PlanBloc extends Bloc<PlanEvent, PlanState> {
-  PlanBloc({MaasRepository repository = MaasRepository.instance})
-    : _repository = repository,
+  PlanBloc({MaasRepository? repository})
+    : _repository = repository ?? MaasRepository.instance,
       super(const PlanState()) {
     on<PlanSearchRequested>(_onSearch);
     on<RouteSelected>(_onRouteSelected);

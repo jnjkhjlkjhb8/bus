@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:wheres_the_car/core/firebase/remote_config.dart';
-import 'package:wheres_the_car/core/grpc/live_data.dart';
+import 'package:wheres_the_car/data/live/arrival_feed.dart';
 import 'package:wheres_the_car/data/models/alert_models.dart';
 import 'package:wheres_the_car/data/repositories/alert_repository.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
@@ -57,7 +57,7 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
     unawaited(_repository.persistReadAlerts(read));
   }
 
-  final List<LiveData<AlertViewModel>> _subs = [];
+  final List<StreamSubscription<AlertViewModel>> _subs = [];
 
   bool get hasActiveSubscriptions => _subs.isNotEmpty;
 
@@ -69,12 +69,11 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
 
     void listen(Stream<AlertViewModel> Function() source) {
       _subs.add(
-        LiveData<AlertViewModel>.watch(
+        ArrivalFeed.passthrough(
           source: source,
-          onData: (vm) => add(AlertReceived(vm)),
           onFailure: (e) => add(AlertStreamFailed(e)),
           onRecovered: () => add(const AlertStreamRecovered()),
-        ),
+        ).listen((vm) => add(AlertReceived(vm))),
       );
     }
 

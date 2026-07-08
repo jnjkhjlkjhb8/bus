@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"github.com/robfig/cron/v3"
@@ -20,11 +19,11 @@ import (
 // every job — not just bus.
 
 // liveSource is the seam between a live job and TDX. The production adapter
-// (restLiveSource) wraps callApi; the test adapter (fakeLiveSource) serves
-// committed fixture bytes. fetch mirrors callApi's contract with the ordering
-// normalized to (dec, modified, close, err): modified=false && err==nil is a 304
-// Not-Modified (cached live data still valid); close closes the response body
-// and is nil when there is nothing to close.
+// (restLiveSource) wraps the shared TDX client's Get; the test adapter
+// (fakeLiveSource) serves committed fixture bytes. fetch mirrors Get's contract
+// (dec, modified, close, err): modified=false && err==nil is a 304 Not-Modified
+// (cached live data still valid); close closes the response body and is nil when
+// there is nothing to close.
 type liveSource interface {
 	fetch(ctx context.Context, url, name string) (dec *json.Decoder, modified bool, close func(), err error)
 }
@@ -132,20 +131,19 @@ func runLiveSpec(ctx context.Context, src liveSource, sink liveSink, spec liveSp
 	log.Infof("[LIVE] action=run event=complete job=%s", spec.key)
 }
 
-// restLiveSource is the production liveSource: it wraps callApi, which fetches a
-// TDX endpoint under an If-Modified-Since guard and streams the body.
+// restLiveSource is the production liveSource: it wraps the shared TDX client's
+// streaming conditional GET, which fetches a TDX endpoint under an
+// If-Modified-Since guard and streams the body.
 type restLiveSource struct {
-	client *resty.Client
-	rc     *redis.Client
+	tdx *shared.TDXClient
 }
 
-// fetch adapts callApi's (dec, comp, err, flipopen) return to the liveSource
-// contract (dec, modified, close, err). ctx is accepted for interface symmetry;
-// callApi's resty client carries its own timeout and the cron wrapper bounds the
-// job, matching the pre-refactor behavior where callApi took no context.
+// fetch delegates to the shared TDX client's Get, whose return already matches
+// the liveSource contract (dec, modified, close, err). ctx is accepted for
+// interface symmetry; the resty client carries its own timeout and the cron
+// wrapper bounds the job.
 func (s restLiveSource) fetch(_ context.Context, url, name string) (*json.Decoder, bool, func(), error) {
-	dec, comp, err, flipopen := callApi(s.client, s.rc, url, name)
-	return dec, comp, flipopen, err
+	return s.tdx.Get(url, name)
 }
 
 // redisLiveSink is the production liveSink backed by *redis.Client. refreshTTL
@@ -297,8 +295,8 @@ const liveJobTimeout = 25 * time.Second
 // order, each under a 25s timeout; mrt runs on 10s and tra on 2m, unbounded, as
 // before. Every job goes through runLiveSpec, so a failing job is isolated and
 // logged and the 304→TTL refresh applies uniformly.
-func registerLiveCrons(r *cron.Cron, client *resty.Client, rc *redis.Client, db *pgxpool.Pool, dispatcher *notificationDispatcher) {
-	src := restLiveSource{client: client, rc: rc}
+func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool, dispatcher *notificationDispatcher) {
+	src := restLiveSource{tdx: tdx}
 	sink := redisLiveSink{rc: rc}
 	specs := liveRegistry(rc, db, dispatcher)
 

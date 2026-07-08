@@ -10,9 +10,33 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 )
+
+// fakeTDXStore is an in-memory shared.TDXStore for the ingestor fan-out tests: it
+// returns a cached token so the client never does a real client_credentials
+// exchange, and empty values (never an error) for every other key so the
+// conditional-GET sends no If-Modified-Since. Writes are dropped.
+type fakeTDXStore struct{ token string }
+
+func (f fakeTDXStore) Get(key string) (string, error) {
+	if key == shared.TDXTokenKey || key == shared.TDXTokenKeyLegacy {
+		return f.token, nil
+	}
+	return "", nil
+}
+func (fakeTDXStore) Set(string, string, time.Duration) error { return nil }
+func (fakeTDXStore) Del(...string) error                     { return nil }
+
+// testTDXClient builds a TDX client pointed at a test server with a fake store,
+// so no request needs a live Redis or a real TDX token exchange.
+func testTDXClient(baseURL string) *shared.TDXClient {
+	return shared.NewTDXClient(shared.TDXConfig{
+		Store:   fakeTDXStore{token: "test-token"},
+		IMSKey:  imsCacheKey,
+		BaseURL: baseURL,
+	})
+}
 
 func TestValidateRawTarget(t *testing.T) {
 	valid := []struct{ table, part string }{
@@ -130,17 +154,7 @@ func TestIngestRaw_FetchesAllBusCityAPIs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := resty.New().SetBaseURL(srv.URL).SetDoNotParseResponse(true)
-	rc := redis.NewClient(&redis.Options{
-		Addr:         "127.0.0.1:1",
-		DialTimeout:  1 * time.Millisecond,
-		ReadTimeout:  1 * time.Millisecond,
-		WriteTimeout: 1 * time.Millisecond,
-		MaxRetries:   0,
-	})
-	defer rc.Close()
-
-	ingestRaw(context.Background(), c, rc)
+	ingestRaw(context.Background(), testTDXClient(srv.URL))
 
 	for _, city := range cities {
 		for _, api := range ingestBusAPIs {
@@ -179,17 +193,7 @@ func TestIngestRaw_NoOpWithoutCredentials(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			c := resty.New().SetBaseURL(srv.URL).SetDoNotParseResponse(true)
-			rc := redis.NewClient(&redis.Options{
-				Addr:         "127.0.0.1:1",
-				DialTimeout:  1 * time.Millisecond,
-				ReadTimeout:  1 * time.Millisecond,
-				WriteTimeout: 1 * time.Millisecond,
-				MaxRetries:   0,
-			})
-			defer rc.Close()
-
-			ingestRaw(context.Background(), c, rc)
+			ingestRaw(context.Background(), testTDXClient(srv.URL))
 
 			if got := atomic.LoadInt32(&calls); got != 0 {
 				t.Fatalf("ingestRaw made %d requests without credentials, want 0", got)

@@ -101,7 +101,7 @@ class _StationDetailSheet extends StatelessWidget {
                   for (final (i, a) in arrivals.indexed) ...[
                     StaggerItem(
                       index: i,
-                      child: _ArrivalRow(arrival: a),
+                      child: MetroArrivalTile(arrival: a),
                     ),
                     Divider(
                       height: 20,
@@ -194,39 +194,31 @@ class _MetroFavButton extends StatelessWidget {
   }
 }
 
-class _ArrivalRow extends StatelessWidget {
-  const _ArrivalRow({required this.arrival});
+/// A single metro arrival row, rendered through the shared [EtaListTile] in its
+/// bare, roundel-lead configuration: line roundel leading, 往-destination in
+/// heading2, and the status through the shared time column. Metro keeps its own
+/// list chrome (divider-separated rows, no coming-soon highlight or tap
+/// target), so it uses the tile's `bare` variant.
+class MetroArrivalTile extends StatelessWidget {
+  const MetroArrivalTile({required this.arrival, super.key});
 
   final MetroArrival arrival;
 
   @override
   Widget build(BuildContext context) {
     // Status mapping goes through the shared ArrivalDisplay contract so metro
-    // stops re-implementing the approaching/minutes rule; the time value still
-    // renders through the shared EtaValue (mono, tabular). Metro keeps its own
-    // row chrome — a line-coloured roundel lead, heading2 destination, and no
-    // coming-soon highlight or tap target — which the bus tile does not carry.
+    // stops re-implementing the approaching/minutes rule.
     final display = ArrivalDisplay.fromMetro(
       line: arrival.line,
       destination: arrival.destination,
       estimateMinutes: arrival.estimateMinutes,
       approaching: arrival.approaching,
     );
-    return Row(
-      children: [
-        TransportIcon(type: _getTransportType(arrival.line)),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Text(
-            '往 ${display.destination}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: AppTextStyles.heading2,
-          ),
-        ),
-        const SizedBox(width: 12),
-        EtaValue(status: display.status),
-      ],
+    return EtaListTile.fromDisplay(
+      display,
+      leading: TransportIcon(type: _getTransportType(arrival.line)),
+      destinationStyle: AppTextStyles.heading2,
+      bare: true,
     );
   }
 }

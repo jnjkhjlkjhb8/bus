@@ -10,7 +10,6 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -53,9 +52,9 @@ type bikeAvailability struct {
 // bikeStatic is the daily static-ingestion entry point for bike-share stations.
 // It always returns nil; failures are logged per-city inside getbikeStation so
 // one city's error does not fail the whole daily run.
-func bikeStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) error {
+func bikeStatic(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) error {
 	log.Infof("[BIKE] action=bike_static event=start")
-	getbikeStation(ctx, client, rc, db)
+	getbikeStation(ctx, tdx, rc, db)
 	log.Infof("[BIKE] action=bike_static event=complete")
 	return nil
 }
@@ -64,14 +63,14 @@ func bikeStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db 
 // via a per-city temp-table COPY then ON CONFLICT upsert. Cities with no public
 // bike-share feed are skipped (the inline list mirrors ingestBikeSkip). The
 // "YouBike2.0_" name prefix is stripped before storing.
-func getbikeStation(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
+func getbikeStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
 	log.Infof("[BIKE] action=getbike_station event=start")
 	for _, city := range cities {
 		if city == "Keelung" || city == "HsinchuCounty" || city == "NantouCounty" || city == "YilanCounty" || city == "PenghuCounty" || city == "KinmenCounty" || city == "LienchiangCounty" || city == "InterCity" || city == "HualienCounty" {
 			continue
 		}
 		log.Infof("[BIKE] action=getbike_station city=%s event=city_start", city)
-		dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Bike/Station/City/%s", city), "bike_stations"+city)
+		dec, comp, flipopen, err := tdx.Get(fmt.Sprintf("/v2/Bike/Station/City/%s", city), "bike_stations"+city)
 		func() {
 			if flipopen != nil {
 				defer flipopen()

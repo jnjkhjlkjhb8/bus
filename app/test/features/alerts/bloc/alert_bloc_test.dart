@@ -31,9 +31,9 @@ void main() {
     await next;
   });
 
-  // These two handlers are what LiveData's onFailure/onRecovered callbacks add
-  // when the four alert streams drop and recover. The wrapper's callback
-  // pass-through itself is covered in test/core/grpc/live_data_test.dart.
+  // These two handlers are what the passthrough seam's onFailure/onRecovered
+  // callbacks add when the four alert streams drop and recover. The seam's
+  // callback pass-through itself is covered in test/data/live/arrival_feed_test.
   test('AlertStreamFailed sets the error, AlertStreamRecovered clears it',
       () async {
     final bloc = AlertBloc();

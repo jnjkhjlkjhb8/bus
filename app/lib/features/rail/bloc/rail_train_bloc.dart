@@ -1,6 +1,6 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_car/data/reminders/reminder_toggle.dart';
 import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
 import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
 import 'package:wheres_the_car/data/repositories/tra_repository.dart';
@@ -40,6 +40,28 @@ class RailTrainBloc extends Bloc<RailTrainEvent, RailTrainState> {
 
   bool get _isThsr => type == '高鐵';
   String get _routeType => _isThsr ? 'thsr' : 'tra';
+
+  // Same optimistic toggle choreography as the bus route, minus the local
+  // mirror and telemetry: rail arms against the stop's scheduled arrival and
+  // keeps no persistent copy.
+  late final ReminderToggle _reminderToggle = ReminderToggle(
+    createReminder: ({
+      required stopKey,
+      required direction,
+      required expiresAt,
+    }) async {
+      final reminder = await _firebase.createArrivalReminder(
+        routeType: _routeType,
+        routeKey: trainNo,
+        stopKey: stopKey,
+        direction: direction,
+        leadMinutes: _leadMinutes,
+        expiresAt: expiresAt,
+      );
+      return reminder.reminderId;
+    },
+    cancelReminder: _firebase.cancelArrivalReminder,
+  );
 
   Future<void> _onStarted(
     RailTrainStarted event,
@@ -130,65 +152,14 @@ class RailTrainBloc extends Bloc<RailTrainEvent, RailTrainState> {
   Future<void> _onReminderToggled(
     RailTrainReminderToggled event,
     Emitter<RailTrainState> emit,
-  ) async {
-    final stopName = event.stopName;
-    final existing = state.reminders[stopName];
-    if (existing != null) {
-      if (existing == 'pending') return;
-      // Optimistic off; restore on failure.
-      emit(
-        state.copyWith(reminders: Map.of(state.reminders)..remove(stopName)),
-      );
-      try {
-        if (!existing.startsWith('local:')) {
-          await _firebase.cancelArrivalReminder(existing);
-        }
-      } on Object catch (e, s) {
-        CrashReporter.record(e, s);
-        if (emit.isDone) return;
-        emit(
-          state.copyWith(
-            reminders: Map.of(state.reminders)..[stopName] = existing,
-          ),
-        );
-      }
-      return;
-    }
-
-    final arrivesAt = _arrivalDateTime(stopName);
-    // No usable arrival time (unparseable / already departed) — nothing to arm.
-    if (arrivesAt == null || !arrivesAt.isAfter(DateTime.now())) return;
-
-    // Optimistic on with a placeholder; replace with the reminder id.
-    emit(
-      state.copyWith(
-        reminders: Map.of(state.reminders)..[stopName] = 'pending',
-      ),
-    );
-    try {
-      final reminder = await _firebase.createArrivalReminder(
-        routeType: _routeType,
-        routeKey: trainNo,
-        stopKey: stopName,
-        direction: '0',
-        leadMinutes: _leadMinutes,
-        expiresAt: arrivesAt,
-      );
-      if (emit.isDone) return;
-      emit(
-        state.copyWith(
-          reminders: Map.of(state.reminders)
-            ..[stopName] = reminder.reminderId,
-        ),
-      );
-    } on Object catch (e, s) {
-      CrashReporter.record(e, s);
-      if (emit.isDone) return;
-      emit(
-        state.copyWith(reminders: Map.of(state.reminders)..remove(stopName)),
-      );
-    }
-  }
+  ) => _reminderToggle.run(
+    readReminders: () => state.reminders,
+    emit: (next) => emit(state.copyWith(reminders: next)),
+    isDone: () => emit.isDone,
+    key: event.stopName,
+    direction: '0',
+    armAt: _arrivalDateTime(event.stopName),
+  );
 
   /// The stop's scheduled arrival (falling back to departure) as a local
   /// DateTime on the service [date], or null when it can't be parsed.

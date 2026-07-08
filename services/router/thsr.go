@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -195,9 +195,9 @@ func thsrTimetablePayload(ctx context.Context, db railDB, start, end string, dat
 // get_thsr_availableseatstatus refreshes the realtime THSR available-seat cache
 // from TDX and republishes it over Redis Pub/Sub. It backs the AvailableSeats
 // stream and is intentionally kept on the router (out of ADR-0005 scope).
-func get_thsr_availableseatstatus(client *resty.Client, rc *redis.Client, Date string) {
+func get_thsr_availableseatstatus(tdx *shared.TDXClient, rc *redis.Client, Date string) {
 	log.Infof("[RAIL] action=thsr_AvailableSeatStatus event=start")
-	dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Rail/THSR/AvailableSeatStatus/Train/OD/TrainDate/%s", Date), "thsr_traindate")
+	dec, comp, flipopen, err := tdx.Get(fmt.Sprintf("/v2/Rail/THSR/AvailableSeatStatus/Train/OD/TrainDate/%s", Date), "thsr_traindate")
 	if err != nil || !comp {
 		log.Infof("[RAIL] action=thsr_AvailableSeatStatus event=skip reason=api_error")
 		return
@@ -231,7 +231,7 @@ func get_thsr_availableseatstatus(client *resty.Client, rc *redis.Client, Date s
 		if err != nil {
 			continue
 		}
-		key := fmt.Sprintf("thsr_seats:%s:%s", Date, trainNo)
+		key := shared.ThsrSeatsKey(Date, trainNo)
 		pipe.Set(key, pb, 15*time.Minute)
 		pipe.Publish(key, string(pb))
 		count++

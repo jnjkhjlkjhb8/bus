@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -77,10 +76,10 @@ type mrtLive struct {
 // first/last timetables. It always returns nil. The OD fare matrix is loaded
 // separately from raw_tdx by loadMrtJourneyMatrix (loader registry key
 // "mrt_odfare"), so this job no longer fetches it directly.
-func mrtStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) error {
+func mrtStatic(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) error {
 	log.Infof("[MRT] action=mrt_static event=start")
-	getmrtStation(ctx, client, rc, db)
-	getmrtFirstlast(ctx, client, rc, db)
+	getmrtStation(ctx, tdx, rc, db)
+	getmrtFirstlast(ctx, tdx, rc, db)
 	log.Infof("[MRT] action=mrt_static event=complete")
 	return nil
 }
@@ -88,12 +87,12 @@ func mrtStatic(ctx context.Context, client *resty.Client, rc *redis.Client, db *
 // getmrtStation upserts metro stations into mrt_station for each metro system
 // via a per-system temp-table COPY then ON CONFLICT upsert on (station_id,
 // system). Per-system failures are logged and skipped.
-func getmrtStation(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
+func getmrtStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
 	log.Infof("[MRT] action=getmrt_station event=start")
 	var systems = []string{"TRTC", "KRTC", "KLRT", "TYMC", "NTMC"}
 	for _, system := range systems {
 		log.Infof("[MRT] action=getmrt_station system=%s event=system_start", system)
-		dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Rail/Metro/Station/%s", system), "mrt_stations"+system)
+		dec, comp, flipopen, err := tdx.Get(fmt.Sprintf("/v2/Rail/Metro/Station/%s", system), "mrt_stations"+system)
 		if err != nil || !comp {
 			log.Infof("[MRT] action=getmrt_station system=%s event=skip reason=api_error", system)
 			continue
@@ -187,12 +186,12 @@ func loadMrtStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _
 // system via temp-table COPY and upsert, then prunes rows older than this run's
 // start so retired schedule entries drop out. NTMC is excluded (no first/last
 // feed). Per-system failures are logged and skipped.
-func getmrtFirstlast(ctx context.Context, client *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
+func getmrtFirstlast(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
 	log.Infof("[MRT] action=getmrt_firstlast event=start")
 	var systems = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
 	for _, system := range systems {
 		log.Infof("[MRT] action=getmrt_firstlast system=%s event=system_start", system)
-		dec, comp, err, flipopen := callApi(client, rc, fmt.Sprintf("/v2/Rail/Metro/FirstLastTimetable/%s", system), "mrt_firstlast"+system)
+		dec, comp, flipopen, err := tdx.Get(fmt.Sprintf("/v2/Rail/Metro/FirstLastTimetable/%s", system), "mrt_firstlast"+system)
 		if err != nil || !comp {
 			log.Infof("[MRT] action=getmrt_firstlast system=%s event=skip reason=api_error", system)
 			continue

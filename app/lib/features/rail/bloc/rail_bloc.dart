@@ -4,7 +4,7 @@ import 'package:flutter/material.dart' show TimeOfDay;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/core/grpc/live_data.dart';
+import 'package:wheres_the_car/data/live/arrival_feed.dart';
 import 'package:wheres_the_car/data/models/tra_models.dart';
 import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
 import 'package:wheres_the_car/data/repositories/tra_repository.dart';
@@ -27,8 +27,11 @@ class RailBloc extends Bloc<RailEvent, RailState> {
 
   static final _dateFormat = DateFormat('yyyy-MM-dd');
 
-  LiveData<List<TraLiveBoardItem>>? _liveBoardSub;
-  LiveData<Map<String, int>>? _delaySub;
+  // A station's live board and a segment's delay map are lone live values
+  // (a whole board / a whole map per frame), not accumulating arrival lists,
+  // so they ride the arrival feed's passthrough seam for resilient reconnect.
+  StreamSubscription<List<TraLiveBoardItem>>? _liveBoardSub;
+  StreamSubscription<Map<String, int>>? _delaySub;
 
   RailLiveBoardLoaded _defaultLoaded(RailSystem system) {
     final now = DateTime.now();
@@ -92,11 +95,10 @@ class RailBloc extends Bloc<RailEvent, RailState> {
 
     final date = _dateFormat.format(DateTime.now());
     await _liveBoardSub?.cancel();
-    _liveBoardSub = LiveData<List<TraLiveBoardItem>>.watch(
+    _liveBoardSub = ArrivalFeed.passthrough(
       source: () => TraRepository.instance.liveBoard(stationId, date),
-      onData: (items) => add(RailLiveBoardItemsUpdated(items)),
       onFailure: (e) => add(RailLiveBoardFailed(e)),
-    );
+    ).listen((items) => add(RailLiveBoardItemsUpdated(items)));
   }
 
   void _onLiveBoardItems(
@@ -181,14 +183,13 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           ),
         );
         await _delaySub?.cancel();
-        _delaySub = LiveData<Map<String, int>>.watch(
+        _delaySub = ArrivalFeed.passthrough(
           source: () => TraRepository.instance.delay(
             event.date,
             event.originId,
             event.destId,
           ),
-          onData: (delays) => add(RailDelaysUpdated(delays)),
-        );
+        ).listen((delays) => add(RailDelaysUpdated(delays)));
       } else {
         final items = await ThsrRepository.instance.timetable(
           event.date,

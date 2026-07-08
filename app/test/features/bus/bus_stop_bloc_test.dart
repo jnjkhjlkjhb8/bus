@@ -1,13 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/repositories/bus_stop_eta_repository.dart';
+import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_car/data/repositories/bus_repository.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
 
 void main() {
   test('loads members and arrivals from repository', () async {
-    final repository = _FakeBusStopEtaRepository(
+    final repository = _FakeBusRepository(
       membersResult: const [
         BusStationMember(
           stationUid: 'stop-1',
@@ -44,7 +45,7 @@ void main() {
   test('BusStopFailed sets AppError', () async {
     final bloc = BusStopBloc(
       stopId: 'group-1',
-      repository: _FakeBusStopEtaRepository(),
+      repository: _FakeBusRepository(),
     );
     addTearDown(bloc.close);
 
@@ -62,7 +63,7 @@ void main() {
   });
 
   test('retry requests a fresh load', () async {
-    final repository = _FakeBusStopEtaRepository();
+    final repository = _FakeBusRepository();
     final bloc = BusStopBloc(stopId: 'group-1', repository: repository);
     addTearDown(bloc.close);
 
@@ -70,28 +71,32 @@ void main() {
     bloc.add(const BusStopRetryRequested());
     await Future<void>.delayed(Duration.zero);
 
-    expect(repository.membersCalls, greaterThanOrEqualTo(2));
+    expect(repository.groupCalls, greaterThanOrEqualTo(2));
   });
 }
 
-class _FakeBusStopEtaRepository implements BusStopEtaRepository {
-  _FakeBusStopEtaRepository({
+class _FakeBusRepository implements BusRepository {
+  _FakeBusRepository({
     this.membersResult = const [],
     this.arrivalsResult = const [],
   });
 
   final List<BusStationMember> membersResult;
   final List<BusStopArrival> arrivalsResult;
-  int membersCalls = 0;
+  int groupCalls = 0;
 
   @override
-  Future<List<BusStationMember>> members(String groupUid) async {
-    membersCalls++;
+  Future<List<BusStationMember>> stationGroup(String groupUid) async {
+    groupCalls++;
     return membersResult;
   }
 
   @override
-  Stream<List<BusStopArrival>> watchStop(String stopId, {String? city}) async* {
+  Stream<List<BusStopArrival>> stationEta(String city, String groupUid) async* {
     yield arrivalsResult;
   }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) =>
+      throw UnimplementedError('${invocation.memberName} not faked');
 }

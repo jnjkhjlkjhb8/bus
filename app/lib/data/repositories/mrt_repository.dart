@@ -2,12 +2,14 @@ import 'package:wheres_the_car/core/grpc/grpc_client.dart';
 import 'package:wheres_the_car/core/powersync/local_db.dart';
 import 'package:wheres_the_car/core/powersync/powersync_service.dart';
 import 'package:wheres_the_car/data/decoders/mrt_decoder.dart';
-import 'package:wheres_the_car/data/generated/mrt.pb.dart';
+import 'package:wheres_the_car/data/generated/mrt.pbgrpc.dart';
 import 'package:wheres_the_car/data/models/journey_info.dart';
 import 'package:wheres_the_car/data/models/metro_models.dart';
 
 class MrtRepository {
-  MrtRepository({LocalDb? localDb}) : _localDb = localDb;
+  MrtRepository({Mrt_ServiceClient? client, LocalDb? localDb})
+    : _client = client,
+      _localDb = localDb;
 
   static final MrtRepository instance = MrtRepository();
 
@@ -16,13 +18,14 @@ class MrtRepository {
   LocalDb? _localDb;
   LocalDb get _db => _localDb ??= PowerSyncService.instance;
 
+  Mrt_ServiceClient? _client;
+  Mrt_ServiceClient get _grpc => _client ??= GrpcClient.instance.mrt;
+
   /// Server-streaming: emits decoded MRT arrival estimates until cancelled.
   ///
   /// [system] — metro operator code, e.g. `'TRTC'` (台北捷運).
   /// [stationId] — station identifier within the system.
-  Stream<MetroLiveArrival> eta(String system, String stationId) => GrpcClient
-      .instance
-      .mrt
+  Stream<MetroLiveArrival> eta(String system, String stationId) => _grpc
       .eta(Ask_mrt(system: system, stationID: stationId))
       .map((resp) => MrtDecoder.instance.decodeEta(resp.data));
 

@@ -8,12 +8,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,7 +20,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -46,7 +43,6 @@ func main() {
 	log.Infof("[BOOT] action=start role=%q", role)
 
 	r := cron.New(cron.WithSeconds())
-	c := resty.New()
 	rc := shared.ConnectRedis()
 	// The ingestor is a nightly batch (≤3-way concurrency); give it its own small
 	// pool so its 03:00 burst can never eat more than a handful of the shared
@@ -63,16 +59,20 @@ func main() {
 		}
 	}(rc)
 	defer db.Close()
-	configureTDXClient(c, rc)
+	tdx := shared.NewTDXClient(shared.TDXConfig{
+		Store:         shared.RedisTDXStore{RC: rc},
+		IMSKey:        imsCacheKey,
+		SinceFallback: sinceFallback,
+	})
 
 	switch mode {
 	case modeIngestor:
-		registerIngestorCrons(r, c, rc)
+		registerIngestorCrons(r, tdx)
 		r.Start()
 		defer r.Stop()
 		waitForShutdown()
 	case modeLegacyProd:
-		runLegacyProd(r, c, rc, db)
+		runLegacyProd(r, tdx, rc, db)
 	}
 }
 
@@ -135,13 +135,13 @@ func runDaily(name string, d time.Duration, job func(context.Context) error) {
 // runLegacyProd is the current prod path: Firebase, notification dispatcher, all
 // transform/realtime crons, and MQTT. Only ROLE="" reaches here — the ingestor
 // never initializes any of it.
-func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.Pool) {
+func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
 	sender, err := newFirebaseSender(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
 	dispatcher := newNotificationDispatcher(notificationStore{db: db}, sender)
-	busDailyroute(c, rc)
+	busDailyroute(tdx, rc)
 	loadHolidays()
 	loadModel()
 	// The legacy direct-fetch static jobs (bikeStatic/mrtStatic/railStatic; the
@@ -156,7 +156,7 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 		})
 	})
 	registerLoaderCrons(r, db, rc)
-	registerLiveCrons(r, c, rc, db, dispatcher)
+	registerLiveCrons(r, tdx, rc, db, dispatcher)
 	_, _ = r.AddFunc("@every 10m", func() {
 		weatherSync(rc)
 	})
@@ -179,38 +179,6 @@ func runLegacyProd(r *cron.Cron, c *resty.Client, rc *redis.Client, db *pgxpool.
 	waitForShutdown()
 }
 
-// configureTDXClient sets the shared resty client up for the TDX basic API:
-// base URL, Brotli/gzip decoding left to the caller (responses are not parsed),
-// retries on transport errors and HTTP 429, and a per-request bearer token from
-// Redis. On 401 it deletes the cached token keys so the retry re-fetches a fresh
-// token. TDX API docs: https://tdx.transportdata.tw/
-func configureTDXClient(c *resty.Client, rc *redis.Client) {
-	c.SetBaseURL("https://tdx.transportdata.tw/api/basic").
-		SetHeader("Content-Type", "application/json").
-		SetHeader("Content-Encoding", "br,gzip").
-		SetDoNotParseResponse(true).
-		SetTimeout(30 * time.Second).
-		SetRetryCount(5).
-		SetRetryWaitTime(1 * time.Second).
-		SetRetryMaxWaitTime(5 * time.Second).
-		AddRetryCondition(
-			func(r *resty.Response, err error) bool {
-				if err != nil {
-					return true
-				}
-				if r.StatusCode() == 401 {
-					rc.Del(tdxTokenKey, tdxTokenKeyLegacy)
-					return true
-				}
-				return r.StatusCode() == 429
-			},
-		).
-		OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
-			req.SetAuthToken(getToken(rc))
-			return nil
-		})
-}
-
 // waitForShutdown blocks until SIGINT or SIGTERM, letting deferred cleanup
 // (cron stop, connection close, MQTT disconnect) run on graceful termination.
 func waitForShutdown() {
@@ -229,21 +197,14 @@ var ingestDB *pgxpool.Pool
 // prod transform path never writes raw_tdx.
 var rawDumpEnabled bool
 
-// Redis is one DB namespaced by key prefix. TDX/raw cache keys live under
-// shared:*. Legacy bare keys are read as fallback; new writes are namespaced.
-const (
-	tdxTokenKey       = "shared:tdx:access_token"
-	tdxTokenKeyLegacy = "TDX_Token"
-)
-
 // imsCacheKey is the If-Modified-Since cache key for a fetch target. The ingestor
 // writes namespaced shared:raw:* keys; the default prod path keeps its legacy key
-// so prod behavior is unchanged.
+// so prod behavior is unchanged. Both key forms live in shared/keys.go.
 func imsCacheKey(name string) string {
 	if rawDumpEnabled {
-		return "shared:raw:last_modified:" + name
+		return shared.TDXRawIMSKey(name)
 	}
-	return "LastTimeGet_" + name
+	return shared.TDXLegacyIMSKey(name)
 }
 
 // dbSince derives an If-Modified-Since value from the latest updated_at of the
@@ -302,63 +263,15 @@ func dbSince(name string) string {
 // raw_tdx would strand the landing table permanently empty.
 func dbSinceFallbackAllowed() bool { return !rawDumpEnabled }
 
-// callApi fetches a TDX endpoint using an If-Modified-Since guard and returns a
-// streaming JSON decoder over the response body. The bool reports whether new
-// data is present: false means a 304 Not-Modified or nothing to process. The
-// returned func closes the response body and must be called (it is nil when
-// there is nothing to close). In ingestor mode the body is buffered and landed
-// into raw_tdx before the Last-Modified cache advances, so a failed dump refetches
-// next run instead of being masked by a later 304; in legacy prod mode the body
-// is streamed and the cache is written immediately.
-func callApi(client *resty.Client, rc *redis.Client, url string, name string) (*json.Decoder, bool, error, func()) {
-	since, _ := rc.Get(imsCacheKey(name)).Result()
-	if since == "" && dbSinceFallbackAllowed() {
-		since = dbSince(name)
+// sinceFallback is the shared TDX client's cold-cache If-Modified-Since source:
+// in the legacy prod path it derives the value from the backing table's
+// updated_at (dbSince); in ingestor mode it returns "" so an empty raw_tdx is
+// never masked by a table-derived 304.
+func sinceFallback(name string) string {
+	if dbSinceFallbackAllowed() {
+		return dbSince(name)
 	}
-	resp, err := client.R().
-		SetHeader("If-Modified-Since", since).
-		Get(url)
-	if err != nil {
-		return &json.Decoder{}, false, err, nil
-	}
-	if resp.StatusCode() == 304 {
-		err := resp.RawResponse.Body.Close()
-		if err != nil {
-			return &json.Decoder{}, false, err, nil
-		}
-		log.Infof("[RUN] action=no update=%s", name)
-		return &json.Decoder{}, false, nil, nil
-	}
-	if resp.StatusCode() >= 400 {
-		_ = resp.RawResponse.Body.Close()
-		return &json.Decoder{}, false, fmt.Errorf("tdx %s: status %d", name, resp.StatusCode()), nil
-	}
-	lastMod := resp.Header().Get("Last-Modified")
-
-	if !rawDumpEnabled {
-		// legacy prod: unchanged — cache IMS immediately, stream the body.
-		rc.Set(imsCacheKey(name), lastMod, 0)
-		return json.NewDecoder(resp.RawResponse.Body), true, nil, func() {
-			if cerr := resp.RawResponse.Body.Close(); cerr != nil {
-				log.Infof("[RUN] action=fail-close-response error=%v", cerr)
-			}
-		}
-	}
-
-	// ingestor: land raw_tdx first; only cache IMS after the dump succeeds so a
-	// failed dump refetches next run instead of being masked by a 304.
-	body, err := io.ReadAll(resp.RawResponse.Body)
-	_ = resp.RawResponse.Body.Close()
-	if err != nil {
-		return &json.Decoder{}, false, err, nil
-	}
-	if table, partCol, partVal, ok := rawDumpTarget(url); ok {
-		if derr := dumpRawTDX(context.Background(), table, partCol, partVal, body); derr != nil {
-			return &json.Decoder{}, false, fmt.Errorf("%w: %s: %v", errRawDump, name, derr), func() {}
-		}
-	}
-	rc.Set(imsCacheKey(name), lastMod, 0)
-	return json.NewDecoder(bytes.NewReader(body)), true, nil, func() {}
+	return ""
 }
 
 // rawDumpTarget maps a TDX static endpoint path to its raw_tdx landing table and
@@ -589,49 +502,6 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 		return nil, err
 	}
 	return list, nil
-}
-
-// getToken returns a TDX OAuth bearer token, preferring the cached value in
-// Redis (namespaced key, then legacy key). On a cache miss it does a
-// client_credentials exchange against the TDX auth server using TDX_CLIENT_ID /
-// TDX_CLIENT_SECRET and caches the token for 6 hours. Any failure is logged and
-// returns "" — the caller then sends an unauthenticated request that TDX rejects
-// with 401, which triggers a token refresh on retry. Token endpoint:
-// https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token
-func getToken(rc *redis.Client) string {
-	if val, err := rc.Get(tdxTokenKey).Result(); err == nil && val != "" {
-		return val
-	}
-	if val, err := rc.Get(tdxTokenKeyLegacy).Result(); err == nil && val != "" {
-		return val
-	}
-	authClient := resty.New()
-	resp, err := authClient.R().
-		SetHeader("content-type", "application/x-www-form-urlencoded").
-		SetFormData(map[string]string{
-			"grant_type":    "client_credentials",
-			"client_id":     os.Getenv("TDX_CLIENT_ID"),
-			"client_secret": os.Getenv("TDX_CLIENT_SECRET"),
-		}).
-		Post("https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token")
-	if err != nil {
-		log.Infof("[TDX] token fetch error: %v", err)
-		return ""
-	}
-	var mp map[string]interface{}
-	if err = json.Unmarshal(resp.Body(), &mp); err != nil {
-		log.Infof("[TDX] token parse error: %v", err)
-		return ""
-	}
-	token, ok := mp["access_token"].(string)
-	if !ok || token == "" {
-		log.Infof("[TDX] access_token missing from response")
-		return ""
-	}
-	if err = rc.Set(tdxTokenKey, token, 6*time.Hour).Err(); err != nil {
-		log.Infof("[TDX] token cache error: %v", err)
-	}
-	return token
 }
 
 // clearBusStaticCache deletes the legacy IMS cache keys for every bus static

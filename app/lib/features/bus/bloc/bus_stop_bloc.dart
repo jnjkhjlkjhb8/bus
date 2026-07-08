@@ -3,7 +3,8 @@ import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/data/live/arrival_feed.dart';
-import 'package:wheres_the_car/data/repositories/bus_stop_eta_repository.dart';
+import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_car/data/repositories/bus_repository.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
 
@@ -11,8 +12,8 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
   BusStopBloc({
     required this.stopId,
     this.city,
-    BusStopEtaRepository? repository,
-  }) : _repository = repository ?? BusStopEtaRepository.instance,
+    BusRepository? repository,
+  }) : _repository = repository ?? BusRepository.instance,
        super(const BusStopState()) {
     on<BusStopStarted>(_onStarted);
     on<BusStopRetryRequested>(_onStarted);
@@ -24,7 +25,7 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
 
   final String? stopId;
   final String? city;
-  final BusStopEtaRepository _repository;
+  final BusRepository _repository;
   // Replace policy + 15s decay live inside the feed; the empty-frame guard the
   // bloc used to run in _onUpdated is the feed's replace policy now.
   final _feed = ArrivalFeed<BusStopArrival>.replace(
@@ -41,7 +42,7 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     emit(state.copyWith(status: BusStopStatus.loading, clearError: true));
     await _sub?.cancel();
     try {
-      final members = await _repository.members(id);
+      final members = await _repository.stationGroup(id);
       if (members.isNotEmpty) {
         emit(state.copyWith(status: BusStopStatus.loaded, members: members));
       }
@@ -50,7 +51,7 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     }
     _sub = _feed
         .watch(
-          source: () => _repository.watchStop(id, city: city),
+          source: () => _repository.stationEta(city ?? '', id),
           onFailure: (e) => add(BusStopFailed(e)),
         )
         .listen((arrivals) => add(BusStopArrivalsUpdated(arrivals)));

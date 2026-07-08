@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -319,7 +318,7 @@ func busDailyTimetableSkip(city string) bool {
 // timetable TDX does not serve. Runs both at boot and in the 03:00 static cron.
 // The fetch wrapper only owns the TDX call; the decoder-side assembly and Redis
 // writes are shared with the loader path via loadBusDailyTimetable.
-func busDailyroute(client *resty.Client, rc *redis.Client) {
+func busDailyroute(tdx *shared.TDXClient, rc *redis.Client) {
 	log.Infof("[bus] action=bus_dailyroute event=start")
 	for _, city := range cities {
 		if busDailyTimetableSkip(city) {
@@ -332,7 +331,7 @@ func busDailyroute(client *resty.Client, rc *redis.Client) {
 			url = fmt.Sprintf("/v2/Bus/DailyTimeTable/City/%s", city)
 		}
 		log.Infof("[bus] action=bus_dailyroute city=%s event=city_start", city)
-		dec, comp, err, flipopen := callApi(client, rc, url, "DailyTimeTable"+city)
+		dec, comp, flipopen, err := tdx.Get(url, "DailyTimeTable"+city)
 		if err != nil {
 			log.Infof("[bus] action=bus_dailyroute city=%s event=skip reason=api_error,error=%s", city, err)
 			continue
@@ -493,7 +492,7 @@ func busOperatorsFromDB(ctx context.Context, db *pgxpool.Pool, city string) map[
 }
 
 // loadBusOperators decodes a city's operators from an already-opened decoder
-// (from callApi or the raw_tdx loader), upserts them into bus_operators, and
+// (the raw_tdx loader reconstructs it), upserts them into bus_operators, and
 // returns them keyed by OperatorID for the subroute assembly. The temp_op COPY
 // and ON CONFLICT (operator_id, authority_code) upsert are byte-identical to
 // the legacy fetch-coupled body. The map is returned even on a write error so

@@ -10,6 +10,7 @@ import (
 	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -36,9 +37,12 @@ type maasDB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-func newMaasServer(rc *redis.Client, db maasDB, tdxAuthToken func() string) *MaasServer {
-	c := resty.New().
-		SetBaseURL("https://tdx.transportdata.tw/api/maas").
+func newMaasServer(rc *redis.Client, db maasDB, tdx *shared.TDXClient) *MaasServer {
+	// The MaaS API family has a different base URL and retry policy than the
+	// basic conditional-GET client, so it gets its own resty client — but the
+	// bearer-token auth flows through the shared TDX client (NewAuthedClient) so
+	// the token exchange lives in exactly one place.
+	c := tdx.NewAuthedClient("https://tdx.transportdata.tw/api/maas").
 		SetHeader("Content-Type", "application/json").
 		SetRetryCount(3).
 		SetRetryWaitTime(500 * time.Millisecond).
@@ -47,10 +51,6 @@ func newMaasServer(rc *redis.Client, db maasDB, tdxAuthToken func() string) *Maa
 				return true
 			}
 			return r.StatusCode() == 429 || r.StatusCode() == 503
-		}).
-		OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
-			req.SetAuthToken(tdxAuthToken())
-			return nil
 		})
 	return &MaasServer{rc: rc, db: db, maasClient: c, osrmClient: resty.New().SetTimeout(5 * time.Second)}
 }

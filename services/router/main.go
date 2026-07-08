@@ -86,14 +86,14 @@ type MrtServer struct {
 
 // ThsrServer serves high-speed-rail fares, timetables, and available-seat
 // streams. Fare/timetable results are cached in Redis and, on a miss, read from
-// the loaded env schema (no TDX fetch, ADR-0005). The resty client remains only
-// for the realtime AvailableSeats refresh.
+// the loaded env schema (no TDX fetch, ADR-0005). The shared TDX client remains
+// only for the realtime AvailableSeats refresh.
 type ThsrServer struct {
 	pb.UnimplementedThsrTimetableServiceServer
-	mu     sync.Mutex
-	db     *pgxpool.Pool
-	client *resty.Client
-	rc     *redis.Client
+	mu  sync.Mutex
+	db  *pgxpool.Pool
+	tdx *shared.TDXClient
+	rc  *redis.Client
 }
 
 // Tra_StationServer streams the live arrival board for a TRA station from Redis
@@ -206,7 +206,10 @@ func main() {
 	rc := shared.ConnectRedis()
 	db := shared.ConnectDB("ROUTER_DB_MAX_CONNS", 20)
 	go logPoolStats(db)
-	c := resty.New()
+	tdx := shared.NewTDXClient(shared.TDXConfig{
+		Store:  shared.RedisTDXStore{RC: rc},
+		IMSKey: shared.TDXLegacyIMSKey,
+	})
 	defer func(rc *redis.Client) {
 		err := rc.Close()
 		if err != nil {
@@ -214,29 +217,6 @@ func main() {
 		}
 	}(rc)
 	defer db.Close()
-	c.SetBaseURL("https://tdx.transportdata.tw/api/basic").
-		SetHeader("Content-Type", "application/json").
-		SetHeader("Content-Encoding", "br,gzip").
-		SetDoNotParseResponse(true).
-		SetRetryCount(5).
-		SetRetryWaitTime(1 * time.Second).
-		SetRetryMaxWaitTime(5 * time.Second).
-		AddRetryCondition(
-			func(r *resty.Response, err error) bool {
-				if err != nil {
-					return true
-				}
-				if r.StatusCode() == 401 {
-					rc.Del("TDX_Token")
-					return true
-				}
-				return r.StatusCode() == 429
-			},
-		).
-		OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
-			req.SetAuthToken(getToken(rc))
-			return nil
-		})
 	lis, err := net.Listen("tcp", "0.0.0.0:50051")
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
@@ -270,14 +250,14 @@ func main() {
 	pb.RegisterBus_Station_ServiceServer(grpcServer, &BusStationserver{db: db, rc: rc})
 	pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: newTTLCache()})
 	pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{db: db, rc: rc})
-	pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, client: c, rc: rc})
+	pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, tdx: tdx, rc: rc})
 	pb.RegisterTRAStationServiceServer(grpcServer, &Tra_StationServer{db: db, rc: rc})
 	pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc})
 	pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc})
 	pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, rc: rc})
 	pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{db: db, osrmClient: resty.New().SetTimeout(5 * time.Second)})
 	pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{rc: rc})
-	pb.RegisterMaasServiceServer(grpcServer, newMaasServer(rc, db, func() string { return getToken(rc) }))
+	pb.RegisterMaasServiceServer(grpcServer, newMaasServer(rc, db, tdx))
 	pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
 	go startHTTPServer(db)
 	log.Infof("gRPC server is running on port %d", 50051)

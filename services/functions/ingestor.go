@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"github.com/robfig/cron/v3"
 )
 
 // ROLE=ingestor fetches static TDX endpoints and lands the raw payloads into
-// raw_tdx (via dumpRawTDX inside callApi). No transforms, no per-env writes.
+// raw_tdx (via dumpRawTDX in fetchRaw's GetInto commit). No transforms, no
+// per-env writes.
 
 // ingestBusAPIs lists the TDX Bus static endpoints landed for every city in one
 // ingestor run.
@@ -43,13 +43,13 @@ var (
 // timeout). When INGEST_ON_BOOT=true it also kicks off one landing immediately in
 // a goroutine, which is how a fresh deploy backfills raw_tdx without waiting for
 // the next 03:00 tick.
-func registerIngestorCrons(r *cron.Cron, c *resty.Client, rc *redis.Client) {
+func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient) {
 	_, _ = r.AddFunc("0 0 3 * * *", func() {
-		withTimeout(20*time.Minute, func(ctx context.Context) { ingestRaw(ctx, c, rc) })
+		withTimeout(20*time.Minute, func(ctx context.Context) { ingestRaw(ctx, tdx) })
 	})
 	if os.Getenv("INGEST_ON_BOOT") == "true" {
 		log.Infoln("[INGEST] INGEST_ON_BOOT=true — running once on boot")
-		go ingestRaw(context.Background(), c, rc)
+		go ingestRaw(context.Background(), tdx)
 	} else {
 		log.Infoln("[INGEST] INGEST_ON_BOOT not set — boot run skipped, daily cron only")
 	}
@@ -58,9 +58,9 @@ func registerIngestorCrons(r *cron.Cron, c *resty.Client, rc *redis.Client) {
 // ingestRaw lands every configured TDX static endpoint into raw_tdx: all bus
 // APIs across all cities (run concurrently, capped at 3 in flight), then bike,
 // metro, and rail endpoints sequentially. Rail daily timetables are fetched for
-// today's date. Each fetch's raw_tdx write happens inside callApi; per-endpoint
-// failures are logged and do not abort the run.
-func ingestRaw(ctx context.Context, c *resty.Client, rc *redis.Client) {
+// today's date. Each fetch's raw_tdx write happens inside fetchRaw's GetInto
+// commit; per-endpoint failures are logged and do not abort the run.
+func ingestRaw(ctx context.Context, tdx *shared.TDXClient) {
 	// Without TDX credentials every fetch would 401, so the ingestor would fire
 	// ~300+ unauthenticated requests (each retried) daily to no effect. Gate the
 	// whole run on non-empty credentials: the cron stays registered but is a true
@@ -133,20 +133,26 @@ func ingestRaw(ctx context.Context, c *resty.Client, rc *redis.Client) {
 		go func(j job) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			fetchRaw(c, rc, j.url, j.name)
+			fetchRaw(ctx, tdx, j.url, j.name)
 		}(j)
 	}
 	wg.Wait()
 	log.Infoln("[INGEST] action=raw event=end")
 }
 
-// fetchRaw calls a static endpoint; the raw_tdx landing happens inside callApi.
-// The returned decoder is intentionally discarded — the ingestor never parses.
-func fetchRaw(c *resty.Client, rc *redis.Client, url, name string) {
-	_, comp, err, done := callApi(c, rc, url, name)
-	if done != nil {
-		defer done()
-	}
+// fetchRaw lands one static endpoint into raw_tdx via GetInto: the whole body is
+// buffered and dumped before the If-Modified-Since marker advances, so a failed
+// dump refetches next run instead of being masked by a later 304. The ingestor
+// never parses the payload — only the raw bytes matter. Endpoints with no
+// raw_tdx mapping still advance their marker (commit is a no-op).
+func fetchRaw(ctx context.Context, tdx *shared.TDXClient, url, name string) {
+	modified, err := tdx.GetInto(url, name, func(body []byte) error {
+		table, partCol, partVal, ok := rawDumpTarget(url)
+		if !ok {
+			return nil
+		}
+		return dumpRawTDX(ctx, table, partCol, partVal, body)
+	})
 	if err != nil {
 		if errors.Is(err, errRawDump) {
 			log.Infof("[INGEST] url=%s event=raw_dump_error error=%v", url, err)
@@ -155,7 +161,7 @@ func fetchRaw(c *resty.Client, rc *redis.Client, url, name string) {
 		}
 		return
 	}
-	if !comp {
+	if !modified {
 		log.Infof("[INGEST] url=%s event=skip reason=not_modified", url)
 	}
 }

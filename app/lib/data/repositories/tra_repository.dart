@@ -2,11 +2,19 @@ import 'package:wheres_the_car/core/grpc/grpc_client.dart';
 import 'package:wheres_the_car/core/powersync/local_db.dart';
 import 'package:wheres_the_car/core/powersync/powersync_service.dart';
 import 'package:wheres_the_car/data/decoders/tra_decoder.dart';
-import 'package:wheres_the_car/data/generated/tra.pb.dart';
+import 'package:wheres_the_car/data/generated/tra.pbgrpc.dart';
 import 'package:wheres_the_car/data/models/tra_models.dart';
 
 class TraRepository {
-  TraRepository({LocalDb? localDb}) : _localDb = localDb;
+  TraRepository({
+    TRA_station_serviceClient? stationClient,
+    TRA_timetable_serviceClient? timetableClient,
+    TRA_Detain_serviceClient? detainClient,
+    LocalDb? localDb,
+  }) : _stationClient = stationClient,
+       _timetableClient = timetableClient,
+       _detainClient = detainClient,
+       _localDb = localDb;
 
   static final TraRepository instance = TraRepository();
 
@@ -15,10 +23,22 @@ class TraRepository {
   LocalDb? _localDb;
   LocalDb get _db => _localDb ??= PowerSyncService.instance;
 
+  TRA_station_serviceClient? _stationClient;
+  TRA_station_serviceClient get _station =>
+      _stationClient ??= GrpcClient.instance.traStation;
+
+  TRA_timetable_serviceClient? _timetableClient;
+  TRA_timetable_serviceClient get _timetable =>
+      _timetableClient ??= GrpcClient.instance.traTimetable;
+
+  TRA_Detain_serviceClient? _detainClient;
+  TRA_Detain_serviceClient get _detain =>
+      _detainClient ??= GrpcClient.instance.traDetain;
+
   /// Server-streaming: emits the decoded live departure/arrival board for
   /// [stationId] on [date] (format `'yyyy-MM-dd'`).
   Stream<List<TraLiveBoardItem>> liveBoard(String stationId, String date) =>
-      GrpcClient.instance.traStation
+      _station
           .live_board(ask_staiton(stationId: stationId, date: date))
           .map(
             (resp) => TraDecoder.instance.decodeLiveBoard(resp.data),
@@ -29,7 +49,7 @@ class TraRepository {
     String originId,
     String destId,
   ) async {
-    final result = await GrpcClient.instance.traTimetable.timetable(
+    final result = await _timetable.timetable(
       ask_route(
         date: date,
         originStationId: originId,
@@ -41,10 +61,8 @@ class TraRepository {
 
   /// Fare query. [stationId] is expected in `'originId:destId'` format when
   /// querying an O/D pair.
-  Future<TraFareItem> fare(String stationId, String date) => GrpcClient
-      .instance
-      .traTimetable
-      .fare(ask_staiton(stationId: stationId, date: date));
+  Future<TraFareItem> fare(String stationId, String date) =>
+      _timetable.fare(ask_staiton(stationId: stationId, date: date));
 
   /// Server-streaming: emits decoded delay data (trainNo → delay minutes) for
   /// trains on the [originId]→[destId] segment on [date].
@@ -52,7 +70,7 @@ class TraRepository {
     String date,
     String originId,
     String destId,
-  ) => GrpcClient.instance.traTimetable
+  ) => _timetable
       .delay(
         ask_route(
           date: date,
@@ -67,7 +85,7 @@ class TraRepository {
       );
 
   Future<List<TraStopTime>> stops(String date, String trainNo) async {
-    final result = await GrpcClient.instance.traDetain.stops(
+    final result = await _detain.stops(
       ask_detain(date: date, trainno: trainNo),
     );
     return TraDecoder.instance.decodeStops(result);

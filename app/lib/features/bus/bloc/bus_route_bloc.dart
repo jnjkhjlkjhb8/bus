@@ -9,6 +9,7 @@ import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_car/data/live/arrival_feed.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
+import 'package:wheres_the_car/data/reminders/reminder_toggle.dart';
 import 'package:wheres_the_car/data/repositories/bus_repository.dart';
 import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
 import 'package:wheres_the_car/data/repositories/reminders_repository.dart';
@@ -19,9 +20,11 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   BusRouteBloc({
     required this.subRouteUid,
     bool autoStart = true,
+    BusRepository? busRepository,
     FirebaseRepository? firebaseRepository,
     RemindersRepository? remindersRepository,
-  }) : _firebase = firebaseRepository ?? FirebaseRepository.instance,
+  }) : _bus = busRepository ?? BusRepository.instance,
+       _firebase = firebaseRepository ?? FirebaseRepository.instance,
        _reminders = remindersRepository ?? RemindersRepository.instance,
        super(const BusRouteState()) {
     on<BusRouteStarted>(_onStarted);
@@ -35,6 +38,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   }
 
   final String subRouteUid;
+  final BusRepository _bus;
   final FirebaseRepository _firebase;
   final RemindersRepository _reminders;
   // Replace policy + 15s decay live inside the feed; the bloc keys the emitted
@@ -62,7 +66,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
       ),
     );
     try {
-      final route = await BusRepository.instance.routeStatic(subRouteUid);
+      final route = await _bus.routeStatic(subRouteUid);
       emit(
         state.copyWith(
           route: route,
@@ -74,7 +78,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
 
       _etaSub = _feed
           .watch(
-            source: () => BusRepository.instance.routeEta(subRouteUid),
+            source: () => _bus.routeEta(subRouteUid),
             onFailure: (e) => add(BusRouteStreamFailed(e)),
             onRecovered: () => add(const BusRouteStreamRecovered()),
           )
@@ -104,7 +108,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   _loadDetails() async {
     BusDailyTimetable? daily;
     try {
-      daily = await BusRepository.instance.routeDaily(subRouteUid);
+      daily = await _bus.routeDaily(subRouteUid);
     } on Object catch (e, s) {
       CrashReporter.record(e, s);
       daily = null;
@@ -145,90 +149,50 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   static const _leadMinutes = 3;
   static const _reminderTtl = Duration(hours: 2);
 
-  Future<void> _onReminderToggled(
-    BusRouteReminderToggled event,
-    Emitter<BusRouteState> emit,
-  ) async {
-    final existing = state.reminders[event.stopUid];
-    if (existing != null) {
-      if (existing == 'pending') return;
-      // Optimistic off; restore on failure.
-      emit(
-        state.copyWith(
-          reminders: Map.of(state.reminders)..remove(event.stopUid),
-        ),
-      );
-      try {
-        if (!existing.startsWith('local:')) {
-          await _firebase.cancelArrivalReminder(existing);
-        }
-        await _reminders.remove(subRouteUid, event.stopUid);
-        unawaited(
-          FirebaseTelemetry.instance.arrivalReminderChanged(
-            routeType: 'bus',
-            routeKey: subRouteUid,
-            enabled: false,
-            leadMinutes: _leadMinutes,
-          ),
-        );
-      } on Object catch (e, s) {
-        CrashReporter.record(e, s);
-        if (emit.isDone) return;
-        emit(
-          state.copyWith(
-            reminders: Map.of(state.reminders)..[event.stopUid] = existing,
-          ),
-        );
-      }
-      return;
-    }
-    // Optimistic on with a placeholder id; replace with the server id.
-    emit(
-      state.copyWith(
-        reminders: Map.of(state.reminders)..[event.stopUid] = 'pending',
-      ),
-    );
-    try {
-      final expiresAt = DateTime.now().add(_reminderTtl);
+  // The optimistic toggle choreography lives in the shared state machine; the
+  // bus wiring adds the local mirror (RemindersRepository) and telemetry that
+  // rail omits.
+  late final ReminderToggle _reminderToggle = ReminderToggle(
+    createReminder: ({
+      required stopKey,
+      required direction,
+      required expiresAt,
+    }) async {
       final reminder = await _firebase.createArrivalReminder(
         routeType: 'bus',
         routeKey: subRouteUid,
-        stopKey: event.stopUid,
-        direction: '${state.direction}',
+        stopKey: stopKey,
+        direction: direction,
         leadMinutes: _leadMinutes,
         expiresAt: expiresAt,
       );
-      if (emit.isDone) return;
-      emit(
-        state.copyWith(
-          reminders: Map.of(state.reminders)
-            ..[event.stopUid] = reminder.reminderId,
-        ),
-      );
-      await _reminders.put(
-        subRouteUid,
-        event.stopUid,
-        reminder.reminderId,
-        expiresAt,
-      );
-      unawaited(
-        FirebaseTelemetry.instance.arrivalReminderChanged(
-          routeType: 'bus',
-          routeKey: subRouteUid,
-          enabled: true,
-          leadMinutes: _leadMinutes,
-        ),
-      );
-    } on Object catch (e, s) {
-      CrashReporter.record(e, s);
-      if (emit.isDone) return;
-      emit(
-        state.copyWith(
-          reminders: Map.of(state.reminders)..remove(event.stopUid),
-        ),
-      );
-    }
-  }
+      return reminder.reminderId;
+    },
+    cancelReminder: _firebase.cancelArrivalReminder,
+    persistArm: (stopKey, reminderId, expiresAt) =>
+        _reminders.put(subRouteUid, stopKey, reminderId, expiresAt),
+    persistDisarm: (stopKey) => _reminders.remove(subRouteUid, stopKey),
+    onToggled: ({required enabled}) => unawaited(
+      FirebaseTelemetry.instance.arrivalReminderChanged(
+        routeType: 'bus',
+        routeKey: subRouteUid,
+        enabled: enabled,
+        leadMinutes: _leadMinutes,
+      ),
+    ),
+  );
+
+  Future<void> _onReminderToggled(
+    BusRouteReminderToggled event,
+    Emitter<BusRouteState> emit,
+  ) => _reminderToggle.run(
+    readReminders: () => state.reminders,
+    emit: (next) => emit(state.copyWith(reminders: next)),
+    isDone: () => emit.isDone,
+    key: event.stopUid,
+    direction: '${state.direction}',
+    armAt: DateTime.now().add(_reminderTtl),
+  );
 
   void _onStreamFailed(
     BusRouteStreamFailed event,

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"time"
 
@@ -436,7 +435,7 @@ func (s *ThsrServer) Fare(ctx context.Context, in *pb.Ask_Thsr) (*pb.ThsaFare, e
 // parsed as RFC3339 and reduced to a date for the TDX refresh.
 func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreamingServer[pb.RespThsrSeats]) error {
 	log.Infof("[gRPC] action=thsr_available_seats date=%s", in.Date)
-	channel := fmt.Sprintf("thsr_seats:%s:*", in.Date)
+	channel := shared.ThsrSeatsPattern(in.Date)
 	var cursor uint64
 	for {
 		if err := stream.Context().Err(); err != nil {
@@ -462,11 +461,11 @@ func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreaming
 		cursor = next
 		if cursor == 0 {
 			t := parseRailDate(in.Date)
-			get_thsr_availableseatstatus(s.client, s.rc, t.Format(time.DateOnly))
+			get_thsr_availableseatstatus(s.tdx, s.rc, t.Format(time.DateOnly))
 			break
 		}
 	}
-	sub := s.rc.PSubscribe(fmt.Sprintf("thsr_seats:%s:*", in.Date))
+	sub := s.rc.PSubscribe(shared.ThsrSeatsPattern(in.Date))
 	defer func(sub *redis.PubSub) { _ = sub.Close() }(sub)
 	for {
 		select {
