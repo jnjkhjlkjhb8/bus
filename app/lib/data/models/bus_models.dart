@@ -234,7 +234,7 @@ class BusRouteViewModel extends Equatable {
     required this.city,
     required this.headsignGo,
     required this.headsignReturn,
-    required this.operatorName,
+    this.operators = const [],
     this.stopsGo = const [],
     this.stopsReturn = const [],
     this.geometryGo = '',
@@ -250,7 +250,7 @@ class BusRouteViewModel extends Equatable {
   final String city;
   final String headsignGo;
   final String headsignReturn;
-  final String operatorName;
+  final List<BusOperatorInfo> operators;
   final List<BusStopModel> stopsGo;
   final List<BusStopModel> stopsReturn;
   final String geometryGo;
@@ -267,6 +267,7 @@ class BusRouteViewModel extends Equatable {
     city,
     headsignGo,
     headsignReturn,
+    operators,
     fare,
   ];
 }

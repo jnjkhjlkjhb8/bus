@@ -100,7 +100,7 @@ class BusDecoder {
       city: route.city,
       headsignGo: dir0?.destinationStopName ?? '',
       headsignReturn: dir1?.destinationStopName ?? '',
-      operatorName: '',
+      operators: route.operators.map(_operator).toList(),
       stopsGo: dir0?.stops.map(_stop).toList() ?? [],
       stopsReturn: dir1?.stops.map(_stop).toList() ?? [],
       geometryGo: dir0?.geometry ?? '',
@@ -108,6 +108,12 @@ class BusDecoder {
       fare: route.hasFare() ? _fare(route.fare) : null,
     );
   }
+
+  BusOperatorInfo _operator(BusOperator o) => BusOperatorInfo(
+    name: o.operatorName,
+    phone: o.operatorPhone,
+    url: o.operatorUrl,
+  );
 
   BusFareInfo _fare(Bus_Fare f) => BusFareInfo(
     pricingType: f.farePricingType,

@@ -71,3 +71,21 @@ class BusFareInfo extends Equatable {
     odFaresJson,
   ];
 }
+
+/// One operating company for a route (聯營 routes carry several). Fields come
+/// straight from TDX Bus/Operator; phone and url may be empty, and the UI hides
+/// the matching action when so.
+class BusOperatorInfo extends Equatable {
+  const BusOperatorInfo({
+    required this.name,
+    required this.phone,
+    required this.url,
+  });
+
+  final String name;
+  final String phone;
+  final String url;
+
+  @override
+  List<Object?> get props => [name, phone, url];
+}

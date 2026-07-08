@@ -18,6 +18,7 @@ class _RouteDetailTab extends StatelessWidget {
         children: [
           _NextDepartures(cs: cs, departures: departures),
           _RouteMeta(cs: cs, state: state),
+          _Operators(cs: cs, operators: state.route?.operators ?? const []),
           _Fares(cs: cs, rows: fareRows),
           _Timetable(cs: cs, rows: timetable),
         ],
@@ -181,6 +182,122 @@ class _RouteMeta extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _Operators extends StatelessWidget {
+  const _Operators({required this.cs, required this.operators});
+  final ColorScheme cs;
+  final List<BusOperatorInfo> operators;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 12,
+      children: [
+        _SectionLabel('營運業者', cs: cs),
+        if (operators.isEmpty)
+          _EmptyDetailText('尚無營運業者資料', cs: cs)
+        else
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            spacing: 12,
+            children: [
+              for (final op in operators) _OperatorCard(op: op, cs: cs),
+            ],
+          ),
+      ],
+    );
+  }
+}
+
+class _OperatorCard extends StatelessWidget {
+  const _OperatorCard({required this.op, required this.cs});
+  final BusOperatorInfo op;
+  final ColorScheme cs;
+
+  // TDX operator phones arrive as free text (e.g. "(02)2999-2020"); strip
+  // formatting so the tel: URI dials.
+  static Future<void> _dial(String phone) async {
+    final digits = phone.replaceAll(RegExp('[^0-9+]'), '');
+    if (digits.isEmpty) return;
+    await launchUrl(Uri(scheme: 'tel', path: digits));
+  }
+
+  static Future<void> _open(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AppCard.outlined(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        spacing: 8,
+        children: [
+          Text(
+            op.name.isEmpty ? '-' : op.name,
+            style: AppTextStyles.bodyLarge.copyWith(color: cs.onSurface),
+          ),
+          if (op.phone.isNotEmpty || op.url.isNotEmpty)
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                if (op.phone.isNotEmpty)
+                  _OperatorAction(
+                    icon: Icons.phone_outlined,
+                    label: op.phone,
+                    cs: cs,
+                    onTap: () => _dial(op.phone),
+                  ),
+                if (op.url.isNotEmpty)
+                  _OperatorAction(
+                    icon: Icons.language_outlined,
+                    label: '官方網站',
+                    cs: cs,
+                    onTap: () => _open(op.url),
+                  ),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OperatorAction extends StatelessWidget {
+  const _OperatorAction({
+    required this.icon,
+    required this.label,
+    required this.cs,
+    required this.onTap,
+  });
+  final IconData icon;
+  final String label;
+  final ColorScheme cs;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      semanticLabel: label,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        spacing: 6,
+        children: [
+          Icon(icon, size: 18, color: cs.onSurfaceVariant),
+          Text(
+            label,
+            style: AppTextStyles.bodyLarge.copyWith(color: cs.onSurface),
+          ),
+        ],
+      ),
     );
   }
 }
