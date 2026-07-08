@@ -8,11 +8,9 @@ const _kIconMarkerSize = 32.0;
 const _kHighlightIconMarkerSize = 44.0;
 const _kMapMarkerLimit = 60;
 
-/// Radius used when the map controller isn't ready yet and we can't measure the
-/// visible viewport. Remote-tunable so ops can widen/narrow the cold-start
-/// nearby query without a release.
-int get _fallbackRadiusMeters =>
-    AppConfig.getInt('nearby_fallback_radius_m');
+/// Fixed radius for nearby-station queries. Decoupled from the map viewport so
+/// panning/zooming can't inflate the query into a slow, jank-inducing fetch.
+const _kNearbyRadiusMeters = 1000;
 
 enum _MarkerStyle { icon, largeDot, smallDot }
 

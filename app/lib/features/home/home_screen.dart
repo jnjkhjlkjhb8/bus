@@ -12,7 +12,6 @@ import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/location/location_service.dart';
 import 'package:wheres_the_car/data/models/near_models.dart';
@@ -66,6 +65,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Set<Marker> _markers = {};
   int _markerRevision = 0;
   Timer? _idleDebounce;
+  /// Center of the last nearby query actually sent; used to suppress redundant
+  /// re-queries when the camera settles only a few metres away.
+  LatLng? _lastQueryCenter;
+  /// When the last sonar ring was emitted; dedupes back-to-back pings.
+  DateTime? _lastPingAt;
   bool _mapReady = false;
   bool _tabApplied = false;
 
@@ -166,33 +170,22 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     return earth * 2 * math.atan2(math.sqrt(h), math.sqrt(1 - h));
   }
 
-  Future<int> _visibleRadiusMeters() async {
-    final controller = _mapController;
-    if (controller == null) return _fallbackRadiusMeters;
-    final bounds = await controller.getVisibleRegion();
-    final northEast = bounds.northeast;
-    final southWest = bounds.southwest;
-    final northWest = LatLng(northEast.latitude, southWest.longitude);
-    final southEast = LatLng(southWest.latitude, northEast.longitude);
-    final radius = [
-      northEast,
-      southWest,
-      northWest,
-      southEast,
-    ].map((p) => _distanceMeters(_camCenter, p)).reduce(math.max);
-    return radius.ceil();
-  }
-
   Future<void> _requestNearbyForViewport(NearbyBloc bloc) async {
-    final radius = await _visibleRadiusMeters();
-    if (!mounted) return;
+    // Skip re-querying when the camera barely moved — sub-200 m nudges return
+    // essentially the same stations and only churn markers.
+    final last = _lastQueryCenter;
+    if (last != null && _distanceMeters(_camCenter, last) < 200) return;
+    _lastQueryCenter = _camCenter;
     bloc.add(
       NearbyRequested(
         lat: _camCenter.latitude,
         lon: _camCenter.longitude,
-        radius: radius,
+        radius: _kNearbyRadiusMeters,
       ),
     );
+    // Sonar cue at the query center; skipped under reduce-motion / no controller
+    // by _playPing's own guards.
+    unawaited(_playPing(_camCenter));
   }
 
   void _scheduleNearbyForViewport(BuildContext context) {
@@ -286,18 +279,47 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
-  /// Emits a single expanding ring at the user's screen position once the
-  /// recenter camera move has settled. `getScreenCoordinate` returns physical
-  /// pixels, so divide by the device ratio for logical layout coordinates.
+  /// On-screen radius, in logical pixels, that the 1 km query radius spans at
+  /// the current zoom around [center]. Measures the pixel gap between [c0]
+  /// (the already-fetched screen coordinate of [center]) and a point 1 km due
+  /// east. Returns null if the widget unmounts.
+  Future<double?> _groundRadiusPixels(
+    GoogleMapController controller,
+    LatLng center,
+    ScreenCoordinate c0,
+  ) async {
+    final eastLon =
+        center.longitude +
+        _kNearbyRadiusMeters /
+            (111320 * math.cos(center.latitude * math.pi / 180));
+    final c1 = await controller.getScreenCoordinate(
+      LatLng(center.latitude, eastLon),
+    );
+    if (!mounted) return null;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    return (c1.x - c0.x).abs() / dpr;
+  }
+
+  /// Emits a single expanding ring at [target]'s screen position once the
+  /// camera move has settled, growing to the on-screen size of the 1 km query
+  /// radius. `getScreenCoordinate` returns physical pixels, so divide by the
+  /// device ratio for logical layout coordinates.
   Future<void> _playPing(LatLng target) async {
     if (!mounted || MediaQuery.disableAnimationsOf(context)) return;
     await Future<void>.delayed(const Duration(milliseconds: 350));
     final controller = _mapController;
     if (!mounted || controller == null) return;
     final coord = await controller.getScreenCoordinate(target);
-    if (!mounted) return;
+    final radius = await _groundRadiusPixels(controller, target, coord);
+    if (!mounted || radius == null) return;
+    final now = DateTime.now();
+    final last = _lastPingAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 1)) {
+      return;
+    }
+    _lastPingAt = now;
     final dpr = MediaQuery.devicePixelRatioOf(context);
-    _ping.value = _Ping(Offset(coord.x / dpr, coord.y / dpr));
+    _ping.value = _Ping(Offset(coord.x / dpr, coord.y / dpr), radius);
   }
 
   void _recenter() {
@@ -323,7 +345,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       create: (_) => NearbyBloc(),
       child: Builder(
         builder: (context) => BlocListener<NearbyBloc, NearbyState>(
-          listenWhen: (p, c) => p.stations != c.stations,
+          listenWhen: (p, c) => !listEquals(p.stations, c.stations),
           listener: (_, state) {
             _stations = state.stations;
             unawaited(_rebuildMarkers(state.stations));

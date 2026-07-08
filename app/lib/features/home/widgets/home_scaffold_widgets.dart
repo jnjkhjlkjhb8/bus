@@ -305,10 +305,12 @@ extension _HomeScreenScaffold on _HomeScreenState {
   }
 }
 
-/// A single ping request: where on screen the ring should emanate from.
+/// A single ping request: where on screen the ring should emanate from, and the
+/// radius in logical pixels the ring should expand to.
 class _Ping {
-  const _Ping(this.offset);
+  const _Ping(this.offset, this.radius);
   final Offset offset;
+  final double radius;
 }
 
 /// Draws one expanding, fading ring — the "scanning around you" cue — each time
@@ -327,6 +329,7 @@ class _LocatePingState extends State<_LocatePing>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   Offset? _center;
+  double _radius = 60;
 
   @override
   void initState() {
@@ -341,7 +344,10 @@ class _LocatePingState extends State<_LocatePing>
   void _onPing() {
     final ping = widget.ping.value;
     if (ping == null || !mounted) return;
-    setState(() => _center = ping.offset);
+    setState(() {
+      _center = ping.offset;
+      _radius = ping.radius;
+    });
     unawaited(_ctrl.forward(from: 0));
   }
 
@@ -363,7 +369,7 @@ class _LocatePingState extends State<_LocatePing>
           return const SizedBox.expand();
         }
         final t = _ctrl.value;
-        final radius = 12 + AppMotion.easeOut.transform(t) * 60;
+        final radius = 12 + AppMotion.easeOut.transform(t) * _radius;
         return Stack(
           children: [
             Positioned(

@@ -149,7 +149,7 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
                 return ErrorStateView(
                   error: state.error!,
                   onRetry: () => context.read<NearbyBloc>().add(
-                    NearbyRequested(radius: _fallbackRadiusMeters),
+                    const NearbyRequested(radius: _kNearbyRadiusMeters),
                   ),
                 );
               }
@@ -157,18 +157,16 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
               if (items.isEmpty) {
                 return const _NearbyEmpty();
               }
-              return ListView(
+              return ListView.builder(
                 padding: EdgeInsets.zero,
-                children: [
-                  for (var i = 0; i < items.length; i++)
-                    StaggerItem(
-                      index: i,
-                      child: _NearbyStationRow(
-                        station: items[i],
-                        onStationTap: widget.onStationTap,
-                      ),
-                    ),
-                ],
+                itemCount: items.length,
+                itemBuilder: (context, i) => StaggerItem(
+                  index: i,
+                  child: _NearbyStationRow(
+                    station: items[i],
+                    onStationTap: widget.onStationTap,
+                  ),
+                ),
               );
             },
           ),
