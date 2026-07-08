@@ -77,6 +77,16 @@ jobs:
         working-directory: app
       - run: flutter analyze --no-fatal-infos
         working-directory: app
+      - name: stub gitignored assets
+        working-directory: app
+        run: |
+          mkdir -p assets/fonts assets/marker assets/sprites assets/rails \
+            assets/mrt/TRTC assets/mrt/KRTC assets/mrt/KLRT
+          touch assets/grpc.crt \
+            assets/fonts/IBMPlexSans.ttf assets/fonts/IBMPlexMono-Regular.ttf
+          for d in marker sprites rails mrt mrt/TRTC mrt/KRTC mrt/KLRT; do
+            touch "assets/$d/stub"
+          done
       - run: flutter test --coverage --file-reporter=json:test-results.json
         working-directory: app
       - run: tojunit --input test-results.json --output junit.xml
