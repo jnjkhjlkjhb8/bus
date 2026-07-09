@@ -89,6 +89,13 @@ func BikeAvailabilityKey(stationUID string) string {
 	return "bike_availability:" + stationUID
 }
 
+// WeatherKey returns the key holding one city's cached weather snapshot. It is a
+// cross-module contract: weatherSync writes it (15-minute TTL) and the bus ETA
+// path reads it for prediction features, so both sides construct it here.
+func WeatherKey(city string) string {
+	return "weather:" + city
+}
+
 // MQTTChannel derives the Redis key/channel caching an MQTT message from its
 // topic: "mqtt:" plus the topic with path separators flattened to colons. The
 // alert channel constructors below must agree with this derivation.

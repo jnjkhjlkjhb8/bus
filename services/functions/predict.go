@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/dmitryikh/leaves"
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -242,7 +241,7 @@ func baselineArrival(stop busStopCtx, inputs predictionInputs) time.Time {
 // is unavailable it falls back to the bare departure time. Returns "" when the
 // model is not loaded or there is no upcoming scheduled departure. Result is an
 // RFC3339 timestamp.
-func predictNextBusTime(rc *redis.Client, stop busStopCtx, inputs predictionInputs) string {
+func predictNextBusTime(weather *weatherData, stop busStopCtx, inputs predictionInputs) string {
 	if etaModel == nil || inputs.nextDep.IsZero() {
 		return ""
 	}
@@ -260,11 +259,11 @@ func predictNextBusTime(rc *redis.Client, stop busStopCtx, inputs predictionInpu
 		}
 		travelSec = int(ratio * float64(inputs.maxTravelAvg))
 	}
+	// The caller passes the city's cached weather snapshot (read once per city
+	// through the live sink); a nil snapshot leaves the features zero-valued.
 	var wd weatherData
-	if wjson, wErr := rc.Get("weather:" + stop.city).Result(); wErr == nil {
-		if err := json.Unmarshal([]byte(wjson), &wd); err != nil {
-			log.Infof("[MODEL] decode weather city=%s error=%v", stop.city, err)
-		}
+	if weather != nil {
+		wd = *weather
 	}
 	cityEnc := -1.0
 	if v, ok := modelEncoders.City[stop.city]; ok {

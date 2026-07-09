@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -73,7 +72,6 @@ func busEta(
 	ctx context.Context,
 	fetch boundFetch,
 	sink liveSink,
-	rc *redis.Client,
 	db *pgxpool.Pool,
 	dispatcher *notificationDispatcher,
 ) {
@@ -89,7 +87,7 @@ func busEta(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			processBusEtaCity(ctx, fetch, sink, rc, db, city, dispatcher)
+			processBusEtaCity(ctx, fetch, sink, db, city, dispatcher)
 		}(city)
 	}
 	wg.Wait()
@@ -119,7 +117,6 @@ func processBusEtaCity(
 	ctx context.Context,
 	fetch boundFetch,
 	sink liveSink,
-	rc *redis.Client,
 	db *pgxpool.Pool,
 	city string,
 	dispatcher *notificationDispatcher,
@@ -234,7 +231,7 @@ func processBusEtaCity(
 		totalStops[uid]++
 	}
 	var weather *weatherData
-	if wjson, wErr := rc.Get("weather:" + city).Result(); wErr == nil {
+	if wjson, wErr := sink.getString(shared.WeatherKey(city)); wErr == nil {
 		var w weatherData
 		if json.Unmarshal([]byte(wjson), &w) == nil {
 			weather = &w
@@ -423,7 +420,7 @@ func processBusEtaCity(
 			} else {
 				avgKey := travelAvgKey{uid, int32(dir), b.StopUID, now.Hour(), int(now.Weekday())}
 				avgVal, hasAvg := travelAvgMap[avgKey]
-				eta.NextBusTime = predictNextBusTime(rc,
+				eta.NextBusTime = predictNextBusTime(weather,
 					busStopCtx{
 						subRouteUID:  uid,
 						direction:    int32(dir),

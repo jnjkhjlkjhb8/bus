@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
 	"os"
 	"strconv"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 )
 
 // cwaBase is the base URL of the CWA (Central Weather Administration) open-data
@@ -211,7 +211,7 @@ func weatherSync(rc *redis.Client) {
 
 	for city, d := range merged {
 		b, _ := json.Marshal(d)
-		rc.Set(fmt.Sprintf("weather:%s", city), string(b), 15*time.Minute)
+		rc.Set(shared.WeatherKey(city), string(b), 15*time.Minute)
 	}
 	log.Infof("[WEATHER] synced %d cities", len(merged))
 }

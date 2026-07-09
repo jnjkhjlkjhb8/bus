@@ -7,7 +7,6 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 
 	"fmt"
-	"time"
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
@@ -100,7 +99,7 @@ func getmrtStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client,
 		}
 		func() {
 			defer flipopen()
-			if loadErr := loadMrtStations(ctx, dec, db, rc, system); loadErr != nil {
+			if loadErr := loadMrtStations(ctx, dec, pgLoadSink{db: db, rc: rc}, system); loadErr != nil {
 				log.Infof("[MRT] action=getmrt_station system=%s event=error error=%v", system, loadErr)
 			}
 		}()
@@ -112,17 +111,17 @@ func getmrtStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client,
 // temp-table COPY then ON CONFLICT (station_id, system) upsert. It consumes an
 // already-opened decoder; the temp_mrt COPY and upsert are byte-identical to the
 // legacy transform.
-func loadMrtStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, system string) error {
+func loadMrtStations(ctx context.Context, dec *json.Decoder, sink loadSink, system string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[MRT] action=getmrt_station system=%s event=decode_error error=%v", system, err)
 		return err
 	}
-	row := [][]interface{}{}
+	row := [][]any{}
 	for dec.More() {
 		var temp mrtStation
 		if err := dec.Decode(&temp); err == nil {
 			g := fmt.Sprintf("POINT(%.6f %.6f)", temp.StationPosition.PositionLon, temp.StationPosition.PositionLat)
-			row = append(row, []interface{}{
+			row = append(row, []any{
 				g,
 				system,
 				temp.StationName.ZhTw,
@@ -132,16 +131,22 @@ func loadMrtStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _
 			})
 		}
 	}
-	if len(row) > 0 {
-		c1 := `CREATE TEMP TABLE temp_mrt (
+	if len(row) == 0 {
+		return nil
+	}
+	return sink.copyUpsert(ctx, copyUpsertSpec{
+		key: "mrt_station",
+		createSQL: `CREATE TEMP TABLE temp_mrt (
 					geom text,
 					system text,
 					name text,
 					city text,
 					id text,
 					bike bool
-				) ON COMMIT DROP;`
-		c2 := `INSERT INTO mrt_station (
+				) ON COMMIT DROP;`,
+		tempTable: "temp_mrt",
+		copyCols:  []string{"geom", "system", "name", "city", "id", "bike"},
+		insertSQL: `INSERT INTO mrt_station (
 					stationposition,
 					system,
 					name,
@@ -151,36 +156,8 @@ func loadMrtStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _
 					updated_at
 				)
 				SELECT st_geomfromtext(geom, 4326), system, name, city,id, bike,NOW() FROM temp_mrt
-				ON CONFLICT (station_id,system) DO UPDATE SET name = EXCLUDED.name,city = excluded.city,stationposition = EXCLUDED.stationposition,updated_at = NOW();`
-		b, err := db.Begin(ctx)
-		if err != nil {
-			log.Infof("[MRT] action=getmrt_station system=%s event=begin_error error=%v", system, err)
-			return err
-		}
-		defer func(b pgx.Tx, ctx context.Context) {
-			_ = b.Rollback(ctx)
-		}(b, ctx)
-		if _, err := b.Exec(ctx, c1); err != nil {
-			log.Infof("[MRT] action=getmrt_station system=%s event=create_temp_error error=%v", system, err)
-			return err
-		}
-		_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_mrt"}, []string{"geom", "system", "name", "city", "id", "bike"}, pgx.CopyFromRows(row))
-		if err == nil {
-			if _, execErr := b.Exec(ctx, c2); execErr != nil {
-				log.Infof("[MRT] action=getmrt_station system=%s event=exec_error error=%v", system, execErr)
-			}
-			if commitErr := b.Commit(ctx); commitErr != nil {
-				log.Infof("[MRT] action=getmrt_station system=%s event=commit_error error=%v", system, commitErr)
-				return commitErr
-			}
-			log.Infof("[MRT] action=getmrt_station system=%s event=success station_count=%d", system, len(row))
-		} else {
-			log.Infof("[MRT] action=getmrt_station system=%s event=copyfrom_error error=%v", system, err)
-			_ = b.Rollback(ctx)
-			return err
-		}
-	}
-	return nil
+				ON CONFLICT (station_id,system) DO UPDATE SET name = EXCLUDED.name,city = excluded.city,stationposition = EXCLUDED.stationposition,updated_at = NOW();`,
+	}, row)
 }
 
 // getmrtFirstlast rebuilds mrt_schedule (first/last train times) per metro
@@ -199,7 +176,7 @@ func getmrtFirstlast(ctx context.Context, tdx *shared.TDXClient, rc *redis.Clien
 		}
 		func() {
 			defer flipopen()
-			if loadErr := loadMrtFirstlast(ctx, dec, db, rc, system); loadErr != nil {
+			if loadErr := loadMrtFirstlast(ctx, dec, pgLoadSink{db: db, rc: rc}, system); loadErr != nil {
 				log.Infof("[MRT] action=getmrt_firstlast system=%s event=error error=%v", system, loadErr)
 			}
 		}()
@@ -215,16 +192,16 @@ func getmrtFirstlast(ctx context.Context, tdx *shared.TDXClient, rc *redis.Clien
 // raw row must survive rather than be collapsed. It consumes an already-opened
 // decoder. updated_at is stamped NOW() so the freshness probe (main.go's
 // MAX(updated_at) per system) keeps working.
-func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, system string) error {
+func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, sink loadSink, system string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[MRT] action=getmrt_firstlast system=%s event=decode_error error=%v", system, err)
 		return err
 	}
-	row := [][]interface{}{}
+	row := [][]any{}
 	for dec.More() {
 		var temp mrtFirstlast
 		if err := dec.Decode(&temp); err == nil {
-			row = append(row, []interface{}{
+			row = append(row, []any{
 				temp.StationID,
 				temp.LineID,
 				temp.TripHeadSign,
@@ -237,8 +214,16 @@ func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
 			})
 		}
 	}
-	if len(row) > 0 {
-		c1 := `CREATE TEMP TABLE temp_mrt (
+	if len(row) == 0 {
+		return nil
+	}
+	// Partition-replace: DELETE this system's rows before re-inserting, and the
+	// drain is a plain INSERT (no ON CONFLICT) because the natural key is not
+	// unique in real data so every raw row must survive.
+	return sink.copyUpsert(ctx, copyUpsertSpec{
+		key:     "mrt_firstlast",
+		preExec: []copyUpsertStmt{{sql: `DELETE FROM mrt_schedule WHERE system = $1`, args: []any{system}}},
+		createSQL: `CREATE TEMP TABLE temp_mrt (
                                id text,
                                lid text,
 							   sign text,
@@ -248,8 +233,10 @@ func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
                                lt text,
        						   mask int2,
        						   sys text
-					) ON COMMIT DROP;`
-		c2 := `INSERT INTO mrt_schedule (
+					) ON COMMIT DROP;`,
+		tempTable: "temp_mrt",
+		copyCols:  []string{"id", "lid", "sign", "dsid", "dsname", "ft", "lt", "mask", "sys"},
+		insertSQL: `INSERT INTO mrt_schedule (
 						station_id,
 						lineid,
 						destinationstaionid,
@@ -262,40 +249,8 @@ func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
 						updated_at,
 						trip_head_sign
 					)
-					SELECT id,lid, dsid, dsname, ft, lt,mask,sys,NOW(),NOW(),sign FROM temp_mrt`
-		b, err := db.Begin(ctx)
-		if err != nil {
-			log.Infof("[MRT] action=getmrt_firstlast system=%s event=begin_error error=%v", system, err)
-			return err
-		}
-		defer func(b pgx.Tx, ctx context.Context) {
-			_ = b.Rollback(ctx)
-		}(b, ctx)
-		if _, err := b.Exec(ctx, `DELETE FROM mrt_schedule WHERE system = $1`, system); err != nil {
-			log.Infof("[MRT] action=getmrt_firstlast system=%s event=delete_partition_error error=%v", system, err)
-			return err
-		}
-		if _, err := b.Exec(ctx, c1); err != nil {
-			log.Infof("[MRT] action=getmrt_firstlast system=%s event=create_temp_error error=%v", system, err)
-			return err
-		}
-		_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_mrt"}, []string{"id", "lid", "sign", "dsid", "dsname", "ft", "lt", "mask", "sys"}, pgx.CopyFromRows(row))
-		if err == nil {
-			if _, execErr := b.Exec(ctx, c2); execErr != nil {
-				log.Infof("[MRT] action=getmrt_firstlast system=%s event=exec_error error=%v", system, execErr)
-			}
-			if commitErr := b.Commit(ctx); commitErr != nil {
-				log.Infof("[MRT] action=getmrt_firstlast system=%s event=commit_error error=%v", system, commitErr)
-				return commitErr
-			}
-			log.Infof("[MRT] action=getmrt_firstlast system=%s event=success row_count=%d", system, len(row))
-		} else {
-			log.Infof("[MRT] action=getmrt_firstlast system=%s event=copyfrom_error error=%v", system, err)
-			_ = b.Rollback(ctx)
-			return err
-		}
-	}
-	return nil
+					SELECT id,lid, dsid, dsname, ft, lt,mask,sys,NOW(),NOW(),sign FROM temp_mrt`,
+	}, row)
 }
 
 // mrtEta refreshes live metro arrivals into Redis on the 10s cron. Per system it
@@ -317,34 +272,25 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=skip reason=api_error", system)
 			continue
 		}
-		if _, err := dec.Token(); err != nil {
-			flipopen()
-			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=decode_error error=%v", system, err)
-			continue
-		}
 		func() {
 			defer flipopen()
 			pipe := sink.pipeline()
-			for dec.More() {
-				var temp mrtLive
-				if err := dec.Decode(&temp); err == nil {
-					raw := &models.MrtLive{
-						LineID:                 temp.LineID,
-						StationID:              temp.StationID,
-						System:                 system,
-						TripHeadSign:           temp.TripHeadSign,
-						DestinationStaionID:    temp.DestinationStaionID,
-						DestinationStationName: temp.DestinationStationName.ZhTw,
-						ServiceStatus:          int32(temp.ServiceStatus),
-						EstimateTime:           temp.EstimateTime,
-					}
-					pb, err := proto.Marshal(raw)
-					if err != nil {
-						continue
-					}
-					pipe.Set(shared.MrtLiveKey(system, temp.StationID, temp.LineID), pb, 2*time.Minute)
-					pipe.Publish(shared.MrtLiveChannel(system, temp.StationID), string(pb))
+			if err := publishProto(dec, pipe, mrtLiveTTL, func(temp mrtLive) (string, string, proto.Message, bool) {
+				raw := &models.MrtLive{
+					LineID:                 temp.LineID,
+					StationID:              temp.StationID,
+					System:                 system,
+					TripHeadSign:           temp.TripHeadSign,
+					DestinationStaionID:    temp.DestinationStaionID,
+					DestinationStationName: temp.DestinationStationName.ZhTw,
+					ServiceStatus:          int32(temp.ServiceStatus),
+					EstimateTime:           temp.EstimateTime,
 				}
+				return shared.MrtLiveKey(system, temp.StationID, temp.LineID),
+					shared.MrtLiveChannel(system, temp.StationID), raw, true
+			}); err != nil {
+				log.Infof("[MRT_ETA] action=mrt_eta system=%s event=decode_error error=%v", system, err)
+				return
 			}
 			_ = pipe.Exec()
 		}()

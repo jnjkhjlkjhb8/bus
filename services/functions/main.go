@@ -289,7 +289,12 @@ func sinceFallback(name string) string {
 }
 
 // rawDumpTarget maps a TDX static endpoint path to its raw_tdx landing table and
-// partition column. Real-time / unmapped endpoints return ok=false.
+// partition column, resolving through the datasetRegistry reverse index
+// (rawTargetIndex) so it can never drift from the fetch list or whitelist.
+// Real-time / unmapped endpoints (and the intentionally-absent Bus/Stop) return
+// ok=false. The date-partitioned timetable endpoints carry their partition value
+// (traindate) in the URL's last segment so a mid-run partition swap replaces one
+// date rather than TRUNCATE'ing the table.
 func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
 	seg := strings.Split(strings.Trim(url, "/"), "/")
 	if len(seg) < 3 || seg[0] != "v2" {
@@ -306,71 +311,48 @@ func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
 		}
 		return ""
 	}
+	var key famSeg
 	switch {
 	case seg[1] == "Bus":
-		// Bus/Stop is intentionally absent: it is never fetched by the ingestor
-		// (raw_tdx.bus_stop stays unused; whitelist + DDL are kept — see rawTDXTables).
-		busTables := map[string]string{
-			"Route": "bus_route", "StopOfRoute": "bus_stopofroute", "Shape": "bus_shape",
-			"Schedule": "bus_schedule", "Station": "bus_station", "StationGroup": "bus_stationgroup",
-			"Operator": "bus_operator", "RouteFare": "bus_routefare",
-			"DailyTimeTable": "bus_dailytimetable",
-		}
-		if t, exists := busTables[seg[2]]; exists {
-			return t, "city", cityOf(), true
-		}
+		key, partVal = famSeg{familyBusCity, seg[2]}, cityOf()
 	case seg[1] == "Bike" && seg[2] == "Station":
-		return "bike_station", "city", cityOf(), true
+		key, partVal = famSeg{familyBikeCity, "Station"}, cityOf()
 	case seg[1] == "Rail" && len(seg) >= 4 && seg[2] == "Metro":
-		metroTables := map[string]string{
-			"Station": "metro_station", "FirstLastTimetable": "metro_schedule", "ODFare": "metro_odfare",
-		}
-		if t, exists := metroTables[seg[3]]; exists {
-			return t, "system", seg[len(seg)-1], true
-		}
+		key, partVal = famSeg{familyMetroSystem, seg[3]}, seg[len(seg)-1]
 	case seg[1] == "Rail" && len(seg) >= 4 && (seg[2] == "TRA" || seg[2] == "THSR"):
-		// Timetable endpoints are landed per train date so the loader window
-		// (TRA today..+60, THSR today..+45) survives a mid-run partition swap
-		// instead of the whole table being TRUNCATE'd. The partition column is
-		// the existing traindate column landed from the TDX payload.
-		switch seg[2] + "/" + seg[3] {
-		case "TRA/DailyTimetable":
-			return "tra_dailytimetable", "traindate", seg[len(seg)-1], true
-		case "THSR/DailyTimetable":
-			return "thsr_dailytimetable", "traindate", seg[len(seg)-1], true
+		pair := seg[2] + "/" + seg[3]
+		if pair == "TRA/DailyTimetable" || pair == "THSR/DailyTimetable" {
+			key, partVal = famSeg{familyRailDate, pair}, seg[len(seg)-1]
+		} else {
+			key = famSeg{familyRailSingle, pair}
 		}
-		railTables := map[string]string{
-			"TRA/Station": "tra_station", "THSR/Station": "thsr_station",
-			"TRA/ODFare": "tra_odfare", "THSR/ODFare": "thsr_odfare",
-			"TRA/TrainType": "tra_traintype",
-		}
-		if t, exists := railTables[seg[2]+"/"+seg[3]]; exists {
-			return t, "", "", true
-		}
+	default:
+		return "", "", "", false
 	}
-	return "", "", "", false
+	d, found := rawTargetIndex[key]
+	if !found {
+		return "", "", "", false
+	}
+	return d.rawTable, d.partCol, partVal, true
 }
 
 // errRawDump marks a raw_tdx landing failure so callers can log it distinctly
 // and, crucially, avoid caching a Last-Modified that would mask the failure.
 var errRawDump = errors.New("raw dump failed")
 
-// rawTDXTables is the whitelist of raw_tdx landing tables. Table and partition
-// names are interpolated into SQL, so they must never come from input — only
-// from this set (and rawDumpTarget, which produces a subset).
-//
-// bus_stop and tra_traintype are currently unused: neither is fetched by the
-// ingestor nor read by any loader (train-type data arrives inside the daily
-// timetables). Their whitelist entries and DDL are kept — the tables may already
-// exist on Azure and dropping them is not worth the migration.
-var rawTDXTables = map[string]bool{
-	"bus_route": true, "bus_stopofroute": true, "bus_shape": true,
-	"bus_schedule": true, "bus_station": true, "bus_stationgroup": true,
-	"bus_stop": true, "bus_operator": true, "bus_routefare": true, // bus_stop: unused
-	"bus_dailytimetable": true, "bike_station": true, "metro_station": true,
-	"metro_schedule": true, "metro_odfare": true, "tra_odfare": true,
-	"tra_dailytimetable": true, "tra_traintype": true, "thsr_station": true, // tra_traintype: unused
-	"thsr_dailytimetable": true, "tra_station": true, "thsr_odfare": true,
+// rawTDXTables is the whitelist of raw_tdx landing tables, derived from the
+// datasetRegistry so it can never drift from the datasets themselves. Table and
+// partition names are interpolated into SQL, so they must come only from this
+// set. It includes the land-only bus_stop and tra_traintype (never fetched, never
+// loaded) whose DDL is kept because the tables may already exist on Azure.
+var rawTDXTables = buildWhitelist()
+
+func buildWhitelist() map[string]bool {
+	m := make(map[string]bool)
+	for _, d := range datasetRegistry() {
+		m[d.rawTable] = true
+	}
+	return m
 }
 
 // validateRawTarget guards the raw_tdx landing: it rejects any table not in the

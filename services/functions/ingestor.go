@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -74,57 +73,23 @@ func ingestRaw(ctx context.Context, tdx *shared.TDXClient) {
 
 	log.Infoln("[INGEST] action=raw event=start")
 
+	// Build the fetch jobs from the single datasetRegistry: every fetched dataset
+	// (familyNone / landOnly excluded) crossed with its landing partitions. The
+	// timetable datasets land the full window (TRA today..+60, THSR today..+45);
+	// day 0 is today, the per-date IMS cache key isolates each date's
+	// If-Modified-Since state, and rawDumpTarget partitions each date by its
+	// traindate column so a mid-run refresh replaces only that date.
 	type job struct{ url, name string }
 	var jobs []job
-	add := func(url, name string) { jobs = append(jobs, job{url, name}) }
-
-	for _, city := range cities {
-		for _, api := range ingestBusAPIs {
-			if city == "InterCity" {
-				add(fmt.Sprintf("/v2/Bus/%s/InterCity", api), "bus_"+api+city)
-			} else {
-				add(fmt.Sprintf("/v2/Bus/%s/City/%s", api, city), "bus_"+api+city)
-			}
+	for _, d := range datasetRegistry() {
+		if !d.fetched() {
+			continue
+		}
+		for _, part := range d.partitions() {
+			jobs = append(jobs, job{d.url(part), d.name(part)})
 		}
 	}
 
-	for _, city := range cities {
-		if !ingestBikeSkip[city] {
-			add("/v2/Bike/Station/City/"+city, "bike_"+city)
-		}
-	}
-
-	for _, s := range ingestMetroStationSystems {
-		add("/v2/Rail/Metro/Station/"+s, "metro_station_"+s)
-	}
-	for _, s := range ingestMetroFirstLast {
-		add("/v2/Rail/Metro/FirstLastTimetable/"+s, "metro_fl_"+s)
-	}
-	for _, s := range ingestMetroODFare {
-		add("/v2/Rail/Metro/ODFare/"+s, "metro_od_"+s)
-	}
-
-	add("/v2/Rail/TRA/ODFare", "tra_odfare")
-	// TRA/TrainType is intentionally not landed: nothing loads raw_tdx.tra_traintype,
-	// and train-type data arrives inside the daily-timetable payloads below.
-	add("/v2/Rail/TRA/Station", "tra_station")
-	add("/v2/Rail/THSR/Station", "thsr_station")
-	add("/v2/Rail/THSR/ODFare", "thsr_odfare")
-
-	// Land the full timetable window (TRA today..+60, THSR today..+45),
-	// mirroring railPreFetch's horizons. Day 0 is today so the current day is
-	// landed; the per-date IMS cache key isolates each date's If-Modified-Since
-	// state, and rawDumpTarget partitions each date by its traindate column so a
-	// mid-run refresh replaces only that date rather than TRUNCATE'ing the table.
-	today := time.Now()
-	for i := 0; i <= 60; i++ {
-		d := today.AddDate(0, 0, i).Format(time.DateOnly)
-		add("/v2/Rail/TRA/DailyTimetable/TrainDate/"+d, "tra_daily_"+d)
-	}
-	for i := 0; i <= 45; i++ {
-		d := today.AddDate(0, 0, i).Format(time.DateOnly)
-		add("/v2/Rail/THSR/DailyTimetable/TrainDate/"+d, "thsr_daily_"+d)
-	}
 	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
 	for _, j := range jobs {

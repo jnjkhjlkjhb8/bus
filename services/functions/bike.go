@@ -10,7 +10,6 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 
 	"github.com/go-redis/redis"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
@@ -66,7 +65,7 @@ func bikeStatic(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db
 func getbikeStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
 	log.Infof("[BIKE] action=getbike_station event=start")
 	for _, city := range cities {
-		if city == "Keelung" || city == "HsinchuCounty" || city == "NantouCounty" || city == "YilanCounty" || city == "PenghuCounty" || city == "KinmenCounty" || city == "LienchiangCounty" || city == "InterCity" || city == "HualienCounty" {
+		if ingestBikeSkip[city] {
 			continue
 		}
 		log.Infof("[BIKE] action=getbike_station city=%s event=city_start", city)
@@ -79,7 +78,7 @@ func getbikeStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client
 				log.Infof("[BIKE] action=getbike_station city=%s event=skip reason=api_error=%s", city, err)
 				return
 			}
-			if loadErr := loadBikeStations(ctx, dec, db, rc, city); loadErr != nil {
+			if loadErr := loadBikeStations(ctx, dec, pgLoadSink{db: db, rc: rc}, city); loadErr != nil {
 				log.Infof("[BIKE] action=getbike_station city=%s event=error error=%v", city, loadErr)
 			}
 		}()
@@ -92,17 +91,17 @@ func getbikeStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client
 // already-opened decoder; the "YouBike2.0_" prefix strip, ST_GeomFromText, and
 // the temp_bike COPY/upsert are byte-identical to the legacy transform. part is
 // the partition value, which for this dataset is the city.
-func loadBikeStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, city string) error {
+func loadBikeStations(ctx context.Context, dec *json.Decoder, sink loadSink, city string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[BIKE] action=getbike_station city=%s event=decode_error error=%v", city, err.Error())
 		return err
 	}
-	row := [][]interface{}{}
+	row := [][]any{}
 	for dec.More() {
 		var temp bikeStation
 		if err := dec.Decode(&temp); err == nil {
 			g := fmt.Sprintf("POINT(%.6f %.6f)", temp.StationPosition.PositionLon, temp.StationPosition.PositionLat)
-			row = append(row, []interface{}{
+			row = append(row, []any{
 				temp.StationUID,
 				temp.StationID,
 				strings.TrimPrefix(temp.StationName.ZhTw, "YouBike2.0_"),
@@ -114,8 +113,12 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
 			})
 		}
 	}
-	if len(row) > 0 {
-		c1 := `CREATE TEMP TABLE temp_bike (
+	if len(row) == 0 {
+		return nil
+	}
+	return sink.copyUpsert(ctx, copyUpsertSpec{
+		key: "bike",
+		createSQL: `CREATE TEMP TABLE temp_bike (
                             uid text,
                             id text,
                             name text,
@@ -124,8 +127,10 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
 							city text,
                             geom text,
                             addr text
-					) ON COMMIT DROP`
-		c2 := `INSERT INTO bike_stations (
+					) ON COMMIT DROP`,
+		tempTable: "temp_bike",
+		copyCols:  []string{"uid", "id", "name", "cap", "type", "city", "geom", "addr"},
+		insertSQL: `INSERT INTO bike_stations (
                            station_uid,
                            station_id,
                            name,
@@ -136,34 +141,9 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, 
                            address,
                            updated_at
 					)
-					SELECT uid, id, name, cap, type, city,st_geomfromtext(geom, 4326) AS temp, addr AS address,NOW() FROM temp_bike 
-					ON CONFLICT (station_uid) DO UPDATE SET name = EXCLUDED.name,capacity = EXCLUDED.capacity,service_type = EXCLUDED.service_type,city = excluded.city,geom = EXCLUDED.geom,address = EXCLUDED.address,updated_at = NOW();`
-		b, err := db.Begin(ctx)
-		if err != nil {
-			log.Infoln(err.Error())
-			return err
-		}
-		if _, err := b.Exec(ctx, c1); err != nil {
-			log.Infof("[BIKE] action=getbike_station city=%s event=create_temp_error error=%v", city, err)
-			return err
-		}
-		_, err = b.CopyFrom(ctx, pgx.Identifier{"temp_bike"}, []string{"uid", "id", "name", "cap", "type", "city", "geom", "addr"}, pgx.CopyFromRows(row))
-		if err == nil {
-			if _, execErr := b.Exec(ctx, c2); execErr != nil {
-				log.Infof("[BIKE] action=getbike_station city=%s event=exec_error error=%v", city, execErr)
-			}
-			if commitErr := b.Commit(ctx); commitErr != nil {
-				log.Infof("[BIKE] action=getbike_station city=%s event=commit_error error=%v", city, commitErr)
-				return commitErr
-			}
-			log.Infof("[BIKE] action=getbike_station city=%s event=success station_count=%d", city, len(row))
-		} else {
-			log.Infof("[BIKE] action=getbike_station city=%s event=copyfrom_error error=%v", city, err)
-			_ = b.Rollback(ctx)
-			return err
-		}
-	}
-	return nil
+					SELECT uid, id, name, cap, type, city,st_geomfromtext(geom, 4326) AS temp, addr AS address,NOW() FROM temp_bike
+					ON CONFLICT (station_uid) DO UPDATE SET name = EXCLUDED.name,capacity = EXCLUDED.capacity,service_type = EXCLUDED.service_type,city = excluded.city,geom = EXCLUDED.geom,address = EXCLUDED.address,updated_at = NOW();`,
+	}, row)
 }
 
 // bikeHistorySampleGate is the process-wide 5-minute-per-station gate shared
@@ -197,37 +177,37 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=api_error,error=%s", city, err)
 			continue
 		}
-		if _, err := dec.Token(); err != nil {
-			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=decode_error error=%v", city, err)
-			continue
-		}
 		func() {
 			defer flipopen()
 			pipe := sink.pipeline()
-			for dec.More() {
-				var temp bikeAvailability
-				if err := dec.Decode(&temp); err == nil {
-					availableRent := int(temp.AvailableRentBikesDetail.GeneralBikes) + int(temp.AvailableRentBikesDetail.ElectricBikes)
-					raw := &models.BikeEta{
-						StationUID:           temp.StationUID,
-						ServiceStatus:        int32(temp.ServiceStatus),
-						ServiceType:          int32(temp.ServiceType),
-						AvailableReturnBikes: int32(temp.AvailableReturnBikes),
-						GeneralBikes:         int32(temp.AvailableRentBikesDetail.GeneralBikes),
-						ElectricBikes:        int32(temp.AvailableRentBikesDetail.ElectricBikes),
-					}
-					pb, err := proto.Marshal(raw)
-					if err != nil {
-						continue
-					}
-					pipe.Set(shared.BikeAvailabilityKey(temp.StationUID), pb, 2*time.Minute)
-					// Sample into history at most once per 5 minutes per station.
-					if db != nil && bikeHistorySampleGate.shouldSample(temp.StationUID, now) {
-						historyRows = append(historyRows, []interface{}{
-							temp.StationUID, availableRent, int(temp.AvailableReturnBikes), now,
-						})
-					}
+			// Availability Set and the interleaved history sampling keep bikeEta on
+			// the streaming decodeItems helper rather than the per-item-proto
+			// publisher: the history append is a per-item side effect the publisher
+			// does not model.
+			if err := decodeItems(dec, func(temp bikeAvailability) {
+				availableRent := int(temp.AvailableRentBikesDetail.GeneralBikes) + int(temp.AvailableRentBikesDetail.ElectricBikes)
+				raw := &models.BikeEta{
+					StationUID:           temp.StationUID,
+					ServiceStatus:        int32(temp.ServiceStatus),
+					ServiceType:          int32(temp.ServiceType),
+					AvailableReturnBikes: int32(temp.AvailableReturnBikes),
+					GeneralBikes:         int32(temp.AvailableRentBikesDetail.GeneralBikes),
+					ElectricBikes:        int32(temp.AvailableRentBikesDetail.ElectricBikes),
 				}
+				pb, err := proto.Marshal(raw)
+				if err != nil {
+					return
+				}
+				pipe.Set(shared.BikeAvailabilityKey(temp.StationUID), pb, bikeLiveTTL)
+				// Sample into history at most once per 5 minutes per station.
+				if db != nil && bikeHistorySampleGate.shouldSample(temp.StationUID, now) {
+					historyRows = append(historyRows, []any{
+						temp.StationUID, availableRent, int(temp.AvailableReturnBikes), now,
+					})
+				}
+			}); err != nil {
+				log.Infof("[BIKE_ETA] action=bike_eta city=%s event=decode_error error=%v", city, err)
+				return
 			}
 			_ = pipe.Exec()
 			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)

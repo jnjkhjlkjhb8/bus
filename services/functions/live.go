@@ -47,6 +47,12 @@ type livePipe interface {
 type liveSink interface {
 	pipeline() livePipe
 	refreshTTL(patterns []ttlPattern)
+	// getString and getHash close the read seam: two jobs need to read a value
+	// back from Redis mid-tick (bus reads the cached weather snapshot for
+	// prediction features; tra reads the delay hash to merge into the live board),
+	// so those reads go through the sink instead of a raw *redis.Client capture.
+	getString(key string) (string, error)
+	getHash(key string) (map[string]string, error)
 }
 
 // ttlPattern pairs a Redis key glob with the TTL to re-arm on a 304
@@ -157,6 +163,19 @@ func (s redisLiveSink) pipeline() livePipe {
 	return &redisLivePipe{pipe: s.rc.Pipeline()}
 }
 
+// getString reads a single string value, delegating to the underlying client so
+// a missing key surfaces the same redis.Nil error the jobs previously handled
+// inline.
+func (s redisLiveSink) getString(key string) (string, error) {
+	return s.rc.Get(key).Result()
+}
+
+// getHash reads a whole hash, used by the tra job to merge cached per-train
+// delays into the live board.
+func (s redisLiveSink) getHash(key string) (map[string]string, error) {
+	return s.rc.HGetAll(key).Result()
+}
+
 // refreshTTL re-arms the TTL on every key matching each pattern via SCAN +
 // pipelined EXPIRE. Errors are logged and the scan for that pattern stops;
 // a refresh failure never aborts the caller (this runs on a 304, off the write
@@ -233,10 +252,10 @@ const (
 // (bike before bus on the 30s tick). db and dispatcher are captured by the specs
 // that need them (bus needs both for the static-map join, prediction, history,
 // and notifications; bike needs db for history sampling), mirroring how
-// loaderRegistry captures src for the bus spec. rc is captured only where a job
-// reads Redis outside the sink (bus reads cached weather; tra reads the delay
-// hash back for the liveboard merge).
-func liveRegistry(rc *redis.Client, db *pgxpool.Pool, dispatcher *notificationDispatcher) []liveSpec {
+// loaderRegistry captures src for the bus spec. No spec captures a raw
+// *redis.Client: the two jobs that read Redis mid-tick (bus weather, tra delay
+// hash) now go through the liveSink read seam.
+func liveRegistry(db *pgxpool.Pool, dispatcher *notificationDispatcher) []liveSpec {
 	bikeCityPatterns := func() []ttlPattern {
 		// Bike availability keys are per-station-UID with no city prefix, so a
 		// single-city 304 cannot target its own keys precisely. Re-arm the whole
@@ -267,7 +286,7 @@ func liveRegistry(rc *redis.Client, db *pgxpool.Pool, dispatcher *notificationDi
 		// refresh is for the jobs that previously skipped (bike/mrt/tra).
 		{key: "bus", cadence: "@every 30s", ttlPatterns: nil,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				busEta(ctx, fetch, sink, rc, db, dispatcher)
+				busEta(ctx, fetch, sink, db, dispatcher)
 				return nil
 			}},
 		{key: "mrt", cadence: "@every 10s", ttlPatterns: mrtPatterns,
@@ -277,7 +296,7 @@ func liveRegistry(rc *redis.Client, db *pgxpool.Pool, dispatcher *notificationDi
 			}},
 		{key: "tra", cadence: "@every 2m", ttlPatterns: traPatterns,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				traEta(ctx, fetch, sink, rc)
+				traEta(ctx, fetch, sink)
 				return nil
 			}},
 	}
@@ -298,7 +317,7 @@ const liveJobTimeout = 25 * time.Second
 func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool, dispatcher *notificationDispatcher) {
 	src := restLiveSource{tdx: tdx}
 	sink := redisLiveSink{rc: rc}
-	specs := liveRegistry(rc, db, dispatcher)
+	specs := liveRegistry(db, dispatcher)
 
 	// Group specs by cadence, keeping registry order within each group so the
 	// 30s tick still runs bike before bus.

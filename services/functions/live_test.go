@@ -71,12 +71,30 @@ type captureLiveSink struct {
 	hsets    []hsetWrite
 	expires  []expireWrite
 	refresh  [][]ttlPattern
+	// strings and hashes seed the read seam so a test can drive the bus weather
+	// read and the tra delay-hash merge without a live Redis.
+	strings map[string]string
+	hashes  map[string]map[string]string
 }
 
 func (s *captureLiveSink) pipeline() livePipe { return &capturePipe{sink: s} }
 
 func (s *captureLiveSink) refreshTTL(patterns []ttlPattern) {
 	s.refresh = append(s.refresh, patterns)
+}
+
+func (s *captureLiveSink) getString(key string) (string, error) {
+	if v, ok := s.strings[key]; ok {
+		return v, nil
+	}
+	return "", redis.Nil
+}
+
+func (s *captureLiveSink) getHash(key string) (map[string]string, error) {
+	if v, ok := s.hashes[key]; ok {
+		return v, nil
+	}
+	return map[string]string{}, nil
 }
 
 // setFor returns the captured SET for key, or nil.
@@ -147,7 +165,7 @@ func readFixture(t *testing.T, name string) []byte {
 // specByKey returns the registered liveSpec with the given key.
 func specByKey(t *testing.T, key string) liveSpec {
 	t.Helper()
-	for _, s := range liveRegistry(nil, nil, nil) {
+	for _, s := range liveRegistry(nil, nil) {
 		if s.key == key {
 			return s
 		}
@@ -200,27 +218,19 @@ func TestMrtSpecRunWritesArrivals(t *testing.T) {
 func TestTraSpecMergesDelayIntoLiveboard(t *testing.T) {
 	// The tra spec must cache the delay hash + all-snapshot from the delay feed,
 	// then build per-station live boards from the liveboard feed. The delay hash is
-	// read back from Redis for the merge; that read-back is deliberately outside
-	// the sink seam (it stays on the concrete *redis.Client), so this fixture test
-	// points rc at an unreachable addr — HGetAll then returns no delays with no
-	// live Redis, exactly like loader_db_test.go. The Redis-round-trip merge-when-
-	// present branch needs a live hash and is exercised in the integration path,
-	// not this fixture unit test.
-	rc := unreachableRedis(t)
+	// read back through the sink seam (getHash) for the merge; seeding the fake
+	// sink's hash exercises the merge-when-present branch that needed a live Redis
+	// before the read moved behind the seam.
 	src := &fakeLiveSource{fixtures: map[string][]byte{
 		"tra_delay":     readFixture(t, "tdx_tra_delay.json"),
 		"tra_liveboard": readFixture(t, "tdx_tra_liveboard.json"),
 	}}
-	sink := &captureLiveSink{}
-	spec := liveSpec{
-		key:         "tra",
-		ttlPatterns: nil,
-		run: func(ctx context.Context, fetch boundFetch, s liveSink) error {
-			traEta(ctx, fetch, s, rc)
-			return nil
+	sink := &captureLiveSink{
+		hashes: map[string]map[string]string{
+			shared.TraDelayHashKey: {"1234": "9"},
 		},
 	}
-	runLiveSpec(context.Background(), src, sink, spec)
+	runLiveSpec(context.Background(), src, sink, specByKey(t, "tra"))
 
 	// Delay hash: train 1234 delayed 5 minutes (from the delay feed, via the sink).
 	var hset *hsetWrite
@@ -253,6 +263,11 @@ func TestTraSpecMergesDelayIntoLiveboard(t *testing.T) {
 	}
 	if board.Items[0].EndingStationName != "屏東" || board.Items[0].TrainTypeName != "自強" {
 		t.Fatalf("liveboard payload = %+v", board.Items[0])
+	}
+	// The seeded delay hash (1234→9) is merged into the board through the sink
+	// read seam, overriding the liveboard feed's own DelayTime for that train.
+	if board.Items[0].Delay != 9 {
+		t.Fatalf("merged delay = %d, want 9 (from the sink-read delay hash)", board.Items[0].Delay)
 	}
 }
 
@@ -344,7 +359,7 @@ func TestBusSpec304RefreshesCityTTL(t *testing.T) {
 	t.Cleanup(func() { storeBusStaticMap(citymap["Taipei"], nil) })
 
 	fetch := bindFetch(src, sink, specByKey(t, "bus"))
-	processBusEtaCity(context.Background(), fetch, sink, nil, nil, "Taipei", nil)
+	processBusEtaCity(context.Background(), fetch, sink, nil, "Taipei", nil)
 
 	if len(sink.refresh) != 1 {
 		t.Fatalf("refreshTTL calls = %d, want 1", len(sink.refresh))
@@ -398,23 +413,6 @@ func TestRunLiveFiltersByKey(t *testing.T) {
 	if len(ran) != 1 || ran[0] != "b" {
 		t.Fatalf("ran = %v, want [b]", ran)
 	}
-}
-
-// unreachableRedis returns a *redis.Client pointed at an unreachable addr with
-// sub-millisecond timeouts, so the tra delay read-back (rc.HGetAll) fails fast
-// and log-and-continues instead of blocking — no live Redis needed, matching
-// loader_db_test.go's pattern.
-func unreachableRedis(t *testing.T) *redis.Client {
-	t.Helper()
-	rc := redis.NewClient(&redis.Options{
-		Addr:         "127.0.0.1:1",
-		DialTimeout:  time.Millisecond,
-		ReadTimeout:  time.Millisecond,
-		WriteTimeout: time.Millisecond,
-		MaxRetries:   0,
-	})
-	t.Cleanup(func() { _ = rc.Close() })
-	return rc
 }
 
 // setKeys lists captured SET keys for failure messages.

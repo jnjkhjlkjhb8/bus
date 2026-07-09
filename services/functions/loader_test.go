@@ -56,7 +56,7 @@ func TestRunLoadIteratesPartitionsAndDecodes(t *testing.T) {
 	spec := loadSpec{
 		key: "probe", table: "probe", partCol: "city",
 		partitions: func() []string { return []string{"A", "B"} },
-		load: func(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool, _ *redis.Client, _ string) error {
+		load: func(_ context.Context, dec *json.Decoder, _ loadSink, _ string) error {
 			if _, err := dec.Token(); err != nil { // opening '['
 				return err
 			}
@@ -92,7 +92,7 @@ func TestRunLoadSkipsStalePartition(t *testing.T) {
 	spec := loadSpec{
 		key: "probe", table: "probe", partCol: "city",
 		partitions: func() []string { return []string{"A"} },
-		load: func(_ context.Context, _ *json.Decoder, _ *pgxpool.Pool, _ *redis.Client, _ string) error {
+		load: func(_ context.Context, _ *json.Decoder, _ loadSink, _ string) error {
 			loaded = true
 			return nil
 		},

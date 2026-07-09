@@ -33,7 +33,7 @@ type loadSpec struct {
 	table      string
 	partCol    string
 	partitions func() []string
-	load       func(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, rc *redis.Client, part string) error
+	load       func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error
 	report     []qualityTarget
 }
 
@@ -88,6 +88,7 @@ func runLoad(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 // a *json.Decoder, and calls the transform. Per-partition failures are logged
 // and do not abort the run (mirrors ingestRaw's per-endpoint isolation).
 func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, specs []loadSpec) error {
+	sink := pgLoadSink{db: db, rc: rc}
 	for _, spec := range specs {
 		parts := spec.partitions()
 		for _, part := range parts {
@@ -101,7 +102,7 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 				continue
 			}
 			dec := json.NewDecoder(bytes.NewReader(body))
-			if err := spec.load(ctx, dec, db, rc, part); err != nil {
+			if err := spec.load(ctx, dec, sink, part); err != nil {
 				log.Infof("[LOAD] action=transform event=error dataset=%s partition=%s error=%v", spec.key, part, err)
 				continue
 			}
@@ -224,67 +225,84 @@ func railDateWindow(n int) []string {
 	return out
 }
 
-// loaderRegistry lists every dataset the loader knows how to transform, in the
-// order it loads them. src is captured by the bus spec because loadBus needs to
-// read six correlated raw_tdx tables (a single decoder cannot feed a
-// multi-endpoint correlation); every other spec ignores it and uses the decoder
-// runLoadSpecs hands its load func. Partition enumerators reuse the ingestor's
-// existing package vars so landed and loaded partitions always agree.
-//
-// Ordering invariant: the "bus_operator" spec MUST precede the "bus" spec.
-// runLoadSpecs iterates this slice sequentially, so the staleness-gated
-// bus_operator upsert has already written bus_operators before loadBus reads
-// them back via loadBusOperatorMap. Do not reorder these two.
-func loaderRegistry(src loadSource) []loadSpec {
-	allCities := func() []string { return cities }
-	bikeCities := func() []string {
-		var out []string
-		for _, c := range cities {
-			if !ingestBikeSkip[c] {
-				out = append(out, c)
-			}
-		}
-		return out
-	}
-	dailyTimetableCities := func() []string {
-		var out []string
-		for _, c := range cities {
-			if !busDailyTimetableSkip(c) {
-				out = append(out, c)
-			}
-		}
-		return out
-	}
-	single := func() []string { return []string{""} }
-	return []loadSpec{
-		{key: "bus_operator", table: "bus_operator", partCol: "city", partitions: allCities,
-			load: func(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, part string) error {
-				_, err := loadBusOperators(ctx, dec, db, part)
-				return err
-			}},
-		{key: "bus", table: "bus_route", partCol: "city", partitions: allCities,
-			load: func(ctx context.Context, _ *json.Decoder, db *pgxpool.Pool, rc *redis.Client, part string) error {
-				return loadBus(ctx, src, db, rc, part)
+// loaderBinding is one dataset's loader implementation: the transform and the
+// optional post-load quality targets. It is joined onto the structural facts
+// (table, partition column, partition enumerator, order) the datasetRegistry
+// owns, keyed by loadKey.
+type loaderBinding struct {
+	load   func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error
+	report []qualityTarget
+}
+
+// loaderTransforms maps each dataset's loadKey to its transform. src is captured
+// by the bus binding because loadBus reads six correlated raw_tdx tables (a
+// single decoder cannot feed a multi-endpoint correlation); the standalone
+// copy-upsert transforms ignore it and consume the decoder runLoadSpecs hands
+// them.
+func loaderTransforms(src loadSource) map[string]loaderBinding {
+	return map[string]loaderBinding{
+		"bus_operator": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
+			_, err := loadBusOperators(ctx, dec, sink.pool(), part)
+			return err
+		}},
+		"bus": {
+			load: func(ctx context.Context, _ *json.Decoder, sink loadSink, part string) error {
+				return loadBus(ctx, src, sink.pool(), sink.redis(), part)
 			},
 			report: []qualityTarget{
 				{table: "bus_subroutes", textCols: []string{"route_name", "sub_route_name", "depart", "destin"}},
 				{table: "bus_static", textCols: []string{"route_name", "sub_route_name"}},
 				{table: "bus_stations", textCols: []string{"station_name"}, geoCols: []string{"position"}},
 			}},
-		{key: "bus_dailytimetable", table: "bus_dailytimetable", partCol: "city", partitions: dailyTimetableCities, load: loadBusDailyTimetable},
-		{key: "bike", table: "bike_station", partCol: "city", partitions: bikeCities, load: loadBikeStations,
+		"bus_dailytimetable": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
+			return loadBusDailyTimetable(ctx, dec, sink.pool(), sink.redis(), part)
+		}},
+		"bike": {load: loadBikeStations,
 			report: []qualityTarget{{table: "bike_stations", textCols: []string{"name", "address"}, geoCols: []string{"geom"}}}},
-		{key: "mrt_station", table: "metro_station", partCol: "system", partitions: func() []string { return ingestMetroStationSystems }, load: loadMrtStations,
+		"mrt_station": {load: loadMrtStations,
 			report: []qualityTarget{{table: "mrt_station", textCols: []string{"name"}, geoCols: []string{"stationposition"}}}},
-		{key: "mrt_firstlast", table: "metro_schedule", partCol: "system", partitions: func() []string { return ingestMetroFirstLast }, load: loadMrtFirstlast},
-		{key: "mrt_odfare", table: "metro_odfare", partCol: "system", partitions: func() []string { return ingestMetroODFare }, load: loadMrtJourneyMatrix},
-		{key: "tra_station", table: "tra_station", partCol: "", partitions: single, load: loadTraStation,
+		"mrt_firstlast": {load: loadMrtFirstlast},
+		"mrt_odfare": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
+			return loadMrtJourneyMatrix(ctx, dec, sink.pool(), sink.redis(), part)
+		}},
+		"tra_station": {load: loadTraStation,
 			report: []qualityTarget{{table: "tra_stations", textCols: []string{"name"}, geoCols: []string{"geom"}}}},
-		{key: "thsr_station", table: "thsr_station", partCol: "", partitions: single, load: loadThsrStation,
+		"thsr_station": {
+			load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
+				return loadThsrStation(ctx, dec, sink.pool(), sink.redis(), part)
+			},
 			report: []qualityTarget{{table: "thsr_stations", textCols: []string{"name"}, geoCols: []string{"geom"}}}},
-		{key: "tra_fare", table: "tra_odfare", partCol: "", partitions: single, load: loadTraFare},
-		{key: "thsr_fare", table: "thsr_odfare", partCol: "", partitions: single, load: loadThsrFare},
-		{key: "tra_timetable", table: "tra_dailytimetable", partCol: "traindate", partitions: func() []string { return railDateWindow(60) }, load: loadTraTimetable},
-		{key: "thsr_timetable", table: "thsr_dailytimetable", partCol: "traindate", partitions: func() []string { return railDateWindow(45) }, load: loadThsrTimetable},
+		"tra_fare":       {load: loadTraFare},
+		"thsr_fare":      {load: loadThsrFare},
+		"tra_timetable":  {load: loadTraTimetable},
+		"thsr_timetable": {load: loadThsrTimetable},
 	}
+}
+
+// loaderRegistry derives the ordered loader specs from the datasetRegistry: one
+// loadSpec per dataset that has a loadKey, in registry slice order, with its
+// table/partition-column/partition-enumerator taken from the dataset and its
+// transform/report from loaderTransforms. Because it walks the ordered slice,
+// the datasetRegistry's bus_operator-before-bus ordering is preserved — loadBus
+// reads bus_operators back after the staleness-gated bus_operator upsert. A
+// dataset whose loadPartitions differs from its landed partitions (only
+// bus_dailytimetable) loads the subset here.
+func loaderRegistry(src loadSource) []loadSpec {
+	transforms := loaderTransforms(src)
+	var specs []loadSpec
+	for _, d := range datasetRegistry() {
+		if d.loadKey == "" {
+			continue
+		}
+		b := transforms[d.loadKey]
+		specs = append(specs, loadSpec{
+			key:        d.loadKey,
+			table:      d.rawTable,
+			partCol:    d.partCol,
+			partitions: d.loadPartitions,
+			load:       b.load,
+			report:     b.report,
+		})
+	}
+	return specs
 }
