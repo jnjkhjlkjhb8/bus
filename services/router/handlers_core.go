@@ -49,8 +49,7 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 			return &pb.Resp_BusStatic{Data: sub}, nil
 		}
 	}
-	var data []byte
-	err := s.db.QueryRow(ctx, `SELECT pb FROM bus_static WHERE sub_route_uid = $1;`, route).Scan(&data)
+	data, err := busStaticPayload(ctx, s.db, route)
 	if err != nil {
 		log.Infof("[gRPC] action=bus_static event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "route not found")
@@ -85,21 +84,22 @@ func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_S
 	})
 }
 
-// BusStationEta streams live ETA for a station group. The request carries the
-// group_uid and, optionally, its city; when the city is omitted it is looked up
-// from bus_station_groups. It returns InvalidArgument when neither a city nor a
-// resolvable group_uid is available. Like BusRouteEta it seeds the stream from
+// streamBusStationEta streams live ETA for a station group. The request carries
+// the group_uid and, optionally, its city; when the city is omitted it is looked
+// up from bus_station_groups. It returns InvalidArgument when neither a city nor
+// a resolvable group_uid is available. Like BusRouteEta it seeds the stream from
 // the cached value, then forwards Redis Pub/Sub updates, skipping empty payloads.
-func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
+// It lives as a free function because both bus services legitimately serve this
+// stream (the station service directly, the route service by delegation).
+func streamBusStationEta(db coreDB, rc *redis.Client, in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
 	log.Infof("call Bus_station_eta %s:%s", in.City, in.GroupUid)
 	groupUID := in.GroupUid
 	if groupUID == "" {
 		return status.Error(codes.InvalidArgument, "station eta key must include group_uid")
 	}
 	city := in.City
-	if city == "" && s.db != nil {
-		var dbCity string
-		if err := s.db.QueryRow(stream.Context(), `SELECT city FROM bus_station_groups WHERE group_uid = $1`, groupUID).Scan(&dbCity); err == nil {
+	if city == "" && db != nil {
+		if dbCity, err := busStationGroupCity(stream.Context(), db, groupUID); err == nil {
 			city = dbCity
 		}
 	}
@@ -107,7 +107,7 @@ func (s *BusRouteserver) BusStationEta(in *pb.Bus_Ask_StationGroup, stream pb.Bu
 		return status.Error(codes.InvalidArgument, "station eta key must include city or known group_uid")
 	}
 	key := shared.BusStationEtaKey(city, groupUID)
-	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+	return streamLive(stream.Context(), redisLiveSource{rc}, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 		usable:   usableBusEtaPayload,
@@ -139,46 +139,37 @@ func (s *BusRouteserver) BusDailytable(in *pb.Bus_Ask_Route) (*pb.Resp_BusDailyT
 	return &pb.Resp_BusDailyTimetable{Data: tt}, nil
 }
 
-// Eta implements the Bus_Station_Service Eta streaming RPC. The station-ETA
-// logic lives on BusRouteserver, so it forwards to a transient BusRouteserver
-// sharing this server's db and rc handles (no cache is needed for a stream).
+// Eta implements the Bus_Station_Service Eta streaming RPC by delegating to the
+// shared streamBusStationEta helper.
 func (s *BusStationserver) Eta(in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
-	return (&BusRouteserver{db: s.db, rc: s.rc}).BusStationEta(in, stream)
+	return streamBusStationEta(s.db, s.rc, in, stream)
 }
 
 // Group returns a station group and its member stops from PostgreSQL. It
-// returns InvalidArgument for an empty group_uid and NotFound when the group
-// does not exist.
+// returns InvalidArgument for an empty group_uid, NotFound when the group does
+// not exist, and Internal for a transient query failure.
 func (s *BusStationserver) Group(ctx context.Context, in *pb.Bus_Ask_StationGroup) (*pb.Bus_StationGroup, error) {
 	groupUID := in.GroupUid
 	if groupUID == "" {
 		return nil, status.Error(codes.InvalidArgument, "group_uid required")
 	}
-	resp := &pb.Bus_StationGroup{GroupUid: groupUID}
-	err := s.db.QueryRow(ctx, `
-		SELECT group_name, city, ST_X(position), ST_Y(position)
-		FROM bus_station_groups
-		WHERE group_uid = $1`, groupUID).Scan(&resp.GroupName, &resp.City, &resp.PositionLon, &resp.PositionLat)
+	header, err := busStationGroupHeader(ctx, s.db, groupUID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "station group not found: %s", groupUID)
+		log.Infof("[gRPC] action=bus_station_group event=query_failed error=%v", err)
+		return nil, grpcStatusFor(err, "station group not found")
 	}
-	rows, err := s.db.Query(ctx, `
-		SELECT station_uid, station_id, station_name, ST_X(position), ST_Y(position)
-		FROM bus_station_group_members
-		WHERE group_uid = $1
-		ORDER BY station_id, station_uid`, groupUID)
+	members, err := busStationGroupMembers(ctx, s.db, groupUID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "station group members: %v", err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		m := &pb.Bus_StationGroupMember{}
-		if err := rows.Scan(&m.StationUid, &m.StationId, &m.StationName, &m.PositionLon, &m.PositionLat); err != nil {
-			return nil, status.Errorf(codes.Internal, "scan station group member: %v", err)
-		}
-		resp.Members = append(resp.Members, m)
-	}
-	return resp, nil
+	return &pb.Bus_StationGroup{
+		GroupUid:    groupUID,
+		GroupName:   header.GroupName,
+		City:        header.City,
+		PositionLon: header.Lon,
+		PositionLat: header.Lat,
+		Members:     members,
+	}, nil
 }
 
 // Static implements the Bike_Service Static RPC by delegating to BikeStatic.
@@ -205,19 +196,17 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 			}
 		}
 	}
-	var name, address string
-	var capacity, serviceType int32
-	err := s.db.QueryRow(ctx, `SELECT name,capacity,service_type,address FROM bike_stations WHERE station_uid = $1;`, in.StationUID).Scan(&name, &capacity, &serviceType, &address)
+	row, err := bikeStaticData(ctx, s.db, in.StationUID)
 	if err != nil {
 		log.Infof("[gRPC] action=bike_static event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "bike station not found")
 	}
 	resp := &pb.BikeStatic{
 		StationUID:  in.StationUID,
-		Name:        name,
-		Capacity:    capacity,
-		ServiceType: serviceType,
-		Address:     address,
+		Name:        row.Name,
+		Capacity:    row.Capacity,
+		ServiceType: row.ServiceType,
+		Address:     row.Address,
 	}
 	if s.cache != nil {
 		if data, err := proto.Marshal(resp); err == nil {
@@ -427,64 +416,28 @@ func (s *ThsrServer) Fare(ctx context.Context, in *pb.Ask_Thsr) (*pb.ThsaFare, e
 	return items.Items[0], nil
 }
 
-// AvailableSeats streams THSR available-seat status for a date. Seat status per
-// train is cached under thsr_seats:<date>:<train> keys, so it first SCANs and
-// sends every existing key. When the scan completes with no more keys, it
-// triggers get_thsr_availableseatstatus to refresh the cache from TDX, then
-// PSubscribes and forwards live updates until the client disconnects. in.Date is
-// parsed as RFC3339 and reduced to a date for the TDX refresh.
+// AvailableSeats streams THSR available-seat status for a date via the shared
+// streamLive seam: it subscribes first, then seeds the client by SCANning the
+// per-train thsr_seats:<date>:<train> keys, and forwards live updates until the
+// client disconnects. The functions THSR-seats live job owns the refresh from
+// TDX (ADR-0005 amendment), so the router only reads. The channel is the
+// per-date thsr_seats:<date>:* string used as an opaque literal — both the
+// functions writer and this reader derive it from shared.ThsrSeatsPattern, so a
+// plain SUBSCRIBE/PUBLISH match with no pattern semantics. in.Date is parsed and
+// reduced to a date so the seed and subscribe target the keys the job writes.
 func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreamingServer[pb.RespThsrSeats]) error {
 	log.Infof("[gRPC] action=thsr_available_seats date=%s", in.Date)
-	channel := shared.ThsrSeatsPattern(in.Date)
-	var cursor uint64
-	for {
-		if err := stream.Context().Err(); err != nil {
-			return err
-		}
-		keys, next, err := s.rc.Scan(cursor, channel, 20).Result()
-		if err != nil {
-			break
-		}
-		for _, i := range keys {
-			val, err := s.rc.Get(i).Bytes()
-			if err != nil {
-				continue
-			}
-			seats, err := decodePayload(val, &pb.ThsrAvailableSeats{})
-			if err != nil {
-				return err
-			}
-			if err = stream.Send(&pb.RespThsrSeats{Data: seats}); err != nil {
-				return err
-			}
-		}
-		cursor = next
-		if cursor == 0 {
-			t := parseRailDate(in.Date)
-			get_thsr_availableseatstatus(s.tdx, s.rc, t.Format(time.DateOnly))
-			break
-		}
-	}
-	sub := s.rc.PSubscribe(shared.ThsrSeatsPattern(in.Date))
-	defer func(sub *redis.PubSub) { _ = sub.Close() }(sub)
-	for {
-		select {
-		case <-stream.Context().Done():
-			return stream.Context().Err()
-		default:
-		}
-		m, err := sub.ReceiveMessage()
+	date := parseRailDate(in.Date).Format(time.DateOnly)
+	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+		channel:  shared.ThsrSeatsPattern(date),
+		seedScan: shared.ThsrSeatsPattern(date),
+	}, func(data []byte) error {
+		seats, err := decodePayload(data, &pb.ThsrAvailableSeats{})
 		if err != nil {
 			return err
 		}
-		seats, err := decodePayload([]byte(m.Payload), &pb.ThsrAvailableSeats{})
-		if err != nil {
-			return err
-		}
-		if err = stream.Send(&pb.RespThsrSeats{Data: seats}); err != nil {
-			return err
-		}
-	}
+		return stream.Send(&pb.RespThsrSeats{Data: seats})
+	})
 }
 
 // Timetable returns the THSR timetable between two stations for a date,
