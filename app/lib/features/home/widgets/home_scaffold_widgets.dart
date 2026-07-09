@@ -303,7 +303,10 @@ extension _HomeScreenScaffold on _HomeScreenState {
             controller: _tabController,
             children: [
               const _FavoritesTab(),
-              _NearbyStationsTab(onStationTap: _openStationDetail),
+              _NearbyStationsTab(
+                onStationTap: _openStationDetail,
+                sheetController: _sheetController,
+              ),
             ],
           ),
         ),

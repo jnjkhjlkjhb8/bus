@@ -2,9 +2,9 @@ part of '../home_screen.dart';
 
 const _kLargeDotZoomThreshold = 13.0;
 const _kIconZoomThreshold = 15.5;
-const _kSmallDotSize = 7.0;
-const _kLargeDotSize = 10.0;
-const _kIconMarkerSize = 32.0;
+const _kSmallDotSize = 10.0;
+const _kLargeDotSize = 7.0;
+const _kIconMarkerSize = 24.0;
 const _kHighlightIconMarkerSize = 44.0;
 const _kMapMarkerLimit = 60;
 
