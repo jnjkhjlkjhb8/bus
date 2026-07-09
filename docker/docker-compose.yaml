@@ -168,10 +168,11 @@ services:
     command:
       - >
         set -e; cd /data;
-        test -f taiwan.osrm.mldgr && exit 0;
+        test "$$(cat taiwan.osrm.profile 2>/dev/null)" = foot && exit 0;
         osrm-extract -p /opt/foot.lua taiwan.osm.pbf &&
         osrm-partition taiwan.osrm &&
-        osrm-customize taiwan.osrm
+        osrm-customize taiwan.osrm &&
+        echo foot > taiwan.osrm.profile
     restart: "no"
 
   osrm:
