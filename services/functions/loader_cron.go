@@ -39,6 +39,12 @@ func rawSourcePool(db *pgxpool.Pool) *pgxpool.Pool {
 	return pool
 }
 
+// loadTimeout bounds one full load run. The Azure B1ms database serves reads
+// slowly under memory pressure; a 20-minute budget has been exhausted mid-run,
+// cascading "context deadline exceeded" over every remaining partition. The
+// loader container is otherwise idle, so a generous budget costs nothing.
+const loadTimeout = 60 * time.Minute
+
 // registerLoaderCrons schedules the daily 03:30 load: transform raw_tdx into
 // this environment's PG_SCHEMA. It runs 30 minutes after the prod ingestor's
 // 03:00 landing (ADR-0005 coordination). When LOAD_ON_BOOT=true it also runs
@@ -54,14 +60,14 @@ func registerLoaderCrons(r *cron.Cron, db *pgxpool.Pool, rc *redis.Client) {
 		// unconditionally (per-partition failures are isolated and logged inside
 		// runLoadSpecs, by design), so there is no error to retry on. The wrapper
 		// is kept only for the shared timeout/observability plumbing.
-		runDaily("load", 20*time.Minute, func(ctx context.Context) error {
+		runDaily("load", loadTimeout, func(ctx context.Context) error {
 			return runLoad(ctx, src, db, rc, nil)
 		})
 	})
 	if os.Getenv("LOAD_ON_BOOT") == "true" {
 		log.Infoln("[LOAD] action=boot event=enabled")
 		go func() {
-			withTimeout(20*time.Minute, func(ctx context.Context) {
+			withTimeout(loadTimeout, func(ctx context.Context) {
 				_ = runLoad(ctx, src, db, rc, nil)
 			})
 		}()

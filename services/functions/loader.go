@@ -166,10 +166,14 @@ type rawTDXSource struct {
 	pool *pgxpool.Pool
 }
 
-// datasetJSON returns to_jsonb of every row in the partition (with the partition
-// column and fetched_at stripped, since those are loader bookkeeping, not TDX
-// fields) plus MAX(fetched_at). An empty partition yields "[]" and the epoch
-// time, which isStale treats as stale (skipped).
+// datasetJSON returns a JSON array of every row in the partition (with the
+// partition column and fetched_at stripped, since those are loader bookkeeping,
+// not TDX fields) plus the newest fetched_at. Rows are serialized one at a time
+// on the server and concatenated here: a single jsonb_agg over a partition with
+// large jsonb columns (bus_routefare odfares) expands to a multi-GB in-memory
+// tree and can OOM the 2 GB database server, so the per-statement working set
+// must stay one row. An empty partition yields "[]" and a zero time, which
+// isStale treats as stale (skipped).
 //
 // thsr_dailytimetable.traindate is timestamptz on the landing table, but the
 // original TDX payload's TrainDate is a YYYY-MM-DD string and the transform's
@@ -203,14 +207,35 @@ func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal s
 		args = append(args, partVal)
 	}
 	q := fmt.Sprintf(
-		`SELECT COALESCE(jsonb_agg(%s), '[]'::jsonb), COALESCE(MAX(t.fetched_at), 'epoch') FROM raw_tdx.%s t %s`,
+		`SELECT %s::text, t.fetched_at FROM raw_tdx.%s t %s`,
 		elem, table, where)
-	var body []byte
-	var fetchedAt time.Time
-	if err := r.pool.QueryRow(ctx, q, args...).Scan(&body, &fetchedAt); err != nil {
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
 		return nil, time.Time{}, err
 	}
-	return body, fetchedAt, nil
+	defer rows.Close()
+	var buf bytes.Buffer
+	buf.WriteByte('[')
+	var fetchedAt time.Time
+	for rows.Next() {
+		var rowJSON []byte
+		var ft time.Time
+		if err := rows.Scan(&rowJSON, &ft); err != nil {
+			return nil, time.Time{}, err
+		}
+		if buf.Len() > 1 {
+			buf.WriteByte(',')
+		}
+		buf.Write(rowJSON)
+		if ft.After(fetchedAt) {
+			fetchedAt = ft
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, time.Time{}, err
+	}
+	buf.WriteByte(']')
+	return buf.Bytes(), fetchedAt, nil
 }
 
 // railDateWindow returns today..today+n as YYYY-MM-DD strings, matching the
