@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/features/search/bloc/search_state.dart';
+import 'package:wheres_the_car/data/models/search_models.dart';
 import 'package:wheres_the_car/features/search/genui/bloc/genui_bloc.dart';
 import 'package:wheres_the_car/features/search/genui/data/genui_service.dart';
 import 'package:wheres_the_car/features/search/genui/view/genui_renderer.dart';

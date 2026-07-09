@@ -33,6 +33,16 @@ class ThsrTimetableItem extends Equatable {
   ];
 }
 
+class ThsrFare extends Equatable {
+  const ThsrFare({required this.fareClass, required this.price});
+
+  final int fareClass;
+  final int price;
+
+  @override
+  List<Object?> get props => [fareClass, price];
+}
+
 class ThsrStopTime extends Equatable {
   const ThsrStopTime({
     required this.stationName,

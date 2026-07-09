@@ -1,3 +1,42 @@
+import 'package:equatable/equatable.dart';
+
+/// Result categories for the live `/api/search` path (SearchBloc/SearchResult).
+enum SearchResultType {
+  busRoute,
+  busStation,
+  bikeStation,
+  mrtStation,
+  traStation,
+  thsrStation,
+  traTrain,
+  thsrTrain,
+}
+
+/// A validated search result from the `/api/search` endpoint. Lives in data/
+/// so repositories can return it without depending on the search feature.
+class SearchResult extends Equatable {
+  const SearchResult({
+    required this.type,
+    required this.uid,
+    required this.name,
+    required this.subtitle,
+    this.city,
+    this.lat,
+    this.lon,
+  });
+
+  final SearchResultType type;
+  final String uid;
+  final String name;
+  final String subtitle;
+  final String? city;
+  final double? lat;
+  final double? lon;
+
+  @override
+  List<Object?> get props => [type, uid, name, subtitle, city, lat, lon];
+}
+
 /// Search result categories returned by the backend search endpoint.
 enum AppSearchResultType {
   busRoute,

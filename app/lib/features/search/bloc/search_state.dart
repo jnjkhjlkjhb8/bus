@@ -1,39 +1,6 @@
 import 'package:equatable/equatable.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
-
-enum SearchResultType {
-  busRoute,
-  busStation,
-  bikeStation,
-  mrtStation,
-  traStation,
-  thsrStation,
-  traTrain,
-  thsrTrain,
-}
-
-class SearchResult extends Equatable {
-  const SearchResult({
-    required this.type,
-    required this.uid,
-    required this.name,
-    required this.subtitle,
-    this.city,
-    this.lat,
-    this.lon,
-  });
-
-  final SearchResultType type;
-  final String uid;
-  final String name;
-  final String subtitle;
-  final String? city;
-  final double? lat;
-  final double? lon;
-
-  @override
-  List<Object?> get props => [type, uid, name, subtitle, city, lat, lon];
-}
+import 'package:wheres_the_car/data/models/search_models.dart';
 
 class SearchState extends Equatable {
   const SearchState({

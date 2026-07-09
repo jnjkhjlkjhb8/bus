@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/features/search/bloc/search_state.dart';
+import 'package:wheres_the_car/data/models/search_models.dart';
 import 'package:wheres_the_car/features/search/genui/data/genui_service.dart';
 import 'package:wheres_the_car/features/search/genui/model/genui_node.dart';
 

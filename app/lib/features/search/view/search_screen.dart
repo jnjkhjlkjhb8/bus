@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
+import 'package:wheres_the_car/data/models/search_models.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/rail_navigation_request.dart';
 import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';

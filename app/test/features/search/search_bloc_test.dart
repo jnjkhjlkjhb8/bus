@@ -1,9 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_car/data/models/search_models.dart';
 import 'package:wheres_the_car/data/repositories/search_recent_repository.dart';
 import 'package:wheres_the_car/data/repositories/search_repository.dart';
 import 'package:wheres_the_car/features/search/bloc/search_bloc.dart';
 import 'package:wheres_the_car/features/search/bloc/search_event.dart';
-import 'package:wheres_the_car/features/search/bloc/search_state.dart';
 
 void main() {
   test('loads recents on construction', () async {

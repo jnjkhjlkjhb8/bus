@@ -61,8 +61,12 @@ class TraRepository {
 
   /// Fare query. [stationId] is expected in `'originId:destId'` format when
   /// querying an O/D pair.
-  Future<TraFareItem> fare(String stationId, String date) =>
-      _timetable.fare(ask_staiton(stationId: stationId, date: date));
+  Future<TraFare> fare(String stationId, String date) async {
+    final result = await _timetable.fare(
+      ask_staiton(stationId: stationId, date: date),
+    );
+    return TraDecoder.instance.decodeFare(result);
+  }
 
   /// Server-streaming: emits decoded delay data (trainNo → delay minutes) for
   /// trains on the [originId]→[destId] segment on [date].

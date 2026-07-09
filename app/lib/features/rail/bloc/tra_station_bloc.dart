@@ -36,7 +36,7 @@ class TraStationBloc extends Bloc<TraStationEvent, TraStationState> {
   // time) is the feed's compare policy now, mirroring how metro sorts inside
   // the feed rather than in the bloc.
   final _feed = ArrivalFeed<TraLiveBoardItem>.replace(
-    compare: (a, b) => a.departureTime.compareTo(b.departureTime),
+    compare: TraLiveBoardItem.byDeparture,
   );
   StreamSubscription<List<TraLiveBoardItem>>? _sub;
 

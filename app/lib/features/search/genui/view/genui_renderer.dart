@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/features/search/bloc/search_state.dart';
+import 'package:wheres_the_car/data/models/search_models.dart';
 import 'package:wheres_the_car/features/search/genui/model/genui_node.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';

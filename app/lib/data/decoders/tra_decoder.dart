@@ -34,6 +34,9 @@ class TraDecoder {
         .toList();
   }
 
+  TraFare decodeFare(TraFareItem f) =>
+      TraFare(ticketType: f.ticketType, price: f.price);
+
   /// delay is a map of trainNo to delayMinutes
   Map<String, int> decodeDelayMap(tra_delays delays) => delays.delay;
 

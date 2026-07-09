@@ -18,6 +18,12 @@ class TraLiveBoardItem extends Equatable {
   final String departureTime;
   final int delayMinutes;
 
+  /// Departure-board ordering: earliest scheduled departure first. Shared by
+  /// RailBloc's full board and the home-sheet TraStationBloc so the two live
+  /// views of the same stream can't drift apart in sort policy.
+  static int byDeparture(TraLiveBoardItem a, TraLiveBoardItem b) =>
+      a.departureTime.compareTo(b.departureTime);
+
   @override
   List<Object?> get props => [
     trainNo,
@@ -55,6 +61,16 @@ class TraStopTime extends Equatable {
     departureTime,
     sequence,
   ];
+}
+
+class TraFare extends Equatable {
+  const TraFare({required this.ticketType, required this.price});
+
+  final String ticketType;
+  final int price;
+
+  @override
+  List<Object?> get props => [ticketType, price];
 }
 
 class TraTimetableItem extends Equatable {

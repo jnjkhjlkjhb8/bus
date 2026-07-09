@@ -1,6 +1,6 @@
 import 'package:firebase_ai/firebase_ai.dart';
+import 'package:wheres_the_car/data/models/search_models.dart';
 import 'package:wheres_the_car/data/repositories/search_repository.dart';
-import 'package:wheres_the_car/features/search/bloc/search_state.dart';
 import 'package:wheres_the_car/features/search/genui/model/genui_node.dart';
 
 /// AI 回覆的處理階段,供 UI 顯示進度文字。

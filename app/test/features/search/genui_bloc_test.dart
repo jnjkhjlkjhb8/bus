@@ -5,7 +5,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/features/search/bloc/search_state.dart';
+import 'package:wheres_the_car/data/models/search_models.dart';
 import 'package:wheres_the_car/features/search/genui/bloc/genui_bloc.dart';
 import 'package:wheres_the_car/features/search/genui/data/genui_service.dart';
 import 'package:wheres_the_car/features/search/genui/model/genui_node.dart';

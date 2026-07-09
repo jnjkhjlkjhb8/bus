@@ -1,5 +1,5 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/features/search/bloc/search_state.dart';
+import 'package:wheres_the_car/data/models/search_models.dart';
 
 sealed class SearchEvent extends Equatable {
   const SearchEvent();

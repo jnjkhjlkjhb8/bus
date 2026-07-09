@@ -27,10 +27,16 @@ class RailBloc extends Bloc<RailEvent, RailState> {
 
   static final _dateFormat = DateFormat('yyyy-MM-dd');
 
-  // A station's live board and a segment's delay map are lone live values
-  // (a whole board / a whole map per frame), not accumulating arrival lists,
-  // so they ride the arrival feed's passthrough seam for resilient reconnect.
+  // The live departure board is an arrival list: it rides the arrival feed's
+  // replace policy (empty-frame guard + departure sort), the same policy the
+  // home-sheet TraStationBloc uses on this stream, so the two can't drift.
+  final _liveBoardFeed = ArrivalFeed<TraLiveBoardItem>.replace(
+    compare: TraLiveBoardItem.byDeparture,
+  );
   StreamSubscription<List<TraLiveBoardItem>>? _liveBoardSub;
+
+  // A segment's delay map is a lone live value (a whole map per frame), not an
+  // arrival list, so it stays on the feed's passthrough seam.
   StreamSubscription<Map<String, int>>? _delaySub;
 
   RailLiveBoardLoaded _defaultLoaded(RailSystem system) {
@@ -95,10 +101,12 @@ class RailBloc extends Bloc<RailEvent, RailState> {
 
     final date = _dateFormat.format(DateTime.now());
     await _liveBoardSub?.cancel();
-    _liveBoardSub = ArrivalFeed.passthrough(
-      source: () => TraRepository.instance.liveBoard(stationId, date),
-      onFailure: (e) => add(RailLiveBoardFailed(e)),
-    ).listen((items) => add(RailLiveBoardItemsUpdated(items)));
+    _liveBoardSub = _liveBoardFeed
+        .watch(
+          source: () => TraRepository.instance.liveBoard(stationId, date),
+          onFailure: (e) => add(RailLiveBoardFailed(e)),
+        )
+        .listen((items) => add(RailLiveBoardItemsUpdated(items)));
   }
 
   void _onLiveBoardItems(

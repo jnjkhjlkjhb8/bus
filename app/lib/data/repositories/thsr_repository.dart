@@ -29,14 +29,16 @@ class ThsrRepository {
   Thsr_Detain_serviceClient get _detain =>
       _detainClient ??= GrpcClient.instance.thsrDetain;
 
-  Future<thsa_fare> fare(String date, String originId, String destId) =>
-      _grpc.fare(
-        Ask_Thsr(
-          date: date,
-          originStationId: originId,
-          destinationStationId: destId,
-        ),
-      );
+  Future<ThsrFare> fare(String date, String originId, String destId) async {
+    final result = await _grpc.fare(
+      Ask_Thsr(
+        date: date,
+        originStationId: originId,
+        destinationStationId: destId,
+      ),
+    );
+    return ThsrDecoder.instance.decodeFare(result);
+  }
 
   Future<List<ThsrTimetableItem>> timetable(
     String date,

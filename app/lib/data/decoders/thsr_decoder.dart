@@ -34,6 +34,9 @@ class ThsrDecoder {
         .toList();
   }
 
+  ThsrFare decodeFare(thsa_fare f) =>
+      ThsrFare(fareClass: f.fareClass, price: f.price);
+
   List<ThsrStopTime> decodeStopTimes(thsr_stoptimes stoptimes) {
     return stoptimes.items
         .map(
