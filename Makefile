@@ -17,16 +17,16 @@ proto-dart:
 	PATH="$$PATH:$$HOME/.pub-cache/bin" protoc --dart_out=grpc:app/lib/data/generated -I models models/*.proto
 
 up-test:
-	BUS_ENV_FILE=env/test.env $(COMPOSE) --env-file env/test.env -f docker-compose.yaml -f docker-compose.test.yaml up -d --build postgres redis router functions
+	BUS_ENV_FILE=env/test.env $(COMPOSE) --env-file env/test.env -f docker/docker-compose.yaml -f docker/docker-compose.test.yaml up -d --build postgres redis router functions
 
 up-staging:
-	BUS_ENV_FILE=env/staging.env $(COMPOSE) --env-file env/staging.env -f docker-compose.yaml -f docker-compose.staging.yaml up -d --build
+	BUS_ENV_FILE=env/staging.env $(COMPOSE) --env-file env/staging.env -f docker/docker-compose.yaml -f docker/docker-compose.staging.yaml up -d --build
 
 up-prod:
-	BUS_ENV_FILE=env/prod.env $(COMPOSE) --env-file env/prod.env -f docker-compose.yaml -f docker-compose.prod.yaml up -d --build
+	BUS_ENV_FILE=env/prod.env $(COMPOSE) --env-file env/prod.env -f docker/docker-compose.yaml -f docker/docker-compose.prod.yaml up -d --build
 
 up-ollama:
-	$(COMPOSE) -f docker-compose.yaml --profile gpu up -d --build ollama
+	$(COMPOSE) -f docker/docker-compose.yaml --profile gpu up -d --build ollama
 
 migrate-up-test:
 	$(MIGRATE) -path migrations -database "$${DATABASE_URL:-postgres://bus:bus@localhost:5432/bus_test?sslmode=disable}" up
