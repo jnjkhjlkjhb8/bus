@@ -4,7 +4,9 @@ import 'package:wheres_the_car/core/firebase/firebase_call_options.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/firebase/install_identity.dart';
 import 'package:wheres_the_car/core/grpc/grpc_client.dart';
+import 'package:wheres_the_car/data/decoders/firebase_decoder.dart';
 import 'package:wheres_the_car/data/generated/firebase.pbgrpc.dart';
+import 'package:wheres_the_car/data/models/firebase_models.dart';
 import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 
 bool isFirebaseRouteType(String value) => value == 'bus';
@@ -26,10 +28,10 @@ class FirebaseRepository {
 
   final SettingsRepository _settings;
 
-  Future<DeviceState> upsertDevice({required String fcmToken}) async {
-    if (!FirebaseGate.enabled) return DeviceState();
+  Future<FirebaseDeviceState> upsertDevice({required String fcmToken}) async {
+    if (!FirebaseGate.enabled) return const FirebaseDeviceState();
     final installId = await InstallIdentity.getOrCreate();
-    return _grpc.upsertDevice(
+    final state = await _grpc.upsertDevice(
       UpsertDeviceRequest(
         identity: DeviceIdentity(
           installId: installId,
@@ -49,9 +51,10 @@ class FirebaseRepository {
       ),
       options: await FirebaseCallOptions.build(),
     );
+    return FirebaseDecoder.instance.decodeDeviceState(state);
   }
 
-  Future<Ack> setRouteSubscription({
+  Future<FirebaseAck> setRouteSubscription({
     required String routeType,
     required String routeKey,
     required bool enabled,
@@ -59,8 +62,10 @@ class FirebaseRepository {
     if (!isFirebaseRouteType(routeType) || routeKey.isEmpty) {
       throw ArgumentError('invalid canonical route identity');
     }
-    if (!FirebaseGate.enabled) return Ack(ok: true, message: 'disabled');
-    return _grpc.setRouteSubscription(
+    if (!FirebaseGate.enabled) {
+      return const FirebaseAck(ok: true, message: 'disabled');
+    }
+    final ack = await _grpc.setRouteSubscription(
       RouteSubscriptionRequest(
         installId: await InstallIdentity.getOrCreate(),
         routeType: routeType,
@@ -69,9 +74,10 @@ class FirebaseRepository {
       ),
       options: await FirebaseCallOptions.build(),
     );
+    return FirebaseDecoder.instance.decodeAck(ack);
   }
 
-  Future<ArrivalReminder> createArrivalReminder({
+  Future<ArrivalReminderReceipt> createArrivalReminder({
     required String routeType,
     required String routeKey,
     required String stopKey,
@@ -86,11 +92,11 @@ class FirebaseRepository {
       throw ArgumentError('invalid canonical arrival identity');
     }
     if (!FirebaseGate.enabled) {
-      return ArrivalReminder(
+      return ArrivalReminderReceipt(
         reminderId: 'local:$routeType:$routeKey:$stopKey:$leadMinutes',
       );
     }
-    return _grpc.createArrivalReminder(
+    final reminder = await _grpc.createArrivalReminder(
       CreateArrivalReminderRequest(
         installId: await InstallIdentity.getOrCreate(),
         routeType: routeType,
@@ -102,24 +108,29 @@ class FirebaseRepository {
       ),
       options: await FirebaseCallOptions.build(),
     );
+    return FirebaseDecoder.instance.decodeReminder(reminder);
   }
 
-  Future<Ack> cancelArrivalReminder(String reminderId) async {
-    if (!FirebaseGate.enabled) return Ack(ok: true, message: 'disabled');
-    return _grpc.cancelArrivalReminder(
+  Future<FirebaseAck> cancelArrivalReminder(String reminderId) async {
+    if (!FirebaseGate.enabled) {
+      return const FirebaseAck(ok: true, message: 'disabled');
+    }
+    final ack = await _grpc.cancelArrivalReminder(
       CancelArrivalReminderRequest(
         reminderId: reminderId,
         installId: await InstallIdentity.getOrCreate(),
       ),
       options: await FirebaseCallOptions.build(),
     );
+    return FirebaseDecoder.instance.decodeAck(ack);
   }
 
-  Future<DeviceState> listDeviceState() async {
-    if (!FirebaseGate.enabled) return DeviceState();
-    return _grpc.listDeviceState(
+  Future<FirebaseDeviceState> listDeviceState() async {
+    if (!FirebaseGate.enabled) return const FirebaseDeviceState();
+    final state = await _grpc.listDeviceState(
       DeviceRequest(installId: await InstallIdentity.getOrCreate()),
       options: await FirebaseCallOptions.build(),
     );
+    return FirebaseDecoder.instance.decodeDeviceState(state);
   }
 }

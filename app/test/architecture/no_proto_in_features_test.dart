@@ -51,10 +51,6 @@ void main() {
       reason: 'Generated proto stubs missing; run protoc before this test.',
     );
 
-    // Known, pre-existing leaks tracked separately and out of scope here:
-    // firebase_repository still returns proto reminder/device types to blocs.
-    const allowedFiles = <String>{'firebase_repository.dart'};
-
     // A method declaration: an optional `static`, a return-type token, the
     // method name, then `(`. Getters (no parens) and constructors (single
     // token before `(`) do not match, which is intended.
@@ -69,8 +65,6 @@ void main() {
     final offenders = <String>[];
     for (final entity in Directory('lib/data/repositories').listSync()) {
       if (entity is! File || !entity.path.endsWith('.dart')) continue;
-      final fileName = entity.uri.pathSegments.last;
-      if (allowedFiles.contains(fileName)) continue;
       final lines = entity.readAsLinesSync();
       for (var i = 0; i < lines.length; i++) {
         final trimmed = lines[i].trimLeft();

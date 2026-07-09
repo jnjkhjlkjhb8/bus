@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/generated/firebase.pbgrpc.dart';
+import 'package:wheres_the_car/data/models/firebase_models.dart';
 import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
 import 'package:wheres_the_car/data/repositories/reminders_repository.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
@@ -13,7 +13,7 @@ class _FakeFirebaseRepository extends FirebaseRepository {
   final cancelled = <String>[];
 
   @override
-  Future<ArrivalReminder> createArrivalReminder({
+  Future<ArrivalReminderReceipt> createArrivalReminder({
     required String routeType,
     required String routeKey,
     required String stopKey,
@@ -22,13 +22,13 @@ class _FakeFirebaseRepository extends FirebaseRepository {
     required DateTime expiresAt,
   }) async {
     if (failCreate) throw Exception('grpc down');
-    return ArrivalReminder(reminderId: 'srv-1');
+    return const ArrivalReminderReceipt(reminderId: 'srv-1');
   }
 
   @override
-  Future<Ack> cancelArrivalReminder(String reminderId) async {
+  Future<FirebaseAck> cancelArrivalReminder(String reminderId) async {
     cancelled.add(reminderId);
-    return Ack(ok: true);
+    return const FirebaseAck(ok: true);
   }
 }
 

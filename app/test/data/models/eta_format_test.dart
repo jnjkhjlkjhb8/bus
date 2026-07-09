@@ -85,16 +85,20 @@ void main() {
         BusStopDisplayStatus.minutes,
       );
     });
-    // A not-yet-departed stop (status 1) has its NextBusTime decayed into a
-    // positive estimate, but it must stay scheduled (clock time), never a
-    // live countdown. Guards the status-0 gate on the countdown branches.
-    test('status 1 stays notDeparted despite a positive decayed estimate', () {
+    // A not-yet-departed stop (status 1) with a predicted NextBusTime carries
+    // a positive estimate the backend derived for exactly this countdown
+    // (bus_eta.go gap fill); only a zero estimate falls back to 尚未發車.
+    test('status 1 with a positive predicted estimate is a countdown', () {
       expect(
         busStopDisplayStatus(estimateSeconds: 300, stopStatus: 1),
-        BusStopDisplayStatus.notDeparted,
+        BusStopDisplayStatus.minutes,
       );
       expect(
         busStopDisplayStatus(estimateSeconds: 30, stopStatus: 1),
+        BusStopDisplayStatus.departingSoon,
+      );
+      expect(
+        busStopDisplayStatus(estimateSeconds: 0, stopStatus: 1),
         BusStopDisplayStatus.notDeparted,
       );
     });
@@ -185,10 +189,19 @@ void main() {
       );
     });
 
-    test('status 1 shows the clock time, not the decayed countdown', () {
+    test('status 1 with a predicted estimate shows the countdown; the clock '
+        'time is the zero-estimate fallback', () {
       expect(
         busStopDisplayLabel(
           estimateSeconds: 300,
+          stopStatus: 1,
+          nextBusTime: '08:15',
+        ),
+        '5分',
+      );
+      expect(
+        busStopDisplayLabel(
+          estimateSeconds: 0,
           stopStatus: 1,
           nextBusTime: '08:15',
         ),
