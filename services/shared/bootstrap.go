@@ -63,6 +63,9 @@ func ConnectDB(maxConnsEnv string, maxConnsDefault int32) *pgxpool.Pool {
 	if s := os.Getenv("PG_SCHEMA"); s != "" {
 		config.ConnConfig.RuntimeParams["search_path"] = s
 	}
+	if t := os.Getenv("PG_STATEMENT_TIMEOUT"); t != "" {
+		config.ConnConfig.RuntimeParams["statement_timeout"] = t
+	}
 	config.MaxConns = EnvInt32(maxConnsEnv, maxConnsDefault)
 	config.MinConns = EnvInt32(strings.Replace(maxConnsEnv, "_MAX_", "_MIN_", 1), 2)
 	config.MaxConnLifetime = 30 * time.Minute

@@ -115,6 +115,7 @@ services:
       REDIS_ADDR: redis:6379
       ROLE: loader
       LOAD_DB_MAX_CONNS: "1"
+      PG_STATEMENT_TIMEOUT: 600s
     volumes:
       - ./secrets:/run/secrets:ro
     mem_limit: ${LOADER_MEM_LIMIT:-512m}
