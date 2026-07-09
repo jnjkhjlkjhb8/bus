@@ -15,6 +15,7 @@ class TimelineStop extends Equatable {
     this.lat,
     this.lon,
     this.isBuffer = false,
+    this.fareSection,
   });
 
   final String uid;
@@ -29,6 +30,12 @@ class TimelineStop extends Equatable {
   final double? lon;
   final bool isBuffer;
 
+  /// 1-based fare-section index for two-section (兩段票) routes: 1 before the
+  /// buffer zone, 2 after it; buffer stops carry the section they lead into and
+  /// are flagged by [isBuffer]. Null when the route has no fare division
+  /// (flat/一段票, free, or 里程計費) — the timeline then draws no section band.
+  final int? fareSection;
+
   @override
   List<Object?> get props => [
     uid,
@@ -38,5 +45,6 @@ class TimelineStop extends Equatable {
     state,
     active,
     isBuffer,
+    fareSection,
   ];
 }

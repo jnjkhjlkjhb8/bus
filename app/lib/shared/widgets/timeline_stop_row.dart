@@ -45,6 +45,7 @@ class TimelineStopRow extends StatelessWidget {
         painter: PillPainter(
           topColor: topColor ?? cs.outlineVariant,
           bottomColor: bottomColor ?? cs.outlineVariant,
+          dotColor: cs.surface,
           isFirst: isFirst,
           isLast: isLast,
         ),
@@ -223,12 +224,17 @@ class PillPainter extends CustomPainter {
   const PillPainter({
     required this.topColor,
     required this.bottomColor,
+    required this.dotColor,
     required this.isFirst,
     required this.isLast,
   });
 
   final Color topColor;
   final Color bottomColor;
+
+  /// Fill of the stop dot's hollow centre; matches the surface behind the
+  /// timeline so the dot reads as a ring in both light and dark themes.
+  final Color dotColor;
   final bool isFirst;
   final bool isLast;
 
@@ -273,13 +279,14 @@ class PillPainter extends CustomPainter {
       }
     }
 
-    canvas.drawCircle(Offset(_cx, dotY), _dotR, Paint()..color = Colors.white);
+    canvas.drawCircle(Offset(_cx, dotY), _dotR, Paint()..color = dotColor);
   }
 
   @override
   bool shouldRepaint(PillPainter old) =>
       old.topColor != topColor ||
       old.bottomColor != bottomColor ||
+      old.dotColor != dotColor ||
       old.isFirst != isFirst ||
       old.isLast != isLast;
 }

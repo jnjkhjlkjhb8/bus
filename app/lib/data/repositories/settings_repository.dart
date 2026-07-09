@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show ThemeMode;
 import 'package:wheres_the_car/core/storage/hive_store.dart';
 
 /// Key-value backing store for [SettingsRepository].
@@ -42,6 +43,21 @@ class SettingsRepository {
 
   bool get largeText => _boolValue('large_text', defaultValue: false);
   set largeText(bool value) => _store.put('large_text', value);
+
+  /// Persisted appearance preference: 'system', 'light', or 'dark'.
+  /// Guarded on [SettingsStore.ready] so it is safe to read before the box
+  /// opens (the pre-init splash reads it and must not throw).
+  String get appearanceMode => _store.ready
+      ? (_store.get('appearance_mode', defaultValue: 'system') as String? ??
+            'system')
+      : 'system';
+  set appearanceMode(String value) => _store.put('appearance_mode', value);
+
+  ThemeMode get themeMode => switch (appearanceMode) {
+    'light' => ThemeMode.light,
+    'dark' => ThemeMode.dark,
+    _ => ThemeMode.system,
+  };
 
   bool get pushEnabled => _boolValue('push_enabled', defaultValue: true);
   set pushEnabled(bool value) => _store.put('push_enabled', value);

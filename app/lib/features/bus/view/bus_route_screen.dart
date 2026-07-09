@@ -21,6 +21,7 @@ import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
 import 'package:wheres_the_car/shared/map/bus_sprite.dart';
+import 'package:wheres_the_car/shared/map/map_style.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/map/wkt.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
@@ -251,6 +252,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                     valueListenable: _mapLayer,
                     builder: (context, layer, _) => GoogleMap(
                       initialCameraPosition: _kDefaultCamera,
+                      style: mapStyleFor(Theme.of(context).brightness),
                       myLocationEnabled: true,
                       myLocationButtonEnabled: false,
                       zoomControlsEnabled: false,

@@ -17,12 +17,18 @@ import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 
 enum _Appearance {
-  system('跟隨系統'),
-  light('淺色模式'),
-  dark('深色模式');
+  system('跟隨系統', 'system'),
+  light('淺色模式', 'light'),
+  dark('深色模式', 'dark');
 
-  const _Appearance(this.label);
+  const _Appearance(this.label, this.key);
   final String label;
+
+  /// Persisted value in the settings box; see [SettingsRepository.themeMode].
+  final String key;
+
+  static _Appearance fromKey(String key) =>
+      values.firstWhere((e) => e.key == key, orElse: () => system);
 }
 
 enum _Language {
@@ -50,7 +56,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   SettingsRepository get _settings =>
       widget.settings ?? SettingsRepository.instance;
 
-  _Appearance _appearance = _Appearance.system;
+  late _Appearance _appearance;
   _Language _language = _Language.system;
   int _versionTaps = 0;
   bool _devMode = false;
@@ -65,6 +71,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _appearance = _Appearance.fromKey(_settings.appearanceMode);
     _devMode = _settings.devModeEnabled;
     _pushEnabled = _settings.pushEnabled;
     _analyticsEnabled = _settings.analyticsEnabled;
@@ -125,6 +132,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  Future<void> _pickAppearance() async {
+    final result = await context.push<String>(
+      '/settings/appearance',
+      extra: {
+        'options': _Appearance.values.map((e) => e.label).toList(),
+        'selected': _appearance.label,
+      },
+    );
+    if (result != null && mounted) {
+      final picked = _Appearance.values.firstWhere(
+        (e) => e.label == result,
+        orElse: () => _appearance,
+      );
+      _settings.appearanceMode = picked.key;
+      setState(() => _appearance = picked);
+    }
+  }
+
   Future<void> _pickLanguage() async {
     final result = await context.push<String>(
       '/settings/language',
@@ -153,15 +178,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _SettingsSection(
             title: '外觀與語言',
             children: [
-              _SettingsSwitchRow(
+              _SettingsRow(
                 icon: Icons.dark_mode_outlined,
-                label: '深色模式',
-                value: _appearance == _Appearance.dark,
-                onChanged: (v) {
-                  setState(() {
-                    _appearance = v ? _Appearance.dark : _Appearance.light;
-                  });
-                },
+                label: '外觀',
+                value: _appearance.label,
+                hasChevron: 1,
+                onTap: _pickAppearance,
               ),
               _SettingsRow(
                 icon: Icons.language_rounded,

@@ -66,6 +66,7 @@ class _ProgressTrack extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return LayoutBuilder(
       builder: (context, constraints) {
         final trackWidth = constraints.maxWidth;
@@ -82,7 +83,7 @@ class _ProgressTrack extends StatelessWidget {
                 top: 8,
                 left: 0,
                 right: 0,
-                child: Container(height: 2, color: Colors.black26),
+                child: Container(height: 2, color: cs.outlineVariant),
               ),
               Positioned(
                 top: 4,
@@ -93,16 +94,16 @@ class _ProgressTrack extends StatelessWidget {
                       width: 4,
                       height: 10,
                       decoration: BoxDecoration(
-                        color: Colors.black87,
+                        color: cs.primary,
                         borderRadius: BorderRadius.circular(2),
                       ),
                     ),
                     const SizedBox(height: 2),
                     Text(
                       vehicleId,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 9,
-                        color: Colors.black54,
+                        color: cs.onSurfaceVariant,
                       ),
                     ),
                   ],

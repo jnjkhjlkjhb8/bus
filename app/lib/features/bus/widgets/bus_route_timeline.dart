@@ -105,7 +105,7 @@ class BusRouteTimeline extends StatelessWidget {
                     height: 12,
                     child: Container(
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: cs.surface,
                         shape: BoxShape.circle,
                         border: Border.all(color: cs.primary, width: 1.5),
                       ),

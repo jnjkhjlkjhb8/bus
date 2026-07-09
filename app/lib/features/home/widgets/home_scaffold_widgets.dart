@@ -13,6 +13,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
                       target: _center,
                       zoom: 15,
                     ),
+                    style: mapStyleFor(cs.brightness),
                     onMapCreated: (controller) {
                       _mapController = controller;
                       _camCenter = _center;

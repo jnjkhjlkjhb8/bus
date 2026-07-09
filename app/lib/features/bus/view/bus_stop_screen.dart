@@ -14,6 +14,7 @@ import 'package:wheres_the_car/features/alerts/view/alert_banner.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
 import 'package:wheres_the_car/features/bus/view/bus_stop_detail_view.dart';
+import 'package:wheres_the_car/shared/map/map_style.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
@@ -118,6 +119,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
                       target: target,
                       zoom: 16,
                     ),
+                    style: mapStyleFor(Theme.of(context).brightness),
                     markers: {
                       for (final m in state.members)
                         Marker(

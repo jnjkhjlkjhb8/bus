@@ -11,6 +11,7 @@ import 'package:wheres_the_car/core/location/location_service.dart';
 import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/core/update/force_update.dart';
 import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
+import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
 import 'package:wheres_the_car/features/alerts/view/notification_toast.dart';
@@ -88,6 +89,7 @@ class _AppViewState extends State<_AppView> {
             title: '我車呢？',
             theme: AppTheme.light,
             darkTheme: AppTheme.dark,
+            themeMode: SettingsRepository.instance.themeMode,
             routerConfig: AppRouter.router,
             debugShowCheckedModeBanner: false,
             builder: (context, child) => _PipGate(
@@ -100,12 +102,13 @@ class _AppViewState extends State<_AppView> {
 
         return ValueListenableBuilder<Box<dynamic>>(
           valueListenable: HiveStore.settings.listenable(
-            keys: const ['large_text'],
+            keys: const ['large_text', 'appearance_mode'],
           ),
           builder: (context, _, child) => MaterialApp.router(
             title: '我車呢？',
             theme: AppTheme.light,
             darkTheme: AppTheme.dark,
+            themeMode: SettingsRepository.instance.themeMode,
             routerConfig: AppRouter.router,
             debugShowCheckedModeBanner: false,
             builder: (context, child) {

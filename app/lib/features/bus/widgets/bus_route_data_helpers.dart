@@ -17,6 +17,45 @@ bool _approaching(BusStopEtaViewModel? eta) {
       eta.estimateSeconds <= AppConfig.getInt('eta_approaching_threshold_s');
 }
 
+/// Live per-stop state for the timeline. 進站中 (arriving) is reserved for a
+/// live bus at the stop — the one status the crude [_approaching] threshold
+/// can't express — so it routes through the shared [busStopDisplayStatus]
+/// mapping; everything within the approaching window stays 即將進站.
+TimelineStopState _stopState(BusStopEtaViewModel? eta) {
+  if (eta == null) return TimelineStopState.none;
+  final status = busStopDisplayStatus(
+    estimateSeconds: eta.estimateSeconds,
+    stopStatus: eta.stopStatus,
+  );
+  if (status == BusStopDisplayStatus.arriving) {
+    return TimelineStopState.arriving;
+  }
+  return _approaching(eta)
+      ? TimelineStopState.approaching
+      : TimelineStopState.none;
+}
+
+/// Per-stop fare section for two-section (兩段票) routes: stops before the
+/// buffer zone are section 1, stops after are section 2, buffer stops carry the
+/// section they lead into. Returns an empty map for any other pricing (flat,
+/// free, 里程計費) so the timeline draws no section band.
+///
+/// ponytail: assumes a single contiguous buffer zone (the 兩段票 norm). A route
+/// with multiple buffer zones would collapse to two sections; revisit if TDX
+/// ever ships 3+ sections on one direction.
+Map<int, int> _fareSectionsBySequence(BusRouteState s) {
+  final buffers = s.bufferSequences;
+  if (buffers.isEmpty || (s.fare?.pricingType ?? 0) != 2) return const {};
+  final lastBuffer = buffers.reduce((a, b) => a > b ? a : b);
+  final stops = s.direction == 0 ? s.route?.stopsGo : s.route?.stopsReturn;
+  if (stops == null) return const {};
+  // Only stops past the buffer zone are section 2; buffer stops and everything
+  // before them read as section 1 (buffer cells are flagged separately).
+  return {
+    for (final st in stops) st.sequence: st.sequence > lastBuffer ? 2 : 1,
+  };
+}
+
 String _markerEta(BusStopEtaViewModel? eta) {
   if (eta == null) return '–';
   final status = busStopDisplayStatus(
@@ -80,17 +119,18 @@ List<TimelineStop> _deriveStops(BusRouteState s) {
   BusStopEtaViewModel? etaFor(BusStopModel stop) =>
       s.etaMap['seq:${s.direction}:${stop.sequence}'] ??
       s.etaMap['uid:${stop.stopUid}'];
+  final sections = _fareSectionsBySequence(s);
   return [
     for (final st in stops)
-      TimelineStop(
-        uid: st.stopUid,
-        name: st.stopName,
-        primaryTime: _etaLabel(etaFor(st)),
-        state: _approaching(etaFor(st))
-            ? TimelineStopState.approaching
-            : TimelineStopState.none,
-        isBuffer: s.bufferSequences.contains(st.sequence),
-      ),
+      if (etaFor(st) case final eta)
+        TimelineStop(
+          uid: st.stopUid,
+          name: st.stopName,
+          primaryTime: _etaLabel(eta),
+          state: _stopState(eta),
+          isBuffer: s.bufferSequences.contains(st.sequence),
+          fareSection: sections[st.sequence],
+        ),
   ];
 }
 

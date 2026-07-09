@@ -90,7 +90,7 @@ class _StepIndicator extends StatelessWidget {
       height: 24,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: done ? cs.primary : Colors.white,
+        color: done ? cs.primary : cs.surface,
         border: done
             ? null
             : Border.all(
@@ -100,7 +100,7 @@ class _StepIndicator extends StatelessWidget {
       ),
       child: Center(
         child: done
-            ? const Icon(Icons.check_rounded, size: 14, color: Colors.white)
+            ? Icon(Icons.check_rounded, size: 14, color: cs.onPrimary)
             : Text(
                 '${index + 1}',
                 style: AppTextStyles.bodySmall.copyWith(

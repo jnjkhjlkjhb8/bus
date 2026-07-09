@@ -10,6 +10,7 @@ import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/location/location_service.dart';
 import 'package:wheres_the_car/features/bike/view/bike_station_detail_view.dart';
+import 'package:wheres_the_car/shared/map/map_style.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
@@ -73,6 +74,7 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
                 target: _kDefaultPos,
                 zoom: 15,
               ),
+              style: mapStyleFor(Theme.of(context).brightness),
               myLocationEnabled: true,
               myLocationButtonEnabled: false,
               zoomControlsEnabled: false,

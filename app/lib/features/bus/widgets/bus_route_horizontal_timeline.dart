@@ -25,13 +25,14 @@ class _HorizontalRouteTimeline extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return SizedBox(
-      height: 120,
+      height: 148,
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 20),
         itemCount: stops.length,
         itemBuilder: (context, i) {
           final stop = stops[i];
+          final prevStop = i > 0 ? stops[i - 1] : null;
           final nextStop = i < stops.length - 1 ? stops[i + 1] : null;
           final isFirst = i == 0;
           final isLast = i == stops.length - 1;
@@ -39,6 +40,15 @@ class _HorizontalRouteTimeline extends StatelessWidget {
           final leftIsBuffer = stop.isBuffer && i > 0 && stops[i - 1].isBuffer;
           final rightIsBuffer =
               stop.isBuffer && nextStop != null && nextStop.isBuffer;
+
+          // Fare-section band: shown only on sectioned (兩段票) routes, where
+          // every stop carries a fareSection. Contiguous stops of the same
+          // band (section 1 / buffer / section 2) render one connected strip;
+          // the ends round off and the section label prints at each run's head.
+          final bandKey = _bandKey(stop);
+          final showBand = stop.fareSection != null;
+          final isBandStart = showBand && _bandKey(prevStop) != bandKey;
+          final isBandEnd = showBand && _bandKey(nextStop) != bandKey;
 
           final vehicle = _vehicleBetween(stop.uid, nextStop?.uid);
 
@@ -68,6 +78,7 @@ class _HorizontalRouteTimeline extends StatelessWidget {
                       rightIsBuffer: rightIsBuffer,
                       lineColor: cs.outlineVariant,
                       dotColor: dotColor,
+                      surfaceColor: cs.surface,
                       activeColor: cs.primary,
                       vehicleProgress: vehicle?.progress,
                       vehiclePlate: vehicle?.plate,
@@ -114,38 +125,42 @@ class _HorizontalRouteTimeline extends StatelessWidget {
                 ),
 
                 Positioned(
-                  bottom: 12,
+                  top: 76,
                   left: 4,
                   right: 4,
                   child: _buildEtaLabel(context, stop, cs),
                 ),
 
-                if (rightIsBuffer && !isLast)
+                if (showBand)
                   Positioned(
-                    bottom: 34,
-                    left: 60,
+                    top: 104,
+                    left: isBandStart ? 5 : 0,
+                    right: isBandEnd ? 5 : 0,
+                    height: 18,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: _bandColor(stop, cs),
+                        borderRadius: BorderRadius.horizontal(
+                          left: Radius.circular(isBandStart ? 9 : 0),
+                          right: Radius.circular(isBandEnd ? 9 : 0),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                if (isBandStart)
+                  Positioned(
+                    top: 124,
+                    left: 8,
                     right: 0,
-                    child: Center(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 1,
-                        ),
-                        decoration: BoxDecoration(
-                          color: cs.surfaceContainerHigh,
-                          borderRadius: BorderRadius.circular(4),
-                          border: Border.all(
-                            color: cs.primary.withValues(alpha: 0.3),
-                            width: 0.5,
-                          ),
-                        ),
-                        child: Text(
-                          '緩衝區',
-                          style: AppTextStyles.bodyVerySmall.copyWith(
-                            color: cs.primary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
+                    child: Text(
+                      _bandLabel(stop),
+                      style: AppTextStyles.bodyVerySmall.copyWith(
+                        color: cs.onSurfaceVariant,
+                        fontWeight: stop.isBuffer
+                            ? FontWeight.w700
+                            : FontWeight.w600,
+                        letterSpacing: 0.2,
                       ),
                     ),
                   ),
@@ -155,6 +170,30 @@ class _HorizontalRouteTimeline extends StatelessWidget {
         },
       ),
     );
+  }
+
+  /// Groups adjacent stops that share a fare band so their strips connect.
+  /// Buffer stops form their own run regardless of the section they carry.
+  String _bandKey(TimelineStop? stop) {
+    if (stop == null || stop.fareSection == null) return '';
+    return stop.isBuffer ? 'buf' : 'sec${stop.fareSection}';
+  }
+
+  Color _bandColor(TimelineStop stop, ColorScheme cs) {
+    if (stop.isBuffer) return cs.outlineVariant.withValues(alpha: 0.35);
+    return stop.fareSection == 2
+        ? cs.surfaceContainerHighest
+        : cs.surfaceContainerHigh;
+  }
+
+  String _bandLabel(TimelineStop stop) {
+    if (stop.isBuffer) return '緩衝區';
+    return switch (stop.fareSection) {
+      1 => '第一段',
+      2 => '第二段',
+      final s? => '第$s段',
+      null => '',
+    };
   }
 
   Widget _buildEtaLabel(
@@ -223,6 +262,7 @@ class _HorizontalTimelinePainter extends CustomPainter {
     required this.rightIsBuffer,
     required this.lineColor,
     required this.dotColor,
+    required this.surfaceColor,
     required this.activeColor,
     required this.vehicleProgress,
     required this.vehiclePlate,
@@ -239,6 +279,10 @@ class _HorizontalTimelinePainter extends CustomPainter {
   final bool rightIsBuffer;
   final Color lineColor;
   final Color dotColor;
+
+  /// Surface behind the timeline; fills the hollow centre of each stop dot so
+  /// the ring reads correctly in both light and dark themes.
+  final Color surfaceColor;
   final Color activeColor;
   final double? vehicleProgress;
   final String? vehiclePlate;
@@ -302,7 +346,7 @@ class _HorizontalTimelinePainter extends CustomPainter {
         ..drawCircle(
           Offset(cx, cy),
           8,
-          Paint()..color = Colors.white,
+          Paint()..color = surfaceColor,
         )
         ..drawCircle(
           Offset(cx, cy),
@@ -314,7 +358,7 @@ class _HorizontalTimelinePainter extends CustomPainter {
         ..drawCircle(
           Offset(cx, cy),
           7,
-          Paint()..color = Colors.white,
+          Paint()..color = surfaceColor,
         )
         ..drawCircle(
           Offset(cx, cy),
@@ -358,6 +402,7 @@ class _HorizontalTimelinePainter extends CustomPainter {
       old.rightIsBuffer != rightIsBuffer ||
       old.lineColor != lineColor ||
       old.dotColor != dotColor ||
+      old.surfaceColor != surfaceColor ||
       old.activeColor != activeColor ||
       old.vehicleProgress != vehicleProgress ||
       old.vehiclePlate != vehiclePlate ||
