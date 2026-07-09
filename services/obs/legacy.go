@@ -59,27 +59,51 @@ func emitLegacyLog(line string) {
 	slog.Log(context.Background(), legacyLevel(attrs), msg, attrs...)
 }
 
+// transientErr reports whether an error string describes a self-healing
+// condition — a timeout or a backend still coming up — rather than a defect.
+// These log at Warn so they stay in stdout but do not raise a Sentry error
+// issue for a single nightly-batch hiccup. A sustained outage still surfaces
+// through the startup connect panic and Sentry event counts; add a
+// consecutive-failure counter here if that proves too quiet.
+func transientErr(val string) bool {
+	lower := strings.ToLower(val)
+	for _, s := range []string{"context deadline exceeded", "timeout", "connection refused", "connection reset", "loading redis"} {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	return false
+}
+
 func legacyLevel(attrs []any) slog.Level {
-	level := slog.LevelInfo
+	errVal := ""
+	eventVal := ""
 	for i := 0; i+1 < len(attrs); i += 2 {
 		key, _ := attrs[i].(string)
 		val, _ := attrs[i+1].(string)
 		switch key {
 		case "err":
 			if val != "" && val != "<nil>" && !strings.HasPrefix(val, "%!") {
-				return slog.LevelError
+				errVal = val
 			}
 		case "event":
-			lower := strings.ToLower(val)
-			if strings.Contains(lower, "fail") || strings.Contains(lower, "error") {
-				return slog.LevelError
-			}
-			if strings.Contains(lower, "skip") || strings.Contains(lower, "invalid") || strings.Contains(lower, "fallback") || strings.Contains(lower, "not_set") {
-				level = slog.LevelWarn
-			}
+			eventVal = strings.ToLower(val)
 		}
 	}
-	return level
+
+	// A skip/fallback event is a handled outcome; keep it at Warn even when an
+	// error value is attached (e.g. an embed request that was skipped).
+	if strings.Contains(eventVal, "skip") || strings.Contains(eventVal, "invalid") ||
+		strings.Contains(eventVal, "fallback") || strings.Contains(eventVal, "not_set") {
+		return slog.LevelWarn
+	}
+	if errVal != "" && transientErr(errVal) {
+		return slog.LevelWarn
+	}
+	if errVal != "" || strings.Contains(eventVal, "fail") || strings.Contains(eventVal, "error") {
+		return slog.LevelError
+	}
+	return slog.LevelInfo
 }
 
 func legacyAttrs(line string) (string, []any) {

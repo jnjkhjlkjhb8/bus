@@ -4,8 +4,8 @@ import 'package:wheres_the_car/features/live_activity/model/journey_models.dart'
 typedef LegEtaStream = Stream<Duration?> Function(JourneyLeg leg);
 
 /// Live ETA for bus legs whose notification identity resolved; every other
-/// leg counts down from its scheduled departure.
-// sources once the planner emits supported identities for them.
+/// leg counts down from its scheduled departure. Non-bus legs will gain live
+/// sources once the planner emits supported identities for them.
 Stream<Duration?> defaultLegEtaStream(JourneyLeg leg) {
   final stopKey = leg.identity.departureStopKey;
   if (leg.kind == JourneyLegKind.bus &&

@@ -207,13 +207,6 @@ type predictionInputs struct {
 	maxTravelAvg int
 }
 
-// predictNextBusTime estimates a NextBusTime for a stop TDX left blank. It bases
-// the estimate on the next scheduled departure plus expected travel time, then
-// adds the XGBoost residual correction. When no per-stop travel average exists it
-// interpolates from the route's max average by stop-sequence ratio; if even that
-// is unavailable it falls back to the bare departure time. Returns "" when the
-// model is not loaded or there is no upcoming scheduled departure. Result is an
-// RFC3339 timestamp.
 // baselineArrival computes the schedule+travel-average arrival for a stop, with
 // no model correction: today's scheduled departure plus expected travel seconds.
 // When no per-stop travel average exists it interpolates from the route's max
@@ -242,6 +235,13 @@ func baselineArrival(stop busStopCtx, inputs predictionInputs) time.Time {
 	return dep.Add(time.Duration(travelSec) * time.Second)
 }
 
+// predictNextBusTime estimates a NextBusTime for a stop TDX left blank. It bases
+// the estimate on the next scheduled departure plus expected travel time, then
+// adds the XGBoost residual correction. When no per-stop travel average exists it
+// interpolates from the route's max average by stop-sequence ratio; if even that
+// is unavailable it falls back to the bare departure time. Returns "" when the
+// model is not loaded or there is no upcoming scheduled departure. Result is an
+// RFC3339 timestamp.
 func predictNextBusTime(rc *redis.Client, stop busStopCtx, inputs predictionInputs) string {
 	if etaModel == nil || inputs.nextDep.IsZero() {
 		return ""

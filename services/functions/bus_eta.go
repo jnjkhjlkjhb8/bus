@@ -179,8 +179,8 @@ func processBusEtaCity(
 	dec, comp, flipopen, err = fetch(ctx, url, "bus_RealTimeByFrequency"+city)
 	if err != nil || !comp {
 		if err == nil {
-			// decode; TTL re-arm keeps the previous snapshot alive, merge the
-			// fresh ETAs here if that staleness ever matters.
+			// 304 Not-Modified on positions: the cached snapshot is still
+			// valid, so re-arm its TTL instead of letting it expire mid-validity.
 			sink.refreshTTL(busEtaTTLPatterns(city))
 		}
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)

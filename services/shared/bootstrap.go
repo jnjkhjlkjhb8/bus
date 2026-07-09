@@ -28,13 +28,25 @@ func ConnectRedis() *redis.Client {
 		MinIdleConns: 3,
 		PoolTimeout:  5 * time.Second,
 	})
-	pong, err := client.Ping().Result()
-	if err != nil {
-		obs.Logf("[REDIS] action=connect event=failed error=%v", err)
-		panic(err)
+	// Redis answers PING with "LOADING ..." right after a restart until its
+	// dataset is in memory, and may not be dialable at all if it starts a beat
+	// behind us. Retry for ~10s so a transient startup race no longer crashes
+	// the process; a still-failing Redis after that is a real outage and panics.
+	// Fixed 10 attempts at 1s; widen if a restart's dataset load runs longer.
+	var err error
+	for i := 0; ; i++ {
+		var pong string
+		pong, err = client.Ping().Result()
+		if err == nil {
+			obs.Logf("[REDIS] action=connect event=success pong=%s", pong)
+			return client
+		}
+		if i >= 9 {
+			obs.Logf("[REDIS] action=connect event=failed error=%v", err)
+			panic(err)
+		}
+		time.Sleep(time.Second)
 	}
-	obs.Logf("[REDIS] action=connect event=success pong=%s", pong)
-	return client
 }
 
 // ConnectDB builds a pgx pool from DATABASE_URL. maxConnsEnv names the env var

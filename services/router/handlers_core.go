@@ -390,8 +390,8 @@ func (s *Tra_DetainServer) Stops(ctx context.Context, in *pb.AskDetain) (*pb.Tra
 // empty cached value is skipped rather than sent as a seed frame.
 func (s *Tra_DetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainService_DelayServer) error {
 	log.Infof("call tra_delay %s", in.Trainno)
-	// ponytail: no writer publishes this channel yet (functions only writes the
-	// delay hash and the :all snapshot), so this stream stays silent — see
+	// No writer publishes this channel yet (functions only writes the delay hash
+	// and the :all snapshot), so this stream stays silent — see
 	// shared.TraDelayTrainChannel.
 	key := shared.TraDelayTrainChannel(in.Trainno)
 	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{

@@ -34,8 +34,9 @@ class FavoritesRepository {
   Stream<BoxEvent> watch() => _box.watch();
 
   /// Coalesced repository change signal: one emission per user action, even
-  /// when the underlying box fires many BoxEvents. Invalidates the cache on
-  /// every box event regardless of listeners.
+  /// when the underlying box fires many BoxEvents. Writes null the cache inline
+  /// regardless of listeners; this box subscription (active only while listened
+  /// to) additionally nulls it and coalesces the events into one signal.
   Stream<void> changes() {
     _changes ??= StreamController<void>.broadcast(
       onListen: _attachBox,

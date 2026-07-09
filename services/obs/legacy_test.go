@@ -25,6 +25,26 @@ func TestLogfMapsLegacyFields(t *testing.T) {
 	}
 }
 
+func TestLegacyLevel(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want slog.Level
+	}{
+		{"error event with real err", "[BUS] action=x event=cleanup_error error=boom", slog.LevelError},
+		{"handled skip keeps warn despite err", "[vector] action=vector event=skip reason=api_error,error=dial tcp: i/o timeout", slog.LevelWarn},
+		{"transient timeout demoted", "[LOAD] action=bus api=RouteFare event=read_error error=timeout: context deadline exceeded", slog.LevelWarn},
+		{"redis loading demoted", "[REDIS] action=connect event=failed error=LOADING Redis is loading the dataset in memory", slog.LevelWarn},
+		{"plain info", "[BUS] action=x event=done count=3", slog.LevelInfo},
+	}
+	for _, c := range cases {
+		_, attrs := legacyAttrs(c.line)
+		if got := legacyLevel(attrs); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func newDiscardLogger(t *testing.T) (*slog.Logger, *fakeTransport) {
 	t.Helper()
 	tr := &fakeTransport{}

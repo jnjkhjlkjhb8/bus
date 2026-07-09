@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -260,5 +259,3 @@ func TestLoaderReplayThsrStation(t *testing.T) {
 		t.Fatalf("geom = %q, want POINT(121.606700 25.053300)", geom)
 	}
 }
-
-var _ = errors.Is // keep errors imported if unused after edits

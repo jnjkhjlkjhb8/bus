@@ -86,7 +86,8 @@ String _iconAsset(NearStationViewModel s) {
 String _mrtIconAsset(String stationId) {
   final code = stationId.split(RegExp(r'[_\d]')).first.toUpperCase();
   switch (code) {
-    // system; they get the TRTC icon until stationId encodes the system.
+    // Taipei metro line codes carry no system prefix, so they default to the
+    // TRTC icon until stationId encodes the system.
     case 'BL':
     case 'BR':
     case 'G':

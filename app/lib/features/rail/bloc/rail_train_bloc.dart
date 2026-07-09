@@ -33,7 +33,7 @@ class RailTrainBloc extends Bloc<RailTrainEvent, RailTrainState> {
   final ThsrRepository _thsr;
   final FirebaseRepository _firebase;
 
-  // ponytail: lead fixed at 3 min, matching the bus reminder. Read the
+  // Lead fixed at 3 min, matching the bus reminder. Read the
   // 'arrival_lead_minutes' remote-config and add a picker if per-user leads
   // are ever needed.
   static const _leadMinutes = 3;

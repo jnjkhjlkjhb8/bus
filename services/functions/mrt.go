@@ -72,10 +72,11 @@ type mrtLive struct {
 	EstimateTime  int32 `json:"EstimateTime"`
 }
 
-// mrtStatic is the daily static-ingestion entry point for metro: stations and
-// first/last timetables. It always returns nil. The OD fare matrix is loaded
+// mrtStatic is the legacy direct-fetch metro static path (stations and
+// first/last timetables), superseded by the ROLE=loader crons and no longer
+// scheduled (see main.go). It always returns nil. The OD fare matrix is loaded
 // separately from raw_tdx by loadMrtJourneyMatrix (loader registry key
-// "mrt_odfare"), so this job no longer fetches it directly.
+// "mrt_odfare").
 func mrtStatic(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) error {
 	log.Infof("[MRT] action=mrt_static event=start")
 	getmrtStation(ctx, tdx, rc, db)

@@ -105,10 +105,6 @@ func traStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr string
 	return b, len(row), nil
 }
 
-// traTimetablePayload reads TRA services calling at both the origin and
-// destination for a date, pairs them into origin/destination legs, and returns
-// the marshaled TraTimetables proto plus the number of paired legs. A zero count
-// signals NotFound (ADR-0005); it never fetches from TDX.
 // isNumericStationID reports whether s is already a numeric station code (TRA
 // and THSR ids are digit strings) rather than a station name needing resolution.
 func isNumericStationID(s string) bool {
@@ -147,6 +143,10 @@ func resolveRailStationID(ctx context.Context, db railDB, table, s string) strin
 	return s
 }
 
+// traTimetablePayload reads TRA services calling at both the origin and
+// destination for a date, pairs them into origin/destination legs, and returns
+// the marshaled TraTimetables proto plus the number of paired legs. A zero count
+// signals NotFound (ADR-0005); it never fetches from TDX.
 func traTimetablePayload(ctx context.Context, db railDB, start, end string, date time.Time) ([]byte, int, error) {
 	start = resolveRailStationID(ctx, db, "tra_stations", start)
 	end = resolveRailStationID(ctx, db, "tra_stations", end)
