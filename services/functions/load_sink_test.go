@@ -68,7 +68,7 @@ func TestLoadMrtStationsThroughSink(t *testing.T) {
 func TestLoadTraTimetableThroughSink(t *testing.T) {
 	// WheelchairFlag (bit 0) + DiningFlag (bit 2) set ⇒ railMask = 1|4 = 5. The
 	// service-day mask stays in the transform's row mapping, not the sink helper.
-	body := `[{"TrainDate":"2026-07-04","DailyTrainInfo":{"TrainNo":"123","Direction":0,"WheelchairFlag":1,"DiningFlag":1},"StopTimes":[{"StopSequence":1,"StationID":"1000","StationName":{"Zh_tw":"台北"},"ArrivalTime":"08:00","DepartureTime":"08:01"}]}]`
+	body := `[{"DailyTrainInfo":{"TrainNo":"123","Direction":0,"WheelchairFlag":1,"DiningFlag":1},"StopTimes":[{"StopSequence":1,"StationID":"1000","StationName":{"Zh_tw":"台北"},"ArrivalTime":"08:00","DepartureTime":"08:01"}]}]`
 	sink := &fakeLoadSink{}
 	if err := loadTraTimetable(context.Background(), decodeInto(body), sink, "2026-07-04"); err != nil {
 		t.Fatalf("loadTraTimetable: %v", err)

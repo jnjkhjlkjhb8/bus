@@ -209,6 +209,12 @@ func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, dat
 	for dec.More() {
 		var temp raw_tra_timetable
 		if err := dec.Decode(&temp); err == nil {
+			// datasetJSON strips the traindate partition column from every
+			// reconstructed element, so TrainDate decodes empty; the partition
+			// value is that date by definition.
+			if temp.TrainDate == "" {
+				temp.TrainDate = date
+			}
 			for _, stop := range temp.StopTimes {
 				at, _ := time.Parse("15:04", stop.ArrivalTime)
 				dt, _ := time.Parse("15:04", stop.DepartureTime)

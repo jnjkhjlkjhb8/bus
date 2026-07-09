@@ -50,7 +50,7 @@ type qualityTarget struct {
 // errLoadStale marks a partition whose newest fetched_at is older than the
 // freshness window; the loader skips it rather than overwriting good data with
 // a landing that never happened.
-var errLoadStale = errors.New("raw_tdx partition stale")
+var errLoadStale = errors.New("raw_tdx_partition_stale")
 
 // staleAfter is the freshness window. Landing runs at 03:00, loads at 03:30; a
 // partition older than 27h means the last landing failed or was skipped, so the
