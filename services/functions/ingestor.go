@@ -35,7 +35,8 @@ var ingestBikeSkip = map[string]bool{
 var (
 	ingestMetroStationSystems = []string{"TRTC", "KRTC", "KLRT", "TYMC", "NTMC"}
 	ingestMetroFirstLast      = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
-	ingestMetroODFare         = []string{"TRTC", "KRTC", "KLRT"}
+	ingestMetroODFare         = []string{"TRTC", "KRTC", "KLRT","TYMC"}
+	ingestMetroTravelGraph = []string{"TRTC"}
 )
 
 // registerIngestorCrons schedules the daily 03:00 raw landing (under a 20-minute

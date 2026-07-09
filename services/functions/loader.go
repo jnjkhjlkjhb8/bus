@@ -290,6 +290,9 @@ func loaderTransforms(src loadSource) map[string]loaderBinding {
 		"mrt_odfare": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
 			return loadMrtJourneyMatrix(ctx, dec, sink.pool(), sink.redis(), part)
 		}},
+		"mrt_trtc_traveltime": {load: func(ctx context.Context, _ *json.Decoder, sink loadSink, part string) error {
+			return loadMrtTrtcTravelTime(ctx, src, sink.pool(), part)
+		}},
 		"tra_station": {load: loadTraStation,
 			report: []qualityTarget{{table: "tra_stations", textCols: []string{"name"}, geoCols: []string{"geom"}}}},
 		"thsr_station": {

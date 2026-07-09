@@ -299,11 +299,13 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 }
 
 // mrtODFare decodes a TDX Rail/Metro/ODFare element: fares between an
-// origin/destination station pair, by ticket type. The same feed carries the
-// station-to-station TravelTime (whole minutes), which populates
+// origin/destination station pair, by ticket type. For KRTC/KLRT the same feed
+// carries the station-to-station TravelTime (whole minutes), which populates
 // mrt_journey_matrix.travel_time_min. TravelTime is json.Number because TDX has
 // emitted it both as a bare number and as a quoted string across systems; a
 // missing or unparseable value yields 0 (left as-is by the upsert's COALESCE).
+// TRTC's ODFare omits TravelTime entirely — its times are computed separately by
+// loadMrtTrtcTravelTime from the segment + transfer graph.
 type mrtODFare struct {
 	OriginStationID      string      `json:"OriginStationID"`
 	DestinationStationID string      `json:"DestinationStationID"`
@@ -374,4 +376,170 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, db *pgxpool.Po
 	}
 	log.Infof("[MRT] journey matrix upserted %d rows for %s", len(fares), system)
 	return nil
+}
+
+// mrtS2SRow decodes one TDX Rail/Metro/S2STravelTime element: a line and its
+// ordered adjacent-station segments. The nested TravelTimes array lands as jsonb
+// (the landing lowercases only top-level keys), so it is decoded here with
+// case-insensitive struct tags. Only the segment endpoints and their RunTime +
+// StopTime (seconds) are used to build the metro graph.
+type mrtS2SRow struct {
+	TravelTimes []struct {
+		FromStationID string      `json:"FromStationID"`
+		ToStationID   string      `json:"ToStationID"`
+		RunTime       json.Number `json:"RunTime"`
+		StopTime      json.Number `json:"StopTime"`
+	} `json:"TravelTimes"`
+}
+
+// mrtLineTransfer decodes one TDX Rail/Metro/LineTransfer element: an interchange
+// edge between two station IDs. TransferTime is whole minutes per the TDX schema.
+type mrtLineTransfer struct {
+	FromStationID string      `json:"FromStationID"`
+	ToStationID   string      `json:"ToStationID"`
+	TransferTime  json.Number `json:"TransferTime"`
+}
+
+// jsonNumInt parses a json.Number into a non-negative int, returning 0 when
+// absent or unparseable (the TDX times are whole non-negative values).
+func jsonNumInt(n json.Number) int {
+	if n == "" {
+		return 0
+	}
+	if v, err := n.Float64(); err == nil && v > 0 {
+		return int(v)
+	}
+	return 0
+}
+
+// loadMrtTrtcTravelTime computes TRTC OD travel times from the segment + transfer
+// graph and writes them into mrt_journey_matrix.travel_time_min. TRTC's ODFare
+// feed omits per-OD TravelTime (unlike KRTC/KLRT), so mrtJourneyMatrixUpsert
+// leaves those rows at 0; this runs after mrt_odfare (registry order) and fills
+// them in. It reads both landed graph inputs via src (like loadBus's multi-table
+// read), builds an undirected weighted graph (edge weight in seconds: adjacent
+// hops = RunTime + StopTime, interchanges = TransferTime * 60), all-pairs
+// shortest-paths it (Floyd-Warshall, ~130 nodes), and UPDATEs each reachable pair
+// that already exists in the matrix. Unreachable/absent pairs keep their current
+// value, so a missing feed never zeroes good data — it just no-ops.
+func loadMrtTrtcTravelTime(ctx context.Context, src loadSource, db *pgxpool.Pool, system string) error {
+	s2sBody, _, err := src.datasetJSON(ctx, "metro_s2straveltime", "system", system)
+	if err != nil {
+		return fmt.Errorf("mrt s2s read %s: %w", system, err)
+	}
+	var lines []mrtS2SRow
+	if err := json.Unmarshal(s2sBody, &lines); err != nil {
+		return fmt.Errorf("mrt s2s decode %s: %w", system, err)
+	}
+	trBody, _, err := src.datasetJSON(ctx, "metro_linetransfer", "system", system)
+	if err != nil {
+		return fmt.Errorf("mrt linetransfer read %s: %w", system, err)
+	}
+	var transfers []mrtLineTransfer
+	if err := json.Unmarshal(trBody, &transfers); err != nil {
+		return fmt.Errorf("mrt linetransfer decode %s: %w", system, err)
+	}
+
+	stations, dist, segCount, transferCount := mrtTravelGraph(lines, transfers)
+	if len(stations) == 0 || segCount == 0 {
+		log.Infof("[MRT] action=trtc_traveltime system=%s event=no_graph segments=%d transfers=%d", system, segCount, transferCount)
+		return nil
+	}
+
+	// UPDATE only rows that already exist (created by mrt_odfare); a pair absent
+	// from the matrix no-ops. Idx order is deterministic via the stations slice.
+	const upd = `UPDATE mrt_journey_matrix SET travel_time_min=$1, updated_at=NOW()
+		WHERE from_station_id=$2 AND to_station_id=$3 AND system=$4`
+	batch := &pgx.Batch{}
+	computed := 0
+	for i, from := range stations {
+		for j, to := range stations {
+			if i == j {
+				continue
+			}
+			d := dist[i][j]
+			if d <= 0 || d >= mrtGraphInf {
+				continue
+			}
+			mins := max((d+30)/60, 1) // round to nearest minute, floor 1
+			batch.Queue(upd, mins, from, to, system)
+			computed++
+		}
+	}
+	br := db.SendBatch(ctx, batch)
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("mrt trtc traveltime batch %s: %w", system, err)
+	}
+	log.Infof("[MRT] action=trtc_traveltime system=%s event=complete stations=%d segments=%d transfers=%d pairs_computed=%d",
+		system, len(stations), segCount, transferCount, computed)
+	return nil
+}
+
+const mrtGraphInf = 1 << 30
+
+// mrtTravelGraph builds the undirected shortest-path distance matrix (seconds)
+// over every station appearing in a segment or transfer. Returns the station-id
+// slice (index i ↔ dist row i), the all-pairs distance matrix, and the segment /
+// transfer edge counts for logging. Split out from loadMrtTrtcTravelTime so the
+// graph math is unit-testable without a database.
+func mrtTravelGraph(lines []mrtS2SRow, transfers []mrtLineTransfer) ([]string, [][]int, int, int) {
+	stations := []string{}
+	idx := map[string]int{}
+	id := func(s string) int {
+		if i, ok := idx[s]; ok {
+			return i
+		}
+		i := len(stations)
+		idx[s] = i
+		stations = append(stations, s)
+		return i
+	}
+	type edge struct{ a, b, w int }
+	var edges []edge
+	segCount, transferCount := 0, 0
+	for _, ln := range lines {
+		for _, s := range ln.TravelTimes {
+			if s.FromStationID == "" || s.ToStationID == "" {
+				continue
+			}
+			edges = append(edges, edge{id(s.FromStationID), id(s.ToStationID), jsonNumInt(s.RunTime) + jsonNumInt(s.StopTime)})
+			segCount++
+		}
+	}
+	for _, t := range transfers {
+		if t.FromStationID == "" || t.ToStationID == "" {
+			continue
+		}
+		edges = append(edges, edge{id(t.FromStationID), id(t.ToStationID), jsonNumInt(t.TransferTime) * 60})
+		transferCount++
+	}
+	n := len(stations)
+	dist := make([][]int, n)
+	for i := range dist {
+		dist[i] = make([]int, n)
+		for j := range dist[i] {
+			if i != j {
+				dist[i][j] = mrtGraphInf
+			}
+		}
+	}
+	for _, e := range edges {
+		if e.w < dist[e.a][e.b] {
+			dist[e.a][e.b] = e.w
+			dist[e.b][e.a] = e.w
+		}
+	}
+	for k := range n {
+		for i := range n {
+			if dist[i][k] >= mrtGraphInf {
+				continue
+			}
+			for j := range n {
+				if d := dist[i][k] + dist[k][j]; d < dist[i][j] {
+					dist[i][j] = d
+				}
+			}
+		}
+	}
+	return stations, dist, segCount, transferCount
 }

@@ -145,8 +145,40 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+  osrm-fetch:
+    image: alpine:3
+    volumes:
+      - ./osrm-data:/data
+    command:
+      - sh
+      - -c
+      - >
+        test -f /data/taiwan.osm.pbf ||
+        wget -O /data/taiwan.osm.pbf
+        ${OSRM_PBF_URL:-https://download.geofabrik.de/asia/taiwan-latest.osm.pbf}
+    restart: "no"
+  osrm-init:
+    image: osrm/osrm-backend
+    depends_on:
+      osrm-fetch:
+        condition: service_completed_successfully
+    volumes:
+      - ./osrm-data:/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        set -e; cd /data;
+        test -f taiwan.osrm.mldgr && exit 0;
+        osrm-extract -p /opt/foot.lua taiwan.osm.pbf &&
+        osrm-partition taiwan.osrm &&
+        osrm-customize taiwan.osrm
+    restart: "no"
+
   osrm:
     image: osrm/osrm-backend
+    depends_on:
+      osrm-init:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:5000:5000"
     volumes:
