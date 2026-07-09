@@ -1,3 +1,4 @@
+name: wheres_the_car
 services:
   ollama:
     build:
