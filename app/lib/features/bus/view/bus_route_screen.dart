@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -13,6 +12,7 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
+import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 import 'package:wheres_the_car/data/models/eta_format.dart';
@@ -25,8 +25,10 @@ import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/map/wkt.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_accordion.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
+import 'package:wheres_the_car/shared/widgets/app_input.dart';
 import 'package:wheres_the_car/shared/widgets/app_sliding_segment.dart';
 import 'package:wheres_the_car/shared/widgets/bookmark_button.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';

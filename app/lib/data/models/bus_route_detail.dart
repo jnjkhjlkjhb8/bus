@@ -45,8 +45,8 @@ class BusStopTime extends Equatable {
 }
 
 /// Validated fare info. The JSON payloads stay as raw bytes because the UI
-/// decodes them lazily (fare_decoder / _farePayloadLabel); the seam only
-/// guarantees they no longer arrive as a proto type.
+/// decodes them lazily (fare_decoder: decodeBufferSequences / decodeFareTable);
+/// the seam only guarantees they no longer arrive as a proto type.
 class BusFareInfo extends Equatable {
   const BusFareInfo({
     required this.pricingType,

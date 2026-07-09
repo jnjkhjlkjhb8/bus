@@ -4,12 +4,7 @@ const List<FontFeature> _tnum = AppTextStyles.tabularFigures;
 
 typedef _BusVehicle = ({String afterStopUid, double progress, String plate});
 typedef _DepartureInfo = ({String time, bool isNext});
-typedef _TimetableInfo = ({
-  String destination,
-  String time,
-  String trip,
-  String vehicle,
-});
+typedef _TimetableInfo = ({String time, bool lowFloor, bool isNext});
 
 String? _etaLabel(BusStopEtaViewModel? eta) {
   if (eta == null) return null;
@@ -120,27 +115,35 @@ List<_DepartureInfo> _departuresFor(BusRouteState state) {
     if (time.isNotEmpty) rows.add(_timeLabel(time));
   }
   rows.sort();
-  final nextIndex = rows.indexWhere((t) {
-    final parts = t.split(':');
-    if (parts.length < 2) return false;
-    final h = int.tryParse(parts[0]);
-    final m = int.tryParse(parts[1]);
-    if (h == null || m == null) return false;
-    return h > now.hour || (h == now.hour && m >= now.minute);
-  });
+  final nextIndex = rows.indexWhere((t) => _isUpcoming(t, now));
   return [
     for (final (i, time) in rows.take(12).indexed)
       (time: time, isNext: i == (nextIndex < 0 ? 0 : nextIndex)),
   ];
 }
 
+// The next-departure highlight marks the first trip whose clock time has not
+// yet passed. Returns false once the day's service is over, so nothing is
+// highlighted rather than defaulting to the first (past) trip.
+bool _isUpcoming(String hhmm, TimeOfDay now) {
+  final parts = hhmm.split(':');
+  if (parts.length < 2) return false;
+  final h = int.tryParse(parts[0]);
+  final m = int.tryParse(parts[1]);
+  if (h == null || m == null) return false;
+  return h > now.hour || (h == now.hour && m >= now.minute);
+}
+
+/// Headsign for the current direction, shown once above the timetable board.
+String _headsignFor(BusRouteState state) => state.currentHeadsign.isNotEmpty
+    ? state.currentHeadsign
+    : (state.currentStops.isEmpty ? '-' : state.currentStops.last.stopName);
+
 List<_TimetableInfo> _timetableFor(BusRouteState state) {
   final trips =
       state.daily?.tripsForDirection(state.direction) ?? const <BusDailyTrip>[];
-  final destination = state.currentHeadsign.isNotEmpty
-      ? state.currentHeadsign
-      : (state.currentStops.isEmpty ? '-' : state.currentStops.last.stopName);
-  final rows = <_TimetableInfo>[];
+  final now = TimeOfDay.now();
+  final raw = <(String, bool)>[];
   for (final trip in trips.take(24)) {
     if (trip.stopTimes.isEmpty) continue;
     final first = trip.stopTimes.reduce(
@@ -149,42 +152,15 @@ List<_TimetableInfo> _timetableFor(BusRouteState state) {
     final time = first.departureTime.isNotEmpty
         ? first.departureTime
         : first.arrivalTime;
-    rows.add((
-      destination: destination,
-      time: _timeLabel(time),
-      trip: trip.tripId.isEmpty ? '-' : trip.tripId,
-      vehicle: trip.isLowFloor ? '低地板' : '-',
-    ));
+    if (time.isEmpty) continue;
+    raw.add((_timeLabel(time), trip.isLowFloor));
   }
-  rows.sort((a, b) => a.time.compareTo(b.time));
-  return rows;
-}
-
-List<(String, String)> _fareRows(BusFareInfo? fare) {
-  if (fare == null) return const [];
-  final rows = <(String, String)>[
-    ('票價型態', _farePricingTypeLabel(fare.pricingType)),
-    ('免費公車', fare.isFreeBus ? '是' : '否'),
+  raw.sort((a, b) => a.$1.compareTo(b.$1));
+  final nextIndex = raw.indexWhere((r) => _isUpcoming(r.$1, now));
+  return [
+    for (final (i, r) in raw.indexed)
+      (time: r.$1, lowFloor: r.$2, isNext: i == nextIndex),
   ];
-  if (fare.sectionFaresJson.isNotEmpty) {
-    rows.add(('分段票價', _farePayloadLabel(fare.sectionFaresJson)));
-  }
-  if (fare.stageFaresJson.isNotEmpty) {
-    rows.add(('段次票價', _farePayloadLabel(fare.stageFaresJson)));
-  }
-  if (fare.odFaresJson.isNotEmpty) {
-    rows.add(('起迄票價', _farePayloadLabel(fare.odFaresJson)));
-  }
-  return rows;
-}
-
-String _farePayloadLabel(List<int> data) {
-  try {
-    final parsed = jsonDecode(utf8.decode(data));
-    if (parsed is Map) return '${parsed.length} 筆';
-    if (parsed is List) return '${parsed.length} 筆';
-  } on Object catch (_) {}
-  return '已提供';
 }
 
 String _farePricingTypeLabel(int type) {
