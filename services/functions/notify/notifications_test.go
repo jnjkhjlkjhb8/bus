@@ -1,4 +1,4 @@
-package main
+package notify
 
 import (
 	"context"
@@ -65,7 +65,7 @@ func (f *fakeFCM) Send(_ context.Context, m *messaging.Message) error {
 func TestFirebaseDisabledInDev(t *testing.T) {
 	t.Setenv("FIREBASE_ENABLED", "true")
 	t.Setenv("APP_ENV", "dev")
-	sender, err := newFirebaseSender(context.Background())
+	sender, err := NewFirebaseSender(context.Background())
 	if err != nil || sender != nil {
 		t.Fatalf("sender=%v err=%v", sender, err)
 	}
@@ -74,7 +74,7 @@ func TestFirebaseDisabledInDev(t *testing.T) {
 func TestRouteAlertMatchingAndDedupe(t *testing.T) {
 	store := &fakeNotificationStore{tokens: []deviceToken{{"a"}, {"a"}, {"b"}}, claimed: map[string]bool{}, wantRouteType: "bus", wantRouteKey: "R1"}
 	sender := &fakeFCM{}
-	d := newNotificationDispatcher(store, sender)
+	d := NewDispatcher(store, sender)
 	d.routeAlert(context.Background(), "bus", "R1", "延誤")
 	if len(sender.messages) != 2 {
 		t.Fatalf("sent=%d", len(sender.messages))
@@ -89,13 +89,13 @@ func TestRouteAlertMatchingAndDedupe(t *testing.T) {
 func TestArrivalThresholdClaimAndNoDuplicate(t *testing.T) {
 	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "t", routeType: "bus", routeKey: "R", stopKey: "S", direction: "0", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
 	sender := &fakeFCM{}
-	d := newNotificationDispatcher(store, sender)
-	d.arrival(context.Background(), "bus", "R", "S", "0", 301)
+	d := NewDispatcher(store, sender)
+	d.Arrival(context.Background(), "bus", "R", "S", "0", 301)
 	if len(sender.messages) != 0 {
 		t.Fatal("sent above threshold")
 	}
-	d.arrival(context.Background(), "bus", "R", "S", "0", 300)
-	d.arrival(context.Background(), "bus", "R", "S", "0", 100)
+	d.Arrival(context.Background(), "bus", "R", "S", "0", 300)
+	d.Arrival(context.Background(), "bus", "R", "S", "0", 100)
 	if len(sender.messages) != 1 || len(store.firedIDs) != 1 {
 		t.Fatalf("sent=%d fired=%v", len(sender.messages), store.firedIDs)
 	}
@@ -130,7 +130,7 @@ func TestRouteAlertStaysBusOnly(t *testing.T) {
 		wantRouteKey:  "123",
 	}
 	sender := &fakeFCM{}
-	newNotificationDispatcher(store, sender).routeAlert(context.Background(), "tra", "123", "延誤")
+	NewDispatcher(store, sender).routeAlert(context.Background(), "tra", "123", "延誤")
 	if len(sender.messages) != 0 {
 		t.Fatalf("non-bus route alert sent=%d", len(sender.messages))
 	}
@@ -150,8 +150,8 @@ func TestArrivalFiresForNonBusTypes(t *testing.T) {
 				wantDirection: "0",
 			}
 			sender := &fakeFCM{}
-			d := newNotificationDispatcher(store, sender)
-			d.arrival(context.Background(), routeType, "R", "S", "0", 60)
+			d := NewDispatcher(store, sender)
+			d.Arrival(context.Background(), routeType, "R", "S", "0", 60)
 			if len(sender.messages) != 1 || len(store.firedIDs) != 1 {
 				t.Fatalf("sent=%d fired=%v", len(sender.messages), store.firedIDs)
 			}
@@ -168,8 +168,8 @@ func TestFireScheduledClaimsSendsAndFires(t *testing.T) {
 		due:     []arrivalReminder{{id: "r1", token: "t", routeType: "tra", routeKey: "1120", stopKey: "南港", direction: "0", leadMinutes: 3}},
 	}
 	sender := &fakeFCM{}
-	d := newNotificationDispatcher(store, sender)
-	d.fireScheduled(context.Background())
+	d := NewDispatcher(store, sender)
+	d.FireScheduled(context.Background())
 	if len(sender.messages) != 1 || len(store.firedIDs) != 1 {
 		t.Fatalf("sent=%d fired=%v", len(sender.messages), store.firedIDs)
 	}
@@ -179,7 +179,7 @@ func TestFireScheduledClaimsSendsAndFires(t *testing.T) {
 	}
 	// A later tick that still sees the (unremoved) reminder must not resend it:
 	// the claim guard prevents duplicate pushes across ticks.
-	d.fireScheduled(context.Background())
+	d.FireScheduled(context.Background())
 	if len(sender.messages) != 1 {
 		t.Fatalf("resent claimed reminder: sent=%d", len(sender.messages))
 	}
@@ -188,7 +188,7 @@ func TestFireScheduledClaimsSendsAndFires(t *testing.T) {
 func TestRouteAlertDedupeAcrossMessages(t *testing.T) {
 	store := &fakeNotificationStore{tokens: []deviceToken{{"token"}}, claimed: map[string]bool{}, wantRouteType: "bus", wantRouteKey: "R1"}
 	sender := &fakeFCM{}
-	dispatcher := newNotificationDispatcher(store, sender)
+	dispatcher := NewDispatcher(store, sender)
 	claimed := map[string]bool{}
 	claim := func(key string, _ time.Duration) bool {
 		if claimed[key] {
@@ -216,7 +216,7 @@ func TestRouteAlertDedupeDoesNotCollideAcrossRoutes(t *testing.T) {
 	}
 	store := &fakeNotificationStore{tokens: []deviceToken{{"token"}}, claimed: map[string]bool{}}
 	sender := &fakeFCM{}
-	dispatcher := newNotificationDispatcher(store, sender)
+	dispatcher := NewDispatcher(store, sender)
 	for _, routeKey := range []string{"R1", "R2"} {
 		store.wantRouteType, store.wantRouteKey = "bus", routeKey
 		dispatchRouteAlerts(context.Background(), []normalizedRouteAlert{{
@@ -228,32 +228,10 @@ func TestRouteAlertDedupeDoesNotCollideAcrossRoutes(t *testing.T) {
 	}
 }
 
-func TestBusArrivalDispatchRequiresUsableETA(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		found  bool
-		status uint8
-		eta    int32
-		want   bool
-	}{
-		{"missing", false, 0, 60, false},
-		{"unavailable status", true, 1, 60, false},
-		{"zero", true, 0, 0, false},
-		{"negative", true, 0, -1, false},
-		{"usable", true, 0, 60, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldDispatchBusArrival(tc.found, tc.status, tc.eta); got != tc.want {
-				t.Fatalf("got=%v want=%v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestArrivalCancelledBeforeClaimDoesNotSend(t *testing.T) {
 	store := &fakeNotificationStore{claimed: map[string]bool{"r1": true}, reminders: []arrivalReminder{{id: "r1", token: "t", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
 	sender := &fakeFCM{}
-	newNotificationDispatcher(store, sender).arrival(context.Background(), "bus", "R", "S", "0", 1)
+	NewDispatcher(store, sender).Arrival(context.Background(), "bus", "R", "S", "0", 1)
 	if len(sender.messages) != 0 {
 		t.Fatal("sent cancelled reminder")
 	}
@@ -266,7 +244,7 @@ func TestInvalidTokenCleanupAndAtMostOnce(t *testing.T) {
 	t.Cleanup(func() { isInvalidFCMToken = old })
 	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "bad", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
 	sender := &fakeFCM{err: sendErr}
-	newNotificationDispatcher(store, sender).arrival(context.Background(), "bus", "R", "S", "0", 1)
+	NewDispatcher(store, sender).Arrival(context.Background(), "bus", "R", "S", "0", 1)
 	if len(store.invalidated) != 1 || len(store.firedIDs) != 0 || !store.claimed["r1"] {
 		t.Fatalf("invalidated=%v fired=%v claimed=%v", store.invalidated, store.firedIDs, store.claimed)
 	}

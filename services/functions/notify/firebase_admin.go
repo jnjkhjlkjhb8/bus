@@ -1,4 +1,4 @@
-package main
+package notify
 
 import (
 	"context"
@@ -11,13 +11,13 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// fcmSender abstracts sending one FCM message, so the dispatcher can be tested
+// Sender abstracts sending one FCM message, so the dispatcher can be tested
 // without a real Firebase client.
-type fcmSender interface {
+type Sender interface {
 	Send(context.Context, *messaging.Message) error
 }
 
-// firebaseSender is the production fcmSender backed by the Firebase Admin
+// firebaseSender is the production Sender backed by the Firebase Admin
 // messaging client.
 type firebaseSender struct{ client *messaging.Client }
 
@@ -36,12 +36,12 @@ func firebaseEnabled() bool {
 	return strings.EqualFold(os.Getenv("FIREBASE_ENABLED"), "true") && !strings.EqualFold(os.Getenv("APP_ENV"), "dev")
 }
 
-// newFirebaseSender builds the FCM sender, or returns (nil, nil) when push is
+// NewFirebaseSender builds the FCM sender, or returns (nil, nil) when push is
 // disabled — a nil sender is a valid "notifications off" state that
-// newNotificationDispatcher treats as no dispatcher. It errors only on
+// NewDispatcher treats as no dispatcher. It errors only on
 // misconfiguration when push is enabled: a missing FIREBASE_PROJECT_ID, absent
 // default credentials, or Admin SDK init failure.
-func newFirebaseSender(ctx context.Context) (fcmSender, error) {
+func NewFirebaseSender(ctx context.Context) (Sender, error) {
 	if !firebaseEnabled() {
 		return nil, nil
 	}

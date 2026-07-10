@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"github.com/robfig/cron/v3"
@@ -146,11 +147,11 @@ func runDaily(name string, d time.Duration, job func(context.Context) error) {
 // transform/realtime crons, and MQTT. Only ROLE="" reaches here — the ingestor
 // never initializes any of it.
 func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
-	sender, err := newFirebaseSender(context.Background())
+	sender, err := notify.NewFirebaseSender(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
-	dispatcher := newNotificationDispatcher(notificationStore{db: db}, sender)
+	dispatcher := notify.NewDispatcher(notify.NewStore(db), sender)
 	busDailyroute(tdx, rc)
 	loadHolidays()
 	loadModel()
@@ -180,7 +181,7 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pg
 	})
 	r.Start()
 	defer r.Stop()
-	mqttClient := startMQTT(rc, dispatcher)
+	mqttClient := notify.StartMQTT(rc, dispatcher)
 	if mqttClient != nil {
 		defer mqttClient.Disconnect(500)
 	}

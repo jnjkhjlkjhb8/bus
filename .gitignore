@@ -99,3 +99,5 @@ temp/
 **/GoogleService-Info.plist
 .github/hooks/
 .github/skills/
+.tmp-gocache/
+app/android/build/

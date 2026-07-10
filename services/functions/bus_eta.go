@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
@@ -73,7 +74,7 @@ func busEta(
 	fetch boundFetch,
 	sink liveSink,
 	db *pgxpool.Pool,
-	dispatcher *notificationDispatcher,
+	dispatcher *notify.Dispatcher,
 ) {
 	log.Infof("[BUS_ETA] action=Bus_eta event=start")
 	sem := make(chan struct{}, 4)
@@ -119,7 +120,7 @@ func processBusEtaCity(
 	sink liveSink,
 	db *pgxpool.Pool,
 	city string,
-	dispatcher *notificationDispatcher,
+	dispatcher *notify.Dispatcher,
 ) {
 	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=city_start", city)
 	prefix := citymap[city]
@@ -394,7 +395,7 @@ func processBusEtaCity(
 			ArrivalUnix:   arrivalUnix,
 		})
 		if shouldDispatchBusArrival(ok, status, est) {
-			dispatcher.arrival(ctx, "bus", uid, b.StopUID, strconv.Itoa(int(dir)), est)
+			dispatcher.Arrival(ctx, "bus", uid, b.StopUID, strconv.Itoa(int(dir)), est)
 		}
 		if _, ok = routes[uid]; !ok {
 			routes[uid] = &models.Bus_RouteArrival{

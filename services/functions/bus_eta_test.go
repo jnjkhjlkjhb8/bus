@@ -97,3 +97,25 @@ func TestPickBusEstimate(t *testing.T) {
 		})
 	}
 }
+
+func TestBusArrivalDispatchRequiresUsableETA(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		found  bool
+		status uint8
+		eta    int32
+		want   bool
+	}{
+		{"missing", false, 0, 60, false},
+		{"unavailable status", true, 1, 60, false},
+		{"zero", true, 0, 0, false},
+		{"negative", true, 0, -1, false},
+		{"usable", true, 0, 60, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldDispatchBusArrival(tc.found, tc.status, tc.eta); got != tc.want {
+				t.Fatalf("got=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}

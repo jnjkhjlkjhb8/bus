@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"github.com/robfig/cron/v3"
 )
@@ -257,7 +258,7 @@ const (
 // loaderRegistry captures src for the bus spec. No spec captures a raw
 // *redis.Client: the two jobs that read Redis mid-tick (bus weather, tra delay
 // hash) now go through the liveSink read seam.
-func liveRegistry(db *pgxpool.Pool, dispatcher *notificationDispatcher) []liveSpec {
+func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 	bikeCityPatterns := func() []ttlPattern {
 		// Bike availability keys are per-station-UID with no city prefix, so a
 		// single-city 304 cannot target its own keys precisely. Re-arm the whole
@@ -330,7 +331,7 @@ const liveJobTimeout = 25 * time.Second
 // order, each under a 25s timeout; mrt runs on 10s and tra on 2m, unbounded, as
 // before. Every job goes through runLiveSpec, so a failing job is isolated and
 // logged and the 304→TTL refresh applies uniformly.
-func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool, dispatcher *notificationDispatcher) {
+func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool, dispatcher *notify.Dispatcher) {
 	src := restLiveSource{tdx: tdx}
 	sink := redisLiveSink{rc: rc}
 	specs := liveRegistry(db, dispatcher)
@@ -369,7 +370,7 @@ func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db
 	// is disabled.
 	_, _ = r.AddFunc("@every 30s", func() {
 		withTimeout(liveJobTimeout, func(ctx context.Context) {
-			dispatcher.fireScheduled(ctx)
+			dispatcher.FireScheduled(ctx)
 		})
 	})
 }

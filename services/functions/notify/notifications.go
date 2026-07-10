@@ -1,4 +1,4 @@
-package main
+package notify
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 )
 
 // notificationStorage is the persistence surface the dispatcher depends on,
-// implemented by notificationStore and stubbed in tests.
+// implemented by Store and stubbed in tests.
 type notificationStorage interface {
 	subscribedTokens(context.Context, string, string) ([]deviceToken, error)
 	activeReminders(context.Context, string, string, string, string, time.Time) ([]arrivalReminder, error)
@@ -21,11 +21,11 @@ type notificationStorage interface {
 	invalidate(context.Context, string) error
 }
 
-// notificationDispatcher sends route-alert and arrival-reminder pushes. now is a
+// Dispatcher sends route-alert and arrival-reminder pushes. now is a
 // clock seam for tests.
-type notificationDispatcher struct {
+type Dispatcher struct {
 	store  notificationStorage
-	sender fcmSender
+	sender Sender
 	now    func() time.Time
 }
 
@@ -34,14 +34,14 @@ type notificationDispatcher struct {
 // substitute the check.
 var isInvalidFCMToken = messaging.IsUnregistered
 
-// newNotificationDispatcher builds a dispatcher, or returns nil when sender is
+// NewDispatcher builds a dispatcher, or returns nil when sender is
 // nil (push disabled). Callers must treat a nil dispatcher as "notifications off"
 // — every dispatcher method is nil-safe and returns early.
-func newNotificationDispatcher(store notificationStorage, sender fcmSender) *notificationDispatcher {
+func NewDispatcher(store notificationStorage, sender Sender) *Dispatcher {
 	if sender == nil {
 		return nil
 	}
-	return &notificationDispatcher{store: store, sender: sender, now: time.Now}
+	return &Dispatcher{store: store, sender: sender, now: time.Now}
 }
 
 // notificationMessage builds an FCM message with both a notification and a data
@@ -58,7 +58,7 @@ func notificationMessage(token, title, body string, data map[string]string) *mes
 // route. It is a no-op for a nil dispatcher, non-bus types, or an empty routeKey.
 // Tokens are deduped, and a send that reports an unregistered token invalidates
 // that token instead of retrying.
-func (d *notificationDispatcher) routeAlert(ctx context.Context, routeType, routeKey, body string) {
+func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body string) {
 	if d == nil || routeType != "bus" || routeKey == "" {
 		return
 	}
@@ -91,7 +91,7 @@ func (d *notificationDispatcher) routeAlert(ctx context.Context, routeType, rout
 // concurrent ETA runs; on success it is marked fired, and an unregistered-token
 // send invalidates the token. etaSeconds is rounded up to whole minutes in the
 // message body.
-func (d *notificationDispatcher) arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32) {
+func (d *Dispatcher) Arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32) {
 	if d == nil || etaSeconds < 0 {
 		return
 	}
@@ -129,7 +129,7 @@ func (d *notificationDispatcher) arrival(ctx context.Context, routeType, routeKe
 // before sending to avoid duplicate pushes across ticks, marks it fired on
 // success, releases it to retry on a transient failure, and invalidates the
 // token when FCM reports it unregistered. No-op for a nil dispatcher.
-func (d *notificationDispatcher) fireScheduled(ctx context.Context) {
+func (d *Dispatcher) FireScheduled(ctx context.Context) {
 	if d == nil {
 		return
 	}

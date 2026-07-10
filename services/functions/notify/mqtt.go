@@ -1,4 +1,4 @@
-package main
+package notify
 
 import (
 	"context"
@@ -33,12 +33,12 @@ var mqttTopics = []mqttTopicCfg{
 	{"v2/Rail/THSR/AlertInfo", 5 * time.Minute},
 }
 
-// startMQTT connects to the TDX MQTT broker over TLS and (re)subscribes to all
+// StartMQTT connects to the TDX MQTT broker over TLS and (re)subscribes to all
 // topics on every connect. It returns nil when MQTT_CLIENT_ID / MQTT_USERNAME /
 // MQTT_PASSWORD are unset, so MQTT is simply skipped in environments without
 // credentials. Auto-reconnect is on; the initial connect failing is logged but
 // not fatal — the client keeps retrying. Broker: mqtts://mqtt.transportdata.tw:8883
-func startMQTT(rc *redis.Client, dispatcher *notificationDispatcher) mqtt.Client {
+func StartMQTT(rc *redis.Client, dispatcher *Dispatcher) mqtt.Client {
 	clientID := os.Getenv("MQTT_CLIENT_ID")
 	username := os.Getenv("MQTT_USERNAME")
 	password := os.Getenv("MQTT_PASSWORD")
@@ -76,7 +76,7 @@ func startMQTT(rc *redis.Client, dispatcher *notificationDispatcher) mqtt.Client
 // message to mqtthandle with that topic's TTL. It runs on every (re)connect, so
 // subscriptions are restored after a dropped connection. Per-topic subscribe
 // failures are logged.
-func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *notificationDispatcher) {
+func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *Dispatcher) {
 	for _, t := range mqttTopics {
 		pattern, ttl := t.pattern, t.ttl
 		tok := c.Subscribe(pattern, 1, func(_ mqtt.Client, msg mqtt.Message) {
@@ -95,7 +95,7 @@ func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *notificationD
 // slashes turned into colons) and republishes it on that key for live streaming.
 // It then dispatches route alerts, using SetNX on an "fcm:alert:" key as a
 // cross-run dedupe claim so the same alert is not pushed twice within its window.
-func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatcher *notificationDispatcher) {
+func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatcher *Dispatcher) {
 	key := shared.MQTTChannel(msg.Topic())
 	if err := rc.Set(key, msg.Payload(), ttl).Err(); err != nil {
 		log.Infof("[MQTT] redis set failed key=%s err=%v", key, err)
@@ -118,7 +118,7 @@ type normalizedRouteAlert struct{ routeType, routeKey, body, id string }
 // dispatchRouteAlerts pushes each alert whose dedupe key claim succeeds. When an
 // alert has no id, the body's SHA-256 is used so identical bodies collapse. claim
 // is injected (Redis SetNX in production) so the dedupe window is testable.
-func dispatchRouteAlerts(ctx context.Context, alerts []normalizedRouteAlert, claim func(string, time.Duration) bool, dispatcher *notificationDispatcher) {
+func dispatchRouteAlerts(ctx context.Context, alerts []normalizedRouteAlert, claim func(string, time.Duration) bool, dispatcher *Dispatcher) {
 	for _, alert := range alerts {
 		id := alert.id
 		if id == "" {
