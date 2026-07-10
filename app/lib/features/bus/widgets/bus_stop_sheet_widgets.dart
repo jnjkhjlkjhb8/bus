@@ -10,28 +10,33 @@ class _StopSheet extends StatelessWidget {
       onRefresh: () async {
         context.read<BusStopBloc>().add(const BusStopRetryRequested());
       },
-      child: ListView(
+      // Slivers so the arrival rows build lazily: on dense stops only the
+      // visible tiles are (re)built per live ETA frame instead of the whole
+      // route × member-stop matrix.
+      child: CustomScrollView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 56),
-        children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+        slivers: [
+          SliverToBoxAdapter(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                _StopMeta(),
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: _StopMeta(),
+                ),
+                Divider(
+                  height: 1,
+                  indent: 16,
+                  endIndent: 16,
+                  color: cs.outlineVariant.withValues(alpha: 0.5),
+                ),
+                const SizedBox(height: 4),
               ],
             ),
           ),
-          Divider(
-            height: 1,
-            indent: 16,
-            endIndent: 16,
-            color: cs.outlineVariant.withValues(alpha: 0.5),
-          ),
-          const SizedBox(height: 4),
           const _StopBody(),
+          const SliverPadding(padding: EdgeInsets.only(bottom: 56)),
         ],
       ),
     );
@@ -55,99 +60,99 @@ class _StopBody extends StatelessWidget {
           p.error != n.error ||
           !identical(p.members, n.members) ||
           !identical(p.displays, n.displays),
-      builder: (context, state) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: _buildBody(context, state, cs),
-      ),
+      builder: (context, state) {
+        // Non-loaded states are a single box; loaded rows go through a lazy
+        // sliver so only visible tiles are built.
+        switch (state.status) {
+          case BusStopStatus.loading:
+            return const SliverToBoxAdapter(child: _StopSkeletonList());
+          case BusStopStatus.empty:
+            return const SliverToBoxAdapter(
+              child: _StopMessage(
+                icon: Icons.directions_bus_outlined,
+                title: '此站目前無路線資訊',
+                hint: '稍後再試，或確認站牌是否正確',
+              ),
+            );
+          case BusStopStatus.error:
+            return SliverToBoxAdapter(
+              child: ErrorStateView(
+                error: state.error ?? const OfflineError(),
+                onRetry: () {
+                  unawaited(HapticService.instance.lightTap());
+                  context.read<BusStopBloc>().add(
+                    const BusStopRetryRequested(),
+                  );
+                },
+              ),
+            );
+          case BusStopStatus.loaded:
+            final rows = _rowBuilders(state, cs);
+            return SliverList.builder(
+              itemCount: rows.length,
+              itemBuilder: (context, i) => rows[i](),
+            );
+        }
+      },
     );
   }
 
-  List<Widget> _buildBody(
-    BuildContext context,
-    BusStopState state,
-    ColorScheme cs,
-  ) {
-    switch (state.status) {
-      case BusStopStatus.loading:
-        return const [_StopSkeletonList()];
-      case BusStopStatus.empty:
-        return const [
-          _StopMessage(
-            icon: Icons.directions_bus_outlined,
-            title: '此站目前無路線資訊',
-            hint: '稍後再試，或確認站牌是否正確',
+  /// Flattens the loaded state into per-row thunks. Deferring widget
+  /// construction to the sliver's itemBuilder is the point: off-screen rows
+  /// cost one closure, not a tile subtree.
+  List<Widget Function()> _rowBuilders(BusStopState state, ColorScheme cs) {
+    // Sorted list + per-stop grouping are derived in the bloc; build only
+    // lays them out.
+    final arrivals = state.displays;
+    final byStation = state.arrivalsByStation;
+    final members = state.members;
+    final selected = state.selectedStationUid;
+    final hasFilter = members.length > 1;
+    final visibleMembers = selected == null
+        ? members
+        : members.where((m) => m.stationUid == selected).toList();
+    // Section headers only earn their space when 全部 spans several stops;
+    // a picked chip already names the stop.
+    final showHeaders = hasFilter && selected == null;
+
+    Widget Function() tile(BusStopArrivalItem a, int staggerIndex, int i) =>
+        () => StaggerItem(
+          key: ValueKey(a.itemKey),
+          index: staggerIndex,
+          child: _EtaChevronTile(
+            arrival: a,
+            highlighted: i == 0 && a.display.isComingSoon,
           ),
-        ];
-      case BusStopStatus.error:
-        return [
-          ErrorStateView(
-            error: state.error ?? const OfflineError(),
-            onRetry: () {
-              unawaited(HapticService.instance.lightTap());
-              context.read<BusStopBloc>().add(const BusStopRetryRequested());
-            },
-          ),
-        ];
-      case BusStopStatus.loaded:
-        // Sorted list + per-stop grouping are derived in the bloc; build only
-        // lays them out.
-        final arrivals = state.displays;
-        final byStation = state.arrivalsByStation;
-        final members = state.members;
-        final selected = state.selectedStationUid;
-        final hasFilter = members.length > 1;
-        final visibleMembers = selected == null
-            ? members
-            : members.where((m) => m.stationUid == selected).toList();
-        // Section headers only earn their space when 全部 spans several stops;
-        // a picked chip already names the stop.
-        final showHeaders = hasFilter && selected == null;
-        return [
-          if (hasFilter)
-            _StationFilterBar(members: members, selectedUid: selected),
-          if (members.isEmpty)
-            for (final (i, a) in arrivals.indexed)
-              StaggerItem(
-                key: ValueKey(a.itemKey),
-                index: i,
-                child: _EtaChevronTile(
-                  arrival: a,
-                  highlighted: i == 0 && a.display.isComingSoon,
-                ),
-              )
-          else
-            for (final (memberIndex, member) in visibleMembers.indexed) ...[
-              if (showHeaders) _StationSectionHeader(member: member),
-              for (final (i, a)
-                  in (byStation[member.stationUid] ??
-                          const <BusStopArrivalItem>[])
-                      .indexed) ...[
-                StaggerItem(
-                  key: ValueKey(a.itemKey),
-                  index: memberIndex * 10 + i,
-                  child: _EtaChevronTile(
-                    arrival: a,
-                    highlighted: i == 0 && a.display.isComingSoon,
-                  ),
-                ),
-                if (i < (byStation[member.stationUid]?.length ?? 0) - 1)
-                  Divider(
-                    height: 1,
-                    indent: 16,
-                    endIndent: 16,
-                    color: cs.outlineVariant.withValues(alpha: 0.5),
-                  ),
-              ],
-            ],
-          if (members.isNotEmpty && arrivals.isEmpty)
-            const _StopMessage(
-              icon: Icons.directions_bus_outlined,
-              title: '目前沒有即時動態',
-              hint: '稍後再試,或下拉重新整理',
-            ),
-        ];
-    }
+        );
+    Widget divider() => Divider(
+      height: 1,
+      indent: 16,
+      endIndent: 16,
+      color: cs.outlineVariant.withValues(alpha: 0.5),
+    );
+
+    return [
+      if (hasFilter)
+        () => _StationFilterBar(members: members, selectedUid: selected),
+      if (members.isEmpty)
+        for (final (i, a) in arrivals.indexed) tile(a, i, i)
+      else
+        for (final (memberIndex, member) in visibleMembers.indexed) ...[
+          if (showHeaders) () => _StationSectionHeader(member: member),
+          for (final (i, a)
+              in (byStation[member.stationUid] ?? const <BusStopArrivalItem>[])
+                  .indexed) ...[
+            tile(a, memberIndex * 10 + i, i),
+            if (i < (byStation[member.stationUid]?.length ?? 0) - 1) divider,
+          ],
+        ],
+      if (members.isNotEmpty && arrivals.isEmpty)
+        () => const _StopMessage(
+          icon: Icons.directions_bus_outlined,
+          title: '目前沒有即時動態',
+          hint: '稍後再試,或下拉重新整理',
+        ),
+    ];
   }
 }
 

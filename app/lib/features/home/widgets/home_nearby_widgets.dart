@@ -148,6 +148,24 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
     );
   }
 
+  // Filtered rows cached per (stations identity, filter) so sheet-driven
+  // rebuilds don't re-filter an unchanged list.
+  late List<NearStationViewModel> _filtered;
+  List<NearStationViewModel>? _filteredSource;
+  NearbyFilter? _filteredFilter;
+
+  List<NearStationViewModel> _visibleStations(
+    List<NearStationViewModel> stations,
+  ) {
+    if (!identical(stations, _filteredSource) ||
+        _selectedFilter != _filteredFilter) {
+      _filteredSource = stations;
+      _filteredFilter = _selectedFilter;
+      _filtered = stations.where(_matches).toList();
+    }
+    return _filtered;
+  }
+
   bool _matches(NearStationViewModel s) {
     switch (_selectedFilter) {
       case NearbyFilter.all:
@@ -206,7 +224,7 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
                   ),
                 );
               }
-              final items = state.stations.where(_matches).toList();
+              final items = _visibleStations(state.stations);
               if (items.isEmpty) {
                 return const _NearbyEmpty();
               }

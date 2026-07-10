@@ -213,6 +213,14 @@ class JourneyControls extends StatelessWidget {
       listenWhen: (p, c) => !p.suggestBoarding && c.suggestBoarding,
       listener: (context, _) => HapticFeedback.mediumImpact(),
       child: BlocBuilder<JourneySessionBloc, JourneySessionState>(
+        // The controls never render eta, so the 30 s ETA tick must not rebuild
+        // them; rebuild only on the fields this subtree actually shows.
+        buildWhen: (p, c) =>
+            p.phase != c.phase ||
+            p.suggestBoarding != c.suggestBoarding ||
+            p.legIndex != c.legIndex ||
+            p.nextStopIndex != c.nextStopIndex ||
+            !identical(p.legs, c.legs),
         builder: (context, state) {
           switch (state.phase) {
             case JourneyPhase.waiting:

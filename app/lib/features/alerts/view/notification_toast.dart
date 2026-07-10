@@ -68,8 +68,7 @@ class _NotificationToastHostState extends State<NotificationToastHost>
   @override
   Widget build(BuildContext context) {
     return BlocListener<AlertBloc, AlertState>(
-      listenWhen: (_, c) =>
-          c.redAlerts.any((a) => !_shown.contains(a.message)),
+      listenWhen: (_, c) => c.redAlerts.any((a) => !_shown.contains(a.message)),
       listener: (context, state) {
         final fresh = state.redAlerts
             .where((a) => !_shown.contains(a.message))
@@ -111,10 +110,10 @@ class _ToastLayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final media = MediaQuery.of(context);
-    final reduce = media.disableAnimations;
+    // Scoped aspects so keyboard/inset changes don't rebuild the toast.
+    final reduce = MediaQuery.disableAnimationsOf(context);
     return Positioned(
-      top: media.padding.top + 8,
+      top: MediaQuery.paddingOf(context).top + 8,
       left: 16,
       right: 16,
       child: AnimatedBuilder(

@@ -98,6 +98,33 @@ void main() {
     expect(subscribeCount, 1);
   });
 
+  test('clean closes back off, cap at maxDelay, and never notify', () async {
+    final delays = <Duration>[];
+    var failed = 0;
+    final sub = ResilientSubscription<int>(
+      source: Stream<int>.empty,
+      onData: (_) {},
+      onFailure: (_) => failed++,
+      baseDelay: const Duration(milliseconds: 1),
+      maxDelay: const Duration(milliseconds: 4),
+      retryDelay: (delay) {
+        delays.add(delay);
+        return Duration.zero;
+      },
+      reportError: (_, _) {},
+    );
+
+    await eventually(() => delays.length >= 4);
+    expect(delays.take(4), [
+      const Duration(milliseconds: 1),
+      const Duration(milliseconds: 2),
+      const Duration(milliseconds: 4),
+      const Duration(milliseconds: 4),
+    ]);
+    expect(failed, 0);
+    await sub.cancel();
+  });
+
   test('uses the injected retry delay', () async {
     Duration? observed;
     final sub = ResilientSubscription<int>(

@@ -37,17 +37,18 @@ const List<FontFeature> _tnum = AppTextStyles.tabularFigures;
 
 final _dateFormat = DateFormat('yyyy-MM-dd');
 
+const Map<int, String> _weekdayMap = {
+  DateTime.monday: '一',
+  DateTime.tuesday: '二',
+  DateTime.wednesday: '三',
+  DateTime.thursday: '四',
+  DateTime.friday: '五',
+  DateTime.saturday: '六',
+  DateTime.sunday: '日',
+};
+
 String _formatDateDisplay(DateTime date) {
-  final weekdayMap = {
-    DateTime.monday: '一',
-    DateTime.tuesday: '二',
-    DateTime.wednesday: '三',
-    DateTime.thursday: '四',
-    DateTime.friday: '五',
-    DateTime.saturday: '六',
-    DateTime.sunday: '日',
-  };
-  return '${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')} (${weekdayMap[date.weekday]})';
+  return '${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')} (${_weekdayMap[date.weekday]})';
 }
 
 /// Normalizes a backend time to `HH:mm`, accepting both an RFC3339 timestamp
@@ -133,6 +134,41 @@ class _RailScreenState extends State<RailScreen> {
   Future<String?> _showStationPicker() => _system == RailSystem.thsr
       ? showTHSRStationPicker(context)
       : showTRAStationPicker(context);
+
+  // Derived card rows, cached per loaded-state instance so local setState
+  // (date picks, station picks, sheet drags) doesn't re-parse every train's
+  // times; states are immutable, so identity is a sound cache key.
+  RailTimetableLoaded? _rowsSource;
+  late List<
+    ({String type, String number, int delay, String depart, String arrive})
+  >
+  _rowsCache;
+
+  List<({String type, String number, int delay, String depart, String arrive})>
+  _rowsFor(RailTimetableLoaded state) {
+    if (!identical(state, _rowsSource)) {
+      _rowsSource = state;
+      _rowsCache = [
+        for (final item in state.traItems)
+          (
+            type: item.trainType,
+            number: item.trainNo,
+            delay: state.delays[item.trainNo] ?? 0,
+            depart: _railHhmm(item.departureTime),
+            arrive: _railHhmm(item.arrivalTime),
+          ),
+        for (final item in state.thsrItems)
+          (
+            type: '高鐵',
+            number: item.trainNo,
+            delay: state.delays[item.trainNo] ?? 0,
+            depart: _railHhmm(item.departureTime),
+            arrive: _railHhmm(item.arrivalTime),
+          ),
+      ];
+    }
+    return _rowsCache;
+  }
 
   @override
   void dispose() {
@@ -271,24 +307,7 @@ class _RailScreenState extends State<RailScreen> {
                         ),
                       );
                     }
-                    final items = [
-                      for (final item in state.traItems)
-                        (
-                          type: item.trainType,
-                          number: item.trainNo,
-                          delay: state.delays[item.trainNo] ?? 0,
-                          depart: _railHhmm(item.departureTime),
-                          arrive: _railHhmm(item.arrivalTime),
-                        ),
-                      for (final item in state.thsrItems)
-                        (
-                          type: '高鐵',
-                          number: item.trainNo,
-                          delay: state.delays[item.trainNo] ?? 0,
-                          depart: _railHhmm(item.departureTime),
-                          arrive: _railHhmm(item.arrivalTime),
-                        ),
-                    ];
+                    final items = _rowsFor(state);
                     if (items.isEmpty) {
                       return ListView(
                         padding: EdgeInsets.fromLTRB(16, topPad + 68, 16, 16),

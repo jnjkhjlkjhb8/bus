@@ -54,7 +54,9 @@ class TraStationBoardView extends StatelessWidget {
               title: name,
             ),
           ),
-          Flexible(child: _Board(stationId: stationId, originName: name)),
+          Flexible(
+            child: _Board(stationId: stationId, originName: name),
+          ),
         ],
       ),
     );
@@ -91,17 +93,31 @@ class TraStationScreen extends StatelessWidget {
       ),
       body: BlocProvider(
         create: (_) => TraStationBloc()..add(LoadTraStation(stationId)),
-        child: _Board(stationId: stationId, originName: name),
+        // Bounded Scaffold body: let the list scroll lazily instead of
+        // laying out every card per live-board frame.
+        child: _Board(
+          stationId: stationId,
+          originName: name,
+          shrinkWrap: false,
+        ),
       ),
     );
   }
 }
 
 class _Board extends StatelessWidget {
-  const _Board({required this.stationId, required this.originName});
+  const _Board({
+    required this.stationId,
+    required this.originName,
+    this.shrinkWrap = true,
+  });
 
   final String stationId;
   final String originName;
+  // The sheet host needs shrinkWrap so short boards hug their content; that
+  // costs a full layout of every card per frame, acceptable at live-board
+  // sizes (≤ a few dozen rows).
+  final bool shrinkWrap;
 
   @override
   Widget build(BuildContext context) {
@@ -138,7 +154,7 @@ class _Board extends StatelessWidget {
           );
         }
         return ListView.separated(
-          shrinkWrap: true,
+          shrinkWrap: shrinkWrap,
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
           itemCount: state.items.length,
           separatorBuilder: (_, _) => const SizedBox(height: 10),

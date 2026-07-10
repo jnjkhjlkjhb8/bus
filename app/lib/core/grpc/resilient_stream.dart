@@ -43,6 +43,7 @@ class ResilientSubscription<T> {
   StreamSubscription<T>? _sub;
   Timer? _timer;
   int _failures = 0;
+  int _cleanCloses = 0;
   bool _notified = false;
   bool _closed = false;
 
@@ -55,6 +56,7 @@ class ResilientSubscription<T> {
           _notified = false;
           _onRecovered?.call();
         }
+        _cleanCloses = 0;
         _onData(data);
       },
       onError: (Object e, StackTrace s) {
@@ -75,7 +77,14 @@ class ResilientSubscription<T> {
       onDone: () {
         if (_closed) return;
         _sub = null;
-        _timer = Timer(_retryDelay(_baseDelay), _listen);
+        // A clean close is normal (server-side stream rotation), but a server
+        // that closes immediately on every connect must not become a hot
+        // reconnect loop: back off like errors do, capped at [_maxDelay], and
+        // never surface a failure. Any received data resets the backoff.
+        if (_cleanCloses < 6) _cleanCloses++;
+        var delay = _baseDelay * (1 << (_cleanCloses - 1));
+        if (delay > _maxDelay) delay = _maxDelay;
+        _timer = Timer(_retryDelay(delay), _listen);
       },
     );
   }

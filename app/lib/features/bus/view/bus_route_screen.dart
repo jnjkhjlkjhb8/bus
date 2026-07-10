@@ -72,6 +72,8 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     (markers: <Marker>{}, polylines: <Polyline>{}),
   );
   List<LatLng> _routePts = [];
+  // Per-marker reuse cache: id → (rendered-inputs key, built Marker).
+  final _markerCache = <String, ({String key, Marker marker})>{};
   String _mapSig = '';
   String? _geomSig;
   List<List<LatLng>> _geomLines = const [];
@@ -134,38 +136,55 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         ),
     };
 
+    // A live frame usually moves one vehicle or one countdown; reuse the
+    // previous Marker for anything whose rendered inputs are unchanged so a
+    // frame costs O(changed) icon lookups instead of O(stops + vehicles).
     final markers = <Marker>{};
     for (final st in stops) {
       if (st.lat == 0 && st.lon == 0) continue;
       final eta = _etaFor(s, st);
+      final key =
+          '${_markerIsScheduled(eta)}:${_markerEta(eta)}:${st.lat},${st.lon}';
+      final cached = _markerCache[st.stopUid];
+      if (cached != null && cached.key == key) {
+        markers.add(cached.marker);
+        continue;
+      }
       final icon = _markerIsScheduled(eta)
           ? await MapMarkers.etaStopIcon(Icons.schedule_rounded, size: 32)
           : await MapMarkers.etaStop(_markerEta(eta), size: 32);
-      markers.add(
-        Marker(
-          markerId: MarkerId(st.stopUid),
-          position: LatLng(st.lat, st.lon),
-          icon: icon,
-          anchor: const Offset(0.5, 0.5),
-          infoWindow: InfoWindow(title: st.stopName),
-        ),
+      final marker = Marker(
+        markerId: MarkerId(st.stopUid),
+        position: LatLng(st.lat, st.lon),
+        icon: icon,
+        anchor: const Offset(0.5, 0.5),
+        infoWindow: InfoWindow(title: st.stopName),
       );
+      _markerCache[st.stopUid] = (key: key, marker: marker);
+      markers.add(marker);
     }
 
     for (final v in vehicles) {
+      final id = 'bus:${v.plate}';
+      final key = '${v.lat},${v.lon},${v.azimuth}';
+      final cached = _markerCache[id];
+      if (cached != null && cached.key == key) {
+        markers.add(cached.marker);
+        continue;
+      }
       final icon = await MapMarkers.busMarker(
         busSpriteAsset(v.azimuth.toDouble()),
       );
-      markers.add(
-        Marker(
-          markerId: MarkerId('bus:${v.plate}'),
-          position: LatLng(v.lat, v.lon),
-          icon: icon,
-          anchor: const Offset(0.5, 0.5),
-          zIndexInt: 1,
-          infoWindow: InfoWindow(title: v.plate),
-        ),
+      final marker = Marker(
+        markerId: MarkerId(id),
+        position: LatLng(v.lat, v.lon),
+        icon: icon,
+        anchor: const Offset(0.5, 0.5),
+        zIndexInt: 1,
+        infoWindow: InfoWindow(title: v.plate),
       );
+      _markerCache[id] = (key: key, marker: marker);
+      markers.add(marker);
     }
 
     if (!mounted) return;
