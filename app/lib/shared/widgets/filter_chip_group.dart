@@ -51,24 +51,42 @@ class _Chip extends StatelessWidget {
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
     return Pressable(
       onTap: onTap,
-      semanticLabel: label,
+      semanticLabel: selected ? '$label，已選取' : label,
       child: AnimatedContainer(
         duration: reduceMotion ? Duration.zero : AppMotion.short,
         curve: AppMotion.easeOut,
         height: 30,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 10),
         alignment: Alignment.center,
+        // Selection reads from a hairline accent border and a check, not a
+        // filled accent block: these groups default to everything selected,
+        // and a row of solid accent would outweigh the screen's primary action.
         decoration: BoxDecoration(
-          color: selected ? cs.primary : cs.surfaceContainerHighest,
+          color: selected ? cs.surfaceContainerHighest : Colors.transparent,
           borderRadius: BorderRadius.circular(8),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-            color: selected ? cs.onPrimary : cs.onSurface,
+          border: Border.all(
+            color: selected ? cs.primary : cs.outlineVariant,
           ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // The check keeps its slot when unselected so toggling a chip
+            // never reflows the row around it.
+            Opacity(
+              opacity: selected ? 1 : 0,
+              child: Icon(Icons.check_rounded, size: 14, color: cs.onSurface),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                color: selected ? cs.onSurface : cs.onSurfaceVariant,
+              ),
+            ),
+          ],
         ),
       ),
     );

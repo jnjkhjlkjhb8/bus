@@ -10,6 +10,7 @@ import 'package:wheres_the_car/features/search/genui/data/genui_service.dart';
 import 'package:wheres_the_car/features/search/genui/view/genui_renderer.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 
 /// GenUI sheet 關閉時帶回的結果。
@@ -197,14 +198,7 @@ class _GenUiSheetState extends State<_GenUiSheet> {
           padding: const EdgeInsets.symmetric(vertical: 24),
           child: Row(
             children: [
-              SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: cs.primary,
-                ),
-              ),
+              const AppSpinner(size: 18, strokeWidth: 2),
               const SizedBox(width: 12),
               Expanded(
                 child: AnimatedSwitcher(

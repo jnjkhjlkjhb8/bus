@@ -71,7 +71,7 @@ class _PlannerHeader extends StatelessWidget {
                         hint: '選擇出發地',
                         onTap: onEditOrigin,
                       ),
-                      Divider(height: 1, color: cs.outlineVariant),
+                      const DividerLine(),
                       _FieldRow(
                         place: dest,
                         hint: '選擇目的地',
@@ -205,7 +205,7 @@ class _PlannerSheet extends StatelessWidget {
                   ],
                 ),
               ),
-              Divider(height: 1, color: cs.outlineVariant),
+              const DividerLine(),
               Expanded(
                 child: _PlannerBody(
                   state: state,
@@ -395,6 +395,17 @@ class _OptionsButton extends StatelessWidget {
   }
 }
 
+/// Names the stance the cost/time weight currently expresses. The weight is a
+/// solver input with no meaning to a rider, so the readout reports the choice
+/// the slider's end labels promise instead of the raw number.
+String _gcLabel(double gc) => switch (gc) {
+  <= 0.1 => '省錢',
+  < 0.4 => '偏省錢',
+  <= 0.6 => '平衡',
+  < 0.9 => '偏省時',
+  _ => '省時',
+};
+
 // TDX transit-mode ids the planner exposes (excludes 20:航空).
 const _kTransitModes = <int, String>{
   3: '高鐵',
@@ -478,11 +489,7 @@ class _OptionsSheetState extends State<_OptionsSheet> {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
                 children: [
-                  _sectionRow(
-                    '時間 / 價格偏好',
-                    'gc ${_o.gc.toStringAsFixed(1)}',
-                    cs,
-                  ),
+                  _sectionRow('時間 / 價格偏好', _gcLabel(_o.gc), cs),
                   AppSlider(
                     value: _o.gc,
                     divisions: 10,

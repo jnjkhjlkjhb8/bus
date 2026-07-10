@@ -57,9 +57,9 @@ class RailResultCard extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
         decoration: BoxDecoration(
-          color: highlighted ? cs.primaryContainer : cs.surface,
+          color: highlighted ? cs.primaryContainer : cs.surfaceContainerLow,
           borderRadius: BorderRadius.circular(AppTheme.radiusCard),
-          boxShadow: highlighted ? null : AppShadows.card,
+          boxShadow: highlighted ? null : AppShadows.cardFor(cs.brightness),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,

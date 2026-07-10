@@ -31,7 +31,9 @@ class AppDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Dialog(
-      backgroundColor: cs.surface,
+      // Elevated surface, not the scaffold's own colour: `surface` leaves the
+      // dialog indistinguishable from the page behind it in dark mode.
+      backgroundColor: cs.surfaceContainerHigh,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppTheme.radiusCard),
       ),

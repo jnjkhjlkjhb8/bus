@@ -20,10 +20,21 @@ class AppSlidingSegment<T> extends StatelessWidget {
     final keys = options.keys.toList();
     final selectedIndex = keys.indexOf(value);
 
+    // The raised thumb is always the lighter of the two surfaces. Light mode
+    // reaches that with the card colour on a pressed track; dark mode has to
+    // take them the other way round, since there depth runs toward lightness.
+    final isDark = cs.brightness == Brightness.dark;
+    final trackColor = isDark
+        ? cs.surfaceContainerLow
+        : cs.surfaceContainerHighest;
+    final thumbColor = isDark
+        ? cs.surfaceContainerHighest
+        : cs.surfaceContainerLow;
+
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
+        color: trackColor,
         borderRadius: BorderRadius.circular(10),
       ),
       child: LayoutBuilder(
@@ -42,15 +53,17 @@ class AppSlidingSegment<T> extends StatelessWidget {
                   width: pillWidth,
                   child: Container(
                     decoration: BoxDecoration(
-                      color: cs.surfaceContainerLow,
+                      color: thumbColor,
                       borderRadius: BorderRadius.circular(7),
-                      boxShadow: [
-                        BoxShadow(
-                          color: cs.shadow.withValues(alpha: .04),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
+                      boxShadow: isDark
+                          ? const []
+                          : [
+                              BoxShadow(
+                                color: cs.shadow.withValues(alpha: .04),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
                     ),
                   ),
                 ),

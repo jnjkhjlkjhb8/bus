@@ -17,6 +17,7 @@ import 'package:wheres_the_car/features/search/genui/view/genui_sheet.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
 
@@ -303,13 +304,9 @@ class _SearchViewState extends State<_SearchView> {
               builder: (context, state) {
                 if (state.loading) {
                   return Center(
-                    child: SizedBox(
-                      width: 24,
-                      height: 24,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: cs.onSurfaceVariant,
-                      ),
+                    child: AppSpinner(
+                      strokeWidth: 2,
+                      color: cs.onSurfaceVariant,
                     ),
                   );
                 }

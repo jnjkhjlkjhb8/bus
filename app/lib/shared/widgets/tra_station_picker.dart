@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/data/models/tra_stations.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
+import 'package:wheres_the_car/shared/widgets/app_button.dart';
 import 'package:wheres_the_car/shared/widgets/clock_dial.dart';
 
 Future<String?> showTRAStationPicker(BuildContext context) {
@@ -131,26 +132,14 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                TextButton(
+                AppButton.text(
+                  label: '取消',
                   onPressed: () => Navigator.of(context).pop(),
-                  child: Text(
-                    '取消',
-                    style: TextStyle(
-                      color: cs.primary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
                 ),
                 const SizedBox(width: 8),
-                TextButton(
+                AppButton.text(
+                  label: '確定',
                   onPressed: () => Navigator.of(context).pop(_station),
-                  child: Text(
-                    '確定',
-                    style: TextStyle(
-                      color: cs.primary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
                 ),
               ],
             ),

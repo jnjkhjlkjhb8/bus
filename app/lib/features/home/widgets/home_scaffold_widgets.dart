@@ -59,12 +59,9 @@ extension _HomeScreenScaffold on _HomeScreenState {
                 child: Container(
                   width: 44,
                   height: 44,
-                  decoration: BoxDecoration(
-                    color: cs.brightness == Brightness.light
-                        ? Colors.white
-                        : cs.surfaceContainerHigh,
+                  decoration: AppTheme.floatingControl(
+                    cs,
                     borderRadius: BorderRadius.circular(12),
-                    boxShadow: AppShadows.floating,
                   ),
                   child: Icon(
                     Icons.settings_rounded,
@@ -98,12 +95,9 @@ extension _HomeScreenScaffold on _HomeScreenState {
                             Container(
                               width: 44,
                               height: 44,
-                              decoration: BoxDecoration(
-                                color: cs.brightness == Brightness.light
-                                    ? Colors.white
-                                    : cs.surfaceContainerHigh,
+                              decoration: AppTheme.floatingControl(
+                                cs,
                                 borderRadius: BorderRadius.circular(12),
-                                boxShadow: AppShadows.floating,
                               ),
                               child: Icon(
                                 unread > 0
@@ -133,12 +127,9 @@ extension _HomeScreenScaffold on _HomeScreenState {
                     child: Container(
                       width: 44,
                       height: 44,
-                      decoration: BoxDecoration(
-                        color: cs.brightness == Brightness.light
-                            ? Colors.white
-                            : cs.surfaceContainerHigh,
+                      decoration: AppTheme.floatingControl(
+                        cs,
                         borderRadius: BorderRadius.circular(12),
-                        boxShadow: AppShadows.floating,
                       ),
                       child: Icon(
                         Icons.directions_subway_rounded,
@@ -156,12 +147,9 @@ extension _HomeScreenScaffold on _HomeScreenState {
                     child: Container(
                       width: 44,
                       height: 44,
-                      decoration: BoxDecoration(
-                        color: cs.brightness == Brightness.light
-                            ? Colors.white
-                            : cs.surfaceContainerHigh,
+                      decoration: AppTheme.floatingControl(
+                        cs,
                         borderRadius: BorderRadius.circular(12),
-                        boxShadow: AppShadows.floating,
                       ),
                       child: Icon(
                         Icons.directions_rounded,
@@ -192,12 +180,9 @@ extension _HomeScreenScaffold on _HomeScreenState {
               child: Container(
                 width: 44,
                 height: 44,
-                decoration: BoxDecoration(
-                  color: cs.brightness == Brightness.light
-                      ? Colors.white
-                      : cs.surfaceContainerHigh,
+                decoration: AppTheme.floatingControl(
+                  cs,
                   borderRadius: BorderRadius.circular(12),
-                  boxShadow: AppShadows.floating,
                 ),
                 child: Center(
                   child: AnimatedSwitcher(

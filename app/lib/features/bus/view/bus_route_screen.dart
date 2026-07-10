@@ -33,6 +33,7 @@ import 'package:wheres_the_car/shared/widgets/app_input.dart';
 import 'package:wheres_the_car/shared/widgets/app_sliding_segment.dart';
 import 'package:wheres_the_car/shared/widgets/bookmark_button.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_car/shared/widgets/divider_line.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/route_tab_bar.dart';
 

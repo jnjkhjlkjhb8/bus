@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 
 class AppBarCircleButton extends StatelessWidget {
@@ -28,13 +28,7 @@ class AppBarCircleButton extends StatelessWidget {
           child: Container(
             width: 40,
             height: 40,
-            decoration: BoxDecoration(
-              color: cs.brightness == Brightness.light
-                  ? Colors.white
-                  : cs.surfaceContainerHigh,
-              shape: BoxShape.circle,
-              boxShadow: AppShadows.floating,
-            ),
+            decoration: AppTheme.floatingControl(cs, shape: BoxShape.circle),
             child: Center(child: child),
           ),
         ),

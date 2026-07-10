@@ -11,6 +11,7 @@ import 'package:wheres_the_car/features/rail/bloc/rail_train_state.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
+import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_car/shared/widgets/bookmark_button.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/route_tab_bar.dart';
@@ -104,7 +105,7 @@ class _RailTrainScreenState extends State<RailTrainScreen>
           builder: (context, state) {
             switch (state.status) {
               case RailTrainStatus.loading:
-                return const Center(child: CircularProgressIndicator());
+                return const Center(child: AppSpinner());
               case RailTrainStatus.error:
                 return ErrorStateView(
                   error: state.error ?? const UnknownError(),

@@ -205,12 +205,7 @@ class _Operators extends StatelessWidget {
             child: Column(
               children: [
                 for (final (i, op) in operators.indexed) ...[
-                  if (i > 0)
-                    Divider(
-                      height: 0.5,
-                      thickness: 0.5,
-                      color: cs.outlineVariant,
-                    ),
+                  if (i > 0) const DividerLine(),
                   _OperatorRow(op: op, cs: cs),
                 ],
               ],
@@ -604,13 +599,9 @@ class _FareGroupBlock extends StatelessWidget {
         // Separate consecutive segments (公路客運 起迄 / 分段) with a hairline so
         // each origin→destination block reads as its own fare panel.
         if (showDivider)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Divider(
-              height: 0.5,
-              thickness: 0.5,
-              color: cs.outlineVariant,
-            ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: DividerLine(),
           ),
         if (group.segment case final segment?)
           Padding(
@@ -766,7 +757,7 @@ class _Timetable extends StatelessWidget {
           ),
         ),
         for (final gridRow in gridRows) ...[
-          Divider(height: 0.5, thickness: 0.5, color: cs.outlineVariant),
+          const DividerLine(),
           IntrinsicHeight(
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,

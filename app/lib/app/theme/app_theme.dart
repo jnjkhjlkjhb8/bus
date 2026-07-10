@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:wheres_the_car/app/theme/app_shadows.dart';
 
 class AppTheme {
   AppTheme._();
@@ -65,10 +66,12 @@ class AppTheme {
   static const Color inkSecondaryDark = Color(0xFF9E9E9E);
   static const Color inkDisabledDark = Color(0xFF383838);
   static const Color borderDark = Color(0xFF383838);
+  // Even ~11-step ramp. Dark mode has no usable drop shadow, so each elevation
+  // level must be a legible lightness step on its own.
   static const Color surfaceDark = Color(0xFF111111);
   static const Color surfaceCardDark = Color(0xFF1C1C1C);
   static const Color surfacePressDark = Color(0xFF282828);
-  static const Color surfaceHighlightDark = Color(0xFF2C2C2C);
+  static const Color surfaceHighlightDark = Color(0xFF333333);
 
   // Custom static schemes ensuring pure neutral surfaces and maximum contrast
   static const ColorScheme lightScheme = ColorScheme(
@@ -86,6 +89,7 @@ class AppTheme {
     surface: surfaceLight,
     onSurface: inkLight,
     surfaceContainerLow: surfaceCardLight,
+    surfaceContainerHigh: surfaceCardLight,
     surfaceContainerHighest: surfacePressLight,
     onSurfaceVariant: inkSecondaryLight,
     outline: inkDisabledLight,
@@ -107,11 +111,40 @@ class AppTheme {
     surface: surfaceDark,
     onSurface: inkDark,
     surfaceContainerLow: surfaceCardDark,
-    surfaceContainerHighest: surfacePressDark,
+    // Elevated chrome: floating map controls, dialogs, pickers. Left unset the
+    // getter falls back to `surface`, which paints elevated surfaces the
+    // darkest colour in the ramp instead of lifting them off it.
+    surfaceContainerHigh: surfacePressDark,
+    // Filled surfaces, segment tracks, dial faces. Must stay a visible step
+    // above `surfaceContainerHigh`: the station dial paints its face here on
+    // top of a dialog painted there.
+    surfaceContainerHighest: surfaceHighlightDark,
     onSurfaceVariant: inkSecondaryDark,
     outline: borderDark,
     outlineVariant: borderDark,
   );
+
+  /// Surface treatment for controls floating above the map (settings, alerts,
+  /// recenter, map back button).
+  ///
+  /// A drop shadow reads as depth on the light map but disappears against the
+  /// dark one, so in dark mode elevation is carried by a lighter surface and a
+  /// hairline border instead. Pass exactly one of [borderRadius] or a circular
+  /// [shape]; `BoxDecoration` rejects both together.
+  static BoxDecoration floatingControl(
+    ColorScheme cs, {
+    BorderRadius? borderRadius,
+    BoxShape shape = BoxShape.rectangle,
+  }) {
+    final isDark = cs.brightness == Brightness.dark;
+    return BoxDecoration(
+      color: isDark ? cs.surfaceContainerHigh : Colors.white,
+      borderRadius: borderRadius,
+      shape: shape,
+      border: isDark ? Border.all(color: cs.outlineVariant) : null,
+      boxShadow: isDark ? const [] : AppShadows.floating,
+    );
+  }
 
   static TextTheme _text(ColorScheme cs) => TextTheme(
     displayLarge: TextStyle(

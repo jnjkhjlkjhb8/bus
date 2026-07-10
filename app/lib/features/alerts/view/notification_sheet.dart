@@ -12,6 +12,7 @@ import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_car/shared/widgets/divider_line.dart';
 
 Color severityColor(AlertSeverity level, ColorScheme cs) =>
     level == AlertSeverity.red ? cs.error : AppTheme.etaApproaching;
@@ -111,7 +112,7 @@ class _NotificationSheet extends StatelessWidget {
                   ],
                 ),
               ),
-              Divider(height: 1, color: cs.outlineVariant),
+              const DividerLine(),
               Expanded(
                 child: alerts.isEmpty
                     ? const _NotificationEmpty()

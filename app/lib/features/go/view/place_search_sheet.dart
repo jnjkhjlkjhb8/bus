@@ -11,6 +11,7 @@ import 'package:wheres_the_car/data/repositories/places_repository.dart';
 import 'package:wheres_the_car/features/go/model/planned_place.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 
 Future<PlannedPlace> resolveCurrentPlace() async {
@@ -290,14 +291,7 @@ class _CurrentLocationRow extends StatelessWidget {
             ),
             const Spacer(),
             if (loading)
-              SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: cs.onSurfaceVariant,
-                ),
-              ),
+              AppSpinner(size: 18, strokeWidth: 2, color: cs.onSurfaceVariant),
           ],
         ),
       ),

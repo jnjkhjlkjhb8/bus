@@ -15,6 +15,7 @@ import 'package:wheres_the_car/features/settings/bloc/settings_state.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_car/shared/widgets/app_switch.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key, this.updatePushPreference, this.settings});
@@ -259,18 +260,7 @@ class _SettingsSwitchRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final sw = Switch(
-      value: value,
-      onChanged: onChanged,
-      thumbIcon: WidgetStateProperty.resolveWith(
-        (states) => Icon(
-          states.contains(WidgetState.selected)
-              ? Icons.check_rounded
-              : Icons.close_rounded,
-          size: 16,
-        ),
-      ),
-    );
+    final sw = AppSwitch(value: value, onChanged: onChanged);
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,

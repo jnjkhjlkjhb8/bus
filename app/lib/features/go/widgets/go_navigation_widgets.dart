@@ -163,7 +163,7 @@ class _NavSheet extends StatelessWidget {
                 total: sections.length,
                 arrival: formatClock(route.endTime),
               ),
-              Divider(height: 1, color: cs.outlineVariant),
+              const DividerLine(),
               Expanded(
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
@@ -436,18 +436,15 @@ class _NavSheetHeader extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 10),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(3),
-            child: TweenAnimationBuilder<double>(
-              duration: reduce ? Duration.zero : AppMotion.medium,
-              curve: AppMotion.easeOut,
-              tween: Tween<double>(end: progress),
-              builder: (context, value, _) => LinearProgressIndicator(
-                value: value,
-                minHeight: 6,
-                backgroundColor: cs.outlineVariant,
-                valueColor: AlwaysStoppedAnimation<Color>(cs.onSurface),
-              ),
+          TweenAnimationBuilder<double>(
+            duration: reduce ? Duration.zero : AppMotion.medium,
+            curve: AppMotion.easeOut,
+            tween: Tween<double>(end: progress),
+            builder: (context, value, _) => AppProgressBar(
+              value: value,
+              borderRadius: 3,
+              color: cs.onSurface,
+              backgroundColor: cs.outlineVariant,
             ),
           ),
           const SizedBox(height: 8),

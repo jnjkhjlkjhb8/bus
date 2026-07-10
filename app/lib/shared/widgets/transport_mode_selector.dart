@@ -25,11 +25,12 @@ class TransportModeSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Container(
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        color: cs.surfaceContainerLow,
         borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-        boxShadow: AppShadows.card,
+        boxShadow: AppShadows.cardFor(cs.brightness),
       ),
       padding: const EdgeInsets.all(8),
       child: style == SelectorStyle.multiSelect
