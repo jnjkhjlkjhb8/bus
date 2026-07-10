@@ -99,7 +99,14 @@ func b64j(v any) string {
 }
 
 func loadOrGenerateKey() (*rsa.PrivateKey, error) {
-	const keyFile = "/data/powersync_key.pem"
+	return loadOrGenerateKeyAt("/data/powersync_key.pem")
+}
+
+// loadOrGenerateKeyAt loads the persisted RS256 signing key, generating and
+// persisting a fresh one when the file is missing or unparseable. A key change
+// invalidates every client's PowerSync JWT at once, so keeping the persisted
+// key readable across restarts is what keeps sync alive.
+func loadOrGenerateKeyAt(keyFile string) (*rsa.PrivateKey, error) {
 	data, err := os.ReadFile(keyFile)
 	if err == nil {
 		block, _ := pem.Decode(data)

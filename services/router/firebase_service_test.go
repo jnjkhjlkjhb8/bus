@@ -20,12 +20,13 @@ const (
 )
 
 type fakeFirebasePersistence struct {
-	device       *pb.DeviceState
-	subscription *pb.RouteSubscriptionRequest
-	reminder     firebaseArrivalReminder
-	cancelledID  string
-	cancelledBy  string
-	secretHash   []byte
+	device        *pb.DeviceState
+	subscription  *pb.RouteSubscriptionRequest
+	reminder      firebaseArrivalReminder
+	cancelledID   string
+	cancelledBy   string
+	secretHash    []byte
+	cancelMissing bool
 }
 
 func (f *fakeFirebasePersistence) UpsertDevice(_ context.Context, identity *pb.DeviceIdentity, prefs *pb.DevicePrefs, secretHash []byte) (*pb.DeviceState, bool, error) {
@@ -53,7 +54,7 @@ func (f *fakeFirebasePersistence) CreateArrivalReminder(_ context.Context, remin
 
 func (f *fakeFirebasePersistence) CancelArrivalReminder(_ context.Context, reminderID, installID string) (bool, error) {
 	f.cancelledID, f.cancelledBy = reminderID, installID
-	return true, nil
+	return !f.cancelMissing, nil
 }
 
 func (f *fakeFirebasePersistence) ListDeviceState(_ context.Context, installID string) (*pb.DeviceState, error) {
@@ -153,6 +154,63 @@ func TestFirebaseServiceRejectsWrongInstallationCredential(t *testing.T) {
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("cross-install code = %v, want %v", status.Code(err), codes.PermissionDenied)
+	}
+}
+
+// The credential gate must reject requests that carry no installation metadata
+// at all, or a secret below the 32-byte minimum — both would otherwise let an
+// anonymous caller mutate another install's subscriptions and reminders.
+func TestFirebaseServiceRejectsMissingOrShortCredentials(t *testing.T) {
+	store := &fakeFirebasePersistence{}
+	server := &FirebaseServer{store: store, now: time.Now}
+	if _, err := server.UpsertDevice(installationContext("install-1", testInstallSecret), &pb.UpsertDeviceRequest{
+		Identity: &pb.DeviceIdentity{InstallId: "install-1", Platform: "ios"},
+		Prefs:    &pb.DevicePrefs{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	subscription := &pb.RouteSubscriptionRequest{InstallId: "install-1", RouteType: "bus", RouteKey: "route-1", Enabled: true}
+	tests := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{"no metadata", context.Background()},
+		{"secret below minimum length", installationContext("install-1", "short-secret")},
+		{"metadata install mismatch", installationContext("install-2", testInstallSecret)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := server.SetRouteSubscription(tt.ctx, subscription)
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("code = %v, want %v", status.Code(err), codes.PermissionDenied)
+			}
+			_, err = server.CancelArrivalReminder(tt.ctx, &pb.CancelArrivalReminderRequest{ReminderId: "id", InstallId: "install-1"})
+			if status.Code(err) != codes.PermissionDenied {
+				t.Fatalf("cancel code = %v, want %v", status.Code(err), codes.PermissionDenied)
+			}
+		})
+	}
+	if store.subscription != nil || store.cancelledID != "" {
+		t.Fatalf("store mutated by unauthorized calls: sub=%v cancelled=%q", store.subscription, store.cancelledID)
+	}
+}
+
+// Cancelling a reminder that is not pending for this install (already fired,
+// cancelled, or owned by someone else) must surface NotFound, not silent success.
+func TestFirebaseServiceCancelReminderNotFound(t *testing.T) {
+	store := &fakeFirebasePersistence{cancelMissing: true}
+	server := &FirebaseServer{store: store, now: time.Now}
+	ctx := installationContext("install-1", testInstallSecret)
+	if _, err := server.UpsertDevice(ctx, &pb.UpsertDeviceRequest{
+		Identity: &pb.DeviceIdentity{InstallId: "install-1", Platform: "ios"},
+		Prefs:    &pb.DevicePrefs{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := server.CancelArrivalReminder(ctx, &pb.CancelArrivalReminderRequest{ReminderId: "gone", InstallId: "install-1"})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("code = %v, want %v", status.Code(err), codes.NotFound)
 	}
 }
 

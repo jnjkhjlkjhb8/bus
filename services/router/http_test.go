@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,42 @@ func TestHandleJWKSPublishesSigningKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifyJWT(t, token, pub)
+}
+
+// A silently regenerated key would invalidate every client's PowerSync token
+// at once, so the persisted key must survive a restart byte-for-byte.
+func TestLoadOrGenerateKeyPersistsAcrossRestarts(t *testing.T) {
+	keyFile := t.TempDir() + "/powersync_key.pem"
+	first, err := loadOrGenerateKeyAt(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadOrGenerateKeyAt(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.N.Cmp(second.N) != 0 || first.D.Cmp(second.D) != 0 {
+		t.Fatal("reloaded key differs from the persisted key")
+	}
+}
+
+func TestLoadOrGenerateKeyRecoversFromCorruptFile(t *testing.T) {
+	keyFile := t.TempDir() + "/powersync_key.pem"
+	if err := os.WriteFile(keyFile, []byte("not a pem"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	key, err := loadOrGenerateKeyAt(keyFile)
+	if err != nil || key == nil {
+		t.Fatalf("key = %v, err = %v", key, err)
+	}
+	// The regenerated key must be persisted so the next restart reuses it.
+	reloaded, err := loadOrGenerateKeyAt(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.N.Cmp(reloaded.N) != 0 {
+		t.Fatal("regenerated key was not persisted for the next restart")
+	}
 }
 
 func TestHandleMetricsWritesLiveHubCounters(t *testing.T) {

@@ -42,6 +42,35 @@ func TestStalenessCheckSkips(t *testing.T) {
 	}
 }
 
+// railDateWindow feeds both the ingestor's landing partitions and the loader's
+// read partitions; an off-by-one here silently drops the first or last landed
+// timetable date from every load.
+func TestRailDateWindow(t *testing.T) {
+	// Sample today before and after the call so the assertion cannot flake if
+	// the test straddles midnight.
+	before := time.Now().Format(time.DateOnly)
+	got := railDateWindow(2)
+	after := time.Now().Format(time.DateOnly)
+	if len(got) != 3 {
+		t.Fatalf("railDateWindow(2) returned %d entries, want 3", len(got))
+	}
+	if got[0] != before && got[0] != after {
+		t.Fatalf("railDateWindow(2)[0] = %s, want today (%s or %s)", got[0], before, after)
+	}
+	first, err := time.Parse(time.DateOnly, got[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, d := range got {
+		if want := first.AddDate(0, 0, i).Format(time.DateOnly); d != want {
+			t.Fatalf("railDateWindow(2)[%d] = %s, want %s", i, d, want)
+		}
+	}
+	if single := railDateWindow(0); len(single) != 1 {
+		t.Fatalf("railDateWindow(0) = %v, want exactly one entry", single)
+	}
+}
+
 func TestRunLoadIteratesPartitionsAndDecodes(t *testing.T) {
 	// A registry spec with two partitions must invoke datasetJSON once per
 	// partition and hand each a decoder positioned at the array.

@@ -123,3 +123,59 @@ func TestComputeTravelAvgMatchesTimetableDepartures(t *testing.T) {
 		t.Errorf("avg_seconds = %d, want a positive origin-to-stop travel time within range", avgSeconds)
 	}
 }
+
+// TestCleanupBusHistoryRetentionBoundary pins the 30-day retention boundary of
+// the only data-deleting cron: rows past the window must go, rows inside it
+// must survive. A flipped comparison or wrong interval here silently destroys
+// the ETA training data, which cannot be rebuilt.
+func TestCleanupBusHistoryRetentionBoundary(t *testing.T) {
+	pool := travelAvgTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS bus_eta_prediction_error (
+		sub_route_uid text, direction smallint, stop_uid text, source text,
+		predicted_at timestamptz NOT NULL, predicted_seconds int, actual_seconds int)`); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	const sr = "TESTCLEANUP_SR"
+	clean := func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM bus_eta_history WHERE sub_route_uid = $1`, sr)
+		_, _ = pool.Exec(ctx, `DELETE FROM bus_eta_prediction_error WHERE sub_route_uid = $1`, sr)
+	}
+	clean()
+	defer clean()
+
+	for _, age := range []string{"31 days", "29 days"} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO bus_eta_history (sub_route_uid, direction, stop_uid, hour, day_of_week, estimate, recorded_at)
+			VALUES ($1, 0, 'STOP_A', 8, 1, 60, NOW() - $2::interval)`, sr, age); err != nil {
+			t.Fatalf("insert history %s: %v", age, err)
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO bus_eta_prediction_error (sub_route_uid, direction, stop_uid, source, predicted_at, predicted_seconds)
+			VALUES ($1, 0, 'STOP_A', 'model', NOW() - $2::interval, 120)`, sr, age); err != nil {
+			t.Fatalf("insert prediction error %s: %v", age, err)
+		}
+	}
+
+	if err := cleanupBusHistory(ctx, pool); err != nil {
+		t.Fatalf("cleanupBusHistory: %v", err)
+	}
+
+	for _, q := range []struct{ table, timeCol string }{
+		{"bus_eta_history", "recorded_at"},
+		{"bus_eta_prediction_error", "predicted_at"},
+	} {
+		var total, old int
+		err := pool.QueryRow(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE `+q.timeCol+` < NOW() - INTERVAL '30 days')
+			FROM `+q.table+` WHERE sub_route_uid = $1`, sr).Scan(&total, &old)
+		if err != nil {
+			t.Fatalf("count %s: %v", q.table, err)
+		}
+		if total != 1 || old != 0 {
+			t.Fatalf("%s after cleanup: total=%d old=%d, want only the 29-day row", q.table, total, old)
+		}
+	}
+}
