@@ -85,15 +85,15 @@ type MrtServer struct {
 }
 
 // ThsrServer serves high-speed-rail fares, timetables, and available-seat
-// streams. Fare/timetable results are cached in Redis and, on a miss, read from
-// the loaded env schema (no TDX fetch, ADR-0005). The shared TDX client remains
-// only for the realtime AvailableSeats refresh.
+// streams. Every path is a pure read: fare/timetable results are cached in Redis
+// and, on a miss, read from the loaded env schema, and AvailableSeats streams the
+// seat snapshots the functions THSR-seats live job refreshes into Redis. No TDX
+// fetch (ADR-0005), so the server holds no TDX client.
 type ThsrServer struct {
 	pb.UnimplementedThsrTimetableServiceServer
-	mu  sync.Mutex
-	db  *pgxpool.Pool
-	tdx *shared.TDXClient
-	rc  *redis.Client
+	mu sync.Mutex
+	db *pgxpool.Pool
+	rc *redis.Client
 }
 
 // Tra_StationServer streams the live arrival board for a TRA station from Redis
@@ -206,6 +206,11 @@ func main() {
 	rc := shared.ConnectRedis()
 	db := shared.ConnectDB("ROUTER_DB_MAX_CONNS", 20)
 	go logPoolStats(db)
+	// MaaS route planning is the router's sole, deliberate TDX carve-out: it is a
+	// request/response proxy, not cacheable live data, so it stays on the read
+	// path (ADR-0005 amendment). Every other formerly-live TDX fetch, including the
+	// THSR seat refresh, now runs in services/functions. This client exists only
+	// for MaaS.
 	tdx := shared.NewTDXClient(shared.TDXConfig{
 		Store:  shared.RedisTDXStore{RC: rc},
 		IMSKey: shared.TDXLegacyIMSKey,
@@ -250,7 +255,7 @@ func main() {
 	pb.RegisterBus_Station_ServiceServer(grpcServer, &BusStationserver{db: db, rc: rc})
 	pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: newTTLCache()})
 	pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{db: db, rc: rc})
-	pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, tdx: tdx, rc: rc})
+	pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, rc: rc})
 	pb.RegisterTRAStationServiceServer(grpcServer, &Tra_StationServer{db: db, rc: rc})
 	pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc})
 	pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc})

@@ -9,7 +9,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestThsrFarePayloadSkipsRefreshWhenDBHasRows(t *testing.T) {
+// TestThsrFarePayloadReadsFare covers the read path (ADR-0005): the helper reads
+// the loaded env schema and marshals the fare it finds, never fetching from TDX.
+func TestThsrFarePayloadReadsFare(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -20,13 +22,9 @@ func TestThsrFarePayloadSkipsRefreshWhenDBHasRows(t *testing.T) {
 		WithArgs("0990", "1000").
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "fare_class", "cabin_class", "price"}).AddRow(uint8(1), uint8(2), uint8(3), int32(120)))
 
-	refreshed := 0
-	payload, err := thsrFarePayload(context.Background(), "0990", "1000", db, func() { refreshed++ })
+	payload, err := thsrFarePayload(context.Background(), "0990", "1000", db)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if refreshed != 0 {
-		t.Fatalf("refresh count = %d, want 0", refreshed)
 	}
 	var fares models.ThsaFares
 	if err := proto.Unmarshal(payload, &fares); err != nil {
@@ -40,10 +38,10 @@ func TestThsrFarePayloadSkipsRefreshWhenDBHasRows(t *testing.T) {
 	}
 }
 
-// TestThsrFarePayloadNilRefreshOnEmpty covers the read path (ADR-0005): with a
-// nil refresh the helper returns an empty payload on an empty DB instead of
-// fetching from TDX, so the handler can map it to NotFound.
-func TestThsrFarePayloadNilRefreshOnEmpty(t *testing.T) {
+// TestThsrFarePayloadEmptyOnEmptyDB covers the read path (ADR-0005): the helper
+// returns an empty payload on an empty DB instead of fetching from TDX, so the
+// handler can map it to NotFound.
+func TestThsrFarePayloadEmptyOnEmptyDB(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +52,7 @@ func TestThsrFarePayloadNilRefreshOnEmpty(t *testing.T) {
 		WithArgs("0990", "1000").
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "fare_class", "cabin_class", "price"}))
 
-	payload, err := thsrFarePayload(context.Background(), "0990", "1000", db, nil)
+	payload, err := thsrFarePayload(context.Background(), "0990", "1000", db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,40 +95,6 @@ func TestThsrStoptimesPayload(t *testing.T) {
 	}
 	if len(stops.Items) != 1 || stops.Items[0].StationId != "0990" {
 		t.Fatalf("stops = %+v, want one stop at 0990", stops.Items)
-	}
-	if err := db.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestThsrFarePayloadRefreshesOnlyWhenDBIsEmpty(t *testing.T) {
-	db, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	db.ExpectQuery("SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares").
-		WithArgs("0990", "1000").
-		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "fare_class", "cabin_class", "price"}))
-	db.ExpectQuery("SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares").
-		WithArgs("0990", "1000").
-		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "fare_class", "cabin_class", "price"}).AddRow(uint8(1), uint8(2), uint8(3), int32(120)))
-
-	refreshed := 0
-	payload, err := thsrFarePayload(context.Background(), "0990", "1000", db, func() { refreshed++ })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if refreshed != 1 {
-		t.Fatalf("refresh count = %d, want 1", refreshed)
-	}
-	var fares models.ThsaFares
-	if err := proto.Unmarshal(payload, &fares); err != nil {
-		t.Fatal(err)
-	}
-	if len(fares.Items) != 1 || fares.Items[0].Price != 120 {
-		t.Fatalf("fares = %+v, want one fare priced 120", fares.Items)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
