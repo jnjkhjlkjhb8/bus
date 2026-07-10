@@ -90,7 +90,7 @@ func BikeAvailabilityKey(stationUID string) string {
 }
 
 // WeatherKey returns the key holding one city's cached weather snapshot. It is a
-// cross-module contract: weatherSync writes it (15-minute TTL) and the bus ETA
+// cross-module contract: weatherSync writes it (60-minute TTL) and the bus ETA
 // path reads it for prediction features, so both sides construct it here.
 func WeatherKey(city string) string {
 	return "weather:" + city

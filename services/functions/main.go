@@ -155,6 +155,11 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pg
 	busDailyroute(tdx, rc)
 	loadHolidays()
 	loadModel()
+	// Prime the weather cache at boot: the @every 10m cron below does not fire until
+	// 10 minutes in, so without this every bus_eta_history row written in that window
+	// after a restart would carry null weather features. Run it off the boot path so
+	// the CWA round-trip does not delay cron startup.
+	go weatherSync(rc)
 	// The legacy direct-fetch static jobs are gone: the ingestor lands raw_tdx at
 	// 03:00 and the ROLE=loader container transforms it into this env's schema at
 	// 03:30. changetovector reads the tables the loader fills, so it runs at 03:45 —

@@ -2,10 +2,8 @@ package main
 
 import (
 	"encoding/json"
-	"math"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -26,30 +24,6 @@ type weatherData struct {
 	Humidity      float64 `json:"humidity"`
 }
 
-// cityCoords maps a city to a representative {lat, lon} used to sample the
-// precipitation grid at that city's location.
-var cityCoords = map[string][2]float64{
-	"Taipei":         {25.04, 121.55},
-	"NewTaipei":      {24.99, 121.46},
-	"Taoyuan":        {24.99, 121.22},
-	"Taichung":       {24.14, 120.67},
-	"Tainan":         {22.99, 120.22},
-	"Kaohsiung":      {22.65, 120.31},
-	"Keelung":        {25.13, 121.73},
-	"Hsinchu":        {24.80, 120.97},
-	"HsinchuCounty":  {24.67, 121.00},
-	"MiaoliCounty":   {24.56, 120.82},
-	"ChanghuaCounty": {24.07, 120.52},
-	"NantouCounty":   {23.96, 120.68},
-	"YunlinCounty":   {23.71, 120.40},
-	"Chiayi":         {23.48, 120.45},
-	"ChiayiCounty":   {23.45, 120.45},
-	"PingtungCounty": {22.54, 120.49},
-	"YilanCounty":    {24.70, 121.75},
-	"HualienCounty":  {23.99, 121.60},
-	"TaitungCounty":  {22.75, 121.11},
-}
-
 // countyToCity maps the CWA station's Chinese county name to the internal city
 // code, so observation records can be bucketed per city. Stations in counties
 // not listed here are ignored.
@@ -60,32 +34,19 @@ var countyToCity = map[string]string{
 	"苗栗縣": "MiaoliCounty", "彰化縣": "ChanghuaCounty", "南投縣": "NantouCounty",
 	"雲林縣": "YunlinCounty", "嘉義市": "Chiayi", "嘉義縣": "ChiayiCounty",
 	"屏東縣": "PingtungCounty", "宜蘭縣": "YilanCounty", "花蓮縣": "HualienCounty",
-	"臺東縣": "TaitungCounty",
-}
-
-// gridPrecipitation samples the CWA precipitation grid at (lon, lat) by rounding
-// to the nearest grid cell. It returns nil when the point falls outside the grid
-// or the cell holds the CWA no-data sentinel (<= -90), so callers leave
-// precipitation unset rather than recording a bogus value.
-func gridPrecipitation(vals []float64, dimX int, startLon, startLat, res, lon, lat float64) *float64 {
-	x := int(math.Round((lon - startLon) / res))
-	y := int(math.Round((lat - startLat) / res))
-	if x < 0 || y < 0 || x >= dimX || y*dimX+x >= len(vals) {
-		return nil
-	}
-	v := vals[y*dimX+x]
-	if v <= -90 {
-		return nil
-	}
-	return &v
+	"臺東縣": "TaitungCounty", "澎湖縣": "PenghuCounty", "金門縣": "KinmenCounty",
+	"連江縣": "LienchiangCounty",
 }
 
 // weatherSync fetches current weather from two CWA datasets and caches a merged
-// per-city snapshot in Redis (weather:<city>, 15-minute TTL) for ETA prediction.
-// O-A0003-001 supplies station observations (temperature, wind, humidity), taking
-// the most recent station per city; F-B0046-001 supplies a precipitation grid
-// sampled per city. No-op when CWA_API_KEY is unset; a failure of either dataset
-// is logged and the other's data is still cached.
+// per-city snapshot in Redis (weather:<city>, 60-minute TTL) for ETA prediction.
+// O-A0003-001 supplies station observations (temperature, wind, humidity) and
+// O-A0002-001 supplies rainfall stations (precipitation), each taking the most
+// recent station per city. No-op when CWA_API_KEY is unset; a failure of either
+// dataset is logged and the other's data is still cached. The TTL runs well ahead
+// of the 10-minute refresh cron so a single transient CWA failure leaves a
+// slightly stale snapshot in place rather than nulling the weather features on
+// every bus_eta_history row written until the next success.
 func weatherSync(rc *redis.Client) {
 	cwaKey := os.Getenv("CWA_API_KEY")
 	if cwaKey == "" {
@@ -153,65 +114,70 @@ func weatherSync(rc *redis.Client) {
 		log.Infof("[WEATHER] O-A0003-001 error status=%d", resp.StatusCode())
 	}
 
-	var grid struct {
-		Cwaopendata struct {
-			Dataset struct {
-				DatasetInfo struct {
-					ParameterSet struct {
-						StartPointLongitude string `json:"StartPointLongitude"`
-						StartPointLatitude  string `json:"StartPointLatitude"`
-						GridResolution      string `json:"GridResolution"`
-						GridDimensionX      string `json:"GridDimensionX"`
-					} `json:"parameterSet"`
-				} `json:"datasetInfo"`
-				Contents struct {
-					Content string `json:"content"`
-				} `json:"contents"`
-			} `json:"dataset"`
-		} `json:"cwaopendata"`
+	// Precipitation comes from the automatic rainfall-station dataset (O-A0002-001),
+	// bucketed per city exactly like the observation stations above: the newest
+	// station per county wins, contributing its "Now" 10-minute accumulation. This
+	// replaced the former F-B0046-001 precipitation grid, whose dataset id CWA
+	// retired — it now 404s, so the whole grid branch was skipped and precipitation
+	// was never written.
+	var rain struct {
+		Records struct {
+			Station []struct {
+				GeoInfo struct {
+					CountyName string `json:"CountyName"`
+				} `json:"GeoInfo"`
+				ObsTime struct {
+					DateTime string `json:"DateTime"`
+				} `json:"ObsTime"`
+				RainfallElement struct {
+					Now struct {
+						Precipitation string `json:"Precipitation"`
+					} `json:"Now"`
+				} `json:"RainfallElement"`
+			} `json:"Station"`
+		} `json:"records"`
 	}
+	type rainBest struct {
+		obsTime time.Time
+		precip  float64
+	}
+	bestRain := make(map[string]rainBest)
 	resp2, err2 := client.R().SetHeader("Authorization", cwaKey).
-		Get(cwaBase + "/F-B0046-001")
+		Get(cwaBase + "/O-A0002-001")
 	if err2 == nil && resp2.StatusCode() == 200 {
-		if jsonErr := json.Unmarshal(resp2.Body(), &grid); jsonErr == nil {
-			ps := grid.Cwaopendata.Dataset.DatasetInfo.ParameterSet
-			startLon, _ := strconv.ParseFloat(ps.StartPointLongitude, 64)
-			startLat, _ := strconv.ParseFloat(ps.StartPointLatitude, 64)
-			res, _ := strconv.ParseFloat(ps.GridResolution, 64)
-			dimX, _ := strconv.Atoi(ps.GridDimensionX)
-			if res <= 0 || dimX <= 0 {
-				log.Infof("[WEATHER] F-B0046-001 invalid grid params, skipping")
-			} else {
-				parts := strings.Split(grid.Cwaopendata.Dataset.Contents.Content, ",")
-				vals := make([]float64, len(parts))
-				for i, p := range parts {
-					raw := strings.TrimSpace(p)
-					v, err := strconv.ParseFloat(raw, 64)
-					if err != nil {
-						log.Infof("[WEATHER] F-B0046-001 parse skipped raw=%s error=%v", raw, err)
-						continue
-					}
-					vals[i] = v
+		if jsonErr := json.Unmarshal(resp2.Body(), &rain); jsonErr == nil {
+			for _, s := range rain.Records.Station {
+				city, ok := countyToCity[s.GeoInfo.CountyName]
+				if !ok {
+					continue
 				}
-				for city, coords := range cityCoords {
-					p := gridPrecipitation(vals, dimX, startLon, startLat, res, coords[1], coords[0])
-					d := merged[city]
-					if p != nil {
-						d.Precipitation = *p
-					}
-					merged[city] = d
+				t, _ := time.Parse(time.RFC3339, s.ObsTime.DateTime)
+				if prev, exists := bestRain[city]; exists && !t.After(prev.obsTime) {
+					continue
 				}
+				// CWA flags no-data with negative sentinels (e.g. -99); skip those so
+				// precipitation stays unset rather than recording a bogus value.
+				v, err := strconv.ParseFloat(s.RainfallElement.Now.Precipitation, 64)
+				if err != nil || v < 0 {
+					continue
+				}
+				bestRain[city] = rainBest{t, v}
+			}
+			for city, b := range bestRain {
+				d := merged[city]
+				d.Precipitation = b.precip
+				merged[city] = d
 			}
 		}
 	} else if err2 != nil {
-		log.Infof("[WEATHER] F-B0046-001 fetch error: %v", err2)
+		log.Infof("[WEATHER] O-A0002-001 fetch error: %v", err2)
 	} else {
-		log.Infof("[WEATHER] F-B0046-001 error status=%d", resp2.StatusCode())
+		log.Infof("[WEATHER] O-A0002-001 error status=%d", resp2.StatusCode())
 	}
 
 	for city, d := range merged {
 		b, _ := json.Marshal(d)
-		rc.Set(shared.WeatherKey(city), string(b), 15*time.Minute)
+		rc.Set(shared.WeatherKey(city), string(b), 60*time.Minute)
 	}
 	log.Infof("[WEATHER] synced %d cities", len(merged))
 }
