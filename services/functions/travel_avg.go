@@ -130,6 +130,11 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 				times = append(times, t)
 			}
 		}
+		if err := drows.Err(); err != nil {
+			log.Infof("[TRAVEL_AVG] dep rows error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
+			depCache[key] = []time.Time{}
+			return nil
+		}
 		depCache[key] = times
 		return times
 	}

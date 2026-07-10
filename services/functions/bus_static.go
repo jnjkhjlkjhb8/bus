@@ -673,6 +673,10 @@ func saveschedule(ctx context.Context, db *pgxpool.Pool, city string) {
 			}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Infof("[BUS] action=saveschedule city=%s event=rows_error error=%v", city, err)
+		return
+	}
 	if len(row) == 0 {
 		log.Infof("[BUS] action=saveschedule city=%s event=skip reason=no_rows", city)
 		return

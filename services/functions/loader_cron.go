@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"github.com/robfig/cron/v3"
 )
 
@@ -24,9 +25,16 @@ func rawSourcePool(db *pgxpool.Pool) *pgxpool.Pool {
 	if dsn == "" {
 		return db
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		// event containing "fail" emits at Error level via obs.legacyLevel.
+		log.Infof("[LOAD] action=raw_pool event=parse_failed fallback=sink_pool error=%v", err)
+		return db
+	}
+	cfg.MaxConns = shared.EnvInt32("RAW_DB_MAX_CONNS", 4)
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
 		log.Infof("[LOAD] action=raw_pool event=connect_failed fallback=sink_pool error=%v", err)
 		return db
 	}

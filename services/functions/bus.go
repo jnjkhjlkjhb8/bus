@@ -306,6 +306,7 @@ type busOperatorJSON struct {
 }
 
 var operatorPhoneRun = regexp.MustCompile(`\d[\d\-() ]*\d|\d`)
+
 func sanitizeOperatorPhone(s string) string {
 	if !strings.ContainsRune(s, '�') {
 		return s
@@ -496,6 +497,9 @@ func busOperatorsFromDB(ctx context.Context, db *pgxpool.Pool, city string) map[
 		if err := rows.Scan(&op.OperatorID, &op.OperatorName.Zhtw, &op.OperatorPhone, &op.OperatorUrl, &op.AuthorityCode); err == nil {
 			result[op.OperatorID] = op
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=rows_error error=%v", city, err)
 	}
 	log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=loaded_from_db count=%d", city, len(result))
 	return result

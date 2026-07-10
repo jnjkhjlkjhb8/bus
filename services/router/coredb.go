@@ -75,6 +75,9 @@ func busStationGroupMembers(ctx context.Context, db coreDB, groupUID string) ([]
 		}
 		members = append(members, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return members, nil
 }
 

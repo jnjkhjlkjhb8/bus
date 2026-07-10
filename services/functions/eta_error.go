@@ -215,6 +215,10 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool) error {
 		log.Infof("[ETA_ERROR] sub_route=%s source=%s mae_seconds=%.1f samples=%d", sub, source, mae, samples)
 		count++
 	}
+	if err := rows.Err(); err != nil {
+		log.Infof("[ETA_ERROR] aggregate rows error: %v", err)
+		return obs.Transient(fmt.Errorf("aggregate prediction error: %w", err))
+	}
 	log.Infof("[ETA_ERROR] complete groups=%d", count)
 	return nil
 }

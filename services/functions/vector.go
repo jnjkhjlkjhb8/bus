@@ -239,7 +239,12 @@ func changetovector(ctx context.Context, rc *redis.Client, db *pgxpool.Pool) {
 		func() {
 			switch table {
 			case "bus_subroutes":
-				rows, _ := db.Query(ctx, busSubroutesForVectorSQL, since)
+				rows, err := db.Query(ctx, busSubroutesForVectorSQL, since)
+				if err != nil {
+					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				defer rows.Close()
 				input := make([]string, 0, size)
 				inrow := make([]resp, 0, size)
@@ -262,12 +267,22 @@ func changetovector(ctx context.Context, rc *redis.Client, db *pgxpool.Pool) {
 						inrow = inrow[:0]
 					}
 				}
+				if err := rows.Err(); err != nil {
+					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				if !processBatch(table, input, inrow) {
 					failed = true
 					return
 				}
 			case "bus_station_groups":
-				rows, _ := db.Query(ctx, busStationsForVectorSQL, since)
+				rows, err := db.Query(ctx, busStationsForVectorSQL, since)
+				if err != nil {
+					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				defer rows.Close()
 				input := make([]string, 0, size)
 				inrow := make([]resp, 0, size)
@@ -290,12 +305,22 @@ func changetovector(ctx context.Context, rc *redis.Client, db *pgxpool.Pool) {
 						inrow = inrow[:0]
 					}
 				}
+				if err := rows.Err(); err != nil {
+					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				if !processBatch(table, input, inrow) {
 					failed = true
 					return
 				}
 			case "bike_stations":
-				rows, _ := db.Query(ctx, bikeStationsForVectorSQL, since)
+				rows, err := db.Query(ctx, bikeStationsForVectorSQL, since)
+				if err != nil {
+					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				defer rows.Close()
 				input := make([]string, 0, size)
 				inrow := make([]resp, 0, size)
@@ -318,12 +343,22 @@ func changetovector(ctx context.Context, rc *redis.Client, db *pgxpool.Pool) {
 						inrow = inrow[:0]
 					}
 				}
+				if err := rows.Err(); err != nil {
+					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				if !processBatch(table, input, inrow) {
 					failed = true
 					return
 				}
 			case "mrt_station":
-				rows, _ := db.Query(ctx, mrtStationsForVectorSQL, since)
+				rows, err := db.Query(ctx, mrtStationsForVectorSQL, since)
+				if err != nil {
+					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				defer rows.Close()
 				input := make([]string, 0, size)
 				inrow := make([]resp, 0, size)
@@ -346,12 +381,22 @@ func changetovector(ctx context.Context, rc *redis.Client, db *pgxpool.Pool) {
 						inrow = inrow[:0]
 					}
 				}
+				if err := rows.Err(); err != nil {
+					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				if !processBatch(table, input, inrow) {
 					failed = true
 					return
 				}
 			case "thsr_stations":
-				rows, _ := db.Query(ctx, thsrStationsForVectorSQL, since)
+				rows, err := db.Query(ctx, thsrStationsForVectorSQL, since)
+				if err != nil {
+					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				defer rows.Close()
 				input := make([]string, 0, size)
 				inrow := make([]resp, 0, size)
@@ -374,12 +419,22 @@ func changetovector(ctx context.Context, rc *redis.Client, db *pgxpool.Pool) {
 						inrow = inrow[:0]
 					}
 				}
+				if err := rows.Err(); err != nil {
+					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				if !processBatch(table, input, inrow) {
 					failed = true
 					return
 				}
 			case "tra_stations":
-				rows, _ := db.Query(ctx, traStationsForVectorSQL, since)
+				rows, err := db.Query(ctx, traStationsForVectorSQL, since)
+				if err != nil {
+					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
+					failed = true
+					return
+				}
 				defer rows.Close()
 				input := make([]string, 0, size)
 				inrow := make([]resp, 0, size)
@@ -401,6 +456,11 @@ func changetovector(ctx context.Context, rc *redis.Client, db *pgxpool.Pool) {
 						input = input[:0]
 						inrow = inrow[:0]
 					}
+				}
+				if err := rows.Err(); err != nil {
+					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
+					failed = true
+					return
 				}
 				if !processBatch(table, input, inrow) {
 					failed = true

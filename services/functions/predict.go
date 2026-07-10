@@ -109,6 +109,9 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 			best[k] = prioDep{dep: dep, prio: prio}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Infof("[MODEL] batchNextDepartures rows error: %v", err)
+	}
 	for k, v := range best {
 		out[k] = v.dep
 	}
@@ -142,6 +145,9 @@ func batchTravelAvg(ctx context.Context, db *pgxpool.Pool, uids []string, hour, 
 		if err := rows.Scan(&uid, &dir, &stop, &sec); err == nil {
 			out[travelAvgKey{subRouteUID: uid, direction: dir, stopUID: stop, hour: hour, dayOfWeek: dayOfWeek}] = sec
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Infof("[MODEL] batchTravelAvg rows error: %v", err)
 	}
 	return out
 }

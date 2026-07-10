@@ -91,6 +91,9 @@ func vectorSearch(ctx context.Context, q string, limit int, db *pgxpool.Pool) ([
 			results = append(results, r)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return results, nil
 }
 
@@ -130,6 +133,9 @@ func textSearch(ctx context.Context, q string, limit int, db *pgxpool.Pool) ([]s
 		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err == nil {
 			results = append(results, r)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return results, nil
 }
@@ -199,6 +205,9 @@ func expandStationRoutes(ctx context.Context, primary []searchResult, db *pgxpoo
 			}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Infof("[SEARCH] route expansion rows error: %v", err)
+	}
 	return append(primary, extra...)
 }
 
@@ -237,6 +246,9 @@ func trainNumberSearch(ctx context.Context, q string, db *pgxpool.Pool) []search
 		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err == nil {
 			results = append(results, r)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Infof("[SEARCH] train number search rows error: %v", err)
 	}
 	return results
 }
