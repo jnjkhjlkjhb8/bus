@@ -1,175 +1,95 @@
 import 'dart:async';
 
-import 'package:firebase_analytics/firebase_analytics.dart';
-import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/firebase/firebase_bootstrap.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/repositories/settings_repository.dart';
+import 'package:wheres_the_car/features/settings/bloc/settings_bloc.dart';
+import 'package:wheres_the_car/features/settings/bloc/settings_event.dart';
+import 'package:wheres_the_car/features/settings/bloc/settings_state.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 
-enum _Appearance {
-  system('跟隨系統', 'system'),
-  light('淺色模式', 'light'),
-  dark('深色模式', 'dark');
-
-  const _Appearance(this.label, this.key);
-  final String label;
-
-  /// Persisted value in the settings box; see [SettingsRepository.themeMode].
-  final String key;
-
-  static _Appearance fromKey(String key) =>
-      values.firstWhere((e) => e.key == key, orElse: () => system);
-}
-
-enum _Language {
-  system('跟隨系統'),
-  zh('繁體中文'),
-  en('English');
-
-  const _Language(this.label);
-  final String label;
-}
-
-class SettingsScreen extends StatefulWidget {
+class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key, this.updatePushPreference, this.settings});
 
-  final Future<bool> Function({required bool requested})? updatePushPreference;
+  final PushUpdater? updatePushPreference;
 
   /// Injectable for tests; defaults to the shared repository instance.
   final SettingsRepository? settings;
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
+  Widget build(BuildContext context) {
+    return BlocProvider(
+      create: (_) => SettingsBloc(
+        settings: settings,
+        updatePushPreference: updatePushPreference,
+      ),
+      child: const _SettingsView(),
+    );
+  }
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
-  SettingsRepository get _settings =>
-      widget.settings ?? SettingsRepository.instance;
+class _SettingsView extends StatelessWidget {
+  const _SettingsView();
 
-  late _Appearance _appearance;
-  _Language _language = _Language.system;
-  int _versionTaps = 0;
-  bool _devMode = false;
-  bool _pushUpdating = false;
-  late bool _pushEnabled;
-  late bool _analyticsEnabled;
-  late bool _crashlyticsEnabled;
-  late bool _largeText;
-  late bool _liveActivityEnabled;
-  late bool _navigationLocationEnabled;
-
-  @override
-  void initState() {
-    super.initState();
-    _appearance = _Appearance.fromKey(_settings.appearanceMode);
-    _devMode = _settings.devModeEnabled;
-    _pushEnabled = _settings.pushEnabled;
-    _analyticsEnabled = _settings.analyticsEnabled;
-    _crashlyticsEnabled = _settings.crashlyticsEnabled;
-    _largeText = _settings.largeText;
-    _liveActivityEnabled = _settings.liveActivityEnabled;
-    _navigationLocationEnabled = _settings.navigationLocationEnabled;
-  }
-
-  Future<void> _setPush(bool value) async {
-    if (_pushUpdating) return;
-    _settings.pushEnabled = value;
-    setState(() {
-      _pushEnabled = value;
-      _pushUpdating = true;
-    });
-    var enabled = false;
-    try {
-      enabled =
-          await (widget.updatePushPreference ??
-              FirebaseBootstrap.updatePushPreference)(requested: value);
-    } on Object catch (_) {
-      enabled = false;
-    } finally {
-      _settings.pushEnabled = enabled;
-      if (mounted) {
-        setState(() {
-          _pushEnabled = enabled;
-          _pushUpdating = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _setCollection({
-    required bool value,
-    required void Function({required bool value}) persist,
-    required void Function({required bool value}) update,
-    required Future<void> Function({required bool value}) setCollectionEnabled,
-  }) async {
-    persist(value: value);
-    setState(() => update(value: value));
-    if (!FirebaseGate.enabled) return;
-    try {
-      await setCollectionEnabled(value: value);
-    } on Object catch (e, s) {
-      CrashReporter.record(e, s);
-    }
-  }
-
-  void _onVersionTap() {
-    _versionTaps++;
-    if (_versionTaps >= 5 && !_devMode) {
-      _settings.devModeEnabled = true;
-      setState(() => _devMode = true);
-      _versionTaps = 0;
-      AppSnackbar.show(context, '開發者模式已啟用');
-    }
-  }
-
-  Future<void> _pickAppearance() async {
+  Future<void> _pickAppearance(
+    BuildContext context,
+    Appearance current,
+  ) async {
     final result = await context.push<String>(
       '/settings/appearance',
       extra: {
-        'options': _Appearance.values.map((e) => e.label).toList(),
-        'selected': _appearance.label,
+        'options': Appearance.values.map((e) => e.label).toList(),
+        'selected': current.label,
       },
     );
-    if (result != null && mounted) {
-      final picked = _Appearance.values.firstWhere(
+    if (result != null && context.mounted) {
+      final picked = Appearance.values.firstWhere(
         (e) => e.label == result,
-        orElse: () => _appearance,
+        orElse: () => current,
       );
-      _settings.appearanceMode = picked.key;
-      setState(() => _appearance = picked);
+      context.read<SettingsBloc>().add(AppearanceSelected(picked));
     }
   }
 
-  Future<void> _pickLanguage() async {
+  Future<void> _pickLanguage(BuildContext context, Language current) async {
     final result = await context.push<String>(
       '/settings/language',
       extra: {
-        'options': _Language.values.map((e) => e.label).toList(),
-        'selected': _language.label,
+        'options': Language.values.map((e) => e.label).toList(),
+        'selected': current.label,
       },
     );
-    if (result != null && mounted) {
-      setState(() {
-        _language = _Language.values.firstWhere(
-          (e) => e.label == result,
-          orElse: () => _language,
-        );
-      });
+    if (result != null && context.mounted) {
+      final picked = Language.values.firstWhere(
+        (e) => e.label == result,
+        orElse: () => current,
+      );
+      context.read<SettingsBloc>().add(LanguageSelected(picked));
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    return BlocListener<SettingsBloc, SettingsState>(
+      // Announce dev mode only on the false -> true unlock transition.
+      listenWhen: (prev, curr) => !prev.devMode && curr.devMode,
+      listener: (context, state) => AppSnackbar.show(context, '開發者模式已啟用'),
+      child: BlocBuilder<SettingsBloc, SettingsState>(
+        builder: _buildBody,
+      ),
+    );
+  }
+
+  Widget _buildBody(BuildContext context, SettingsState state) {
+    final bloc = context.read<SettingsBloc>();
     return Scaffold(
       appBar: const DetailAppBar(title: '設定', centerTitle: true),
       body: ListView(
@@ -181,25 +101,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _SettingsRow(
                 icon: Icons.dark_mode_outlined,
                 label: '外觀',
-                value: _appearance.label,
+                value: state.appearance.label,
                 hasChevron: 1,
-                onTap: _pickAppearance,
+                onTap: () => _pickAppearance(context, state.appearance),
               ),
               _SettingsRow(
                 icon: Icons.language_rounded,
                 label: '語言',
-                value: _language.label,
+                value: state.language.label,
                 hasChevron: 1,
-                onTap: _pickLanguage,
+                onTap: () => _pickLanguage(context, state.language),
               ),
               _SettingsSwitchRow(
                 icon: Icons.text_fields_rounded,
                 label: '大字體模式',
-                value: _largeText,
-                onChanged: (v) {
-                  _settings.largeText = v;
-                  setState(() => _largeText = v);
-                },
+                value: state.largeText,
+                onChanged: (v) => bloc.add(LargeTextToggled(value: v)),
               ),
             ],
           ),
@@ -211,21 +128,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 icon: Icons.dashboard_customize_outlined,
                 label: '即時動態',
                 subtitle: '鎖定畫面與動態島顯示導航資訊',
-                value: _liveActivityEnabled,
-                onChanged: (v) {
-                  _settings.liveActivityEnabled = v;
-                  setState(() => _liveActivityEnabled = v);
-                },
+                value: state.liveActivityEnabled,
+                onChanged: (v) => bloc.add(LiveActivityToggled(value: v)),
               ),
               _SettingsSwitchRow(
                 icon: Icons.my_location_outlined,
                 label: '導航自動定位',
                 subtitle: '用於自動上車提醒與車上進度；關閉後仍可手動操作',
-                value: _navigationLocationEnabled,
-                onChanged: (v) {
-                  _settings.navigationLocationEnabled = v;
-                  setState(() => _navigationLocationEnabled = v);
-                },
+                value: state.navigationLocationEnabled,
+                onChanged: (v) =>
+                    bloc.add(NavigationLocationToggled(value: v)),
               ),
             ],
           ),
@@ -236,36 +148,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
               _SettingsSwitchRow(
                 icon: Icons.notifications_none_rounded,
                 label: '推播通知',
-                value: _pushEnabled,
-                onChanged: _pushUpdating ? null : _setPush,
+                value: state.pushEnabled,
+                onChanged: state.pushUpdating
+                    ? null
+                    : (v) => bloc.add(PushToggled(value: v)),
               ),
               _SettingsSwitchRow(
                 icon: Icons.analytics_outlined,
                 label: 'Analytics 使用資料',
-                value: _analyticsEnabled,
-                onChanged: (value) => _setCollection(
-                  value: value,
-                  persist: ({required value}) =>
-                      _settings.analyticsEnabled = value,
-                  update: ({required value}) => _analyticsEnabled = value,
-                  setCollectionEnabled: ({required value}) => FirebaseAnalytics
-                      .instance
-                      .setAnalyticsCollectionEnabled(value),
-                ),
+                value: state.analyticsEnabled,
+                onChanged: (value) => bloc.add(AnalyticsToggled(value: value)),
               ),
               _SettingsSwitchRow(
                 icon: Icons.bug_report_outlined,
                 label: 'Crashlytics 錯誤回報',
-                value: _crashlyticsEnabled,
-                onChanged: (value) => _setCollection(
-                  value: value,
-                  persist: ({required value}) =>
-                      _settings.crashlyticsEnabled = value,
-                  update: ({required value}) => _crashlyticsEnabled = value,
-                  setCollectionEnabled: ({required value}) =>
-                      FirebaseCrashlytics.instance
-                          .setCrashlyticsCollectionEnabled(value),
-                ),
+                value: state.crashlyticsEnabled,
+                onChanged: (value) =>
+                    bloc.add(CrashlyticsToggled(value: value)),
               ),
             ],
           ),
@@ -295,7 +194,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 icon: Icons.info_outline_rounded,
                 label: '目前版本',
                 value: '1.0.0',
-                onTap: _onVersionTap,
+                onTap: () => bloc.add(const VersionTapped()),
               ),
               if (FirebaseGate.appEnv != 'prod' &&
                   FirebaseGate.appEnv != 'production')
@@ -319,7 +218,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
           ),
-          if (_devMode) ...[
+          if (state.devMode) ...[
             const SizedBox(height: 16),
             _SettingsSection(
               title: '開發者',
