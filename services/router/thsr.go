@@ -16,9 +16,11 @@ type thsrTimetableRow struct {
 	Ending_station_id     string `db:"ending_station_id"`
 	Ending_station_name   string `db:"ending_station_name"`
 	Arrivaltime           string `db:"arrivaltime"`
+	Departuretime         string `db:"departuretime"`
 	Note                  string `db:"note"`
 	Overnight             bool   `db:"overnight"`
 	Stationid             string `db:"stationid"`
+	Stopsequence          int    `db:"stopsequence"`
 }
 type thsrStopsRow struct {
 	Stopsequence  int    `db:"stopsequence"`
@@ -103,7 +105,7 @@ func thsrStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr strin
 func thsrTimetablePayload(ctx context.Context, db railDB, start, end string, date time.Time) ([]byte, int, error) {
 	start = resolveRailStationID(ctx, db, "thsr_stations", start)
 	end = resolveRailStationID(ctx, db, "thsr_stations", end)
-	const combined = `SELECT trainno, starting_station_id,starting_station_name,ending_station_id,ending_station_name,arrivaltime,note,overnight,stationid FROM thsr_timetable WHERE stationid = ANY($1) AND train_date = $2;`
+	const combined = `SELECT trainno, starting_station_id,starting_station_name,ending_station_id,ending_station_name,arrivaltime,departuretime,note,overnight,stationid,stopsequence FROM thsr_timetable WHERE stationid = ANY($1) AND train_date = $2;`
 	stations := []string{start, end}
 	rows, err := db.Query(ctx, combined, stations, date.Format(time.DateOnly))
 	if err != nil {
@@ -114,14 +116,16 @@ func thsrTimetablePayload(ctx context.Context, db railDB, start, end string, dat
 		return nil, 0, err
 	}
 	mp := make(map[string]*models.ThsaTimetable)
+	startSeq := make(map[string]int)
 	arr := []*models.ThsaTimetable{}
 	for _, temp := range row {
 		if temp.Stationid != start {
 			continue
 		}
-		if temp.Arrivaltime < date.Format(time.TimeOnly) {
+		if temp.Departuretime < date.Format(time.TimeOnly) {
 			continue
 		}
+		startSeq[temp.Trainno] = temp.Stopsequence
 		mp[temp.Trainno] = &models.ThsaTimetable{
 			TrainDate:             date.Format(time.DateOnly),
 			TrainNo:               temp.Trainno,
@@ -129,7 +133,7 @@ func thsrTimetablePayload(ctx context.Context, db railDB, start, end string, dat
 			EndingStationName:     temp.Ending_station_name,
 			Note:                  temp.Note,
 			Overnight:             temp.Overnight,
-			Starting_Time:         temp.Arrivaltime,
+			Starting_Time:         temp.Departuretime,
 		}
 	}
 	for _, temp := range row {
@@ -138,6 +142,9 @@ func thsrTimetablePayload(ctx context.Context, db railDB, start, end string, dat
 		}
 		seed, ok := mp[temp.Trainno]
 		if !ok {
+			continue
+		}
+		if temp.Stopsequence <= startSeq[temp.Trainno] {
 			continue
 		}
 		w, err := time.Parse(time.TimeOnly, seed.Starting_Time)

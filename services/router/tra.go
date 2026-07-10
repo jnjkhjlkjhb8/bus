@@ -161,9 +161,11 @@ func traTimetablePayload(ctx context.Context, db railDB, start, end string, date
 		return nil, 0, err
 	}
 	mp := make(map[string]*models.TraTimetable)
+	startSeq := make(map[string]int)
 	arr := []*models.TraTimetable{}
 	for _, temp := range row {
 		if temp.Stationid == start {
+			startSeq[temp.Trainno] = temp.Stopsequence
 			mp[temp.Trainno] = &models.TraTimetable{
 				TrainDate:             temp.Train_date.Format(time.DateOnly),
 				TrainNo:               temp.Trainno,
@@ -175,7 +177,9 @@ func traTimetablePayload(ctx context.Context, db railDB, start, end string, date
 				TripLine:              temp.Tripline,
 				Mask:                  temp.Mask,
 				Note:                  temp.Note,
-				Starting_Time:         temp.Arrivaltime.Format(time.RFC3339),
+				// The origin leg is a departure, not an arrival: a train
+				// originating at the queried station has no arrival time there.
+				Starting_Time: temp.Departuretime.Format(time.RFC3339),
 			}
 		}
 	}
@@ -185,6 +189,9 @@ func traTimetablePayload(ctx context.Context, db railDB, start, end string, date
 		}
 		seed, ok := mp[temp.Trainno]
 		if !ok {
+			continue
+		}
+		if temp.Stopsequence <= startSeq[temp.Trainno] {
 			continue
 		}
 		w, err := time.Parse(time.RFC3339, seed.Starting_Time)
@@ -207,4 +214,3 @@ func traTimetablePayload(ctx context.Context, db railDB, start, end string, date
 	}
 	return b, len(arr), nil
 }
-
