@@ -10,7 +10,6 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/firebase/remote_config.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
@@ -20,8 +19,8 @@ import 'package:wheres_the_car/data/models/timeline_stop.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
+import 'package:wheres_the_car/features/bus/widgets/bus_timeline_stops.dart';
 import 'package:wheres_the_car/shared/map/bus_sprite.dart';
-import 'package:wheres_the_car/shared/map/map_style.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/map/wkt.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
@@ -252,7 +251,6 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                     valueListenable: _mapLayer,
                     builder: (context, layer, _) => GoogleMap(
                       initialCameraPosition: _kDefaultCamera,
-                      style: mapStyleFor(Theme.of(context).brightness),
                       myLocationEnabled: true,
                       myLocationButtonEnabled: false,
                       zoomControlsEnabled: false,
