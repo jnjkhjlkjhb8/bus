@@ -5,5 +5,7 @@
   "GRPC_PORT": 50051,
   "GRPC_TLS": true,
   "FIREBASE_ENABLED": true,
+  "GOOGLE_MAPS_API_KEY": "",
+  "GOOGLE_PLACES_API_KEY": "",
   "APP_ENV": "production"
 }
