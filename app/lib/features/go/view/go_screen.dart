@@ -25,7 +25,6 @@ import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
-import 'package:wheres_the_car/shared/map/map_style.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
@@ -392,7 +391,6 @@ class _GoScreenState extends State<GoScreen> {
                       target: _kDefaultPos,
                       zoom: 14,
                     ),
-                    style: mapStyleFor(Theme.of(context).brightness),
                     onMapCreated: (c) {
                       _map = c;
                       if (route != null && !navigating) _fitTo(route);

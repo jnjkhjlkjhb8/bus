@@ -26,7 +26,6 @@ import 'package:wheres_the_car/features/home/bloc/nearby_bloc.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_event.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_state.dart';
 import 'package:wheres_the_car/features/home/widgets/home_station_detail.dart';
-import 'package:wheres_the_car/shared/map/map_style.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';

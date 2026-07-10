@@ -13,7 +13,9 @@ extension _HomeScreenScaffold on _HomeScreenState {
                       target: _center,
                       zoom: 15,
                     ),
-                    style: mapStyleFor(cs.brightness),
+                    colorScheme: cs.brightness == Brightness.dark
+                        ? MapColorScheme.dark
+                        : MapColorScheme.light,
                     onMapCreated: (controller) {
                       _mapController = controller;
                       _camCenter = _center;
