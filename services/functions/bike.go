@@ -9,7 +9,6 @@ import (
 
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
@@ -46,44 +45,6 @@ type bikeAvailability struct {
 		GeneralBikes  uint8 `json:"GeneralBikes"`
 		ElectricBikes uint8 `json:"ElectricBikes"`
 	} `json:"AvailableRentBikesDetail"`
-}
-
-// bikeStatic is the daily static-ingestion entry point for bike-share stations.
-// It always returns nil; failures are logged per-city inside getbikeStation so
-// one city's error does not fail the whole daily run.
-func bikeStatic(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) error {
-	log.Infof("[BIKE] action=bike_static event=start")
-	getbikeStation(ctx, tdx, rc, db)
-	log.Infof("[BIKE] action=bike_static event=complete")
-	return nil
-}
-
-// getbikeStation upserts bike-share stations into bike_stations, city by city,
-// via a per-city temp-table COPY then ON CONFLICT upsert. Cities with no public
-// bike-share feed are skipped (the inline list mirrors ingestBikeSkip). The
-// "YouBike2.0_" name prefix is stripped before storing.
-func getbikeStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
-	log.Infof("[BIKE] action=getbike_station event=start")
-	for _, city := range cities {
-		if ingestBikeSkip[city] {
-			continue
-		}
-		log.Infof("[BIKE] action=getbike_station city=%s event=city_start", city)
-		dec, comp, flipopen, err := tdx.Get(fmt.Sprintf("/v2/Bike/Station/City/%s", city), "bike_stations"+city)
-		func() {
-			if flipopen != nil {
-				defer flipopen()
-			}
-			if err != nil || !comp {
-				log.Infof("[BIKE] action=getbike_station city=%s event=skip reason=api_error=%s", city, err)
-				return
-			}
-			if loadErr := loadBikeStations(ctx, dec, pgLoadSink{db: db, rc: rc}, city); loadErr != nil {
-				log.Infof("[BIKE] action=getbike_station city=%s event=error error=%v", city, loadErr)
-			}
-		}()
-	}
-	log.Infof("[BIKE] action=getbike_station event=complete")
 }
 
 // loadBikeStations upserts one city's bike-share stations into bike_stations via

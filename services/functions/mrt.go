@@ -71,42 +71,6 @@ type mrtLive struct {
 	EstimateTime  int32 `json:"EstimateTime"`
 }
 
-// mrtStatic is the legacy direct-fetch metro static path (stations and
-// first/last timetables), superseded by the ROLE=loader crons and no longer
-// scheduled (see main.go). It always returns nil. The OD fare matrix is loaded
-// separately from raw_tdx by loadMrtJourneyMatrix (loader registry key
-// "mrt_odfare").
-func mrtStatic(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) error {
-	log.Infof("[MRT] action=mrt_static event=start")
-	getmrtStation(ctx, tdx, rc, db)
-	getmrtFirstlast(ctx, tdx, rc, db)
-	log.Infof("[MRT] action=mrt_static event=complete")
-	return nil
-}
-
-// getmrtStation upserts metro stations into mrt_station for each metro system
-// via a per-system temp-table COPY then ON CONFLICT upsert on (station_id,
-// system). Per-system failures are logged and skipped.
-func getmrtStation(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
-	log.Infof("[MRT] action=getmrt_station event=start")
-	var systems = []string{"TRTC", "KRTC", "KLRT", "TYMC", "NTMC"}
-	for _, system := range systems {
-		log.Infof("[MRT] action=getmrt_station system=%s event=system_start", system)
-		dec, comp, flipopen, err := tdx.Get(fmt.Sprintf("/v2/Rail/Metro/Station/%s", system), "mrt_stations"+system)
-		if err != nil || !comp {
-			log.Infof("[MRT] action=getmrt_station system=%s event=skip reason=api_error", system)
-			continue
-		}
-		func() {
-			defer flipopen()
-			if loadErr := loadMrtStations(ctx, dec, pgLoadSink{db: db, rc: rc}, system); loadErr != nil {
-				log.Infof("[MRT] action=getmrt_station system=%s event=error error=%v", system, loadErr)
-			}
-		}()
-	}
-	log.Infof("[MRT] action=getmrt_station event=complete")
-}
-
 // loadMrtStations upserts one metro system's stations into mrt_station via a
 // temp-table COPY then ON CONFLICT (station_id, system) upsert. It consumes an
 // already-opened decoder; the temp_mrt COPY and upsert are byte-identical to the
@@ -158,30 +122,6 @@ func loadMrtStations(ctx context.Context, dec *json.Decoder, sink loadSink, syst
 				SELECT st_geomfromtext(geom, 4326), system, name, city,id, bike,NOW() FROM temp_mrt
 				ON CONFLICT (station_id,system) DO UPDATE SET name = EXCLUDED.name,city = excluded.city,stationposition = EXCLUDED.stationposition,updated_at = NOW();`,
 	}, row)
-}
-
-// getmrtFirstlast rebuilds mrt_schedule (first/last train times) per metro
-// system via temp-table COPY and upsert, then prunes rows older than this run's
-// start so retired schedule entries drop out. NTMC is excluded (no first/last
-// feed). Per-system failures are logged and skipped.
-func getmrtFirstlast(ctx context.Context, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
-	log.Infof("[MRT] action=getmrt_firstlast event=start")
-	var systems = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
-	for _, system := range systems {
-		log.Infof("[MRT] action=getmrt_firstlast system=%s event=system_start", system)
-		dec, comp, flipopen, err := tdx.Get(fmt.Sprintf("/v2/Rail/Metro/FirstLastTimetable/%s", system), "mrt_firstlast"+system)
-		if err != nil || !comp {
-			log.Infof("[MRT] action=getmrt_firstlast system=%s event=skip reason=api_error", system)
-			continue
-		}
-		func() {
-			defer flipopen()
-			if loadErr := loadMrtFirstlast(ctx, dec, pgLoadSink{db: db, rc: rc}, system); loadErr != nil {
-				log.Infof("[MRT] action=getmrt_firstlast system=%s event=error error=%v", system, loadErr)
-			}
-		}()
-	}
-	log.Infof("[MRT] action=getmrt_firstlast event=complete")
 }
 
 // loadMrtFirstlast rebuilds mrt_schedule (first/last train times) for one metro

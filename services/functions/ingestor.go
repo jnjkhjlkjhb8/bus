@@ -22,7 +22,7 @@ var ingestBusAPIs = []string{
 	"Operator", "RouteFare", "DailyTimeTable",
 }
 
-// mirrors getbikeStation's skip list — cities with no public bike-share feed.
+// cities with no public bike-share feed.
 var ingestBikeSkip = map[string]bool{
 	"Keelung": true, "HsinchuCounty": true, "NantouCounty": true,
 	"YilanCounty": true, "PenghuCounty": true, "KinmenCounty": true,

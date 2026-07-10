@@ -239,12 +239,14 @@ func (p *redisLivePipe) Exec() error {
 
 // TTL windows re-armed on a 304, per the CONTEXT.md operating rule. They match
 // the SET TTLs each job writes on the success path so a 304 extends a snapshot
-// by exactly one more validity window: bus 180s, mrt/bike 2min, tra 3min.
+// by exactly one more validity window: bus 180s, mrt/bike 2min, tra 3min, thsr
+// seats 15min (a slow 10min cadence, so the snapshot outlives one missed refresh).
 const (
-	busLiveTTL  = 180 * time.Second
-	mrtLiveTTL  = 2 * time.Minute
-	bikeLiveTTL = 2 * time.Minute
-	traLiveTTL  = 3 * time.Minute
+	busLiveTTL       = 180 * time.Second
+	mrtLiveTTL       = 2 * time.Minute
+	bikeLiveTTL      = 2 * time.Minute
+	traLiveTTL       = 3 * time.Minute
+	thsrSeatsLiveTTL = 15 * time.Minute
 )
 
 // liveRegistry lists every realtime dataset the runner knows how to refresh, in
@@ -273,6 +275,11 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notificationDispatcher) []liveSp
 			{pattern: shared.TraDelayHashKey, ttl: traLiveTTL},
 		}
 	}
+	thsrSeatsPatterns := func() []ttlPattern {
+		// Re-arm today's per-train seat keys on a 304; the date is resolved when the
+		// 304 fires so the pattern always targets the current service day.
+		return []ttlPattern{{pattern: shared.ThsrSeatsPattern(time.Now().In(taipei).Format(time.DateOnly)), ttl: thsrSeatsLiveTTL}}
+	}
 	return []liveSpec{
 		{key: "bike", cadence: "@every 30s", ttlPatterns: bikeCityPatterns,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
@@ -297,6 +304,15 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notificationDispatcher) []liveSp
 		{key: "tra", cadence: "@every 2m", ttlPatterns: traPatterns,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				traEta(ctx, fetch, sink)
+				return nil
+			}},
+		// THSR available-seat status changes slowly, so it refreshes on a
+		// conservative 10-minute cadence (its own cron entry, unbounded like
+		// mrt/tra). This is the seat refresh moved off the router's read path
+		// (ADR-0005 amendment).
+		{key: "thsr_seats", cadence: "@every 10m", ttlPatterns: thsrSeatsPatterns,
+			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
+				thsrAvailableSeats(ctx, fetch, sink)
 				return nil
 			}},
 	}

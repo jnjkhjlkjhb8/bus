@@ -301,6 +301,81 @@ func TestBikeSpecWritesAvailability(t *testing.T) {
 	}
 }
 
+func TestThsrSeatsSpecWritesSeats(t *testing.T) {
+	// The thsr_seats spec, run against a fixture source and capture sink, must
+	// aggregate the OD segments per train into one ThsrAvailableSeats, SET it under
+	// the per-train key with the 15-minute TTL, and PUBLISH each train to the
+	// per-date channel so connected router streams get the update. The job fetches
+	// under the fixed "thsr_availableseats" name for today's Taipei date, so the
+	// keys/channel are computed the same way here.
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"thsr_availableseats": readFixture(t, "tdx_thsr_availableseats.json"),
+	}}
+	sink := &captureLiveSink{}
+	runLiveSpec(context.Background(), src, sink, specByKey(t, "thsr_seats"))
+
+	date := time.Now().In(taipei).Format(time.DateOnly)
+
+	// Train 0801 carries both fixture segments, aggregated into one snapshot.
+	sw := sink.setFor(shared.ThsrSeatsKey(date, "0801"))
+	if sw == nil {
+		t.Fatalf("expected SET for train 0801; got keys %v", setKeys(sink))
+	}
+	if sw.ttl != thsrSeatsLiveTTL {
+		t.Fatalf("thsr seats SET ttl = %v, want %v", sw.ttl, thsrSeatsLiveTTL)
+	}
+	var got models.ThsrAvailableSeats
+	if err := proto.Unmarshal(sw.value, &got); err != nil {
+		t.Fatalf("unmarshal ThsrAvailableSeats: %v", err)
+	}
+	if len(got.Segments) != 2 {
+		t.Fatalf("train 0801 segments = %d, want 2", len(got.Segments))
+	}
+	if got.Segments[0].OriginStationId != "0990" || got.Segments[0].StandardSeatStatus != "O" {
+		t.Fatalf("segment[0] = %+v", got.Segments[0])
+	}
+	if got.Segments[1].DestinationStationId != "1070" || got.Segments[1].StandardSeatStatus != "L" {
+		t.Fatalf("segment[1] = %+v", got.Segments[1])
+	}
+
+	// Train 0803 has a single segment and is also written.
+	if sw := sink.setFor(shared.ThsrSeatsKey(date, "0803")); sw == nil {
+		t.Fatalf("expected SET for train 0803; got keys %v", setKeys(sink))
+	}
+
+	// Both trains publish to the per-date channel.
+	channel := shared.ThsrSeatsPattern(date)
+	pubCount := 0
+	for _, p := range sink.publishs {
+		if p.channel == channel {
+			pubCount++
+		}
+	}
+	if pubCount != 2 {
+		t.Fatalf("publishes to %s = %d, want 2", channel, pubCount)
+	}
+}
+
+func TestThsrSeatsSpec304RefreshesTTL(t *testing.T) {
+	// With no fixture the seat fetch 304s, so the spec must re-arm today's seat-key
+	// TTL once via boundFetch and write nothing.
+	src := &fakeLiveSource{fixtures: map[string][]byte{}}
+	sink := &captureLiveSink{}
+	runLiveSpec(context.Background(), src, sink, specByKey(t, "thsr_seats"))
+
+	if len(sink.sets) != 0 {
+		t.Fatalf("expected no SETs on a 304; got %v", setKeys(sink))
+	}
+	if len(sink.refresh) != 1 {
+		t.Fatalf("refreshTTL calls = %d, want 1", len(sink.refresh))
+	}
+	date := time.Now().In(taipei).Format(time.DateOnly)
+	got := sink.refresh[0]
+	if len(got) != 1 || got[0].pattern != shared.ThsrSeatsPattern(date) || got[0].ttl != thsrSeatsLiveTTL {
+		t.Fatalf("refresh patterns = %+v", got)
+	}
+}
+
 func TestBoundFetch304RefreshesTTL(t *testing.T) {
 	// When TDX answers 304, boundFetch must re-arm the spec's ttlPatterns through
 	// the sink before returning modified=false — the generalized 304→TTL rule for
