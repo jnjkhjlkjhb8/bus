@@ -270,6 +270,21 @@ func TestTraSpecMergesDelayIntoLiveboard(t *testing.T) {
 	if board.Items[0].Delay != 9 {
 		t.Fatalf("merged delay = %d, want 9 (from the sink-read delay hash)", board.Items[0].Delay)
 	}
+	// The board must also PUBLISH to its key-as-channel with the same payload, or
+	// the router's LiveBoard stream only ever gets the seed GET and never updates.
+	ch := shared.TraLiveboardKey("1000")
+	var pub *publishWrite
+	for i := range sink.publishs {
+		if sink.publishs[i].channel == ch {
+			pub = &sink.publishs[i]
+		}
+	}
+	if pub == nil {
+		t.Fatalf("expected PUBLISH to %s; got channels %v", ch, sink.publishs)
+	}
+	if !bytes.Equal(pub.value, sw.value) {
+		t.Fatalf("published payload != cached payload for %s", ch)
+	}
 }
 
 func TestBikeSpecWritesAvailability(t *testing.T) {

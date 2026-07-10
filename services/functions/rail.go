@@ -648,6 +648,10 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 				continue
 			}
 			pipe.Set(shared.TraLiveboardKey(a), pbs, traLiveTTL)
+			// Same key doubles as the channel the router's LiveBoard stream
+			// subscribes to; without this publish the stream only ever gets the
+			// seed GET and never updates.
+			pipe.Publish(shared.TraLiveboardKey(a), string(pbs))
 		}
 		_ = pipe.Exec()
 	}()
