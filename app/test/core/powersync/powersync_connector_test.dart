@@ -20,7 +20,7 @@ void main() {
         calls++;
         return PowerSyncCredentials(
           endpoint: 'https://sync.test',
-          token: tokenExpiringAt(DateTime(2026, 7, 11)),
+          token: tokenExpiringAt(DateTime(2100)),
         );
       },
     );
@@ -39,7 +39,7 @@ void main() {
         await Future<void>.delayed(Duration.zero);
         return PowerSyncCredentials(
           endpoint: 'https://sync.test',
-          token: tokenExpiringAt(DateTime(2026, 7, 11)),
+          token: tokenExpiringAt(DateTime(2100)),
         );
       },
     );

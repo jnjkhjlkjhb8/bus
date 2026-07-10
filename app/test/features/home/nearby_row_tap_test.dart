@@ -1,10 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_car/data/models/near_models.dart';
-
-// _NearbyStationRow 是 library-private（part of home_screen.dart），
-// 這裡透過公開 test hook 驗證 onStationTap 被觸發。
-// Task 2 會 export 一個 debug 用的 buildNearbyRowForTest。
 import 'package:wheres_the_car/features/home/home_screen.dart';
 
 void main() {
