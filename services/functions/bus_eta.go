@@ -198,38 +198,13 @@ func processBusEtaCity(
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=decode_dropped kind=position count=%d kept=%d", city, droppedPosition, len(posit))
 	}
 	flipopen()
-	busmap := make(map[string][]*models.BusPosition)
-	etamap := make(map[etaKey]rawBusEsimated)
 	stations := make(map[string]*models.Bus_StationArrival)
 	routes := make(map[string]*models.Bus_RouteArrival)
-	// TDX returns one ETA per (stop x subroute x direction); keying on StopUID
-	// alone would let multi-route stops overwrite each other. Canonicalize the
-	// subroute/direction (ADR-0006) so each route at a stop keeps its own ETA.
-	for _, e := range eat {
-		uid, dir := shared.CanonicalSubroute(city, e.SubRouteUID, e.Direction)
-		k := etaKey{uid, dir, e.StopUID}
-		if prev, seen := etamap[k]; seen {
-			etamap[k] = pickBusEstimate(prev, e)
-		} else {
-			etamap[k] = e
-		}
-	}
-	for _, b := range posit {
-		uid, _ := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
-		pb := &models.BusPosition{
-			PlateNumb:   b.PlateNumb,
-			PositionLon: b.BusPosition.PositionLon,
-			PositionLat: b.BusPosition.PositionLat,
-			Speed:       int32(b.Speed),
-			Azimuth:     int32(b.Azimuth),
-		}
-		busmap[uid] = append(busmap[uid], pb)
-	}
-	totalStops := make(map[string]int)
-	for _, b := range mp {
-		uid, _ := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
-		totalStops[uid]++
-	}
+	// Assemble-inputs stage: collapse the raw TDX ETA array, group live positions,
+	// and count route lengths, all keyed on canonical subroute/direction (ADR-0006).
+	etamap := buildBusEtaMap(city, eat)
+	busmap := buildBusPositionMap(city, posit)
+	totalStops := buildTotalStops(city, mp)
 	var weather *weatherData
 	if wjson, wErr := sink.getString(shared.WeatherKey(city)); wErr == nil {
 		var w weatherData
@@ -239,26 +214,7 @@ func processBusEtaCity(
 	}
 	now := time.Now().In(taipei)
 	holiday := isHoliday(now)
-	var fillKeys []routeDirKey
-	fillUIDs := make(map[string]bool)
-	for _, b := range mp {
-		uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
-		etaEnt, ok2 := etamap[etaKey{uid, dir, b.StopUID}]
-		if !ok2 {
-			continue
-		}
-		if etaEnt.StopStatus == 1 && etaEnt.NextBusTime == "" {
-			fillKeys = append(fillKeys, routeDirKey{uid, int32(dir)})
-			fillUIDs[uid] = true
-		}
-		// Delay propagation needs the baseline (schedule + travel avg) at upstream
-		// stops where a live bus is en route, so include those routes' departures
-		// and travel averages in the batched lookups too.
-		if etaEnt.StopStatus == 0 {
-			fillKeys = append(fillKeys, routeDirKey{uid, int32(dir)})
-			fillUIDs[uid] = true
-		}
-	}
+	fillKeys, fillUIDs := collectFillKeys(city, mp, etamap)
 	todTime := now.Format("15:04:05")
 	// Day-of-week mask only; holiday-aware schedules would need TDX SpecialDays
 	// landing, as schedule rows carry no holiday flag from TDX's Mon-Sun fields.
@@ -269,13 +225,7 @@ func processBusEtaCity(
 		uidList = append(uidList, u)
 	}
 	travelAvgMap := batchTravelAvg(ctx, db, uidList, now.Hour(), int(now.Weekday()))
-	maxAvgMap := make(map[routeDirKey]int)
-	for k, v := range travelAvgMap {
-		rk := routeDirKey{k.subRouteUID, k.direction}
-		if v > maxAvgMap[rk] {
-			maxAvgMap[rk] = v
-		}
-	}
+	maxAvgMap := maxTravelAvgByRoute(travelAvgMap)
 	// baselineFor returns the schedule+travel-average arrival for a stop, shared by
 	// the delay-propagation observation pass and the downstream fill.
 	baselineFor := func(b busStationmap, uid string, dir int32) time.Time {
@@ -300,37 +250,10 @@ func processBusEtaCity(
 			},
 		)
 	}
-	// Delay-propagation pass: for every stop with a live bus en route (StopStatus
-	// 0) and a usable estimate, record how far that vehicle runs behind (or ahead
-	// of) the schedule+travel-average baseline, keyed per route/direction. A
-	// downstream stop TDX left blank then inherits the closest upstream vehicle's
-	// decayed delay before falling through to the model.
-	upstreamByRoute := make(map[routeDirKey][]upstreamObs)
-	for _, b := range mp {
-		uid, cdir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
-		eta, ok := etamap[etaKey{uid, cdir, b.StopUID}]
-		if !ok || eta.StopStatus != 0 {
-			continue
-		}
-		dir := int32(cdir)
-		var est int32
-		if srcT, parseErr := time.Parse(time.RFC3339, eta.SrcUpdateTime); parseErr == nil {
-			est = eta.EstimatedTime - int32(now.Sub(srcT).Seconds())
-		} else {
-			est = eta.EstimatedTime
-		}
-		baseline := baselineFor(b, uid, dir)
-		if baseline.IsZero() {
-			continue
-		}
-		observedArrival := now.Add(time.Duration(est) * time.Second)
-		rk := routeDirKey{uid, dir}
-		upstreamByRoute[rk] = append(upstreamByRoute[rk], upstreamObs{
-			stopSequence: int(b.StopSequence),
-			delaySeconds: observedArrival.Sub(baseline).Seconds(),
-			observedAt:   now,
-		})
-	}
+	// Delay-propagation observation stage: record each en-route vehicle's delay
+	// against the schedule+travel-average baseline, keyed per route/direction, for
+	// the downstream fill to inherit.
+	upstreamByRoute := buildUpstreamObs(city, mp, etamap, now, baselineFor)
 	var predictionRows []predictionRecord
 	var historyRows [][]interface{}
 	for _, b := range mp {
@@ -345,38 +268,13 @@ func processBusEtaCity(
 		var est int32
 		var stime string
 		if ok {
-			if srcT, parseErr := time.Parse(time.RFC3339, eta.SrcUpdateTime); parseErr == nil {
-				est = eta.EstimatedTime - int32(now.Sub(srcT).Seconds())
-			} else {
-				est = eta.EstimatedTime
-			}
+			est = adjustedEstimate(eta, now)
 			status = eta.StopStatus
 			stime = eta.SrcUpdateTime
 		}
 		if status == 0 {
 			ts := totalStops[uid]
-			var plateNumb *string
-			var busSpeed *int16
-			var busDist *int
-			if buses := busmap[uid]; len(buses) > 0 && b.Lat != 0 {
-				nearest := buses[0]
-				nearestDist := haversine(b.Lat, b.Lon,
-					float64(nearest.PositionLat), float64(nearest.PositionLon))
-				for _, bus := range buses[1:] {
-					d := haversine(b.Lat, b.Lon,
-						float64(bus.PositionLat), float64(bus.PositionLon))
-					if d < nearestDist {
-						nearestDist = d
-						nearest = bus
-					}
-				}
-				pn := nearest.PlateNumb
-				plateNumb = &pn
-				spd := int16(nearest.Speed)
-				busSpeed = &spd
-				dist := int(nearestDist)
-				busDist = &dist
-			}
+			plateNumb, busSpeed, busDist := nearestBus(b.Lat, b.Lon, busmap[uid])
 			var srcTime *time.Time
 			if stime != "" {
 				if t, err := time.Parse(time.RFC3339, stime); err == nil {
@@ -478,19 +376,7 @@ func processBusEtaCity(
 				Routes:      make([]*models.Bus_StopEstimate, 0),
 			}
 		}
-		// arrivalUnix is the absolute arrival instant so the app can decay the
-		// countdown locally between server pushes. Status 0 with a live estimate
-		// derives it from now+est; status 1 uses the (predicted or TDX) NextBusTime
-		// when it parses as RFC3339; otherwise it stays 0 and the app falls back to
-		// the estimate field.
-		var arrivalUnix int64
-		if status == 0 && est > 0 {
-			arrivalUnix = now.Add(time.Duration(est) * time.Second).Unix()
-		} else if status == 1 && eta.NextBusTime != "" {
-			if t, err := time.Parse(time.RFC3339, eta.NextBusTime); err == nil {
-				arrivalUnix = t.Unix()
-			}
-		}
+		arrivalUnix := computeArrivalUnix(status, est, eta.NextBusTime, now)
 		station := stations[groupUID]
 		if !slices.Contains(station.StationUid, b.StationUID) {
 			station.StationUid = append(station.StationUid, b.StationUID)
