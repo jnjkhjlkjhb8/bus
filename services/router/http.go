@@ -9,8 +9,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"os"
+	"runtime"
 	"time"
 
 	sentrygin "github.com/getsentry/sentry-go/gin"
@@ -18,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func startHTTPServer(db *pgxpool.Pool) {
+func startHTTPServer(db *pgxpool.Pool, live *liveHub) {
 	key, err := loadOrGenerateKey()
 	if err != nil {
 		log.Fatalf("[HTTP] failed to load/generate RSA key: %v", err)
@@ -31,9 +33,24 @@ func startHTTPServer(db *pgxpool.Pool) {
 	r.GET("/api/token/powersync", handleToken(key))
 	r.GET("/api/.well-known/jwks.json", handleJWKS(key))
 	r.GET("/api/search", handleSearch(db))
+	r.GET("/metrics", handleMetrics(live))
 	log.Infof("[HTTP] server running on 0.0.0.0:8080")
 	if err := r.Run("0.0.0.0:8080"); err != nil {
 		log.Fatalf("[HTTP] server failed: %v", err)
+	}
+}
+
+func handleMetrics(live *liveHub) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		stats := live.stats()
+		body := fmt.Sprintf(
+			"router_live_streams %d\nrouter_live_channels %d\nrouter_live_dropped_frames_total %d\nrouter_goroutines %d\n",
+			stats.ActiveStreams,
+			stats.ActiveChannels,
+			stats.DroppedFrames,
+			runtime.NumGoroutine(),
+		)
+		c.Data(200, "text/plain; version=0.0.4; charset=utf-8", []byte(body))
 	}
 }
 func handleToken(key *rsa.PrivateKey) gin.HandlerFunc {

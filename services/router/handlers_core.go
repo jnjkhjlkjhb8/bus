@@ -5,7 +5,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/go-redis/redis"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/grpc"
@@ -71,7 +70,7 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_Service_EtaServer) error {
 	log.Infof("call Bus_route_eta %s", in.SubRouteUID)
 	key := shared.BusRouteEtaKey(in.SubRouteUID)
-	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+	return streamLive(stream.Context(), s.live, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 		usable:   usableBusEtaPayload,
@@ -91,7 +90,7 @@ func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_S
 // the cached value, then forwards Redis Pub/Sub updates, skipping empty payloads.
 // It lives as a free function over the query seam rather than as a method on
 // either bus server, so it carries no server state beyond db and rc.
-func streamBusStationEta(db coreDB, rc *redis.Client, in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
+func streamBusStationEta(db coreDB, live liveSource, in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
 	log.Infof("call Bus_station_eta %s:%s", in.City, in.GroupUid)
 	groupUID := in.GroupUid
 	if groupUID == "" {
@@ -107,7 +106,7 @@ func streamBusStationEta(db coreDB, rc *redis.Client, in *pb.Bus_Ask_StationGrou
 		return status.Error(codes.InvalidArgument, "station eta key must include city or known group_uid")
 	}
 	key := shared.BusStationEtaKey(city, groupUID)
-	return streamLive(stream.Context(), redisLiveSource{rc}, liveStreamSpec{
+	return streamLive(stream.Context(), live, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 		usable:   usableBusEtaPayload,
@@ -142,7 +141,7 @@ func (s *BusRouteserver) BusDailytable(in *pb.Bus_Ask_Route) (*pb.Resp_BusDailyT
 // Eta implements the Bus_Station_Service Eta streaming RPC by delegating to the
 // shared streamBusStationEta helper.
 func (s *BusStationserver) Eta(in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
-	return streamBusStationEta(s.db, s.rc, in, stream)
+	return streamBusStationEta(s.db, s.live, in, stream)
 }
 
 // Group returns a station group and its member stops from PostgreSQL. It
@@ -223,7 +222,7 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 func (s *BikeServer) bikeEta(in *pb.BikeRequest, stream pb.Bike_Service_EtaServer) error {
 	log.Infof("call bike_eta %s", in.StationUID)
 	key := shared.BikeAvailabilityKey(in.StationUID)
-	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+	return streamLive(stream.Context(), s.live, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
@@ -248,7 +247,7 @@ func (s *MrtServer) Eta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 func (s *MrtServer) MrtEta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 	log.Infof("call Mrt_eta %s %s", in.System, in.StationID)
 	channel := shared.MrtLiveChannel(in.System, in.StationID)
-	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+	return streamLive(stream.Context(), s.live, liveStreamSpec{
 		channel:  channel,
 		seedScan: shared.MrtLiveSeedPattern(in.System, in.StationID),
 	}, func(data []byte) error {
@@ -273,7 +272,7 @@ func (s *Tra_StationServer) LiveBoard(in *pb.AskStaiton, stream pb.TRAStationSer
 func (s *Tra_StationServer) traLiveboard(in *pb.AskStaiton, stream pb.TRAStationService_LiveBoardServer) error {
 	log.Infof("call tra_liveboard %s", in.StationId)
 	key := shared.TraLiveboardKey(in.StationId)
-	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+	return streamLive(stream.Context(), s.live, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
@@ -341,7 +340,7 @@ func (s *Tra_TimetableServer) Timetable(ctx context.Context, in *pb.AskRoute) (*
 // skipped rather than sent as a seed frame.
 func (s *Tra_TimetableServer) traDelay(stream pb.TRATimetableService_DelayServer) error {
 	log.Infof("call tra_delay")
-	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+	return streamLive(stream.Context(), s.live, liveStreamSpec{
 		channel:  shared.TraDelayAllKey,
 		seedKeys: []string{shared.TraDelayAllKey},
 	}, func(data []byte) error {
@@ -383,7 +382,7 @@ func (s *Tra_DetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainServi
 	// and the :all snapshot), so this stream stays silent — see
 	// shared.TraDelayTrainChannel.
 	key := shared.TraDelayTrainChannel(in.Trainno)
-	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+	return streamLive(stream.Context(), s.live, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
@@ -428,7 +427,7 @@ func (s *ThsrServer) Fare(ctx context.Context, in *pb.Ask_Thsr) (*pb.ThsaFare, e
 func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreamingServer[pb.RespThsrSeats]) error {
 	log.Infof("[gRPC] action=thsr_available_seats date=%s", in.Date)
 	date := parseRailDate(in.Date).Format(time.DateOnly)
-	return streamLive(stream.Context(), redisLiveSource{s.rc}, liveStreamSpec{
+	return streamLive(stream.Context(), s.live, liveStreamSpec{
 		channel:  shared.ThsrSeatsPattern(date),
 		seedScan: shared.ThsrSeatsPattern(date),
 	}, func(data []byte) error {

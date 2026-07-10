@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/go-redis/redis"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/grpc"
@@ -13,7 +12,7 @@ import (
 // state before live updates begin.
 type AlertServer struct {
 	pb.UnimplementedAlert_ServiceServer
-	rc *redis.Client
+	live liveSource
 }
 
 // BusNews streams bus service-news alerts for the requested city. The city is
@@ -21,33 +20,33 @@ type AlertServer struct {
 // channel that never receives messages.
 func (s *AlertServer) BusNews(in *pb.Alert_Bus_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
 	key := shared.AlertBusNewsChannel(in.City)
-	return streamAlert(s.rc, key, stream)
+	return streamAlert(s.live, key, stream)
 }
 
 // MetroAlert streams metro alerts for the requested rail system (e.g. TRTC,
 // KRTC). The system code is interpolated into the Redis channel name.
 func (s *AlertServer) MetroAlert(in *pb.Alert_Metro_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
 	key := shared.AlertMetroChannel(in.System)
-	return streamAlert(s.rc, key, stream)
+	return streamAlert(s.live, key, stream)
 }
 
 // TraAlert streams TRA (conventional rail) alerts. The request carries no
 // parameters; all TRA alerts share one channel.
 func (s *AlertServer) TraAlert(_ *pb.Alert_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	return streamAlert(s.rc, shared.AlertTraChannel, stream)
+	return streamAlert(s.live, shared.AlertTraChannel, stream)
 }
 
 // ThsrAlert streams THSR (high-speed rail) alerts. The request carries no
 // parameters; all THSR alerts share one channel.
 func (s *AlertServer) ThsrAlert(_ *pb.Alert_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	return streamAlert(s.rc, shared.AlertThsrChannel, stream)
+	return streamAlert(s.live, shared.AlertThsrChannel, stream)
 }
 
 // streamAlert bridges one alert channel to a gRPC stream: the mirrored
 // latest-payload key seeds new subscribers, then live updates follow. Unlike
 // the old loop, client disconnect is noticed while idle.
-func streamAlert(rc *redis.Client, key string, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	return streamLive(stream.Context(), redisLiveSource{rc}, liveStreamSpec{
+func streamAlert(live liveSource, key string, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
+	return streamLive(stream.Context(), live, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {

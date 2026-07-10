@@ -97,4 +97,22 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(subscribeCount, 1);
   });
+
+  test('uses the injected retry delay', () async {
+    Duration? observed;
+    final sub = ResilientSubscription<int>(
+      source: () => Stream<int>.error(const GrpcError.unavailable()),
+      onData: (_) {},
+      onFailure: (_) {},
+      retryDelay: (delay) {
+        observed ??= delay;
+        return const Duration(days: 1);
+      },
+      reportError: (_, _) {},
+    );
+
+    await eventually(() => observed != null);
+    expect(observed, const Duration(seconds: 2));
+    await sub.cancel();
+  });
 }

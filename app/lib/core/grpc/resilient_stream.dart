@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:grpc/grpc.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
+
+typedef RetryDelay = Duration Function(Duration delay);
 
 class ResilientSubscription<T> {
   ResilientSubscription({
@@ -14,6 +17,7 @@ class ResilientSubscription<T> {
     Duration baseDelay = const Duration(seconds: 2),
     Duration maxDelay = const Duration(seconds: 30),
     void Function(Object, StackTrace)? reportError,
+    RetryDelay? retryDelay,
   }) : _source = source,
        _onData = onData,
        _onFailure = onFailure,
@@ -21,7 +25,8 @@ class ResilientSubscription<T> {
        _maxFailures = maxFailures,
        _baseDelay = baseDelay,
        _maxDelay = maxDelay,
-       _reportError = reportError ?? CrashReporter.record {
+       _reportError = reportError ?? CrashReporter.record,
+       _retryDelay = retryDelay ?? _jitteredDelay {
     _listen();
   }
 
@@ -33,6 +38,7 @@ class ResilientSubscription<T> {
   final Duration _baseDelay;
   final Duration _maxDelay;
   final void Function(Object, StackTrace) _reportError;
+  final RetryDelay _retryDelay;
 
   StreamSubscription<T>? _sub;
   Timer? _timer;
@@ -69,7 +75,7 @@ class ResilientSubscription<T> {
       onDone: () {
         if (_closed) return;
         _sub = null;
-        _timer = Timer(_baseDelay, _listen);
+        _timer = Timer(_retryDelay(_baseDelay), _listen);
       },
     );
   }
@@ -91,7 +97,7 @@ class ResilientSubscription<T> {
     final shift = _failures - 1 > 5 ? 5 : _failures - 1;
     var delay = _baseDelay * (1 << shift);
     if (delay > _maxDelay) delay = _maxDelay;
-    _timer = Timer(delay, _listen);
+    _timer = Timer(_retryDelay(delay), _listen);
   }
 
   Future<void> cancel() async {
@@ -99,4 +105,12 @@ class ResilientSubscription<T> {
     _timer?.cancel();
     await _sub?.cancel();
   }
+
+  static Duration _jitteredDelay(Duration delay) {
+    final min = delay.inMilliseconds ~/ 2;
+    final max = delay.inMilliseconds + min;
+    return Duration(milliseconds: min + _random.nextInt(max - min + 1));
+  }
+
+  static final Random _random = Random();
 }

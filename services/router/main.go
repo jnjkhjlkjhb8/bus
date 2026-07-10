@@ -54,15 +54,17 @@ type BusRouteserver struct {
 	db    *pgxpool.Pool
 	rc    *redis.Client
 	cache *ttlCache
+	live  liveSource
 }
 
 // BusStationserver serves station-group bus queries: group membership from
 // PostgreSQL and per-station live ETA streamed from Redis Pub/Sub.
 type BusStationserver struct {
 	pb.UnimplementedBus_Station_ServiceServer
-	mu sync.Mutex
-	db *pgxpool.Pool
-	rc *redis.Client
+	mu   sync.Mutex
+	db   *pgxpool.Pool
+	rc   *redis.Client
+	live liveSource
 }
 
 // BikeServer serves bike-share station static data from PostgreSQL (memoized in
@@ -73,15 +75,17 @@ type BikeServer struct {
 	db    *pgxpool.Pool
 	rc    *redis.Client
 	cache *ttlCache
+	live  liveSource
 }
 
 // MrtServer streams metro arrival boards from Redis. It seeds each stream by
 // scanning the current mrt_live keys before subscribing to live updates.
 type MrtServer struct {
 	pb.UnimplementedMrt_ServiceServer
-	mu sync.Mutex
-	rc *redis.Client
-	db *pgxpool.Pool
+	mu   sync.Mutex
+	rc   *redis.Client
+	db   *pgxpool.Pool
+	live liveSource
 }
 
 // ThsrServer serves high-speed-rail fares, timetables, and available-seat
@@ -91,18 +95,20 @@ type MrtServer struct {
 // fetch (ADR-0005), so the server holds no TDX client.
 type ThsrServer struct {
 	pb.UnimplementedThsrTimetableServiceServer
-	mu sync.Mutex
-	db *pgxpool.Pool
-	rc *redis.Client
+	mu   sync.Mutex
+	db   *pgxpool.Pool
+	rc   *redis.Client
+	live liveSource
 }
 
 // Tra_StationServer streams the live arrival board for a TRA station from Redis
 // Pub/Sub.
 type Tra_StationServer struct {
 	pb.UnimplementedTRAStationServiceServer
-	mu sync.Mutex
-	db *pgxpool.Pool
-	rc *redis.Client
+	mu   sync.Mutex
+	db   *pgxpool.Pool
+	rc   *redis.Client
+	live liveSource
 }
 
 // Tra_TimetableServer serves TRA fares and timetables and streams system-wide
@@ -110,9 +116,10 @@ type Tra_StationServer struct {
 // loaded env schema; empty results return NotFound (no TDX fetch, ADR-0005).
 type Tra_TimetableServer struct {
 	pb.UnimplementedTRATimetableServiceServer
-	mu sync.Mutex
-	db *pgxpool.Pool
-	rc *redis.Client
+	mu   sync.Mutex
+	db   *pgxpool.Pool
+	rc   *redis.Client
+	live liveSource
 }
 
 // Tra_DetainServer serves per-train TRA stop times and streams per-train delay
@@ -120,9 +127,10 @@ type Tra_TimetableServer struct {
 // schema; empty results return NotFound (no TDX fetch, ADR-0005).
 type Tra_DetainServer struct {
 	pb.UnimplementedTRA_DetainServiceServer
-	mu sync.Mutex
-	db *pgxpool.Pool
-	rc *redis.Client
+	mu   sync.Mutex
+	db   *pgxpool.Pool
+	rc   *redis.Client
+	live liveSource
 }
 
 // Thsr_DetainServer serves per-train THSR stop times. Stop times are Redis-cached
@@ -130,9 +138,10 @@ type Tra_DetainServer struct {
 // (no TDX fetch, ADR-0005).
 type Thsr_DetainServer struct {
 	pb.UnimplementedThsr_DetainServiceServer
-	mu sync.Mutex
-	db *pgxpool.Pool
-	rc *redis.Client
+	mu   sync.Mutex
+	db   *pgxpool.Pool
+	rc   *redis.Client
+	live liveSource
 }
 
 // Near_Server answers nearby-station queries. It runs PostGIS radius queries
@@ -204,6 +213,7 @@ func allowRequest(ctx context.Context, rl *rateLimiter, limit int, window time.D
 func main() {
 	defer obs.Init("router")()
 	rc := shared.ConnectRedis()
+	live := newLiveHub(redisLiveSource{rc: rc}, int(shared.EnvInt32("ROUTER_MAX_LIVE_STREAMS", 2000)))
 	db := shared.ConnectDB("ROUTER_DB_MAX_CONNS", 20)
 	go logPoolStats(db)
 	// MaaS route planning is the router's sole, deliberate TDX carve-out: it is a
@@ -251,20 +261,20 @@ func main() {
 		serverOptions = append(serverOptions, grpc.Creds(tlsCredentials))
 	}
 	grpcServer := grpc.NewServer(serverOptions...)
-	pb.RegisterBus_Route_ServiceServer(grpcServer, &BusRouteserver{db: db, rc: rc, cache: newTTLCache()})
-	pb.RegisterBus_Station_ServiceServer(grpcServer, &BusStationserver{db: db, rc: rc})
-	pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: newTTLCache()})
-	pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{db: db, rc: rc})
-	pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, rc: rc})
-	pb.RegisterTRAStationServiceServer(grpcServer, &Tra_StationServer{db: db, rc: rc})
-	pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc})
-	pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc})
-	pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, rc: rc})
+	pb.RegisterBus_Route_ServiceServer(grpcServer, &BusRouteserver{db: db, rc: rc, cache: newTTLCache(), live: live})
+	pb.RegisterBus_Station_ServiceServer(grpcServer, &BusStationserver{db: db, rc: rc, live: live})
+	pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: newTTLCache(), live: live})
+	pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{db: db, rc: rc, live: live})
+	pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, rc: rc, live: live})
+	pb.RegisterTRAStationServiceServer(grpcServer, &Tra_StationServer{db: db, rc: rc, live: live})
+	pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc, live: live})
+	pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc, live: live})
+	pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, rc: rc, live: live})
 	pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{db: db, osrmClient: resty.New().SetTimeout(5 * time.Second)})
-	pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{rc: rc})
+	pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
 	pb.RegisterMaasServiceServer(grpcServer, newMaasServer(rc, db, tdx))
 	pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
-	go startHTTPServer(db)
+	go startHTTPServer(db, live)
 	log.Infof("gRPC server is running on port %d", 50051)
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)

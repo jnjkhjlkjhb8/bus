@@ -130,3 +130,28 @@ func TestHandleJWKSPublishesSigningKey(t *testing.T) {
 	}
 	verifyJWT(t, token, pub)
 }
+
+func TestHandleMetricsWritesLiveHubCounters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	hub := newLiveHub(newHubSource(), 2)
+	r := gin.New()
+	r.GET("/metrics", handleMetrics(hub))
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	body := w.Body.String()
+	for _, metric := range []string{
+		"router_live_streams",
+		"router_live_channels",
+		"router_live_dropped_frames_total",
+		"router_goroutines",
+	} {
+		if !strings.Contains(body, metric) {
+			t.Fatalf("missing metric %q in %q", metric, body)
+		}
+	}
+}

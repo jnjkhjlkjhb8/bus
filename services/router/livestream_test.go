@@ -36,9 +36,9 @@ func (f *fakeLiveSource) scanKeys(pattern string) []string {
 	return f.scans[pattern]
 }
 
-func (f *fakeLiveSource) subscribe(channel string) (<-chan []byte, func()) {
+func (f *fakeLiveSource) subscribe(channel string) (<-chan []byte, func(), error) {
 	f.ops = append(f.ops, "subscribe:"+channel)
-	return f.ch, func() { f.ops = append(f.ops, "close:"+channel) }
+	return f.ch, func() { f.ops = append(f.ops, "close:"+channel) }, nil
 }
 
 // run streamLive in a goroutine, collecting sent frames; returns a cancel

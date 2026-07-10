@@ -19,7 +19,7 @@ type liveSource interface {
 	// subscribe returns a channel of live payloads for channel and a close
 	// func the caller must invoke. A closed payload channel means the
 	// subscription died.
-	subscribe(channel string) (<-chan []byte, func())
+	subscribe(channel string) (<-chan []byte, func(), error)
 }
 
 // liveStreamSpec describes one gRPC live stream: which channel to follow,
@@ -43,7 +43,10 @@ func streamLive(ctx context.Context, src liveSource, spec liveStreamSpec, send f
 		usable = func(b []byte) bool { return len(b) > 0 }
 	}
 
-	ch, closeSub := src.subscribe(spec.channel)
+	ch, closeSub, err := src.subscribe(spec.channel)
+	if err != nil {
+		return err
+	}
 	defer closeSub()
 
 	keys := spec.seedKeys
@@ -108,7 +111,7 @@ func (r redisLiveSource) scanKeys(pattern string) []string {
 	}
 }
 
-func (r redisLiveSource) subscribe(channel string) (<-chan []byte, func()) {
+func (r redisLiveSource) subscribe(channel string) (<-chan []byte, func(), error) {
 	sub := r.rc.Subscribe(channel)
 	out := make(chan []byte)
 	done := make(chan struct{})
@@ -134,5 +137,5 @@ func (r redisLiveSource) subscribe(channel string) (<-chan []byte, func()) {
 	return out, func() {
 		close(done)
 		_ = sub.Close()
-	}
+	}, nil
 }
