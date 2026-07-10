@@ -89,8 +89,8 @@ func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_S
 // up from bus_station_groups. It returns InvalidArgument when neither a city nor
 // a resolvable group_uid is available. Like BusRouteEta it seeds the stream from
 // the cached value, then forwards Redis Pub/Sub updates, skipping empty payloads.
-// It lives as a free function because both bus services legitimately serve this
-// stream (the station service directly, the route service by delegation).
+// It lives as a free function over the query seam rather than as a method on
+// either bus server, so it carries no server state beyond db and rc.
 func streamBusStationEta(db coreDB, rc *redis.Client, in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
 	log.Infof("call Bus_station_eta %s:%s", in.City, in.GroupUid)
 	groupUID := in.GroupUid
