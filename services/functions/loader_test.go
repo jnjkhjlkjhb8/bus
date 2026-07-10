@@ -115,6 +115,38 @@ func TestLoaderRegistryKeysUnique(t *testing.T) {
 	}
 }
 
+func TestLoaderExceptionalBindingsUseSemanticSink(t *testing.T) {
+	tests := []struct {
+		key       string
+		operation string
+		part      string
+	}{
+		{key: "bus_operator", operation: "bus operators", part: "Taipei"},
+		{key: "bus", operation: "bus city assembly", part: "Taipei"},
+		{key: "bus_dailytimetable", operation: "bus daily timetable", part: "Taipei"},
+		{key: "mrt_odfare", operation: "MRT journey matrix", part: "TRTC"},
+		{key: "mrt_trtc_traveltime", operation: "MRT travel time", part: "TRTC"},
+		{key: "thsr_station", operation: "THSR stations", part: ""},
+	}
+	bindings := loaderTransforms(&fakeLoadSource{})
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			sink := &fakeLoadSink{}
+			dec := json.NewDecoder(bytes.NewReader([]byte("[]")))
+			if err := bindings[tt.key].load(context.Background(), dec, sink, tt.part); err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			if len(sink.semanticCalls) != 1 {
+				t.Fatalf("semantic calls = %v, want one %q call", sink.semanticCalls, tt.operation)
+			}
+			got := sink.semanticCalls[0]
+			if got.operation != tt.operation || got.part != tt.part {
+				t.Fatalf("semantic call = %+v, want operation %q part %q", got, tt.operation, tt.part)
+			}
+		})
+	}
+}
+
 // TestLoadBusDailyTimetableWritesRedis feeds a daily-timetable array to the
 // shared assembly function and asserts it lands the reconstructed protobuf under
 // bus_daily_timetable:<subRouteUID> with the expected TTL, exercising the loader

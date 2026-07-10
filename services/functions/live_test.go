@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
@@ -423,18 +424,25 @@ func TestMrtSpec304RefreshesTTLPerSystem(t *testing.T) {
 
 func TestBusSpec304RefreshesCityTTL(t *testing.T) {
 	// The bus spec keeps its own precise per-city 304 refresh inside
-	// processBusEtaCity: an ETA 304 re-arms exactly that city's station and route
+	// busLiveJob.runCity: an ETA 304 re-arms exactly that city's station and route
 	// key patterns with the 180s window. Driven directly (no db needed on the
 	// skip path) with an all-304 source, using a static-map cache seeded for one
 	// city so the fetch is reached.
 	src := &fakeLiveSource{fixtures: map[string][]byte{}}
 	sink := &captureLiveSink{}
-	// Seed the per-prefix static map so processBusEtaCity does not hit the (nil) db.
+	// Seed the per-prefix static map so busLiveJob.runCity does not hit the store.
 	storeBusStaticMap(citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
 	t.Cleanup(func() { storeBusStaticMap(citymap["Taipei"], nil) })
 
 	fetch := bindFetch(src, sink, specByKey(t, "bus"))
-	processBusEtaCity(context.Background(), fetch, sink, nil, "Taipei", nil)
+	job := busLiveJob{
+		fetch:    fetch,
+		sink:     sink,
+		store:    pgBusEtaStore{},
+		notifier: (*notify.Dispatcher)(nil),
+		now:      time.Now,
+	}
+	job.runCity(context.Background(), "Taipei")
 
 	if len(sink.refresh) != 1 {
 		t.Fatalf("refreshTTL calls = %d, want 1", len(sink.refresh))

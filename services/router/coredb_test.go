@@ -209,29 +209,3 @@ func TestBikeStaticDataMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
-// TestNearBusGroupsCollectsRows verifies the nearby-bus-group query collects rows
-// into the busStations struct the OSRM refinement step consumes.
-func TestNearBusGroupsCollectsRows(t *testing.T) {
-	db, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	db.ExpectQuery("FROM bus_station_groups g WHERE ST_DWithin").
-		WithArgs(121.5, 25.0, 500, 80).
-		WillReturnRows(pgxmock.NewRows([]string{"station_uid", "station_name", "city", "distance", "lon", "lat"}).
-			AddRow("G-1", "Taipei Main", "Taipei", 42.0, 121.51, 25.01))
-
-	rows, err := nearBusGroups(context.Background(), db, 121.5, 25.0, 500, 80)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].StationUid != "G-1" || rows[0].Distance != 42.0 {
-		t.Fatalf("rows = %+v, want one G-1 group", rows)
-	}
-	if err := db.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
-	}
-}

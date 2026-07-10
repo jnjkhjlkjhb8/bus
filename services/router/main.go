@@ -144,15 +144,10 @@ type Thsr_DetainServer struct {
 	live liveSource
 }
 
-// Near_Server answers nearby-station queries. It runs PostGIS radius queries
-// against PostgreSQL and refines walking time/distance through the OSRM foot
-// profile via osrmClient, falling back to geodesic estimates when OSRM is
-// unavailable.
+// Near_Server streams results from the nearby discovery module.
 type Near_Server struct {
 	pb.UnimplementedNear_Station_ServiceServer
-	mu         sync.Mutex
-	db         *pgxpool.Pool
-	osrmClient *resty.Client
+	discovery *nearbyDiscovery
 }
 
 type rateLimiter struct {
@@ -270,7 +265,8 @@ func main() {
 	pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc, live: live})
 	pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc, live: live})
 	pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, rc: rc, live: live})
-	pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{db: db, osrmClient: resty.New().SetTimeout(5 * time.Second)})
+	nearbyRouter := newOSRMWalkingRouter(resty.New().SetTimeout(5*time.Second), "http://osrm:5000")
+	pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{discovery: newNearbyDiscovery(newPostgresNearbyStore(db), nearbyRouter)})
 	pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
 	pb.RegisterMaasServiceServer(grpcServer, newMaasServer(rc, db, tdx))
 	pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})

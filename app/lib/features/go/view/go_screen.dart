@@ -18,13 +18,14 @@ import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
 import 'package:wheres_the_car/features/go/model/plan_options.dart';
 import 'package:wheres_the_car/features/go/model/planned_place.dart';
+import 'package:wheres_the_car/features/go/navigation/navigation_coordinator.dart';
 import 'package:wheres_the_car/features/go/view/place_search_sheet.dart';
 import 'package:wheres_the_car/features/go/widgets/route_option_card.dart';
 import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
@@ -51,6 +52,7 @@ class GoScreen extends StatefulWidget {
 class _GoScreenState extends State<GoScreen> {
   GoogleMapController? _map;
   late final SheetController _sheet;
+  late final NavigationCoordinator _navigationCoordinator;
   PlannedPlace? _origin;
   PlannedPlace? _dest;
   PlanOptions _options = const PlanOptions();
@@ -68,6 +70,14 @@ class _GoScreenState extends State<GoScreen> {
   void initState() {
     super.initState();
     _sheet = SheetController();
+    _navigationCoordinator = NavigationCoordinator(
+      planBloc: context.read<PlanBloc>(),
+      journeySessionBloc: context.read<JourneySessionBloc>(),
+      setPipNavigating: ({required navigating}) =>
+          PipMode.instance.setNavigating(navigating),
+      liveActivityEnabled: () =>
+          SettingsRepository.instance.liveActivityEnabled,
+    );
     if (context.read<PlanBloc>().state.activeLegIndex == null) {
       unawaited(_initOrigin());
     }
@@ -160,21 +170,28 @@ class _GoScreenState extends State<GoScreen> {
     unawaited(HapticService.instance.heavyTap());
     final bloc = context.read<PlanBloc>();
     final routes = bloc.state.result?.routes ?? const <PlanRoute>[];
-    bloc
-      ..add(RouteSelected(index: routes.indexOf(route)))
-      ..add(const NavigationStarted());
-    final legs = JourneyLeg.legsFromRoute(route);
-    if (legs.isNotEmpty && SettingsRepository.instance.liveActivityEnabled) {
-      context.read<JourneySessionBloc>().add(JourneyStarted(legs: legs));
-      unawaited(PipMode.instance.setNavigating(true));
-    }
-    final start = _firstPoint(route);
+    unawaited(
+      _startNavigation(route: route, routeIndex: routes.indexOf(route)),
+    );
+  }
+
+  Future<void> _startNavigation({
+    required PlanRoute route,
+    required int routeIndex,
+  }) async {
+    final start = await _navigationCoordinator.start(
+      route: route,
+      routeIndex: routeIndex,
+    );
+    if (!mounted) return;
     final map = _map;
     if (start != null && map != null) {
+      final target = _latLngOrNull(start);
+      if (target == null) return;
       unawaited(
         map.animateCamera(
           CameraUpdate.newCameraPosition(
-            CameraPosition(target: start, zoom: 15.5, bearing: 30, tilt: 45),
+            CameraPosition(target: target, zoom: 15.5, bearing: 30, tilt: 45),
           ),
         ),
       );
@@ -183,16 +200,21 @@ class _GoScreenState extends State<GoScreen> {
 
   void _advance(PlanRoute route, int activeLeg) {
     unawaited(HapticService.instance.lightTap());
-    final bloc = context.read<PlanBloc>();
-    if (activeLeg >= route.sections.length - 1) {
-      bloc.add(const NavigationEnded());
-      _stopJourneySession();
+    unawaited(_advanceNavigation(route, activeLeg));
+  }
+
+  Future<void> _advanceNavigation(PlanRoute route, int activeLeg) async {
+    final result = await _navigationCoordinator.advance(
+      route: route,
+      activeLeg: activeLeg,
+    );
+    if (!mounted) return;
+    if (result.arrived) {
       _resetCamera();
       AppSnackbar.show(context, '已抵達目的地', type: SnackType.success);
       return;
     }
-    bloc.add(StopArrived(legIndex: activeLeg + 1, stopIndex: 0));
-    final next = _firstPoint(route, leg: activeLeg + 1);
+    final next = _latLngOrNull(result.nextCameraPoint);
     final map = _map;
     if (next != null && map != null) {
       unawaited(map.animateCamera(CameraUpdate.newLatLng(next)));
@@ -201,17 +223,14 @@ class _GoScreenState extends State<GoScreen> {
 
   void _endNav() {
     unawaited(HapticService.instance.lightTap());
-    context.read<PlanBloc>().add(const NavigationEnded());
-    _stopJourneySession();
+    unawaited(_navigationCoordinator.end());
     _resetCamera();
   }
 
-  /// User-initiated end of navigation: tear down the journey session and the
-  /// picture-in-picture navigating flag. Safe to call when no session is
-  /// active (JourneyCancelled is a no-op from the idle phase).
-  void _stopJourneySession() {
-    context.read<JourneySessionBloc>().add(const JourneyCancelled());
-    unawaited(PipMode.instance.setNavigating(false));
+  Future<void> _reconcileJourneyDone() async {
+    final shouldResetCamera = await _navigationCoordinator
+        .reconcileJourneyDone();
+    if (mounted && shouldResetCamera) _resetCamera();
   }
 
   void _resetCamera() {
@@ -230,9 +249,6 @@ class _GoScreenState extends State<GoScreen> {
     if (point == null) return null;
     return LatLng(point.lat, point.lng);
   }
-
-  LatLng? _firstPoint(PlanRoute route, {int leg = 0}) =>
-      _latLngOrNull(route.firstPoint(leg: leg));
 
   void _fitTo(PlanRoute route) {
     final points = _routePoints(route);
@@ -338,14 +354,7 @@ class _GoScreenState extends State<GoScreen> {
     // reverts even when the user didn't tap 結束導航.
     return BlocListener<JourneySessionBloc, JourneySessionState>(
       listenWhen: (p, c) => p.phase != c.phase && c.phase == JourneyPhase.done,
-      listener: (context, _) {
-        unawaited(PipMode.instance.setNavigating(false));
-        final plan = context.read<PlanBloc>();
-        if (plan.state.activeLegIndex != null) {
-          plan.add(const NavigationEnded());
-          _resetCamera();
-        }
-      },
+      listener: (context, _) => unawaited(_reconcileJourneyDone()),
       child: _buildPlanner(),
     );
   }
@@ -387,6 +396,7 @@ class _GoScreenState extends State<GoScreen> {
               children: [
                 Positioned.fill(
                   child: GoogleMap(
+                    style: mapStyleOf(context),
                     initialCameraPosition: const CameraPosition(
                       target: _kDefaultPos,
                       zoom: 14,

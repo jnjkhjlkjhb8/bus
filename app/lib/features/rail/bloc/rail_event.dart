@@ -70,17 +70,29 @@ final class RailQuerySubmitted extends RailEvent {
   const RailQuerySubmitted();
 }
 
+final class RailStationSelection extends Equatable {
+  const RailStationSelection({required this.name, this.id});
+
+  final String name;
+  final String? id;
+
+  @override
+  List<Object?> get props => [name, id];
+}
+
 final class RailTimetableRequested extends RailEvent {
   const RailTimetableRequested({
-    required this.originId,
-    required this.destId,
+    required this.system,
+    required this.origin,
+    required this.destination,
     required this.date,
   });
-  final String originId;
-  final String destId;
+  final RailSystem system;
+  final RailStationSelection origin;
+  final RailStationSelection destination;
   final String date;
   @override
-  List<Object?> get props => [originId, destId, date];
+  List<Object?> get props => [system, origin, destination, date];
 }
 
 final class RailTrainStopsRequested extends RailEvent {

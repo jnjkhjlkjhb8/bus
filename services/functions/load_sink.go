@@ -2,23 +2,26 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// loadSink is the write seam a loadSpec's transform receives instead of the raw
-// pool. copyUpsert owns the temp-table COPY + upsert skeleton the station, fare
-// and timetable transforms all repeat; pool and redis are escape hatches for the
-// loaders that do not fit that shape (the multi-table bus assembly reads six
-// correlated raw_tdx tables, the metro OD-fare loader batches per row, the daily
-// timetable loader writes only Redis). The production adapter is pgLoadSink;
-// unit tests drive the migrated transforms through fakeLoadSink.
+// loadSink is the write seam a loadSpec's transform receives instead of raw
+// PostgreSQL and Redis clients. copyUpsert owns the temp-table COPY + upsert
+// skeleton the station, fare and timetable transforms repeat; semantic methods
+// own the loaders that do not fit that shape. The production adapter is
+// pgLoadSink; unit tests drive the transforms through fakeLoadSink.
 type loadSink interface {
 	copyUpsert(ctx context.Context, spec copyUpsertSpec, rows [][]any) error
-	pool() *pgxpool.Pool
-	redis() *redis.Client
+	loadBusOperators(ctx context.Context, dec *json.Decoder, city string) error
+	loadBusCity(ctx context.Context, src loadSource, city string) error
+	loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, city string) error
+	loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, system string) error
+	loadMrtTravelTime(ctx context.Context, src loadSource, system string) error
+	loadThsrStations(ctx context.Context, dec *json.Decoder, part string) error
 }
 
 // copyUpsertStmt is one parameterized statement copyUpsert runs inside its
@@ -44,15 +47,36 @@ type copyUpsertSpec struct {
 	insertSQL string
 }
 
-// pgLoadSink is the production loadSink backed by the env-schema pool plus the
-// Redis client the Redis-only loaders need.
+// pgLoadSink is the production loadSink backed by the env-schema pool and Redis.
 type pgLoadSink struct {
 	db *pgxpool.Pool
 	rc *redis.Client
 }
 
-func (s pgLoadSink) pool() *pgxpool.Pool  { return s.db }
-func (s pgLoadSink) redis() *redis.Client { return s.rc }
+func (s pgLoadSink) loadBusOperators(ctx context.Context, dec *json.Decoder, city string) error {
+	_, err := loadBusOperators(ctx, dec, s.db, city)
+	return err
+}
+
+func (s pgLoadSink) loadBusCity(ctx context.Context, src loadSource, city string) error {
+	return loadBus(ctx, src, s.db, s.rc, city)
+}
+
+func (s pgLoadSink) loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, city string) error {
+	return loadBusDailyTimetable(ctx, dec, s.db, s.rc, city)
+}
+
+func (s pgLoadSink) loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, system string) error {
+	return loadMrtJourneyMatrix(ctx, dec, s.db, s.rc, system)
+}
+
+func (s pgLoadSink) loadMrtTravelTime(ctx context.Context, src loadSource, system string) error {
+	return loadMrtTrtcTravelTime(ctx, src, s.db, system)
+}
+
+func (s pgLoadSink) loadThsrStations(ctx context.Context, dec *json.Decoder, part string) error {
+	return loadThsrStation(ctx, dec, s.db, s.rc, part)
+}
 
 // copyUpsert runs the temp-table COPY + upsert skeleton in one transaction:
 // preExec statements, CREATE TEMP TABLE ... ON COMMIT DROP, CopyFrom, the

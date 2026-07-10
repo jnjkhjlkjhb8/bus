@@ -267,12 +267,11 @@ type loaderBinding struct {
 func loaderTransforms(src loadSource) map[string]loaderBinding {
 	return map[string]loaderBinding{
 		"bus_operator": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
-			_, err := loadBusOperators(ctx, dec, sink.pool(), part)
-			return err
+			return sink.loadBusOperators(ctx, dec, part)
 		}},
 		"bus": {
 			load: func(ctx context.Context, _ *json.Decoder, sink loadSink, part string) error {
-				return loadBus(ctx, src, sink.pool(), sink.redis(), part)
+				return sink.loadBusCity(ctx, src, part)
 			},
 			report: []qualityTarget{
 				{table: "bus_subroutes", textCols: []string{"route_name", "sub_route_name", "depart", "destin"}},
@@ -280,7 +279,7 @@ func loaderTransforms(src loadSource) map[string]loaderBinding {
 				{table: "bus_stations", textCols: []string{"station_name"}, geoCols: []string{"position"}},
 			}},
 		"bus_dailytimetable": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
-			return loadBusDailyTimetable(ctx, dec, sink.pool(), sink.redis(), part)
+			return sink.loadBusDailyTimetable(ctx, dec, part)
 		}},
 		"bike": {load: loadBikeStations,
 			report: []qualityTarget{{table: "bike_stations", textCols: []string{"name", "address"}, geoCols: []string{"geom"}}}},
@@ -288,16 +287,16 @@ func loaderTransforms(src loadSource) map[string]loaderBinding {
 			report: []qualityTarget{{table: "mrt_station", textCols: []string{"name"}, geoCols: []string{"stationposition"}}}},
 		"mrt_firstlast": {load: loadMrtFirstlast},
 		"mrt_odfare": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
-			return loadMrtJourneyMatrix(ctx, dec, sink.pool(), sink.redis(), part)
+			return sink.loadMrtJourneyMatrix(ctx, dec, part)
 		}},
 		"mrt_trtc_traveltime": {load: func(ctx context.Context, _ *json.Decoder, sink loadSink, part string) error {
-			return loadMrtTrtcTravelTime(ctx, src, sink.pool(), part)
+			return sink.loadMrtTravelTime(ctx, src, part)
 		}},
 		"tra_station": {load: loadTraStation,
 			report: []qualityTarget{{table: "tra_stations", textCols: []string{"name"}, geoCols: []string{"geom"}}}},
 		"thsr_station": {
 			load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
-				return loadThsrStation(ctx, dec, sink.pool(), sink.redis(), part)
+				return sink.loadThsrStations(ctx, dec, part)
 			},
 			report: []qualityTarget{{table: "thsr_stations", textCols: []string{"name"}, geoCols: []string{"geom"}}}},
 		"tra_fare":       {load: loadTraFare},

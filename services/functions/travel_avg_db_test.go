@@ -11,7 +11,7 @@ import (
 
 // travelAvgTestPool connects to DATABASE_URL and skips when it is unset. Unlike
 // loaderTestPool it does not require the raw_tdx schema: this test provisions
-// the two bus_* tables it needs itself.
+// the three bus_* tables it needs itself.
 func travelAvgTestPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
@@ -25,12 +25,15 @@ func travelAvgTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-// TestComputeTravelAvgDerivesTripsFromPlates covers the whole derivation: an
-// arrival is the tail of a descending estimate run, the origin arrival of the
-// same plate is that trip's departure, and the bucket keys on the departure's
-// hour and weekday. Three trips land 10 minutes apart, each observed twice at the
-// origin and twice downstream, giving one bucket of three samples.
-func TestComputeTravelAvgDerivesTripsFromPlates(t *testing.T) {
+// TestComputeTravelAvgMatchesTimetableDepartures is the regression guard for the
+// getDepTimes fix: the origin-departure lookup must read timetable rows
+// (type=false, origin = lowest stopsequence per trip) filtered by service_day,
+// not the dead "type=true AND stopsequence=0" shape that never matches loaded
+// rows. It lands a single 08:00 Monday origin departure plus ten arrival
+// crossings for a downstream stop, runs computeTravelAvg, and asserts a
+// bus_travel_avg bucket was produced. With the old dead query getDepTimes
+// returns nothing, every crossing is skipped, and no bucket is upserted.
+func TestComputeTravelAvgMatchesTimetableDepartures(t *testing.T) {
 	pool := travelAvgTestPool(t)
 	defer pool.Close()
 	ctx := context.Background()
@@ -38,14 +41,20 @@ func TestComputeTravelAvgDerivesTripsFromPlates(t *testing.T) {
 	ddl := []string{
 		`CREATE TABLE IF NOT EXISTS bus_eta_history (
 			sub_route_uid text, direction smallint, stop_uid text,
-			stop_sequence smallint, estimate int, plate_numb text,
-			src_update_time timestamptz,
+			hour smallint, day_of_week smallint, estimate double precision,
 			recorded_at timestamptz NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE IF NOT EXISTS bus_travel_avg (
 			sub_route_uid text, direction smallint, stop_uid text,
 			hour smallint, day_of_week smallint, avg_seconds int,
 			sample_count int, updated_at timestamptz NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (sub_route_uid, direction, stop_uid, hour, day_of_week))`,
+		`CREATE TABLE IF NOT EXISTS bus_schedule (
+			sub_route_uid text, direction smallint, type bool, tripid text,
+			islowfloor bool, stopsequence smallint,
+			"stop_uid/MinHeadwayMins" text, "stop_name/MaxHeadwayMins" text,
+			"arrival_time/StartTime" time, "departure_time/EndTime" time,
+			service_day smallint, updated_at timestamptz NOT NULL DEFAULT NOW(),
+			PRIMARY KEY (sub_route_uid, direction, type, service_day, tripid, "stop_uid/MinHeadwayMins"))`,
 	}
 	for _, s := range ddl {
 		if _, err := pool.Exec(ctx, s); err != nil {
@@ -55,7 +64,7 @@ func TestComputeTravelAvgDerivesTripsFromPlates(t *testing.T) {
 
 	const sr = "TESTTRAVELAVG_SR"
 	clean := func() {
-		for _, tbl := range []string{"bus_eta_history", "bus_travel_avg"} {
+		for _, tbl := range []string{"bus_eta_history", "bus_travel_avg", "bus_schedule"} {
 			if _, err := pool.Exec(ctx, "DELETE FROM "+tbl+" WHERE sub_route_uid = $1", sr); err != nil {
 				t.Fatalf("clean %s: %v", tbl, err)
 			}
@@ -64,30 +73,35 @@ func TestComputeTravelAvgDerivesTripsFromPlates(t *testing.T) {
 	clean()
 	defer clean()
 
-	// Yesterday 08:05 Taipei, so all three departures fall in hour 8 and the
-	// aggregation window (30 days) covers them regardless of wall-clock date.
-	now := time.Now().In(taipei)
-	base := time.Date(now.Year(), now.Month(), now.Day(), 8, 5, 0, 0, taipei).Add(-24 * time.Hour)
-
-	insert := func(stop string, seq int, est int, at time.Time, plate string) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO bus_eta_history
-			  (sub_route_uid, direction, stop_uid, stop_sequence, estimate, plate_numb, recorded_at)
-			VALUES ($1, 0, $2, $3, $4, $5, $6)`,
-			sr, stop, seq, est, plate, at); err != nil {
-			t.Fatalf("insert %s@%s: %v", plate, stop, err)
-		}
+	// Origin departure at 08:00, Monday only. day_of_week=1 (Monday) maps to
+	// service_day bit0 = 1, so the getDepTimes service_day filter must match.
+	// Two stops on one trip; the origin is the lowest stopsequence.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO bus_schedule (sub_route_uid, direction, type, tripid, islowfloor,
+			stopsequence, "stop_uid/MinHeadwayMins", "stop_name/MaxHeadwayMins",
+			"arrival_time/StartTime", "departure_time/EndTime", service_day)
+		VALUES ($1, 0, false, 'T1', false, 1, 'STOP_A', 'A', '08:00:00', '08:00:00', 1),
+		       ($1, 0, false, 'T1', false, 2, 'STOP_B', 'B', '08:10:00', '08:10:00', 1)`,
+		sr); err != nil {
+		t.Fatalf("insert schedule: %v", err)
 	}
 
-	for i, plate := range []string{"KAA-001", "KAA-002", "KAA-003"} {
-		dep := base.Add(time.Duration(i*10) * time.Minute)
-		// Origin: run tail at dep+20s with estimate 30 => departure at dep+50s.
-		insert("STOP_A", 1, 300, dep, plate)
-		insert("STOP_A", 1, 30, dep.Add(20*time.Second), plate)
-		// Downstream: run tail at dep+10m with estimate 60 => arrival at dep+11m.
-		insert("STOP_B", 2, 600, dep.Add(2*time.Minute), plate)
-		insert("STOP_B", 2, 60, dep.Add(10*time.Minute), plate)
+	// Ten arrival crossings for STOP_B: each pair is a positive estimate then a
+	// non-positive one within 5s, which computeTravelAvg reads as one arrival.
+	// Anchored to yesterday 08:05 Taipei so every crossing lands in hour 8 and
+	// resolves against the 08:00 origin departure. Stored hour/day_of_week are
+	// what the aggregation buckets on, independent of the wall-clock date.
+	now := time.Now().In(taipei)
+	base := time.Date(now.Year(), now.Month(), now.Day(), 8, 5, 0, 0, taipei).Add(-24 * time.Hour)
+	for i := 0; i < 10; i++ {
+		tPos := base.Add(time.Duration(i*20) * time.Second)
+		tNeg := tPos.Add(5 * time.Second)
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO bus_eta_history (sub_route_uid, direction, stop_uid, hour, day_of_week, estimate, recorded_at)
+			VALUES ($1, 0, 'STOP_B', 8, 1, 60, $2), ($1, 0, 'STOP_B', 8, 1, -5, $3)`,
+			sr, tPos, tNeg); err != nil {
+			t.Fatalf("insert history pair %d: %v", i, err)
+		}
 	}
 
 	if err := computeTravelAvg(ctx, pool); err != nil {
@@ -98,16 +112,14 @@ func TestComputeTravelAvgDerivesTripsFromPlates(t *testing.T) {
 	err := pool.QueryRow(ctx, `
 		SELECT sample_count, avg_seconds FROM bus_travel_avg
 		WHERE sub_route_uid = $1 AND direction = 0 AND stop_uid = 'STOP_B'
-		  AND hour = 8 AND day_of_week = $2`,
-		sr, int(base.Weekday())).Scan(&sampleCount, &avgSeconds)
+		  AND hour = 8 AND day_of_week = 1`, sr).Scan(&sampleCount, &avgSeconds)
 	if err != nil {
-		t.Fatalf("expected a travel-average bucket: %v", err)
+		t.Fatalf("expected a travel-average bucket (dead getDepTimes query would produce none): %v", err)
 	}
-	if sampleCount != 3 {
-		t.Errorf("sample_count = %d, want 3", sampleCount)
+	if sampleCount != 10 {
+		t.Errorf("sample_count = %d, want 10", sampleCount)
 	}
-	// arrival(dep+11m) - departure(dep+50s) = 610s.
-	if avgSeconds != 610 {
-		t.Errorf("avg_seconds = %d, want 610", avgSeconds)
+	if avgSeconds <= 0 || avgSeconds > 7200 {
+		t.Errorf("avg_seconds = %d, want a positive origin-to-stop travel time within range", avgSeconds)
 	}
 }

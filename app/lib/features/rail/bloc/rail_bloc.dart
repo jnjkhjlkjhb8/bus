@@ -12,7 +12,10 @@ import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
 
 class RailBloc extends Bloc<RailEvent, RailState> {
-  RailBloc() : super(const RailInitial()) {
+  RailBloc({TraRepository? traRepository, ThsrRepository? thsrRepository})
+    : _traRepository = traRepository ?? TraRepository.instance,
+      _thsrRepository = thsrRepository ?? ThsrRepository.instance,
+      super(const RailInitial()) {
     on<RailSystemChanged>(_onSystemChanged);
     on<RailStationSelected>(_onStationSelected);
     on<RailLiveBoardStarted>(_onLiveBoardStarted);
@@ -24,6 +27,9 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     on<RailLiveBoardItemsUpdated>(_onLiveBoardItems);
     on<RailLiveBoardFailed>(_onLiveBoardFailed);
   }
+
+  final TraRepository _traRepository;
+  final ThsrRepository _thsrRepository;
 
   static final _dateFormat = DateFormat('yyyy-MM-dd');
 
@@ -103,7 +109,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     await _liveBoardSub?.cancel();
     _liveBoardSub = _liveBoardFeed
         .watch(
-          source: () => TraRepository.instance.liveBoard(stationId, date),
+          source: () => _traRepository.liveBoard(stationId, date),
           onFailure: (e) => add(RailLiveBoardFailed(e)),
         )
         .listen((items) => add(RailLiveBoardItemsUpdated(items)));
@@ -154,16 +160,9 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     RailTimetableRequested event,
     Emitter<RailState> emit,
   ) async {
-    final current = state;
-    final system = current is RailLiveBoardLoaded
-        ? current.system
-        : RailSystem.tra;
-    final originName = current is RailLiveBoardLoaded
-        ? current.queryOriginName
-        : '';
-    final destName = current is RailLiveBoardLoaded
-        ? current.queryDestName
-        : '';
+    final system = event.system;
+    final originName = event.origin.name;
+    final destName = event.destination.name;
 
     emit(
       RailTimetableLoading(
@@ -175,11 +174,13 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     );
 
     try {
+      final originId = await _stationId(system, event.origin);
+      final destId = await _stationId(system, event.destination);
       if (system == RailSystem.tra) {
-        final items = await TraRepository.instance.timetable(
+        final items = await _traRepository.timetable(
           event.date,
-          event.originId,
-          event.destId,
+          originId,
+          destId,
         );
         emit(
           RailTimetableLoaded(
@@ -192,17 +193,17 @@ class RailBloc extends Bloc<RailEvent, RailState> {
         );
         await _delaySub?.cancel();
         _delaySub = ArrivalFeed.passthrough(
-          source: () => TraRepository.instance.delay(
+          source: () => _traRepository.delay(
             event.date,
-            event.originId,
-            event.destId,
+            originId,
+            destId,
           ),
         ).listen((delays) => add(RailDelaysUpdated(delays)));
       } else {
-        final items = await ThsrRepository.instance.timetable(
+        final items = await _thsrRepository.timetable(
           event.date,
-          event.originId,
-          event.destId,
+          originId,
+          destId,
         );
         emit(
           RailTimetableLoaded(
@@ -217,6 +218,18 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     } on Object catch (e) {
       emit(RailError(AppError.from(e)));
     }
+  }
+
+  Future<String> _stationId(
+    RailSystem system,
+    RailStationSelection selection,
+  ) async {
+    final knownId = selection.id;
+    if (knownId != null && knownId.isNotEmpty) return knownId;
+    final resolved = system == RailSystem.tra
+        ? await _traRepository.stationId(selection.name)
+        : await _thsrRepository.stationId(selection.name);
+    return resolved ?? selection.name;
   }
 
   @override
@@ -242,7 +255,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           ? current.system
           : RailSystem.tra;
       if (system == RailSystem.tra) {
-        final stops = await TraRepository.instance.stops(
+        final stops = await _traRepository.stops(
           event.date,
           event.trainNo,
         );
@@ -255,7 +268,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           ),
         );
       } else {
-        final stops = await ThsrRepository.instance.stops(
+        final stops = await _thsrRepository.stops(
           event.date,
           event.trainNo,
         );

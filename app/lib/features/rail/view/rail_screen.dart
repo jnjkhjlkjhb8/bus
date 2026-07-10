@@ -11,8 +11,6 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
-import 'package:wheres_the_car/data/repositories/tra_repository.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_bloc.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
@@ -76,14 +74,6 @@ String _computeDuration(String depart, String arrive) {
   return '$h時$m分';
 }
 
-// Falls back to the name itself when the station is unknown, so the query
-// still carries a value the caller can display.
-Future<String> _resolveTraStationId(String name) async =>
-    await TraRepository.instance.stationId(name) ?? name;
-
-Future<String> _resolveThsrStationId(String name) async =>
-    await ThsrRepository.instance.stationId(name) ?? name;
-
 class RailScreen extends StatefulWidget {
   const RailScreen({super.key});
 
@@ -101,6 +91,7 @@ class _RailScreenState extends State<RailScreen> {
   late final SheetController _sheetController;
   DateTime _selectedDate = DateTime.now();
   bool _initialized = false;
+  bool _hasSubmittedQuery = false;
 
   @override
   void initState() {
@@ -139,27 +130,9 @@ class _RailScreenState extends State<RailScreen> {
   String _defaultDest(RailSystem system) =>
       system == RailSystem.thsr ? '左營' : '花蓮';
 
-  Future<String> _resolveStationId(String name) => _system == RailSystem.thsr
-      ? _resolveThsrStationId(name)
-      : _resolveTraStationId(name);
-
   Future<String?> _showStationPicker() => _system == RailSystem.thsr
       ? showTHSRStationPicker(context)
       : showTRAStationPicker(context);
-
-  /// Resolves any missing ids for the current origin/dest, then runs the query.
-  Future<void> _resolveAndSearch() async {
-    final originId = _originId.isNotEmpty
-        ? _originId
-        : await _resolveStationId(_originName);
-    final destId = await _resolveStationId(_destName);
-    if (!mounted) return;
-    setState(() {
-      _originId = originId;
-      _destId = destId;
-    });
-    _dispatchSearch();
-  }
 
   @override
   void dispose() {
@@ -177,6 +150,7 @@ class _RailScreenState extends State<RailScreen> {
       _destName = _defaultDest(system);
       _originId = '';
       _destId = '';
+      _hasSubmittedQuery = false;
     });
     // Clear stale results back to the prompt (no query until user searches).
     _bloc.add(RailSystemChanged(system));
@@ -192,37 +166,35 @@ class _RailScreenState extends State<RailScreen> {
       _destName = tmpName;
       _destId = tmpId;
     });
-    _dispatchSearch();
+    if (_hasSubmittedQuery) _dispatchSearch();
   }
 
   void _dispatchSearch() {
-    if (_originId.isEmpty || _destId.isEmpty) return;
-    // The bloc reads system + O/D names off a RailLiveBoardLoaded state, so
-    // re-establish it before every request; without this a repeat THSR query
-    // would silently fall back to TRA.
-    _bloc
-      ..add(RailSystemChanged(_system))
-      ..add(RailQueryChanged(originName: _originName, destName: _destName))
-      ..add(
-        RailTimetableRequested(
-          originId: _originId,
-          destId: _destId,
-          date: _dateFormat.format(_selectedDate),
+    _hasSubmittedQuery = true;
+    _bloc.add(
+      RailTimetableRequested(
+        system: _system,
+        origin: RailStationSelection(
+          name: _originName,
+          id: _originId.isEmpty ? null : _originId,
         ),
-      );
+        destination: RailStationSelection(
+          name: _destName,
+          id: _destId.isEmpty ? null : _destId,
+        ),
+        date: _dateFormat.format(_selectedDate),
+      ),
+    );
   }
 
   Future<void> _pickOrigin() async {
     unawaited(HapticService.instance.lightTap());
     final name = await _showStationPicker();
     if (name != null && mounted) {
-      final id = await _resolveStationId(name);
-      if (mounted) {
-        setState(() {
-          _originName = name;
-          _originId = id;
-        });
-      }
+      setState(() {
+        _originName = name;
+        _originId = '';
+      });
     }
   }
 
@@ -230,13 +202,10 @@ class _RailScreenState extends State<RailScreen> {
     unawaited(HapticService.instance.lightTap());
     final name = await _showStationPicker();
     if (name != null && mounted) {
-      final id = await _resolveStationId(name);
-      if (mounted) {
-        setState(() {
-          _destName = name;
-          _destId = id;
-        });
-      }
+      setState(() {
+        _destName = name;
+        _destId = '';
+      });
     }
   }
 
@@ -496,7 +465,7 @@ class _RailScreenState extends State<RailScreen> {
                       onOriginTap: _pickOrigin,
                       onDestTap: _pickDest,
                       onSearch: () {
-                        unawaited(_resolveAndSearch());
+                        _dispatchSearch();
                         // Collapse the inline sheet to reveal results. Never
                         // pop the navigator here — the sheet is part of this
                         // screen's Stack, so popping unwinds back to home.

@@ -1,10 +1,168 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
+import 'package:wheres_the_car/data/models/thsr_models.dart';
+import 'package:wheres_the_car/data/models/tra_models.dart';
+import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
+import 'package:wheres_the_car/data/repositories/tra_repository.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_bloc.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
 
 void main() {
+  test('one THSR request loads from the initial state', () async {
+    const item = ThsrTimetableItem(
+      trainNo: '101',
+      departureTime: '08:00',
+      arrivalTime: '09:30',
+      travelMinutes: 90,
+      delayMinutes: 0,
+      remark: '',
+    );
+    final thsr = _FakeThsrRepository(timetableResult: const [item]);
+    final bloc = RailBloc(thsrRepository: thsr);
+    addTearDown(bloc.close);
+
+    final states = expectLater(
+      bloc.stream,
+      emitsInOrder([
+        isA<RailTimetableLoading>()
+            .having((s) => s.system, 'system', RailSystem.thsr)
+            .having((s) => s.originName, 'origin', '南港')
+            .having((s) => s.destName, 'destination', '左營'),
+        isA<RailTimetableLoaded>()
+            .having((s) => s.system, 'system', RailSystem.thsr)
+            .having((s) => s.thsrItems, 'items', const [item]),
+      ]),
+    );
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: RailStationSelection(name: '南港', id: '0990'),
+        destination: RailStationSelection(name: '左營', id: '1070'),
+        date: '2026-07-10',
+      ),
+    );
+
+    await states;
+    expect(thsr.timetableCalls, [('2026-07-10', '0990', '1070')]);
+  });
+
+  test('known station IDs bypass repository lookup', () async {
+    final thsr = _FakeThsrRepository();
+    final bloc = RailBloc(thsrRepository: thsr);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: RailStationSelection(name: '南港', id: '0990'),
+        destination: RailStationSelection(name: '左營', id: '1070'),
+        date: '2026-07-10',
+      ),
+    );
+    await bloc.stream.firstWhere((state) => state is RailTimetableLoaded);
+
+    expect(thsr.stationIdCalls, isEmpty);
+    expect(thsr.timetableCalls, [('2026-07-10', '0990', '1070')]);
+  });
+
+  test('unknown station names fall back to names as IDs', () async {
+    final thsr = _FakeThsrRepository();
+    final bloc = RailBloc(thsrRepository: thsr);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: RailStationSelection(name: '未知起點'),
+        destination: RailStationSelection(name: '未知終點'),
+        date: '2026-07-10',
+      ),
+    );
+    await bloc.stream.firstWhere((state) => state is RailTimetableLoaded);
+
+    expect(thsr.stationIdCalls, ['未知起點', '未知終點']);
+    expect(
+      thsr.timetableCalls,
+      [('2026-07-10', '未知起點', '未知終點')],
+    );
+  });
+
+  test('TRA delay updates are attached to the loaded timetable', () async {
+    final delays = StreamController<Map<String, int>>.broadcast();
+    addTearDown(delays.close);
+    final tra = _FakeTraRepository(delayStream: delays.stream);
+    final bloc = RailBloc(traRepository: tra);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.tra,
+        origin: RailStationSelection(name: '台北', id: '1000'),
+        destination: RailStationSelection(name: '花蓮', id: '7000'),
+        date: '2026-07-10',
+      ),
+    );
+    await bloc.stream.firstWhere((state) => state is RailTimetableLoaded);
+    while (tra.delayCalls.isEmpty) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    final delayed = bloc.stream.firstWhere(
+      (state) => state is RailTimetableLoaded && state.delays['110'] == 3,
+    );
+    delays.add(const {'110': 3});
+
+    expect((await delayed as RailTimetableLoaded).delays, const {'110': 3});
+  });
+
+  test('repeat THSR requests remain on the THSR adapter', () async {
+    final thsr = _FakeThsrRepository();
+    final tra = _FakeTraRepository();
+    final bloc = RailBloc(traRepository: tra, thsrRepository: thsr);
+    addTearDown(bloc.close);
+
+    RailTimetableRequested request(String date) => RailTimetableRequested(
+      system: RailSystem.thsr,
+      origin: const RailStationSelection(name: '南港', id: '0990'),
+      destination: const RailStationSelection(name: '左營', id: '1070'),
+      date: date,
+    );
+
+    bloc.add(request('2026-07-10'));
+    await bloc.stream.firstWhere((state) => state is RailTimetableLoaded);
+    bloc.add(request('2026-07-11'));
+    await bloc.stream.firstWhere(
+      (state) => state is RailTimetableLoaded && state.date == '2026-07-11',
+    );
+
+    expect(tra.timetableCalls, isEmpty);
+    expect(thsr.timetableCalls, [
+      ('2026-07-10', '0990', '1070'),
+      ('2026-07-11', '0990', '1070'),
+    ]);
+  });
+
+  test('repository failures become RailError', () async {
+    final thsr = _FakeThsrRepository(error: StateError('boom'));
+    final bloc = RailBloc(thsrRepository: thsr);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: RailStationSelection(name: '南港', id: '0990'),
+        destination: RailStationSelection(name: '左營', id: '1070'),
+        date: '2026-07-10',
+      ),
+    );
+
+    final state = await bloc.stream.firstWhere((state) => state is RailError);
+    expect((state as RailError).error, isA<UnknownError>());
+  });
+
   test('RailBloc starts in initial state', () {
     final bloc = RailBloc();
     addTearDown(bloc.close);
@@ -49,27 +207,59 @@ void main() {
 
     expect(state.error, isA<OfflineError>());
   });
+}
 
-  test(
-    'RailSystemChanged + RailQueryChanged retains THSR system and O/D names',
-    () async {
-      // Guards the rail_screen hand-off: _dispatchSearch re-establishes a
-      // RailLiveBoardLoaded before each request so _onTimetableRequested reads
-      // the right system (else a repeat THSR query falls back to TRA).
-      final bloc = RailBloc();
-      addTearDown(bloc.close);
+class _FakeThsrRepository extends ThsrRepository {
+  _FakeThsrRepository({this.timetableResult = const [], this.error});
 
-      bloc
-        ..add(const RailSystemChanged(RailSystem.thsr))
-        ..add(const RailQueryChanged(originName: '南港', destName: '左營'));
-      await Future<void>.delayed(Duration.zero);
+  final List<ThsrTimetableItem> timetableResult;
+  final Error? error;
+  final timetableCalls = <(String, String, String)>[];
+  final stationIdCalls = <String>[];
 
-      final state = bloc.state;
-      expect(state, isA<RailLiveBoardLoaded>());
-      state as RailLiveBoardLoaded;
-      expect(state.system, RailSystem.thsr);
-      expect(state.queryOriginName, '南港');
-      expect(state.queryDestName, '左營');
-    },
-  );
+  @override
+  Future<String?> stationId(String name) async {
+    stationIdCalls.add(name);
+    return null;
+  }
+
+  @override
+  Future<List<ThsrTimetableItem>> timetable(
+    String date,
+    String originId,
+    String destId,
+  ) async {
+    timetableCalls.add((date, originId, destId));
+    if (error case final error?) throw error;
+    return timetableResult;
+  }
+}
+
+class _FakeTraRepository extends TraRepository {
+  _FakeTraRepository({Stream<Map<String, int>>? delayStream})
+    : _delayStream = delayStream ?? const Stream.empty();
+
+  final Stream<Map<String, int>> _delayStream;
+  final timetableCalls = <(String, String, String)>[];
+  final delayCalls = <(String, String, String)>[];
+
+  @override
+  Future<List<TraTimetableItem>> timetable(
+    String date,
+    String originId,
+    String destId,
+  ) async {
+    timetableCalls.add((date, originId, destId));
+    return const [];
+  }
+
+  @override
+  Stream<Map<String, int>> delay(
+    String date,
+    String originId,
+    String destId,
+  ) {
+    delayCalls.add((date, originId, destId));
+    return _delayStream;
+  }
 }

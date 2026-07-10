@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
@@ -480,12 +481,8 @@ func (s *Near_Server) Near(stream pb.Near_Station_Service_NearServer) error {
 
 // FindNear is a bidirectional stream: for each location the client sends, it
 // replies with nearby stations of every mode. It returns nil on client EOF.
-// Note findnearstation takes (lat, lon), so the received lon/lat are passed in
-// swapped order.
 func (s *Near_Server) FindNear(stream pb.Near_Station_Service_NearServer) error {
 	ctx := stream.Context()
-	var l1, l2 float64
-	var l3 int
 	for {
 		in, err := stream.Recv()
 		if err == io.EOF {
@@ -497,13 +494,15 @@ func (s *Near_Server) FindNear(stream pb.Near_Station_Service_NearServer) error 
 		lon := in.PositionLon
 		lat := in.PositionLat
 		r := in.Radius
-		l1 = lon
-		l2 = lat
-		l3 = int(r)
 		log.Infof("[gRPC] received location: lon=%f lat=%f radius=%d", lon, lat, r)
-		resp, err := findnearstation(l2, l1, l3, ctx, s.db, s.osrmClient)
+		resp, err := s.discovery.Discover(ctx, nearbyQuery{
+			Origin: geoPoint{Lon: lon, Lat: lat}, RadiusMeters: int(r),
+		})
 		if err != nil {
-			log.Infof("[gRPC] action=findnearstation failed error=%v", err)
+			log.Infof("[gRPC] action=nearby_discovery failed error=%v", err)
+			if errors.Is(err, ErrNearbyUnavailable) {
+				return status.Error(codes.Unavailable, "nearby discovery unavailable")
+			}
 			return err
 		}
 		if err := stream.Send(resp); err != nil {

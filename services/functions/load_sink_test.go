@@ -5,9 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-
-	"github.com/go-redis/redis"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // copyUpsertCall records one captured copyUpsert invocation so a test can assert
@@ -17,11 +14,16 @@ type copyUpsertCall struct {
 	rows [][]any
 }
 
-// fakeLoadSink is the loadSink seam's in-memory adapter: it captures every
-// copyUpsert call and exposes a nil pool/redis, so the migrated copy-upsert
-// transforms run end to end from JSON fixtures with no DATABASE_URL.
+// fakeLoadSink is the loadSink seam's in-memory adapter: it captures copyUpsert
+// and semantic calls so transforms run end to end without PostgreSQL or Redis.
 type fakeLoadSink struct {
-	calls []copyUpsertCall
+	calls         []copyUpsertCall
+	semanticCalls []semanticLoadCall
+}
+
+type semanticLoadCall struct {
+	operation string
+	part      string
 }
 
 func (f *fakeLoadSink) copyUpsert(_ context.Context, spec copyUpsertSpec, rows [][]any) error {
@@ -29,8 +31,34 @@ func (f *fakeLoadSink) copyUpsert(_ context.Context, spec copyUpsertSpec, rows [
 	return nil
 }
 
-func (f *fakeLoadSink) pool() *pgxpool.Pool  { return nil }
-func (f *fakeLoadSink) redis() *redis.Client { return nil }
+func (f *fakeLoadSink) recordSemantic(operation, part string) error {
+	f.semanticCalls = append(f.semanticCalls, semanticLoadCall{operation: operation, part: part})
+	return nil
+}
+
+func (f *fakeLoadSink) loadBusOperators(_ context.Context, _ *json.Decoder, part string) error {
+	return f.recordSemantic("bus operators", part)
+}
+
+func (f *fakeLoadSink) loadBusCity(_ context.Context, _ loadSource, part string) error {
+	return f.recordSemantic("bus city assembly", part)
+}
+
+func (f *fakeLoadSink) loadBusDailyTimetable(_ context.Context, _ *json.Decoder, part string) error {
+	return f.recordSemantic("bus daily timetable", part)
+}
+
+func (f *fakeLoadSink) loadMrtJourneyMatrix(_ context.Context, _ *json.Decoder, part string) error {
+	return f.recordSemantic("MRT journey matrix", part)
+}
+
+func (f *fakeLoadSink) loadMrtTravelTime(_ context.Context, _ loadSource, part string) error {
+	return f.recordSemantic("MRT travel time", part)
+}
+
+func (f *fakeLoadSink) loadThsrStations(_ context.Context, _ *json.Decoder, part string) error {
+	return f.recordSemantic("THSR stations", part)
+}
 
 // decodeInto returns a decoder positioned at the start of a committed JSON array.
 func decodeInto(body string) *json.Decoder {

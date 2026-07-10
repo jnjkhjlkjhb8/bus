@@ -10,6 +10,7 @@ import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/location/location_service.dart';
 import 'package:wheres_the_car/features/bike/view/bike_station_detail_view.dart';
+import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
@@ -69,6 +70,7 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
         children: [
           Positioned.fill(
             child: GoogleMap(
+              style: mapStyleOf(context),
               initialCameraPosition: const CameraPosition(
                 target: _kDefaultPos,
                 zoom: 15,

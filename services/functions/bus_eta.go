@@ -25,6 +25,18 @@ type etaKey struct {
 	stopUID     string
 }
 
+type busArrivalNotifier interface {
+	Arrival(context.Context, string, string, string, string, int32)
+}
+
+type busLiveJob struct {
+	fetch    boundFetch
+	sink     liveSink
+	store    busEtaStore
+	notifier busArrivalNotifier
+	now      func() time.Time
+}
+
 // pickBusEstimate resolves two ETA entries sharing an etaKey (multiple buses on
 // the same route toward the same stop): prefer a bus en route (StopStatus 0),
 // and among those keep the soonest (smallest EstimatedTime). If neither is
@@ -77,6 +89,13 @@ func busEta(
 	dispatcher *notify.Dispatcher,
 ) {
 	log.Infof("[BUS_ETA] action=Bus_eta event=start")
+	job := busLiveJob{
+		fetch:    fetch,
+		sink:     sink,
+		store:    pgBusEtaStore{db: db},
+		notifier: dispatcher,
+		now:      time.Now,
+	}
 	sem := make(chan struct{}, 4)
 	var wg sync.WaitGroup
 	for _, city := range cities {
@@ -88,7 +107,7 @@ func busEta(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			processBusEtaCity(ctx, fetch, sink, db, city, dispatcher)
+			job.runCity(ctx, city)
 		}(city)
 	}
 	wg.Wait()
@@ -106,7 +125,7 @@ func busEtaTTLPatterns(city string) []ttlPattern {
 	}
 }
 
-// processBusEtaCity builds and publishes one city's bus arrivals. It joins the
+// busLiveJob.runCity builds and publishes one city's bus arrivals. It joins the
 // static stop map (cached per prefix) with live TDX ETAs and vehicle positions,
 // then: records history rows for stops with a bus en route (StopStatus 0); fills
 // a predicted NextBusTime for stops flagged status 1 with no TDX NextBusTime,
@@ -114,14 +133,7 @@ func busEtaTTLPatterns(city string) []ttlPattern {
 // correction (predictNextBusTime); attaches the nearest live vehicle to each
 // stop; and dispatches arrival notifications. Results are written to Redis both
 // as SET snapshots (180s TTL) and PUBLISH events, keyed per station and per route.
-func processBusEtaCity(
-	ctx context.Context,
-	fetch boundFetch,
-	sink liveSink,
-	db *pgxpool.Pool,
-	city string,
-	dispatcher *notify.Dispatcher,
-) {
+func (j busLiveJob) runCity(ctx context.Context, city string) {
 	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=city_start", city)
 	prefix := citymap[city]
 	if prefix == "" {
@@ -131,7 +143,7 @@ func processBusEtaCity(
 	mp, cached := cachedBusStaticMap(prefix)
 	if !cached {
 		var err error
-		mp, err = busstaticmp(ctx, db, prefix)
+		mp, err = j.store.staticStops(ctx, prefix)
 		if err != nil || len(mp) <= 0 {
 			log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
 			return
@@ -148,12 +160,12 @@ func processBusEtaCity(
 	} else {
 		url = fmt.Sprintf("/v2/Bus/EstimatedTimeOfArrival/City/%s", city)
 	}
-	dec, comp, flipopen, err := fetch(ctx, url, "bus_EstimatedTimeOfArrival"+city)
+	dec, comp, flipopen, err := j.fetch(ctx, url, "bus_EstimatedTimeOfArrival"+city)
 	if err != nil || !comp {
 		if err == nil {
 			// 304 Not-Modified: the cached arrival instants are still valid, so
 			// re-arm their TTL instead of letting the snapshots expire mid-validity.
-			sink.refreshTTL(busEtaTTLPatterns(city))
+			j.sink.refreshTTL(busEtaTTLPatterns(city))
 		}
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_eta error=%v", city, err)
 		return
@@ -164,7 +176,7 @@ func processBusEtaCity(
 		// Truncated or malformed body: committing it would overwrite the live
 		// snapshot with mostly status-67 blanks (the abrupt-blank-then-recover
 		// flicker). Treat it like a 304 — re-arm the last good snapshot's TTL.
-		sink.refreshTTL(busEtaTTLPatterns(city))
+		j.sink.refreshTTL(busEtaTTLPatterns(city))
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_partial_eta eat_count=%d", city, len(eat))
 		return
 	}
@@ -174,12 +186,12 @@ func processBusEtaCity(
 	} else {
 		url = fmt.Sprintf("/v2/Bus/RealTimeByFrequency/City/%s", city)
 	}
-	dec, comp, flipopen, err = fetch(ctx, url, "bus_RealTimeByFrequency"+city)
+	dec, comp, flipopen, err = j.fetch(ctx, url, "bus_RealTimeByFrequency"+city)
 	if err != nil || !comp {
 		if err == nil {
 			// 304 Not-Modified on positions: the cached snapshot is still
 			// valid, so re-arm its TTL instead of letting it expire mid-validity.
-			sink.refreshTTL(busEtaTTLPatterns(city))
+			j.sink.refreshTTL(busEtaTTLPatterns(city))
 		}
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)
 		return
@@ -207,25 +219,25 @@ func processBusEtaCity(
 	busmap := buildBusPositionMap(city, posit)
 	totalStops := buildTotalStops(city, mp)
 	var weather *weatherData
-	if wjson, wErr := sink.getString(shared.WeatherKey(city)); wErr == nil {
+	if wjson, wErr := j.sink.getString(shared.WeatherKey(city)); wErr == nil {
 		var w weatherData
 		if json.Unmarshal([]byte(wjson), &w) == nil {
 			weather = &w
 		}
 	}
-	now := time.Now().In(taipei)
+	now := j.now().In(taipei)
 	holiday := isHoliday(now)
 	fillKeys, fillUIDs := collectFillKeys(city, mp, etamap)
 	todTime := now.Format("15:04:05")
 	// Day-of-week mask only; holiday-aware schedules would need TDX SpecialDays
 	// landing, as schedule rows carry no holiday flag from TDX's Mon-Sun fields.
 	dayBit := 1 << ((int(now.Weekday()) + 6) % 7) // mask2 bit order: Monday=bit0..Sunday=bit6
-	depMap := batchNextDepartures(ctx, db, dedupRouteDirPairs(fillKeys), todTime, dayBit)
+	depMap := j.store.nextDepartures(ctx, dedupRouteDirPairs(fillKeys), todTime, dayBit)
 	uidList := make([]string, 0, len(fillUIDs))
 	for u := range fillUIDs {
 		uidList = append(uidList, u)
 	}
-	travelAvgMap := batchTravelAvg(ctx, db, uidList, now.Hour(), int(now.Weekday()))
+	travelAvgMap := j.store.travelAverages(ctx, uidList, now.Hour(), int(now.Weekday()))
 	maxAvgMap := maxTravelAvgByRoute(travelAvgMap)
 	// baselineFor returns the schedule+travel-average arrival for a stop, shared by
 	// the delay-propagation observation pass and the downstream fill.
@@ -370,7 +382,7 @@ func processBusEtaCity(
 		if groupName == "" {
 			groupName = b.StationName
 		}
-		if _, ok = stations[groupUID]; !ok {
+		if _, exists := stations[groupUID]; !exists {
 			stations[groupUID] = &models.Bus_StationArrival{
 				StationName: groupName,
 				StationUid:  make([]string, 0),
@@ -395,7 +407,7 @@ func processBusEtaCity(
 			ArrivalUnix:   arrivalUnix,
 		})
 		if shouldDispatchBusArrival(ok, status, est) {
-			dispatcher.Arrival(ctx, "bus", uid, b.StopUID, strconv.Itoa(int(dir)), est)
+			j.notifier.Arrival(ctx, "bus", uid, b.StopUID, strconv.Itoa(int(dir)), est)
 		}
 		if _, ok = routes[uid]; !ok {
 			routes[uid] = &models.Bus_RouteArrival{
@@ -415,7 +427,7 @@ func processBusEtaCity(
 			ArrivalUnix:   arrivalUnix,
 		})
 	}
-	pipe := sink.pipeline()
+	pipe := j.sink.pipeline()
 	for groupUID, pb := range stations {
 		data, _ := proto.Marshal(pb)
 		key := shared.BusStationEtaKey(city, groupUID)
@@ -434,8 +446,8 @@ func processBusEtaCity(
 	} else {
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=redis_success station_count=%d route_count=%d eat_count=%d posit_count=%d", city, len(stations), len(routes), len(eat), len(posit))
 	}
-	saveBusEtaHistory(ctx, db, historyRows)
-	recordPredictionErrors(ctx, db, predictionRows)
+	j.store.saveHistory(ctx, historyRows)
+	j.store.recordPredictions(ctx, predictionRows)
 }
 
 // shouldDispatchBusArrival reports whether a live ETA warrants an arrival
