@@ -23,7 +23,7 @@ void main() {
   testWidgets('hidden when no error', (tester) async {
     final bloc = await pump(tester);
     addTearDown(bloc.close);
-    expect(find.text('目前離線,顯示快取資料'), findsNothing);
+    expect(find.text('目前離線，顯示快取資料。'), findsNothing);
   });
 
   testWidgets('visible when offline', (tester) async {
@@ -31,6 +31,6 @@ void main() {
     addTearDown(bloc.close);
     bloc.add(const AlertStreamFailed(OfflineError()));
     await tester.pump();
-    expect(find.text('目前離線,顯示快取資料'), findsOneWidget);
+    expect(find.text('目前離線，顯示快取資料。'), findsOneWidget);
   });
 }

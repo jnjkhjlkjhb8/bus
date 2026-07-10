@@ -49,7 +49,7 @@ class ForceUpdateGate extends StatefulWidget {
 }
 
 class _ForceUpdateGateState extends State<ForceUpdateGate> {
-  bool _outdated = false;
+  String? _current;
 
   @override
   void initState() {
@@ -62,7 +62,7 @@ class _ForceUpdateGateState extends State<ForceUpdateGate> {
       final info = await PackageInfo.fromPlatform();
       final min = AppConfig.getString('min_supported_version');
       if (mounted && isBelowMinVersion(info.version, min)) {
-        setState(() => _outdated = true);
+        setState(() => _current = info.version);
       }
     } on Object catch (_) {
       // Fail open: any failure reading the version leaves the app usable.
@@ -70,12 +70,21 @@ class _ForceUpdateGateState extends State<ForceUpdateGate> {
   }
 
   @override
-  Widget build(BuildContext context) =>
-      _outdated ? const _ForceUpdateScreen() : widget.child;
+  Widget build(BuildContext context) => _current == null
+      ? widget.child
+      : _ForceUpdateScreen(currentVersion: _current!);
 }
 
+/// Blocking interstitial for an unsupported build.
+///
+/// Content sits in the upper third and the action is pinned to the bottom, so
+/// the only thing to do is reachable one-handed. Left-aligned rather than
+/// centred: the body copy runs to two lines in Chinese, and a centred ragged
+/// block is harder to scan than a flush one.
 class _ForceUpdateScreen extends StatelessWidget {
-  const _ForceUpdateScreen();
+  const _ForceUpdateScreen({required this.currentVersion});
+
+  final String currentVersion;
 
   String get _storeUrl => Platform.isIOS
       ? AppConfig.getString('store_url_ios')
@@ -90,33 +99,59 @@ class _ForceUpdateScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final minVersion = AppConfig.getString('min_supported_version');
+    final storeUrl = _storeUrl;
+
     return PopScope(
       canPop: false,
       child: Scaffold(
-        body: Center(
+        body: SafeArea(
           child: Padding(
-            padding: const EdgeInsets.all(32),
+            padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
             child: Column(
-              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.system_update, size: 56, color: cs.primary),
-                const SizedBox(height: 20),
-                const Text('請更新至最新版本', style: AppTextStyles.heading2),
-                const SizedBox(height: 10),
+                const Spacer(flex: 2),
+                Icon(
+                  Icons.system_update_rounded,
+                  size: 32,
+                  color: cs.onSurfaceVariant,
+                ),
+                const SizedBox(height: 24),
+                const Text('請更新至最新版本', style: AppTextStyles.heading1),
+                const SizedBox(height: 12),
                 Text(
-                  '目前版本已不再支援，請更新後繼續使用。',
-                  textAlign: TextAlign.center,
-                  style: AppTextStyles.bodyRegular.copyWith(
+                  '這個版本已不再支援。更新後就能繼續查詢即時到站。',
+                  style: AppTextStyles.bodyLarge.copyWith(
                     color: cs.onSurfaceVariant,
+                    height: 1.5,
                   ),
                 ),
-                if (_storeUrl.isNotEmpty) ...[
-                  const SizedBox(height: 24),
+                const SizedBox(height: 20),
+                // Versions are data, so they render in mono like every other
+                // figure in the app.
+                Text(
+                  '目前 $currentVersion · 需要 $minVersion',
+                  style: AppTextStyles.memo.copyWith(color: cs.outline),
+                ),
+                const Spacer(flex: 3),
+                if (storeUrl.isNotEmpty)
                   FilledButton(
                     onPressed: _openStore,
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 50),
+                    ),
                     child: const Text('前往更新'),
+                  )
+                else
+                  Text(
+                    Platform.isIOS
+                        ? '請至 App Store 搜尋「我車呢」並更新。'
+                        : '請至 Google Play 搜尋「我車呢」並更新。',
+                    style: AppTextStyles.bodyRegular.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
                   ),
-                ],
               ],
             ),
           ),

@@ -33,6 +33,14 @@ class AppTheme {
   static const Color warningBg = Color(0xFFFEF0C7);
   static const Color warningBorder = Color(0xFFB54708);
 
+  // Warning surface, split by role. `warningBorder` used to serve as text,
+  // icon, and border at once; as text on `warningBg` it only reaches 4.78:1.
+  // `warningInk` carries the reading (8.32:1); the border hue stays the accent.
+  static const Color warningInkLight = Color(0xFF7A2E0E);
+  static const Color warningBgDark = Color(0xFF33230A);
+  static const Color warningInkDark = Color(0xFFFBDFA6);
+  static const Color warningAccentDark = Color(0xFFE8912B);
+
   static const double radiusCard = 12;
   static const double radiusModal = 12;
   static const double radiusBottom = 8;

@@ -1,4 +1,5 @@
 import 'package:firebase_remote_config/firebase_remote_config.dart';
+import 'package:flutter/foundation.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 
 /// Thin read accessor over Firebase Remote Config.
@@ -9,6 +10,10 @@ import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 /// Firebase is off or a read fails, so a read is always safe from any layer.
 class AppConfig {
   AppConfig._();
+  /// Bumped whenever a Realtime Remote Config update is activated, so widgets
+  /// reading config (e.g. the maintenance banner) can rebuild without a
+  /// relaunch. Listen via a ValueListenableBuilder; the value itself is opaque.
+  static final version = ValueNotifier<int>(0);
 
   /// Single source of truth for defaults. Also fed to `setDefaults()` at
   /// bootstrap so registered and fallback values can't drift apart.

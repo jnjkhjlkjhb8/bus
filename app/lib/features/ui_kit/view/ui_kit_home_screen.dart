@@ -234,6 +234,7 @@ const _feedback = [
   _UiKitItem('Tooltip', Icons.info_rounded, '/ui-kit/tooltip'),
   _UiKitItem('Snackbar', Icons.chat_bubble_outline_rounded, '/ui-kit/snackbar'),
   _UiKitItem('Badge', Icons.badge_rounded, '/ui-kit/badge'),
+  _UiKitItem('Status Banner', Icons.build_rounded, '/ui-kit/status-banner'),
 ];
 
 const _navigation = [

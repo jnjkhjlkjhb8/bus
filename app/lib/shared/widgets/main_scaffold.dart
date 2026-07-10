@@ -11,18 +11,19 @@ class MainScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    body: Stack(
+    body: Column(
       children: [
-        Positioned.fill(child: shell),
-        const Align(
-          alignment: Alignment.bottomCenter,
-          child: NavMiniBar(),
-        ),
-        const Align(
-          alignment: Alignment.topCenter,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [MaintenanceBanner(), OfflineBanner()],
+        const MaintenanceBanner(),
+        const OfflineBanner(),
+        Expanded(
+          child: Stack(
+            children: [
+              Positioned.fill(child: shell),
+              const Align(
+                alignment: Alignment.bottomCenter,
+                child: NavMiniBar(),
+              ),
+            ],
           ),
         ),
       ],

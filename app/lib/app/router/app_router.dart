@@ -53,6 +53,7 @@ import 'package:wheres_the_car/features/ui_kit/view/pages/slider_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/snackbar_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/spacing_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/spinner_page.dart';
+import 'package:wheres_the_car/features/ui_kit/view/pages/status_banner_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/stepper_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/switch_page.dart';
 import 'package:wheres_the_car/features/ui_kit/view/pages/table_page.dart';
@@ -276,6 +277,10 @@ class AppRouter {
             GoRoute(
               path: 'snackbar',
               pageBuilder: (_, _) => _page(const SnackbarPage()),
+            ),
+            GoRoute(
+              path: 'status-banner',
+              pageBuilder: (_, _) => _page(const StatusBannerPage()),
             ),
             GoRoute(
               path: 'badge',

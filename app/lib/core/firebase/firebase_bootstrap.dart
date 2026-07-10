@@ -130,11 +130,22 @@ class FirebaseBootstrap {
         await remoteConfig.setConfigSettings(
           RemoteConfigSettings(
             fetchTimeout: const Duration(seconds: 5),
-            minimumFetchInterval: const Duration(hours: 1),
+            // Short so a cold start reflects an ops push (maintenance banner,
+            // min version) quickly; foreground apps use Realtime below.
+            minimumFetchInterval: const Duration(minutes: 1),
           ),
         );
         await remoteConfig.setDefaults(AppConfig.defaults);
         await remoteConfig.fetchAndActivate();
+        // This init runs after runApp (fire-and-forget), so the UI already
+        // built with defaults — bump to re-read the just-fetched values.
+        AppConfig.version.value++;
+        // Realtime updates: apply an ops push to foreground apps within
+        // seconds, bypassing minimumFetchInterval. iOS/Android only.
+        remoteConfig.onConfigUpdated.listen((_) async {
+          await remoteConfig.activate();
+          AppConfig.version.value++;
+        });
       },
       () async => updatePushPreference(requested: HiveStore.pushEnabled),
       () async {
