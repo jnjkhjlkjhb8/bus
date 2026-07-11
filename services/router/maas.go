@@ -137,15 +137,29 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 
 	return resp, nil
 }
-func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
-	// TDX requires the full yyyy-mm-ddTHH:mm:ss format (code 40001 otherwise);
-	// the app sends HH:mm, so pad the seconds when missing.
-	timeStr := req.Time
+// maasTimeParam builds the TDX routing time query params. Despite the docs
+// saying depart and arrival are mutually exclusive, TDX's validator requires
+// BOTH to be present — omitting either returns code 40001 — so both are sent
+// with the same value. TDX also rejects a depart at/before now with code
+// 20001, so a depart search bumps the time one minute ahead when it is not in
+// the future. The app sends HH:mm, so the seconds are padded (40001
+// otherwise). Times are Taipei (server local per TDX); an unparseable value
+// falls through as-is.
+func maasTimeParam(date, timeStr string, arriveBy bool, now time.Time) (depart, arrival string) {
 	if len(timeStr) == len("HH:mm") {
 		timeStr += ":00"
 	}
-	paramTime := fmt.Sprintf("%sT%s", req.Date, timeStr)
+	const layout = "2006-01-02T15:04:05"
+	value := fmt.Sprintf("%sT%s", date, timeStr)
+	if !arriveBy {
+		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil && !t.After(now) {
+			value = now.Add(time.Minute).Format(layout)
+		}
+	}
+	return value, value
+}
 
+func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
 	gc := req.Gc
 	if gc < 0 || gc > 1 {
 		gc = 0.0
@@ -186,20 +200,9 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 		SetQueryParam("last_mile_mode", fmt.Sprintf("%d", lastMode)).
 		SetQueryParam("last_mile_time", fmt.Sprintf("%d", lastTime)).
 		SetResult(&apiResp)
-	// depart and arrival are mutually exclusive (TDX: pick one). Send arrival
-	// only when the user asked to arrive by a time. Otherwise send depart only
-	// when it is in the future: a depart at/before now trips TDX's 20001
-	// "depart time before now", and omitting it makes TDX default to its own
-	// current time — exactly what a "depart now" search wants. Times are Taipei
-	// (server local per TDX); an unparseable value falls through as-is.
-	switch {
-	case req.ArriveBy:
-		r.SetQueryParam("arrival", paramTime)
-	default:
-		if t, perr := time.ParseInLocation("2006-01-02T15:04:05", paramTime, time.Local); perr != nil || t.After(time.Now()) {
-			r.SetQueryParam("depart", paramTime)
-		}
-	}
+	depart, arrival := maasTimeParam(req.Date, req.Time, req.ArriveBy, time.Now())
+	r.SetQueryParam("depart", depart)
+	r.SetQueryParam("arrival", arrival)
 	resp, err := r.Get("/routing")
 	if err != nil {
 		return nil, err

@@ -3,11 +3,62 @@ package main
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/go-resty/resty/v2"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/pashagolub/pgxmock/v4"
 )
+
+func TestMaasTimeParam(t *testing.T) {
+	now := time.Date(2026, 7, 11, 23, 0, 0, 0, time.Local)
+	layout := "2006-01-02T15:04:05"
+
+	// TDX requires both depart and arrival present (else 40001); every case
+	// must return the two equal and non-empty.
+	assertBoth := func(t *testing.T, depart, arrival, want string) {
+		t.Helper()
+		if depart != arrival {
+			t.Fatalf("depart %q != arrival %q, TDX needs both equal", depart, arrival)
+		}
+		if want != "" && depart != want {
+			t.Fatalf("got %q, want %q", depart, want)
+		}
+	}
+
+	t.Run("arriveBy sends the requested time with padded seconds", func(t *testing.T) {
+		d, a := maasTimeParam("2026-07-12", "08:30", true, now)
+		assertBoth(t, d, a, "2026-07-12T08:30:00")
+	})
+
+	t.Run("future depart is passed through unchanged", func(t *testing.T) {
+		d, a := maasTimeParam("2026-07-11", "23:30", false, now)
+		assertBoth(t, d, a, "2026-07-11T23:30:00")
+	})
+
+	// A depart at/before now must be bumped into the future to avoid TDX 20001.
+	for _, tt := range []struct{ name, date, tm string }{
+		{"now", "2026-07-11", "23:00"},
+		{"past", "2026-07-11", "22:00"},
+	} {
+		t.Run("depart "+tt.name+" is bumped into the future", func(t *testing.T) {
+			d, a := maasTimeParam(tt.date, tt.tm, false, now)
+			assertBoth(t, d, a, "")
+			got, err := time.ParseInLocation(layout, d, time.Local)
+			if err != nil {
+				t.Fatalf("unparseable depart %q: %v", d, err)
+			}
+			if !got.After(now) {
+				t.Fatalf("depart %v not after now %v", got, now)
+			}
+		})
+	}
+
+	t.Run("unparseable time falls through unchanged", func(t *testing.T) {
+		d, a := maasTimeParam("", "", false, now)
+		assertBoth(t, d, a, "T")
+	})
+}
 
 func TestResolveBusNotificationIdentityUnique(t *testing.T) {
 	db, err := pgxmock.NewPool()
