@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
+	"sync"
 	"time"
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -245,19 +248,42 @@ func (s *MrtServer) Eta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 // SCANs and sends the current value of every matching key to seed client state,
 // then subscribes to the station channel and forwards live updates until the
 // client disconnects.
+//
+// A transfer station reaches TDX as several station IDs (松江南京 is both G15 and
+// O08), and the app merges them into one UI station whose ID joins the parts with
+// "_". No TDX station ID contains an underscore, so a StationID is split back into
+// its parts and each is streamed concurrently onto the one gRPC stream: a merged
+// ID would otherwise seed and subscribe to a keyspace nothing ever writes, and the
+// client would sit on an empty stream forever.
 func (s *MrtServer) MrtEta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 	log.Infof("call Mrt_eta %s %s", in.System, in.StationID)
-	channel := shared.MrtLiveChannel(in.System, in.StationID)
-	return streamLive(stream.Context(), s.live, liveStreamSpec{
-		channel:  channel,
-		seedScan: shared.MrtLiveSeedPattern(in.System, in.StationID),
-	}, func(data []byte) error {
+
+	// stream.Send is not safe for concurrent use, so the per-station streams
+	// serialize their sends through one mutex.
+	var mu sync.Mutex
+	send := func(data []byte) error {
 		live, err := decodePayload(data, &pb.MrtLive{})
 		if err != nil {
 			return err
 		}
+		mu.Lock()
+		defer mu.Unlock()
 		return stream.Send(&pb.Resp_MrtEta{Data: live})
-	})
+	}
+
+	g, ctx := errgroup.WithContext(stream.Context())
+	for _, station := range strings.Split(in.StationID, "_") {
+		if station == "" {
+			continue
+		}
+		g.Go(func() error {
+			return streamLive(ctx, s.live, liveStreamSpec{
+				channel:  shared.MrtLiveChannel(in.System, station),
+				seedScan: shared.MrtLiveSeedPattern(in.System, station),
+			}, send)
+		})
+	}
+	return g.Wait()
 }
 
 // LiveBoard implements the TRAStationService LiveBoard streaming RPC by
