@@ -398,6 +398,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) {
 			StopUid:       b.StationUID,
 			SubRouteUid:   uid,
 			RouteName:     b.SubRouteName,
+			Destination:   b.Destination,
 			Direction:     int32(dir),
 			Estimate:      est,
 			NextBusTime:   eta.NextBusTime,

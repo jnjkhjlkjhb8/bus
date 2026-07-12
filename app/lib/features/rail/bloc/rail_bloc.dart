@@ -12,10 +12,14 @@ import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
 
 class RailBloc extends Bloc<RailEvent, RailState> {
-  RailBloc({TraRepository? traRepository, ThsrRepository? thsrRepository})
-    : _traRepository = traRepository ?? TraRepository.instance,
-      _thsrRepository = thsrRepository ?? ThsrRepository.instance,
-      super(const RailInitial()) {
+  RailBloc({
+    TraRepository? traRepository,
+    ThsrRepository? thsrRepository,
+    DateTime Function()? now,
+  }) : _traRepository = traRepository ?? TraRepository.instance,
+       _thsrRepository = thsrRepository ?? ThsrRepository.instance,
+       _now = now ?? DateTime.now,
+       super(const RailInitial()) {
     on<RailSystemChanged>(_onSystemChanged);
     on<RailStationSelected>(_onStationSelected);
     on<RailLiveBoardStarted>(_onLiveBoardStarted);
@@ -31,7 +35,45 @@ class RailBloc extends Bloc<RailEvent, RailState> {
   final TraRepository _traRepository;
   final ThsrRepository _thsrRepository;
 
+  /// Clock seam so tests can pin "today" when filtering departed trains.
+  final DateTime Function() _now;
+
   static final _dateFormat = DateFormat('yyyy-MM-dd');
+
+  /// Minutes past midnight for a backend time string (RFC3339 timestamp or a
+  /// bare `HH:mm:ss` clock), or null when unparseable.
+  static int? _minutesOfDay(String t) {
+    final s = t.contains('T') ? t.split('T').last : t;
+    final parts = s.split(':');
+    if (parts.length < 2) return null;
+    final h = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+    if (h == null || m == null) return null;
+    return h * 60 + m;
+  }
+
+  /// Sorts timetable results by departure time and, when [date] is today,
+  /// drops trains that have already departed. Unparseable times sort first
+  /// and are never dropped, so bad data stays visible rather than vanishing.
+  List<T> _upcomingSorted<T>(
+    List<T> items,
+    String Function(T) departureOf,
+    String date,
+  ) {
+    final sorted = [...items]
+      ..sort(
+        (a, b) => (_minutesOfDay(departureOf(a)) ?? -1).compareTo(
+          _minutesOfDay(departureOf(b)) ?? -1,
+        ),
+      );
+    final now = _now();
+    if (date != _dateFormat.format(now)) return sorted;
+    final cutoff = now.hour * 60 + now.minute;
+    return sorted.where((item) {
+      final m = _minutesOfDay(departureOf(item));
+      return m == null || m >= cutoff;
+    }).toList();
+  }
 
   // The live departure board is an arrival list: it rides the arrival feed's
   // replace policy (empty-frame guard + departure sort), the same policy the
@@ -188,7 +230,11 @@ class RailBloc extends Bloc<RailEvent, RailState> {
             originName: originName,
             destName: destName,
             date: event.date,
-            traItems: items,
+            traItems: _upcomingSorted(
+              items,
+              (item) => item.departureTime,
+              event.date,
+            ),
           ),
         );
         await _delaySub?.cancel();
@@ -211,7 +257,11 @@ class RailBloc extends Bloc<RailEvent, RailState> {
             originName: originName,
             destName: destName,
             date: event.date,
-            thsrItems: items,
+            thsrItems: _upcomingSorted(
+              items,
+              (item) => item.departureTime,
+              event.date,
+            ),
           ),
         );
       }

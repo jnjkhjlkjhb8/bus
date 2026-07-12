@@ -373,3 +373,53 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 		t.Fatalf("bus_operators rows for %s = %d, want 1", opID, opRows)
 	}
 }
+
+// TestTouchRawTDXRefreshesFetchedAt guards the 304 staleness seam: a TDX
+// Not-Modified response lands nothing, so fetched_at kept its original landing
+// time and isStale eventually skipped the partition forever even though the raw
+// data was verified current. touchRawTDX must bump fetched_at so the loader
+// keeps loading unchanged-at-TDX partitions.
+func TestTouchRawTDXRefreshesFetchedAt(t *testing.T) {
+	pool := loaderTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+
+	prev := ingestDB
+	ingestDB = pool
+	defer func() { ingestDB = prev }()
+
+	const date = "2020-01-02" // fake partition far outside any real landing window
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM raw_tdx.thsr_dailytimetable WHERE traindate = $1", date)
+	}
+	cleanup()
+	defer cleanup()
+
+	body := []byte(`[{"TrainDate":"2020-01-02","DailyTrainInfo":{"TrainNo":"0101"},"StopTimes":[],"VersionID":1}]`)
+	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, body); err != nil {
+		t.Fatalf("land: %v", err)
+	}
+	// Backdate the landing past the 27h freshness window, as if every ingest run
+	// since then answered 304.
+	if _, err := pool.Exec(ctx,
+		"UPDATE raw_tdx.thsr_dailytimetable SET fetched_at = now() - interval '48 hours' WHERE traindate = $1", date); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	src := rawTDXSource{pool: pool}
+	if _, fetchedAt, err := src.datasetJSON(ctx, "thsr_dailytimetable", "traindate", date); err != nil {
+		t.Fatalf("datasetJSON: %v", err)
+	} else if !isStale(fetchedAt) {
+		t.Fatalf("backdated partition not stale (fetched_at=%s); test premise broken", fetchedAt)
+	}
+
+	if err := touchRawTDX(ctx, "thsr_dailytimetable", "traindate", date); err != nil {
+		t.Fatalf("touchRawTDX: %v", err)
+	}
+
+	if _, fetchedAt, err := src.datasetJSON(ctx, "thsr_dailytimetable", "traindate", date); err != nil {
+		t.Fatalf("datasetJSON after touch: %v", err)
+	} else if isStale(fetchedAt) {
+		t.Fatalf("touched partition still stale (fetched_at=%s)", fetchedAt)
+	}
+}

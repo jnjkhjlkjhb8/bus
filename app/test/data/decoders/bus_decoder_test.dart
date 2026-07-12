@@ -119,7 +119,22 @@ void main() {
     Resp_Bus_station_eta respWith(List<Bus_StopEstimate> routes) =>
         Resp_Bus_station_eta(data: Bus_StationArrival(routes: routes));
 
-    test('derives minutes via ceil and 去程/返程 label', () {
+    test('uses the server terminal name when present', () {
+      final resp = respWith([
+        Bus_StopEstimate(
+          stopUid: 'S1',
+          routeName: '5014',
+          direction: 0,
+          destination: '桃園後站',
+          stopStatus: 0,
+          estimate: 300,
+        ),
+      ]);
+      final out = _decoder.decodeStationEta(resp, now: _now);
+      expect(out.single.destination, '桃園後站');
+    });
+
+    test('derives minutes via ceil and falls back to 去程/返程 label', () {
       final resp = respWith([
         Bus_StopEstimate(
           stopUid: 'S1',

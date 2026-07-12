@@ -241,7 +241,7 @@ class _SheetTitle extends StatelessWidget {
     final now = TimeOfDay.now();
     String two(int v) => v.toString().padLeft(2, '0');
     final sub = showingSaved
-        ? '${state.savedRoutes.length} 條保存路線'
+        ? '${state.savedRoutes.length} 條路線'
         : state.status == PlanStatus.success && count > 0
         ? '$count 個建議 · 出發 ${two(now.hour)}:${two(now.minute)}'
         : '出發：現在';
@@ -249,7 +249,7 @@ class _SheetTitle extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          showingSaved ? '已保存路線' : '建議路線',
+          showingSaved ? '路線箱' : '建議路線',
           style: AppTextStyles.heading2.copyWith(color: cs.onSurface),
         ),
         const SizedBox(height: 3),

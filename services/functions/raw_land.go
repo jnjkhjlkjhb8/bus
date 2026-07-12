@@ -197,6 +197,28 @@ func rawPartitionWhere(table, partCol string) string {
 	return fmt.Sprintf("WHERE %s = $1", partCol)
 }
 
+// touchRawTDX bumps fetched_at on an already-landed raw_tdx partition after a
+// TDX 304 Not-Modified: the fetch landed nothing, but it verified the landed
+// rows are still current, and the loader's isStale window reads fetched_at as
+// "last verified". Without the bump, a partition whose upstream data stops
+// changing ages past staleAfter and is skipped by every load forever.
+func touchRawTDX(ctx context.Context, table, partCol, partVal string) error {
+	if ingestDB == nil {
+		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
+	}
+	if err := validateRawTarget(table, partCol); err != nil {
+		return err
+	}
+	q := fmt.Sprintf("UPDATE raw_tdx.%s SET fetched_at = now()", table)
+	args := []any{}
+	if partCol != "" {
+		q += " " + rawPartitionWhere(table, partCol)
+		args = append(args, partVal)
+	}
+	_, err := ingestDB.Exec(ctx, q, args...)
+	return err
+}
+
 // rawDeleteSQL builds the per-partition DELETE for a raw_tdx landing. table and
 // partCol are interpolated, so callers must pass values already cleared by
 // validateRawTarget.

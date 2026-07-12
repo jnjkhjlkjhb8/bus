@@ -1,12 +1,38 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/data/models/metro_map_models.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 
-class MetroSvgMap extends StatelessWidget {
+final RegExp _mapDigits = RegExp(r'\d+');
+
+/// Line colour for a station id: the prefix of the first (primary) line code.
+/// Interchange ids combine codes (e.g. 'BL15_BR10'); the first wins.
+Color metroLineColor(String id) {
+  final code = id.split('_').first.replaceAll(_mapDigits, '');
+  switch (code) {
+    case 'BL':
+      return AppTheme.mrtBL;
+    case 'R':
+      return AppTheme.mrtR;
+    case 'G':
+      return AppTheme.mrtG;
+    case 'O':
+      return AppTheme.mrtO;
+    case 'BR':
+      return AppTheme.mrtBR;
+    case 'Y':
+      return AppTheme.mrtY;
+    default:
+      return AppTheme.mrtBL;
+  }
+}
+
+class MetroSvgMap extends StatefulWidget {
   const MetroSvgMap({
     required this.onStationTap,
     this.selectedStationId,
@@ -23,12 +49,53 @@ class MetroSvgMap extends StatelessWidget {
   static const double _mapW = 1080;
   static const double _mapH = 1920;
 
+  /// Starts rasterizing the current theme's map bitmap so it is ready before
+  /// the user navigates here — the one-time ~400ms rasterization otherwise
+  /// lands in the middle of the push transition. Safe to call repeatedly.
+  static void precache(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    unawaited(
+      _RasterSvgState.ensure(
+        isDark
+            ? 'assets/mrt/TRTC_map_dark.svg'
+            : 'assets/mrt/TRTC_map_light.svg',
+        _RasterSvgState.targetWidthFor(context),
+      ),
+    );
+  }
+
+  @override
+  State<MetroSvgMap> createState() => _MetroSvgMapState();
+}
+
+class _MetroSvgMapState extends State<MetroSvgMap> {
+  /// Station hit-targets (120 Semantics+GestureDetector subtrees) are built
+  /// one frame after the route transition instead of during it — their
+  /// one-time ~80ms build would stutter the push animation.
+  bool _hitTargetsReady = false;
+  Timer? _deferTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _deferTimer = Timer(const Duration(milliseconds: 350), () {
+      if (mounted) setState(() => _hitTargetsReady = true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _deferTimer?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
-      final s = constraints.maxWidth / _mapW;
-      final mapH = _mapH * s;
+      final s = constraints.maxWidth / MetroSvgMap._mapW;
+      final mapH = MetroSvgMap._mapH * s;
       final isDark = Theme.of(context).brightness == Brightness.dark;
+      final selectedStationId = widget.selectedStationId;
 
       final selectedStation = selectedStationId != null
           ? metroMapStations.firstWhere(
@@ -56,11 +123,10 @@ class MetroSvgMap extends StatelessWidget {
           child: Stack(
             children: [
               Positioned.fill(
-                child: SvgPicture.asset(
-                  isDark
+                child: _RasterSvg(
+                  asset: isDark
                       ? 'assets/mrt/TRTC_map_dark.svg'
                       : 'assets/mrt/TRTC_map_light.svg',
-                  fit: BoxFit.fill,
                 ),
               ),
               for (final station in metroMapStations)
@@ -69,27 +135,30 @@ class MetroSvgMap extends StatelessWidget {
                     key: ValueKey(selectedStationId),
                     x: station.x * s,
                     y: station.y * s,
-                    animate: animate,
+                    scale: s,
+                    color: metroLineColor(station.id),
+                    animate: widget.animate,
                   ),
-              for (final station in metroMapStations)
-                Positioned(
-                  left: station.x * s - 12,
-                  top: station.y * s - 12,
-                  width: 24,
-                  height: 24,
-                  child: Semantics(
-                    button: true,
-                    label: '${station.id} ${station.name}',
-                    child: GestureDetector(
-                      key: ValueKey(station.id),
-                      onTap: () => onStationTap(station),
-                      behavior: HitTestBehavior.opaque,
-                      child: const SizedBox.expand(),
+              if (_hitTargetsReady)
+                for (final station in metroMapStations)
+                  Positioned(
+                    left: station.x * s - 12,
+                    top: station.y * s - 12,
+                    width: 24,
+                    height: 24,
+                    child: Semantics(
+                      button: true,
+                      label: '${station.id} ${station.name}',
+                      child: GestureDetector(
+                        key: ValueKey(station.id),
+                        onTap: () => widget.onStationTap(station),
+                        behavior: HitTestBehavior.opaque,
+                        child: const SizedBox.expand(),
+                      ),
                     ),
                   ),
-                ),
               for (final station in metroMapStations)
-                if (stationLabels[station.id] case final label?)
+                if (widget.stationLabels[station.id] case final label?)
                   Positioned(
                     left: station.x * s - 24,
                     top: station.y * s - 2,
@@ -99,7 +168,7 @@ class MetroSvgMap extends StatelessWidget {
                         key: ValueKey(station.id),
                         label: label,
                         delayMs: getDelayMs(station),
-                        animate: animate,
+                        animate: widget.animate,
                         isSelected: station.id == selectedStationId,
                         color: isDark ? Colors.white : Colors.black,
                       ),
@@ -111,6 +180,92 @@ class MetroSvgMap extends StatelessWidget {
       );
     },
   );
+}
+
+/// Draws the metro map SVG as a pre-rasterized [ui.Image] instead of a live
+/// vector picture. The ~600-path SVG costs >100ms per frame to rasterize
+/// under [InteractiveViewer] pan/zoom (Impeller has no picture raster cache);
+/// a texture pans at full frame rate. Nothing is painted while rasterization
+/// runs (painting the live SVG as a placeholder costs 300-500ms raster frames
+/// mid-transition); [MetroSvgMap.precache] hides even that gap.
+class _RasterSvg extends StatefulWidget {
+  const _RasterSvg({required this.asset});
+
+  final String asset;
+
+  @override
+  State<_RasterSvg> createState() => _RasterSvgState();
+}
+
+class _RasterSvgState extends State<_RasterSvg> {
+  // ponytail: images cached for app lifetime (one per theme actually viewed,
+  // ~20-30MB each); evict on memory pressure if this ever shows up in
+  // profiling.
+  static final Map<String, Future<ui.Image>> _cache = {};
+
+  ui.Image? _image;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _RasterSvg oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.asset != widget.asset) {
+      _image = null;
+      _load();
+    }
+  }
+
+  /// 2× the on-screen physical width keeps labels sharp up to ~2× zoom;
+  /// height (map is 1080×1920) stays within the common 4096px texture cap.
+  static int targetWidthFor(BuildContext context) =>
+      (MediaQuery.sizeOf(context).width *
+              MediaQuery.devicePixelRatioOf(context) *
+              2)
+          .round()
+          .clamp(1080, 2304);
+
+  static Future<ui.Image> ensure(String asset, int targetW) => _cache
+      .putIfAbsent('$asset@$targetW', () => _rasterize(asset, targetW));
+
+  void _load() {
+    final asset = widget.asset;
+    unawaited(
+      ensure(asset, targetWidthFor(context)).then((img) {
+        if (mounted && widget.asset == asset) {
+          setState(() => _image = img);
+        }
+      }),
+    );
+  }
+
+  static Future<ui.Image> _rasterize(String asset, int targetW) async {
+    final info = await vg.loadPicture(SvgAssetLoader(asset), null);
+    final scale = targetW / info.size.width;
+    final targetH = (info.size.height * scale).round();
+    final recorder = ui.PictureRecorder();
+    Canvas(recorder)
+      ..scale(scale)
+      ..drawPicture(info.picture);
+    final scaled = recorder.endRecording();
+    try {
+      // toImageSync keeps the result GPU-resident; toImage returns a host
+      // image whose ~37MB texture upload would jank the first on-screen draw.
+      return scaled.toImageSync(targetW, targetH);
+    } finally {
+      scaled.dispose();
+      info.picture.dispose();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => _image != null
+      ? RawImage(image: _image, fit: BoxFit.fill)
+      : const SizedBox.shrink();
 }
 
 class _AnimatedLabel extends StatefulWidget {
@@ -207,17 +362,35 @@ class _AnimatedLabelState extends State<_AnimatedLabel>
   }
 }
 
+/// Line-coloured selection marker: a soft halo fill plus a ring drawn around
+/// the station glyph (never over it), tinted the station's line colour. A
+/// locate-me-style ping expands out on each selection. All radii are expressed
+/// in SVG map units and multiplied by [scale] so the marker tracks the glyph
+/// through zoom instead of floating at a fixed pixel size.
 class _SelectedMarker extends StatefulWidget {
   const _SelectedMarker({
     required this.x,
     required this.y,
+    required this.scale,
+    required this.color,
     required this.animate,
     super.key,
   });
 
   final double x;
   final double y;
+  final double scale;
+  final Color color;
   final bool animate;
+
+  // SVG-unit geometry (glyph radius is 14). The ring clears the glyph; the
+  // ping expands from the ring out to [_pingMaxUnits].
+  static const double _haloUnits = 26;
+  static const double _ringUnits = 20;
+  static const double _ringStrokeUnits = 4;
+  static const double _pingStartUnits = 20;
+  static const double _pingMaxUnits = 52;
+  static const double _pingStrokeUnits = 2.5;
 
   @override
   State<_SelectedMarker> createState() => _SelectedMarkerState();
@@ -225,8 +398,6 @@ class _SelectedMarker extends StatefulWidget {
 
 class _SelectedMarkerState extends State<_SelectedMarker>
     with SingleTickerProviderStateMixin {
-  static const double _ringMax = 72;
-
   late final AnimationController _ctrl;
   bool _motionSynced = false;
 
@@ -275,30 +446,37 @@ class _SelectedMarkerState extends State<_SelectedMarker>
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final s = widget.scale;
+    final color = widget.color;
+    final boxHalf = _SelectedMarker._pingMaxUnits * s;
 
-    // Static marker (no scale-in); a locate-me-style ring pings out from it on
-    // each selection. Box is sized to _ringMax so the expanding ring isn't
-    // clipped; the marker stays centred within it.
+    // Box is sized to the ping's outer bound so the expanding ring isn't
+    // clipped; the static halo + ring stay centred within it.
     return Positioned(
-      left: widget.x - _ringMax,
-      top: widget.y - _ringMax,
-      width: _ringMax * 2,
-      height: _ringMax * 2,
+      left: widget.x - boxHalf,
+      top: widget.y - boxHalf,
+      width: boxHalf * 2,
+      height: boxHalf * 2,
       child: IgnorePointer(
         child: AnimatedBuilder(
           animation: _ctrl,
           builder: (context, child) {
-            final t = _ctrl.value;
-            final radius = 12 + AppMotion.easeOut.transform(t) * 60;
+            final t = AppMotion.easeOut.transform(_ctrl.value);
+            final pingRadius =
+                (_SelectedMarker._pingStartUnits +
+                    (_SelectedMarker._pingMaxUnits -
+                            _SelectedMarker._pingStartUnits) *
+                        t) *
+                s;
             return Stack(
               alignment: Alignment.center,
               children: [
                 CustomPaint(
-                  size: Size.square(radius * 2),
+                  size: Size.square(pingRadius * 2),
                   painter: _RingPainter(
-                    color: cs.onSurface,
-                    opacity: (1 - t) * 0.4,
+                    color: color,
+                    opacity: (1 - _ctrl.value) * 0.4,
+                    strokeWidth: _SelectedMarker._pingStrokeUnits * s,
                   ),
                 ),
                 child!,
@@ -309,34 +487,19 @@ class _SelectedMarkerState extends State<_SelectedMarker>
             alignment: Alignment.center,
             children: [
               Container(
-                width: 24,
-                height: 24,
+                width: _SelectedMarker._haloUnits * 2 * s,
+                height: _SelectedMarker._haloUnits * 2 * s,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: cs.onSurface.withValues(alpha: 0.15),
+                  color: color.withValues(alpha: 0.14),
                 ),
               ),
-              Container(
-                width: 4,
-                height: 4,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.white,
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black26,
-                      blurRadius: 3,
-                      offset: Offset(0, 1),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: cs.onSurface,
+              CustomPaint(
+                size: Size.square(_SelectedMarker._ringUnits * 2 * s),
+                painter: _RingPainter(
+                  color: color,
+                  opacity: 1,
+                  strokeWidth: _SelectedMarker._ringStrokeUnits * s,
                 ),
               ),
             ],
@@ -347,28 +510,35 @@ class _SelectedMarkerState extends State<_SelectedMarker>
   }
 }
 
-/// Expanding, fading stroke ring — the locate-me "ping" reused for metro
-/// station selection. Copied from the home locate-me cue.
+/// Stroke ring used both for the static selection ring and the expanding,
+/// fading locate-me "ping".
 class _RingPainter extends CustomPainter {
-  _RingPainter({required this.color, required this.opacity});
+  _RingPainter({
+    required this.color,
+    required this.opacity,
+    required this.strokeWidth,
+  });
 
   final Color color;
   final double opacity;
+  final double strokeWidth;
 
   @override
   void paint(Canvas canvas, Size size) {
     final r = size.width / 2;
     canvas.drawCircle(
       Offset(r, r),
-      r - 1,
+      r - strokeWidth / 2,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
+        ..strokeWidth = strokeWidth
         ..color = color.withValues(alpha: opacity),
     );
   }
 
   @override
   bool shouldRepaint(_RingPainter old) =>
-      old.opacity != opacity || old.color != color;
+      old.opacity != opacity ||
+      old.color != color ||
+      old.strokeWidth != strokeWidth;
 }

@@ -20,6 +20,7 @@ import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 class SheetDetailHeader extends StatelessWidget {
   const SheetDetailHeader({
     required this.title,
+    this.subtitle,
     this.favorite,
     this.trailing,
     super.key,
@@ -29,6 +30,10 @@ class SheetDetailHeader extends StatelessWidget {
        );
 
   final String title;
+
+  /// Secondary line under the title (e.g. a freshness timestamp), so metadata
+  /// shares the header row instead of costing its own row of sheet height.
+  final Widget? subtitle;
 
   /// Standard bookmark toggle target. When set, renders the favorite button.
   final Favorite? favorite;
@@ -66,14 +71,21 @@ class SheetDetailHeader extends StatelessWidget {
                 ),
               ),
               Expanded(
-                child: Semantics(
-                  header: true,
-                  child: Text(
-                    title,
-                    style: AppTextStyles.heading2,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Semantics(
+                      header: true,
+                      child: Text(
+                        title,
+                        style: AppTextStyles.heading2,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    ?subtitle,
+                  ],
                 ),
               ),
               if (favorite != null) FavoriteToggleButton(favorite: favorite!),

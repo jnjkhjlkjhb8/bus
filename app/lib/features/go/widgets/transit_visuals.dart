@@ -48,10 +48,7 @@ String sectionLabel(PlanSection s) {
   final t = s.transport;
   if (isWalk(s)) return '步行';
   final name = t.shortName.isNotEmpty ? t.shortName : t.name;
-  return switch (t.mode.toLowerCase()) {
-    'bus' => '$name 路',
-    _ => name,
-  };
+  return name;
 }
 
 String minutesLabel(int minutes) => '$minutes 分';

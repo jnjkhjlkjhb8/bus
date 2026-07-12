@@ -169,11 +169,20 @@ class _TimetableTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
+    // When every stop is in the past the reminder bells are all hidden; say
+    // why once at the top instead of leaving a silently bell-less list.
+    final finished =
+        reminders.isEmpty &&
+        !stops.any((s) {
+          final t = _stopDateTime(serviceDate, s);
+          return t != null && t.isAfter(now);
+        });
     return ListView.builder(
       padding: EdgeInsets.zero,
-      itemCount: stops.length,
-      itemBuilder: (_, i) {
-        final stop = stops[i];
+      itemCount: stops.length + (finished ? 1 : 0),
+      itemBuilder: (context, i) {
+        if (finished && i == 0) return const _FinishedNotice();
+        final stop = stops[finished ? i - 1 : i];
         final scheduled = _stopDateTime(serviceDate, stop);
         final reminder = reminders[stop.name];
         // Offer a reminder only for stops still ahead of the train; an already
@@ -261,6 +270,24 @@ class _StopRow extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Quiet header shown when the whole run is in the past, explaining why no
+/// reminder bells are offered.
+class _FinishedNotice extends StatelessWidget {
+  const _FinishedNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 4),
+      child: Text(
+        '本班車已行駛完畢',
+        style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
       ),
     );
   }

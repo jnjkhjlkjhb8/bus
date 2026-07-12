@@ -78,7 +78,7 @@ func traFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, 
 // env schema and returns the marshaled TraStoptimes proto plus the row count. A
 // zero count signals NotFound (ADR-0005); it never fetches from TDX.
 func traStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr string) ([]byte, int, error) {
-	const q = `SELECT stopsequence, stationid,stationname,arrivaltime,departuretime,mask FROM tra_timetable WHERE trainno = $1 AND train_date = $2;`
+	const q = `SELECT stopsequence, stationid,stationname,arrivaltime,departuretime,mask FROM tra_timetable WHERE trainno = $1 AND train_date = $2 ORDER BY stopsequence;`
 	rows, err := db.Query(ctx, q, trainno, dateStr)
 	if err != nil {
 		return nil, 0, err

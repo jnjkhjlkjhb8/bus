@@ -35,8 +35,8 @@ var ingestBikeSkip = map[string]bool{
 var (
 	ingestMetroStationSystems = []string{"TRTC", "KRTC", "KLRT", "TYMC", "NTMC"}
 	ingestMetroFirstLast      = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
-	ingestMetroODFare         = []string{"TRTC", "KRTC", "KLRT","TYMC"}
-	ingestMetroTravelGraph = []string{"TRTC"}
+	ingestMetroODFare         = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
+	ingestMetroTravelGraph    = []string{"TRTC"}
 )
 
 // registerIngestorCrons schedules the daily 03:00 raw landing (under a 20-minute
@@ -128,6 +128,14 @@ func fetchRaw(ctx context.Context, tdx *shared.TDXClient, url, name string) {
 		return
 	}
 	if !modified {
+		// 304: nothing landed, but the landed partition is verified current — bump
+		// fetched_at so the loader's staleness window doesn't skip it forever.
+		if table, partCol, partVal, ok := rawDumpTarget(url); ok {
+			if err := touchRawTDX(ctx, table, partCol, partVal); err != nil {
+				log.Infof("[INGEST] url=%s event=touch_error error=%v", url, err)
+				return
+			}
+		}
 		log.Infof("[INGEST] url=%s event=skip reason=not_modified", url)
 	}
 }

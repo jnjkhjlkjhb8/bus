@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/models/arrival_display.dart';
 import 'package:wheres_the_car/data/models/favorite.dart';
@@ -28,6 +29,7 @@ const _kLineNames = <String, String>{
   'G': '松山新店線',
   'BR': '文湖線',
   'O': '中和新蘆線',
+  'Y': '環狀線',
 };
 
 final RegExp _digits = RegExp(r'\d+');
@@ -35,6 +37,13 @@ final RegExp _digits = RegExp(r'\d+');
 String _lineCode(String id) => id.split('_').first.replaceAll(_digits, '');
 
 String _lineName(String id) => _kLineNames[_lineCode(id)] ?? _lineCode(id);
+
+/// Line label for a (possibly interchange) id, e.g. `板南線・文湖線`.
+String _stationLineLabel(String id) => id
+    .split('_')
+    .map((p) => p.replaceAll(_digits, ''))
+    .map((code) => _kLineNames[code] ?? code)
+    .join('・');
 
 TransportType _getTransportType(String line) {
   switch (line) {

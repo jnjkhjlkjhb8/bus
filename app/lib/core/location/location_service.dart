@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter_compass/flutter_compass.dart';
 import 'package:geolocator/geolocator.dart';
 
 /// Wrapper around geolocator — handles permission and fallback.
@@ -37,6 +38,16 @@ class LocationService {
     );
   }
 
+  /// Last OS-cached fix, if any — returns instantly, no GPS wait. Null when
+  /// the OS has no cached position or permission is missing.
+  Future<Position?> lastKnownPosition() async {
+    try {
+      return await Geolocator.getLastKnownPosition();
+    } on Object {
+      return null;
+    }
+  }
+
   /// Continuous position stream (low power).
   Stream<Position> positionStream() => Geolocator.getPositionStream(
     locationSettings: const LocationSettings(
@@ -56,12 +67,28 @@ class LocationService {
       // while keeping full-accuracy background tracking.
       settings = AppleSettings(
         activityType: ActivityType.otherNavigation,
-        distanceFilter: 25,
+        // 5 m keeps the follow camera moving at walking pace; 25 m delivered a
+        // fix only every ~20 s of walking, which read as "not following".
+        distanceFilter: 5,
         showBackgroundLocationIndicator: true,
       );
     } else {
-      settings = AndroidSettings(distanceFilter: 25);
+      settings = AndroidSettings(distanceFilter: 5);
     }
     return Geolocator.getPositionStream(locationSettings: settings);
+  }
+
+  /// Device compass heading (degrees clockwise from magnetic north), for
+  /// rotating the navigation camera as the phone turns. Emits only non-null
+  /// headings; on a device with no magnetometer (or the plugin returning no
+  /// stream) this is an empty stream and callers keep the GPS-course fallback.
+  /// The plugin type stays inside core/ — callers see a plain `Stream<double>`.
+  Stream<double> compassStream() {
+    final events = FlutterCompass.events;
+    if (events == null) return const Stream.empty();
+    return events
+        .map((event) => event.heading)
+        .where((heading) => heading != null)
+        .cast<double>();
   }
 }

@@ -63,7 +63,11 @@ class BusDecoder {
         stationId: r.stopUid,
         subRouteUid: r.subRouteUid,
         routeName: r.routeName,
-        destination: r.direction == 1 ? '返程' : '去程',
+        // Terminal stop name from static data; direction label only when the
+        // server knows no terminal for this subroute+direction.
+        destination: r.destination.isNotEmpty
+            ? r.destination
+            : (r.direction == 1 ? '返程' : '去程'),
         estimateSeconds: estimateSeconds,
         nextBusTime: r.nextBusTime,
         stopStatus: r.stopStatus,

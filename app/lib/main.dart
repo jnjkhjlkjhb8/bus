@@ -25,25 +25,29 @@ Future<void> _bootstrap() async {
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
   }
 
-  final sw = Stopwatch()..start();
-  try {
-    await HiveStore.init();
-    if (!kReleaseMode) {
-      debugPrint('[boot] HiveStore.init ${sw.elapsedMilliseconds}ms');
-    }
-  } on Object catch (e, s) {
-    CrashReporter.record(e, s);
-  } finally {
-    App.isInitialized.value = true;
-  }
-
+  // Start the maps renderer warmup first — it runs on the platform side and
+  // overlaps with the Dart-side init below.
   _prewarmMapRenderer();
-  try {
-    await FirebaseBootstrap.ensureCoreInitialized();
-  } on Object catch (e, s) {
-    CrashReporter.record(e, s);
+
+  // Hive, Firebase core, and the gRPC CA load have no ordering dependencies;
+  // running them in parallel keeps the native splash to the slowest of the
+  // three instead of their sum.
+  final sw = Stopwatch()..start();
+  await Future.wait([
+    HiveStore.init()
+        .then<void>((_) {
+          if (!kReleaseMode) {
+            debugPrint('[boot] HiveStore.init ${sw.elapsedMilliseconds}ms');
+          }
+        })
+        .catchError(CrashReporter.record)
+        .whenComplete(() => App.isInitialized.value = true),
+    FirebaseBootstrap.ensureCoreInitialized().catchError(CrashReporter.record),
+    GrpcClient.init().catchError(CrashReporter.record),
+  ]);
+  if (!kReleaseMode) {
+    debugPrint('[boot] pre-runApp init ${sw.elapsedMilliseconds}ms');
   }
-  await GrpcClient.init();
   _initializeRemoteServices();
   unawaited(
     FavoritesRepository.instance.migrateLegacy().catchError(

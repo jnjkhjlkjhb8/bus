@@ -5,38 +5,19 @@ class _StopSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return RefreshIndicator(
       onRefresh: () async {
         context.read<BusStopBloc>().add(const BusStopRetryRequested());
       },
       // Slivers so the arrival rows build lazily: on dense stops only the
       // visible tiles are (re)built per live ETA frame instead of the whole
-      // route × member-stop matrix.
-      child: CustomScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
+      // route × member-stop matrix. The freshness line lives in the header
+      // subtitle (see BusStopDetailView), so the list starts at the content.
+      child: const CustomScrollView(
+        physics: AlwaysScrollableScrollPhysics(),
         slivers: [
-          SliverToBoxAdapter(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 0, 16, 12),
-                  child: _StopMeta(),
-                ),
-                Divider(
-                  height: 1,
-                  indent: 16,
-                  endIndent: 16,
-                  color: cs.outlineVariant.withValues(alpha: 0.5),
-                ),
-                const SizedBox(height: 4),
-              ],
-            ),
-          ),
-          const _StopBody(),
-          const SliverPadding(padding: EdgeInsets.only(bottom: 56)),
+          _StopBody(),
+          SliverPadding(padding: EdgeInsets.only(bottom: 56)),
         ],
       ),
     );
@@ -114,6 +95,16 @@ class _StopBody extends StatelessWidget {
     // Section headers only earn their space when 全部 spans several stops;
     // a picked chip already names the stop.
     final showHeaders = hasFilter && selected == null;
+    final labels = _memberLabels(members, byStation);
+    // Member stops with no routes render nothing in the 全部 view — an empty
+    // group is noise, and a stack of them reads as a broken screen.
+    final groups = [
+      for (final m in visibleMembers)
+        (m, byStation[m.stationUid] ?? const <BusStopArrivalItem>[]),
+    ];
+    final visibleGroups = selected == null
+        ? groups.where((g) => g.$2.isNotEmpty).toList()
+        : groups;
 
     Widget Function() tile(BusStopArrivalItem a, int staggerIndex, int i) =>
         () => StaggerItem(
@@ -131,22 +122,31 @@ class _StopBody extends StatelessWidget {
       color: cs.outlineVariant.withValues(alpha: 0.5),
     );
 
+    final flatCount = visibleGroups.fold(0, (n, g) => n + g.$2.length);
     return [
-      if (hasFilter)
-        () => _StationFilterBar(members: members, selectedUid: selected),
+      if (hasFilter) ...[
+        () => _StationFilterBar(
+          members: members,
+          selectedUid: selected,
+          labels: labels,
+        ),
+        divider,
+      ],
       if (members.isEmpty)
         for (final (i, a) in arrivals.indexed) tile(a, i, i)
       else
-        for (final (memberIndex, member) in visibleMembers.indexed) ...[
-          if (showHeaders) () => _StationSectionHeader(member: member),
-          for (final (i, a)
-              in (byStation[member.stationUid] ?? const <BusStopArrivalItem>[])
-                  .indexed) ...[
+        for (final (memberIndex, group) in visibleGroups.indexed) ...[
+          if (showHeaders)
+            () => _StationSectionHeader(
+              label: labels[group.$1.stationUid] ?? group.$1.stationName,
+              routeCount: group.$2.length,
+            ),
+          for (final (i, a) in group.$2.indexed) ...[
             tile(a, memberIndex * 10 + i, i),
-            if (i < (byStation[member.stationUid]?.length ?? 0) - 1) divider,
+            if (i < group.$2.length - 1) divider,
           ],
         ],
-      if (members.isNotEmpty && arrivals.isEmpty)
+      if (members.isNotEmpty && flatCount == 0)
         () => const _StopMessage(
           icon: Icons.directions_bus_outlined,
           title: '目前沒有即時動態',
@@ -158,15 +158,20 @@ class _StopBody extends StatelessWidget {
 
 /// Single-select filter chips, one per member stop plus 全部. Picking a chip
 /// filters the list and pans the map to that stop (via [BusStopStationSelected]
-/// on the bloc); labels use the stop name, never the raw StationID.
+/// on the bloc); labels come from [_memberLabels] — destination-first, never
+/// the raw StationID.
 class _StationFilterBar extends StatelessWidget {
-  const _StationFilterBar({required this.members, required this.selectedUid});
+  const _StationFilterBar({
+    required this.members,
+    required this.selectedUid,
+    required this.labels,
+  });
   final List<BusStationMember> members;
   final String? selectedUid;
+  final Map<String, String> labels;
 
   @override
   Widget build(BuildContext context) {
-    final labels = _memberLabels(members);
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
@@ -227,43 +232,91 @@ class _StationChip extends StatelessWidget {
   }
 }
 
-/// Chip labels from member stop names, suffixing an ordinal only where two
-/// members share a name so every chip stays distinguishable without exposing
-/// the raw StationID.
-Map<String, String> _memberLabels(List<BusStationMember> members) {
+/// Chip / header labels for member stops, in commuter language instead of
+/// ordinals: a member is named by where its routes go (往 X), because riders
+/// pick a pole by their destination, not by a number. Members with no routes
+/// fall back to a compass-side label (東側站牌) derived from the group
+/// centroid; colliding labels get the compass side appended, then an ordinal
+/// as the last resort. The raw StationID is never exposed.
+Map<String, String> _memberLabels(
+  List<BusStationMember> members,
+  Map<String, List<BusStopArrivalItem>> byStation,
+) {
+  if (members.isEmpty) return const {};
+  final clat =
+      members.map((m) => m.lat).reduce((a, b) => a + b) / members.length;
+  final clon =
+      members.map((m) => m.lon).reduce((a, b) => a + b) / members.length;
+
+  String bearing(BusStationMember m) {
+    final dy = m.lat - clat;
+    final dx = (m.lon - clon) * math.cos(clat * math.pi / 180);
+    if (dx == 0 && dy == 0) return '';
+    if (dx.abs() > dy.abs()) return dx > 0 ? '東側' : '西側';
+    return dy > 0 ? '北側' : '南側';
+  }
+
+  String base(BusStationMember m) {
+    final dests = <String>{
+      for (final a in byStation[m.stationUid] ?? const <BusStopArrivalItem>[])
+        if (a.display.destination.isNotEmpty) a.display.destination,
+    };
+    if (dests.isNotEmpty) return '往${dests.take(2).join('、')}';
+    final side = bearing(m);
+    return side.isEmpty ? m.stationName : '$side站牌';
+  }
+
+  final bases = {for (final m in members) m.stationUid: base(m)};
   final counts = <String, int>{};
-  for (final m in members) {
-    counts[m.stationName] = (counts[m.stationName] ?? 0) + 1;
+  for (final v in bases.values) {
+    counts[v] = (counts[v] ?? 0) + 1;
   }
   final seen = <String, int>{};
   final labels = <String, String>{};
   for (final m in members) {
-    if ((counts[m.stationName] ?? 0) > 1) {
-      final n = (seen[m.stationName] ?? 0) + 1;
-      seen[m.stationName] = n;
-      labels[m.stationUid] = '${m.stationName} $n';
-    } else {
-      labels[m.stationUid] = m.stationName;
+    var label = bases[m.stationUid]!;
+    if ((counts[label] ?? 0) > 1) {
+      final side = bearing(m);
+      if (side.isNotEmpty && !label.contains(side)) label = '$label($side)';
+      final n = (seen[label] ?? 0) + 1;
+      seen[label] = n;
+      if (n > 1) label = '$label $n';
     }
+    labels[m.stationUid] = label;
   }
   return labels;
 }
 
 class _StationSectionHeader extends StatelessWidget {
-  const _StationSectionHeader({required this.member});
-  final BusStationMember member;
+  const _StationSectionHeader({required this.label, required this.routeCount});
+  final String label;
+  final int routeCount;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-      child: Text(
-        member.stationName,
-        style: AppTextStyles.bodySmall.copyWith(
-          color: cs.onSurfaceVariant,
-          fontWeight: FontWeight.w700,
-        ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppTextStyles.bodySmall.copyWith(
+                color: cs.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          Text(
+            '$routeCount 條路線',
+            style: AppTextStyles.bodySmall.copyWith(
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -283,7 +336,7 @@ class _StopMeta extends StatelessWidget {
         final label = updatedAt != null ? '更新於 ${_hhmm(updatedAt)}' : '即時動態';
         return Text(
           label,
-          style: AppTextStyles.bodyRegular.copyWith(color: cs.onSurfaceVariant),
+          style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
         );
       },
     );

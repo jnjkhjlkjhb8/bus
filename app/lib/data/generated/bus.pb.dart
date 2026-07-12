@@ -1677,6 +1677,7 @@ class Bus_StopEstimate extends $pb.GeneratedMessage {
     $core.String? srcUpdateTime,
     $core.Iterable<Bus_position>? buses,
     $fixnum.Int64? arrivalUnix,
+    $core.String? destination,
   }) {
     final result = create();
     if (stopUid != null) result.stopUid = stopUid;
@@ -1689,6 +1690,7 @@ class Bus_StopEstimate extends $pb.GeneratedMessage {
     if (srcUpdateTime != null) result.srcUpdateTime = srcUpdateTime;
     if (buses != null) result.buses.addAll(buses);
     if (arrivalUnix != null) result.arrivalUnix = arrivalUnix;
+    if (destination != null) result.destination = destination;
     return result;
   }
 
@@ -1715,6 +1717,7 @@ class Bus_StopEstimate extends $pb.GeneratedMessage {
     ..pPM<Bus_position>(9, _omitFieldNames ? '' : 'Buses',
         protoName: 'Buses', subBuilder: Bus_position.create)
     ..aInt64(10, _omitFieldNames ? '' : 'arrivalUnix')
+    ..aOS(11, _omitFieldNames ? '' : 'destination')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1819,6 +1822,17 @@ class Bus_StopEstimate extends $pb.GeneratedMessage {
   $core.bool hasArrivalUnix() => $_has(9);
   @$pb.TagNumber(10)
   void clearArrivalUnix() => $_clearField(10);
+
+  /// Terminal stop name for this subroute+direction (e.g. 桃園後站). Empty when
+  /// the static data has none; clients fall back to a direction label.
+  @$pb.TagNumber(11)
+  $core.String get destination => $_getSZ(10);
+  @$pb.TagNumber(11)
+  set destination($core.String value) => $_setString(10, value);
+  @$pb.TagNumber(11)
+  $core.bool hasDestination() => $_has(10);
+  @$pb.TagNumber(11)
+  void clearDestination() => $_clearField(11);
 }
 
 class Bus_position extends $pb.GeneratedMessage {

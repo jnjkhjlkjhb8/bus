@@ -54,8 +54,8 @@ const _kAltRouteColor = Color(0xFF9AA0A6);
 
 // Follow-camera framing while navigating. Shared by the one-shot nav-start
 // camera and every follow tick so they stay in lockstep (spec: keep tilt 45 /
-// zoom 15.5); the initial bearing is only used until the first trustworthy
-// heading rotates the map.
+// zoom 15.5). The bearing is a fixed constant — the map never rotates; only
+// the puck rotates to the device heading.
 const _kNavZoom = 15.5;
 const _kNavTilt = 45.0;
 const _kNavBearing = 30.0;
@@ -87,9 +87,22 @@ class _GoScreenState extends State<GoScreen> {
   // user has panned the map by gesture (then follow pauses until re-armed by a
   // nav (re)start or a leg advance).
   bool _followPaused = false;
-  // Last bearing the camera adopted; a fix too slow/heading-invalid to trust
-  // for direction keeps this rather than spinning the map (see followBearing).
-  double _followBearing = _kNavBearing;
+  // Puck-only heading: the directional arrow's rotation, driven by the compass.
+  // The camera bearing stays the _kNavBearing constant, so this never rotates
+  // the map — it only points the puck at the device's true (north-referenced)
+  // heading. Seeds to _kNavBearing until the first compass event.
+  double _puckHeading = _kNavBearing;
+  // Most recent navigation GPS fix, cached so the recenter button can snap the
+  // camera back to the user, and so the puck can be placed at the user.
+  Position? _lastFix;
+  // Compass heading subscription — magnetometer draws battery, so it lives only
+  // for the duration of an active navigation (started with follow, torn down at
+  // nav end / dispose), never on the planner screen.
+  StreamSubscription<double>? _compassSub;
+  // Last compass heading actually applied to the puck, plus when — feeds the
+  // shouldApplyHeading throttle.
+  double? _lastAppliedHeading;
+  DateTime _lastHeadingApplied = DateTime.fromMillisecondsSinceEpoch(0);
   // onCameraMoveStarted fires for the app's own animateCamera too; this counts
   // in-flight programmatic moves so only genuine user gestures pause follow.
   int _programmaticMoves = 0;
@@ -144,6 +157,7 @@ class _GoScreenState extends State<GoScreen> {
   @override
   void dispose() {
     _navigationCoordinator.dispose();
+    _stopCompass();
     _map?.dispose();
     _sheet.dispose();
     _previewSheet.dispose();
@@ -281,10 +295,12 @@ class _GoScreenState extends State<GoScreen> {
       routeIndex: routeIndex,
     );
     if (!mounted) return;
-    // (Re)starting navigation re-arms follow and resets the bearing to the
-    // one-shot framing below; subsequent GPS fixes take over from there.
+    // (Re)starting navigation re-arms follow and reseeds the puck heading; the
+    // compass then rotates the puck (never the map) as fixes drive the camera.
     setState(() => _followPaused = false);
-    _followBearing = _kNavBearing;
+    _puckHeading = _kNavBearing;
+    _lastAppliedHeading = null;
+    _startCompass();
     final target = _latLngOrNull(start);
     if (target != null) {
       unawaited(
@@ -316,29 +332,80 @@ class _GoScreenState extends State<GoScreen> {
     }
   }
 
-  // Each navigation GPS fix. Keeps the camera on the user (tilt/zoom fixed,
-  // bearing following travel direction) unless the user has panned away.
-  void _onFollowUpdate(Position fix) {
+  // Subscribes to the compass only while navigating; a no-op if already live so
+  // a nav restart doesn't stack subscriptions.
+  void _startCompass() {
+    _compassSub ??= LocationService.instance.compassStream().listen(
+      _onCompassHeading,
+    );
+  }
+
+  void _stopCompass() {
+    unawaited(_compassSub?.cancel());
+    _compassSub = null;
+    _lastAppliedHeading = null;
+  }
+
+  // Compass event: rotate only the puck to the phone's heading while
+  // navigating, including standing still — the map never rotates. Throttled by
+  // shouldApplyHeading so it stays under ~5 setStates/sec and ignores sub-3°
+  // jitter. Not gated on _followPaused: the puck stays visible (and honest)
+  // even after a gesture pause.
+  void _onCompassHeading(double heading) {
     if (!mounted) return;
     final navigating = context.read<PlanBloc>().state.activeLegIndex != null;
+    if (!navigating) return;
+    if (!shouldApplyHeading(
+      last: _lastAppliedHeading,
+      next: heading,
+      sinceLast: DateTime.now().difference(_lastHeadingApplied),
+    )) {
+      return;
+    }
+    _lastAppliedHeading = heading;
+    _lastHeadingApplied = DateTime.now();
+    // Rotate the directional puck; heading is north-referenced and the camera
+    // stays at _kNavBearing, so no bearing compensation is needed.
+    setState(() => _puckHeading = heading);
+  }
+
+  // Each navigation GPS fix. Keeps the camera on the user (tilt/zoom/bearing
+  // all fixed — only the target follows) unless the user has panned away.
+  void _onFollowUpdate(Position fix) {
+    if (!mounted) return;
+    // Cache every fix (even while paused) so the recenter button and the puck
+    // always have a fresh position.
+    _lastFix = fix;
+    final navigating = context.read<PlanBloc>().state.activeLegIndex != null;
+    // Move the directional puck to the new fix.
+    if (navigating) setState(() {});
     if (!navigating || _followPaused) return;
     _followTo(fix);
   }
 
   void _followTo(Position fix) {
-    _followBearing = followBearing(fix) ?? _followBearing;
+    // The camera bearing is the fixed _kNavBearing — the map never rotates, so
+    // a follow tick only recenters the target.
     unawaited(
       _animateCameraGuarded(
         CameraUpdate.newCameraPosition(
           CameraPosition(
             target: LatLng(fix.latitude, fix.longitude),
             zoom: _kNavZoom,
-            bearing: _followBearing,
+            bearing: _kNavBearing,
             tilt: _kNavTilt,
           ),
         ),
       ),
     );
+  }
+
+  // Puck tap: re-arm follow and snap the camera back to the user.
+  void _recenterFollow() {
+    unawaited(HapticService.instance.lightTap());
+    setState(() => _followPaused = false);
+    final fix = _lastFix;
+    if (fix != null) _followTo(fix);
   }
 
   void _advance(PlanRoute route, int activeLeg) {
@@ -402,6 +469,9 @@ class _GoScreenState extends State<GoScreen> {
   }
 
   void _resetCamera() {
+    // Every navigation-end path funnels through here (manual end, auto-arrival,
+    // self-completed journey), so release the compass here too.
+    _stopCompass();
     unawaited(
       _animateCameraGuarded(
         CameraUpdate.newCameraPosition(
@@ -483,21 +553,51 @@ class _GoScreenState extends State<GoScreen> {
         add(s.arrival.location);
       }
       if (pts.length < 2) continue;
-      final base = walk ? cs.outline : transitColor(s.transport, cs);
       final dim = activeLeg != null && i < activeLeg;
-      lines.add(
-        Polyline(
-          polylineId: PolylineId('leg_$i'),
-          points: pts,
-          width: walk ? 4 : 6,
-          color: dim ? base.withValues(alpha: 0.3) : base,
-          // Sits above the muted alternates.
-          zIndex: 2,
-          patterns: walk
-              ? [PatternItem.dot, PatternItem.gap(8)]
-              : const [],
-        ),
-      );
+      Color d(Color c) => dim ? c.withValues(alpha: 0.3) : c;
+      if (walk) {
+        // White-cased ink dots: a wide card-colored casing under narrower ink
+        // dots, both on the same points/pattern so the dots read against any
+        // map background. Card color matches the nav header's card.
+        final card = cs.brightness == Brightness.light
+            ? Colors.white
+            : cs.surfaceContainerHigh;
+        final pattern = [PatternItem.dot, PatternItem.gap(16)];
+        lines
+          ..add(
+            Polyline(
+              polylineId: PolylineId('leg_${i}_casing'),
+              points: pts,
+              width: 11,
+              color: d(card),
+              // Casing sits below its dots, both above the muted alternates.
+              zIndex: 2,
+              patterns: pattern,
+            ),
+          )
+          ..add(
+            Polyline(
+              polylineId: PolylineId('leg_$i'),
+              points: pts,
+              width: 7,
+              color: d(cs.onSurface),
+              zIndex: 3,
+              patterns: pattern,
+            ),
+          );
+      } else {
+        final base = transitColor(s.transport, cs);
+        lines.add(
+          Polyline(
+            polylineId: PolylineId('leg_$i'),
+            points: pts,
+            width: 6,
+            color: d(base),
+            // Sits above the muted alternates.
+            zIndex: 2,
+          ),
+        );
+      }
     }
     return lines;
   }
@@ -656,6 +756,41 @@ class _GoScreenState extends State<GoScreen> {
     return markers;
   }
 
+  // Directional user puck during navigation: an ink arrow on a white disc at
+  // the latest fix, replacing the default blue dot. Flat + center-anchored;
+  // its rotation is the north-referenced compass heading and the map stays at
+  // _kNavBearing, so the arrow points at the device's true heading on the map.
+  // Shown for the whole navigation regardless of follow state — gated only on
+  // having a fix. Rebuilt on each fix (position) and each applied heading
+  // (rotation), both throttled upstream, so never at raw compass rate.
+  Marker? _navPuck(ColorScheme cs) {
+    final fix = _lastFix;
+    if (fix == null) return null;
+    // Card color matches the nav header's card (white in light, elevated
+    // surface in dark); it forms the puck's ring and arrow glyph.
+    final card = cs.brightness == Brightness.light
+        ? Colors.white
+        : cs.surfaceContainerHigh;
+    final icon = _resolveMarker(
+      'go_nav_puck|${cs.onSurface.toARGB32()}|${card.toARGB32()}',
+      () => MapMarkers.navArrow(cs.onSurface, card),
+    );
+    if (icon == null) return null;
+    return Marker(
+      markerId: const MarkerId('nav_puck'),
+      position: LatLng(fix.latitude, fix.longitude),
+      icon: icon,
+      anchor: const Offset(0.5, 0.5),
+      rotation: _puckHeading,
+      flat: true,
+      zIndexInt: 40,
+      // Doubles as the recenter affordance: tapping re-arms follow and snaps
+      // back to the user. Harmless while already following (puck is centered);
+      // it only matters after a gesture pause.
+      onTap: _recenterFollow,
+    );
+  }
+
   // Recomputes the cached overlays only when the result identity, selected
   // route, active leg, or theme colors change; identical inputs reuse the sets.
   void _ensureOverlays(
@@ -785,13 +920,19 @@ class _GoScreenState extends State<GoScreen> {
                         setState(() => _followPaused = true);
                       }
                     },
-                    myLocationEnabled: true,
+                    // The default blue dot only in the planner; navigation
+                    // renders its own directional arrow puck instead.
+                    myLocationEnabled: !navigating,
                     myLocationButtonEnabled: false,
                     zoomControlsEnabled: false,
                     compassEnabled: false,
                     mapToolbarEnabled: false,
                     polylines: route == null ? const {} : _overlayPolylines,
-                    markers: route == null ? const {} : _overlayMarkers,
+                    markers: {
+                      if (route != null) ..._overlayMarkers,
+                      if (navigating)
+                        ?_navPuck(Theme.of(context).colorScheme),
+                    },
                   ),
                 ),
                 Positioned(

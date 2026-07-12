@@ -221,6 +221,57 @@ class MapMarkers {
     });
   }
 
+  /// User-position puck for active navigation: a solid ink disc inside a thin
+  /// card-colored ring, with an ink heading arrow (matching the recenter button
+  /// glyph) knocked out in the ring color and a soft drop shadow. [disc] is the
+  /// solid body (ink), [ring] the outer ring / arrow glyph (card color). The
+  /// glyph points up (bitmap north); rendered as a flat marker rotated by the
+  /// camera bearing so it tracks the travel/heading direction on the map.
+  /// Proportions follow the 48px mock: outer ring radius 20, ink disc radius 17
+  /// (3px ring), arrow ~26/48 of the marker.
+  static Future<BitmapDescriptor> navArrow(
+    Color disc,
+    Color ring, {
+    double size = 48,
+  }) {
+    final key = 'navarrow:${disc.toARGB32()}:${ring.toARGB32()}:$size';
+    return _memo(key, () async {
+      final px = (size * _dpr).round();
+      final center = Offset(px / 2, px / 2);
+      final rOuter = px * (20 / 48);
+      final rInk = px * (17 / 48);
+      final image = await _record(px, (canvas) {
+        canvas
+          ..drawCircle(
+            center + Offset(0, px * (2.5 / 48)),
+            rOuter,
+            Paint()
+              ..color = const Color(0x2E000000)
+              ..maskFilter = MaskFilter.blur(BlurStyle.normal, px * (3 / 48)),
+          )
+          ..drawCircle(center, rOuter, Paint()..color = ring)
+          ..drawCircle(center, rInk, Paint()..color = disc);
+        final painter = TextPainter(
+          text: TextSpan(
+            text: String.fromCharCode(Icons.navigation_rounded.codePoint),
+            style: TextStyle(
+              color: ring,
+              fontSize: px * (26 / 48),
+              fontFamily: Icons.navigation_rounded.fontFamily,
+              package: Icons.navigation_rounded.fontPackage,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+        painter.paint(
+          canvas,
+          center - Offset(painter.width / 2, painter.height / 2),
+        );
+      });
+      return _toBitmap(image);
+    });
+  }
+
   static Future<BitmapDescriptor> _memo(
     String key,
     Future<BitmapDescriptor> Function() build,

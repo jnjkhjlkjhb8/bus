@@ -1,5 +1,81 @@
 part of '../view/metro_screen.dart';
 
+/// Floating time/fare toggle mirroring the system pill's card styling. Drives
+/// [_MapMode], which controls the labels shown on every station across the map.
+class _MapModeChip extends StatelessWidget {
+  const _MapModeChip({
+    required this.mode,
+    required this.onChanged,
+    super.key,
+  });
+
+  final _MapMode mode;
+  final ValueChanged<_MapMode> onChanged;
+
+  static const _labels = <_MapMode, String>{
+    _MapMode.time: '時間',
+    _MapMode.fare: '票價',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    return Container(
+      height: 44,
+      padding: const EdgeInsets.all(4),
+      decoration: AppTheme.floatingControl(
+        cs,
+        borderRadius: const BorderRadius.all(Radius.circular(999)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (final entry in _labels.entries)
+            _segment(cs, reduceMotion, entry.key, entry.value),
+        ],
+      ),
+    );
+  }
+
+  Widget _segment(
+    ColorScheme cs,
+    bool reduceMotion,
+    _MapMode value,
+    String label,
+  ) {
+    final selected = value == mode;
+    return Semantics(
+      button: true,
+      selected: selected,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => onChanged(value),
+        child: AnimatedContainer(
+          duration: reduceMotion ? Duration.zero : AppMotion.medium,
+          curve: AppMotion.easeOut,
+          height: 36,
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          decoration: BoxDecoration(
+            color: selected ? cs.onSurface : Colors.transparent,
+            borderRadius: const BorderRadius.all(Radius.circular(999)),
+          ),
+          child: AnimatedDefaultTextStyle(
+            duration: reduceMotion ? Duration.zero : AppMotion.medium,
+            curve: AppMotion.easeOut,
+            style: AppTextStyles.bodyRegular.copyWith(
+              fontWeight: FontWeight.w600,
+              color: selected ? cs.surface : cs.onSurfaceVariant,
+            ),
+            child: Text(label),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _SystemPill extends StatefulWidget {
   const _SystemPill();
 

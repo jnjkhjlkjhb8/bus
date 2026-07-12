@@ -274,6 +274,7 @@ type busStationmap struct {
 	SubRouteUID  string
 	RouteUID     string
 	SubRouteName string
+	Destination  string
 	Direction    uint8
 	StopUID      string
 	StopSequence uint8

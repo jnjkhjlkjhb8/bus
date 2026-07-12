@@ -9,6 +9,7 @@ import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/data/models/alert_models.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
+import 'package:wheres_the_car/features/alerts/view/alert_source_chip.dart';
 import 'package:wheres_the_car/features/alerts/view/notification_sheet.dart';
 
 class NotificationToastHost extends StatefulWidget {
@@ -153,33 +154,38 @@ class _ToastLayer extends StatelessWidget {
                   boxShadow: AppShadows.floating,
                 ),
                 child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      width: 30,
-                      height: 30,
-                      decoration: BoxDecoration(
-                        color: cs.error,
-                        borderRadius: BorderRadius.circular(
-                          AppTheme.radiusChip,
-                        ),
-                      ),
-                      child: const Icon(
-                        Icons.warning_amber_rounded,
-                        color: Colors.white,
-                        size: 18,
-                      ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 1),
+                      child: AlertSourceChip(source: alert.source),
                     ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: Text(
-                        alert.message,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppTextStyles.bodySmall.copyWith(
-                          color: cs.onSurface,
-                          fontWeight: FontWeight.w600,
-                          height: 1.3,
-                        ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            alert.title ?? alert.message,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppTextStyles.bodyRegular.copyWith(
+                              fontSize: 13.5,
+                              color: cs.onSurface,
+                              fontWeight: FontWeight.w600,
+                              height: 1.3,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '剛剛 · 服務中斷',
+                            style: AppTextStyles.memo.copyWith(
+                              fontSize: 11,
+                              color: cs.onSurfaceVariant,
+                              height: 1.2,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                     const SizedBox(width: 8),

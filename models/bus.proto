@@ -146,6 +146,9 @@ message Bus_StopEstimate{
   string src_update_time = 8;
   repeated Bus_position Buses = 9;
   int64 arrival_unix = 10;
+  // Terminal stop name for this subroute+direction (e.g. 桃園後站). Empty when
+  // the static data has none; clients fall back to a direction label.
+  string destination = 11;
 }
 message Bus_position{
   reserved 6, 7, 8;

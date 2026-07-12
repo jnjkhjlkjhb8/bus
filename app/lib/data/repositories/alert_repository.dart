@@ -23,27 +23,36 @@ class AlertRepository {
       _settings.setReadAlerts(read);
 
   /// Server-streaming: emits bus service alerts for [city] until cancelled.
-  Stream<AlertViewModel> busNews(String city) =>
-      _decoded(_grpc.busNews(Alert_Bus_Ask(city: city)));
+  Stream<AlertViewModel> busNews(String city) => _decoded(
+    _grpc.busNews(Alert_Bus_Ask(city: city)),
+    AlertSource(AlertSourceKind.bus, city),
+  );
 
   /// Server-streaming: emits metro service alerts for [system] until cancelled.
   ///
   /// [system] — metro operator code, e.g. `'TRTC'`.
-  Stream<AlertViewModel> metroAlert(String system) =>
-      _decoded(_grpc.metroAlert(Alert_Metro_Ask(system: system)));
+  Stream<AlertViewModel> metroAlert(String system) => _decoded(
+    _grpc.metroAlert(Alert_Metro_Ask(system: system)),
+    AlertSource(AlertSourceKind.metro, system),
+  );
 
   /// Server-streaming: emits TRA nationwide service alerts.
-  Stream<AlertViewModel> traAlert() =>
-      _decoded(_grpc.traAlert(Alert_Ask()));
+  Stream<AlertViewModel> traAlert() => _decoded(
+    _grpc.traAlert(Alert_Ask()),
+    const AlertSource(AlertSourceKind.tra),
+  );
 
   /// Server-streaming: emits THSR nationwide service alerts.
-  Stream<AlertViewModel> thsrAlert() =>
-      _decoded(_grpc.thsrAlert(Alert_Ask()));
+  Stream<AlertViewModel> thsrAlert() => _decoded(
+    _grpc.thsrAlert(Alert_Ask()),
+    const AlertSource(AlertSourceKind.thsr),
+  );
 
   /// Decodes each proto envelope to a domain [AlertViewModel], dropping
   /// messages that fail to parse. Keeps the proto seam inside data/.
-  Stream<AlertViewModel> _decoded(Stream<Alert_Msg> source) => source
-      .map((msg) => AlertDecoder.instance.decode(msg.data))
-      .where((vm) => vm != null)
-      .cast<AlertViewModel>();
+  Stream<AlertViewModel> _decoded(Stream<Alert_Msg> source, AlertSource from) =>
+      source
+          .map((msg) => AlertDecoder.instance.decode(msg.data, source: from))
+          .where((vm) => vm != null)
+          .cast<AlertViewModel>();
 }

@@ -143,6 +143,14 @@ extension _HomeScreenScaffold on _HomeScreenState {
             ),
           ),
 
+          // Severe-alert banner, anchored below the floating control row.
+          const Positioned(
+            top: 16 + 44 + 12,
+            left: 16,
+            right: 16,
+            child: SafeArea(child: HomeAlertBanner()),
+          ),
+
           // Fixed floating controls: recenter above, route planner below.
           // Anchored above the sheet's default extent; no longer tracks drags.
           Positioned(

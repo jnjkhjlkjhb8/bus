@@ -9,6 +9,8 @@ import 'package:wheres_the_car/data/models/alert_models.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
+import 'package:wheres_the_car/features/alerts/view/alert_source_chip.dart';
+import 'package:wheres_the_car/features/alerts/view/notification_sheet.dart';
 
 /// Compact full-width strip shown below map close buttons.
 class MapAlertStrip extends StatelessWidget {
@@ -100,10 +102,31 @@ class _AlertCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final dark = theme.brightness == Brightness.dark;
     final isRed = alert.level == AlertSeverity.red;
-    final bgColor = isRed ? cs.errorContainer : cs.tertiaryContainer;
-    final fgColor = isRed ? cs.onErrorContainer : cs.onTertiaryContainer;
+
+    // Severity carries through the container color and the source chip; the
+    // former pulsing dot is gone. Yellow uses the shared warning tokens so it
+    // reads as an ops notice, not a themed accent.
+    final Color bgColor;
+    final Color fgColor;
+    if (isRed) {
+      bgColor = cs.errorContainer;
+      fgColor = cs.onErrorContainer;
+    } else if (dark) {
+      bgColor = AppTheme.warningBgDark;
+      fgColor = AppTheme.warningInkDark;
+    } else {
+      bgColor = AppTheme.warningBg;
+      fgColor = AppTheme.warningInkLight;
+    }
+
+    final time = alert.time;
+    final sub = time != null
+        ? '${alertRelativeTime(time, DateTime.now())} · 點擊看詳情'
+        : '點擊看詳情';
 
     return Dismissible(
       key: ValueKey(alert.message),
@@ -114,101 +137,67 @@ class _AlertCard extends StatelessWidget {
         offset: Offset.zero,
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeOut,
-        child: Container(
-          margin: const EdgeInsets.fromLTRB(12, 4, 12, 0),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(
-            color: bgColor,
-            borderRadius: BorderRadius.circular(AppTheme.radiusCard),
-          ),
-          child: Row(
-            children: [
-              _AlertDot(isRed: isRed, color: fgColor),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  alert.message,
-                  style: AppTextStyles.bodySmall.copyWith(
-                    color: fgColor,
-                    fontWeight: FontWeight.w500,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => unawaited(showNotificationSheet(context)),
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+            padding: const EdgeInsets.fromLTRB(12, 10, 4, 10),
+            decoration: BoxDecoration(
+              color: bgColor,
+              borderRadius: BorderRadius.circular(AppTheme.radiusCard),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: AlertSourceChip(source: alert.source),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        alert.title ?? alert.message,
+                        style: AppTextStyles.bodyRegular.copyWith(
+                          fontSize: 13.5,
+                          color: fgColor,
+                          fontWeight: FontWeight.w600,
+                          height: 1.3,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        sub,
+                        style: AppTextStyles.memo.copyWith(
+                          fontSize: 11,
+                          color: fgColor.withValues(alpha: 0.8),
+                          height: 1.2,
+                        ),
+                      ),
+                    ],
                   ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
                 ),
-              ),
-              IconButton(
-                icon: Icon(Icons.close, size: 16, color: fgColor),
-                onPressed: () => context.read<AlertBloc>().add(
-                  AlertDismissed(alert.message),
+                IconButton(
+                  icon: Icon(Icons.close, size: 16, color: fgColor),
+                  onPressed: () => context.read<AlertBloc>().add(
+                    AlertDismissed(alert.message),
+                  ),
+                  tooltip: '關閉',
+                  padding: EdgeInsets.zero,
+                  // 16px glyph, but the hit target keeps the 44px floor.
+                  constraints: const BoxConstraints(
+                    minWidth: 44,
+                    minHeight: 44,
+                  ),
                 ),
-                tooltip: '關閉',
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _AlertDot extends StatefulWidget {
-  const _AlertDot({required this.isRed, required this.color});
-  final bool isRed;
-  final Color color;
-
-  @override
-  State<_AlertDot> createState() => _AlertDotState();
-}
-
-class _AlertDotState extends State<_AlertDot>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse;
-  late final Animation<double> _opacity;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulse = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 800),
-    );
-    if (widget.isRed) {
-      _opacity = Tween<double>(begin: 0.4, end: 1).animate(_pulse);
-    } else {
-      _opacity = const AlwaysStoppedAnimation(1);
-    }
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (widget.isRed) {
-      if (MediaQuery.disableAnimationsOf(context)) {
-        _pulse.stop();
-      } else {
-        unawaited(_pulse.repeat(reverse: true));
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: _opacity,
-      child: Container(
-        width: 8,
-        height: 8,
-        decoration: BoxDecoration(
-          color: widget.color,
-          shape: BoxShape.circle,
         ),
       ),
     );

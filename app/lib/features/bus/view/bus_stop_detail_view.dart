@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -9,6 +10,7 @@ import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_car/data/models/eta_format.dart';
 import 'package:wheres_the_car/data/models/favorite.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_event.dart';
@@ -64,7 +66,11 @@ class BusStopDetailView extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SheetDetailHeader(title: stopName, favorite: _favorite()),
+          SheetDetailHeader(
+            title: stopName,
+            subtitle: const _StopMeta(),
+            favorite: _favorite(),
+          ),
           const Flexible(child: _StopSheet()),
         ],
       ),

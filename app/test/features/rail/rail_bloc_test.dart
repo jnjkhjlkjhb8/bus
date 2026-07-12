@@ -50,6 +50,100 @@ void main() {
     expect(thsr.timetableCalls, [('2026-07-10', '0990', '1070')]);
   });
 
+  test('today query drops departed THSR trains and sorts the rest', () async {
+    const early = ThsrTimetableItem(
+      trainNo: '801',
+      departureTime: '14:15',
+      arrivalTime: '15:45',
+      travelMinutes: 90,
+      delayMinutes: 0,
+      remark: '',
+    );
+    const late = ThsrTimetableItem(
+      trainNo: '805',
+      departureTime: '20:30',
+      arrivalTime: '22:00',
+      travelMinutes: 90,
+      delayMinutes: 0,
+      remark: '',
+    );
+    const mid = ThsrTimetableItem(
+      trainNo: '803',
+      departureTime: '19:10',
+      arrivalTime: '20:40',
+      travelMinutes: 90,
+      delayMinutes: 0,
+      remark: '',
+    );
+    final thsr = _FakeThsrRepository(timetableResult: const [early, late, mid]);
+    final bloc = RailBloc(
+      thsrRepository: thsr,
+      now: () => DateTime(2026, 7, 12, 19),
+    );
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: RailStationSelection(name: '南港', id: '0990'),
+        destination: RailStationSelection(name: '左營', id: '1070'),
+        date: '2026-07-12',
+      ),
+    );
+    final loaded =
+        await bloc.stream.firstWhere((state) => state is RailTimetableLoaded)
+            as RailTimetableLoaded;
+
+    expect(loaded.thsrItems, const [mid, late]);
+  });
+
+  test('future query keeps all THSR trains sorted by departure', () async {
+    const early = ThsrTimetableItem(
+      trainNo: '801',
+      departureTime: '14:15',
+      arrivalTime: '15:45',
+      travelMinutes: 90,
+      delayMinutes: 0,
+      remark: '',
+    );
+    const late = ThsrTimetableItem(
+      trainNo: '805',
+      departureTime: '20:30',
+      arrivalTime: '22:00',
+      travelMinutes: 90,
+      delayMinutes: 0,
+      remark: '',
+    );
+    const mid = ThsrTimetableItem(
+      trainNo: '803',
+      departureTime: '19:10',
+      arrivalTime: '20:40',
+      travelMinutes: 90,
+      delayMinutes: 0,
+      remark: '',
+    );
+    final thsr = _FakeThsrRepository(timetableResult: const [early, late, mid]);
+    final bloc = RailBloc(
+      thsrRepository: thsr,
+      now: () => DateTime(2026, 7, 12, 19),
+    );
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: RailStationSelection(name: '南港', id: '0990'),
+        destination: RailStationSelection(name: '左營', id: '1070'),
+        date: '2026-07-13',
+      ),
+    );
+    final loaded =
+        await bloc.stream.firstWhere((state) => state is RailTimetableLoaded)
+            as RailTimetableLoaded;
+
+    expect(loaded.thsrItems, const [early, mid, late]);
+  });
+
   test('known station IDs bypass repository lookup', () async {
     final thsr = _FakeThsrRepository();
     final bloc = RailBloc(thsrRepository: thsr);

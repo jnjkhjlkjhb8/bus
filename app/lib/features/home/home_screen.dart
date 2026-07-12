@@ -17,6 +17,7 @@ import 'package:wheres_the_car/data/models/near_models.dart';
 import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
+import 'package:wheres_the_car/features/alerts/view/alert_banner.dart';
 import 'package:wheres_the_car/features/alerts/view/notification_sheet.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_state.dart';
@@ -25,6 +26,7 @@ import 'package:wheres_the_car/features/home/bloc/nearby_bloc.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_event.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_state.dart';
 import 'package:wheres_the_car/features/home/widgets/home_station_detail.dart';
+import 'package:wheres_the_car/features/metro/widgets/metro_svg_map.dart';
 import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
@@ -224,9 +226,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       App.isInitialized.addListener(_onFavoritesReady);
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Timer(const Duration(milliseconds: 700), () {
-        unawaited(_initializeMapPosition());
-      });
+      unawaited(_initializeMapPosition());
+      if (mounted) MetroSvgMap.precache(context);
     });
   }
 
@@ -243,19 +244,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _initializeMapPosition() async {
-    var target = _kDefaultPosition;
+    // Show the map immediately at the last OS-cached fix (default center when
+    // none) instead of blocking on a fresh GPS fix, which can take up to 10 s
+    // cold. The fresh fix pans the camera when it arrives.
+    final last = await LocationService.instance.lastKnownPosition();
+    if (!mounted) return;
+    setState(() {
+      if (last != null) {
+        _center = LatLng(last.latitude, last.longitude);
+        _camCenter = _center;
+      }
+      _mapReady = true;
+    });
     try {
       final pos = await LocationService.instance.currentPosition();
-      target = LatLng(pos.latitude, pos.longitude);
+      if (!mounted) return;
+      final target = LatLng(pos.latitude, pos.longitude);
+      setState(() {
+        _center = target;
+        _camCenter = target;
+      });
+      // If the map is already up, pan to the fix; the resulting camera-idle
+      // re-queries nearby stations. Before map creation, initialCameraPosition
+      // picks up the new _center on its own.
+      final controller = _mapController;
+      if (controller != null) {
+        unawaited(controller.animateCamera(CameraUpdate.newLatLng(target)));
+      }
     } on Object catch (e, s) {
       CrashReporter.record(e, s);
     }
-    if (!mounted) return;
-    setState(() {
-      _center = target;
-      _camCenter = target;
-      _mapReady = true;
-    });
   }
 
   Future<void> _locateUser() async {

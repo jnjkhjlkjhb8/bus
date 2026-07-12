@@ -19,7 +19,6 @@ import 'package:wheres_the_car/features/metro/widgets/metro_svg_map.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
-import 'package:wheres_the_car/shared/widgets/app_sliding_segment.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
@@ -34,6 +33,7 @@ const _kLineNames = <String, String>{
   'G': '松山新店線',
   'BR': '文湖線',
   'O': '中和新蘆線',
+  'Y': '環狀線',
 };
 
 final RegExp _digits = RegExp(r'\d+');
@@ -180,15 +180,6 @@ class _MetroScreenState extends State<MetroScreen> {
         children: [
           const SheetDragHandle(),
           const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: AppSlidingSegment<_MapMode>(
-              options: const {_MapMode.time: '旅途時間', _MapMode.fare: '票價'},
-              value: _mode,
-              onChanged: (m) => setState(() => _mode = m),
-            ),
-          ),
-          const SizedBox(height: 16),
           Expanded(
             child: BlocBuilder<MetroBloc, MetroState>(
               builder: (context, state) => AnimatedSwitcher(
@@ -295,6 +286,38 @@ class _MetroScreenState extends State<MetroScreen> {
                       const SizedBox(width: 12),
                       const _SystemPill(),
                     ],
+                  ),
+                ),
+              ),
+            ),
+            // Time/fare switch lives on the map (it drives the whole-map station
+            // labels), surfacing only once a station is selected.
+            SafeArea(
+              bottom: false,
+              child: Align(
+                alignment: Alignment.topRight,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                  child: AnimatedSwitcher(
+                    duration: AppMotion.short,
+                    switchInCurve: AppMotion.easeOut,
+                    switchOutCurve: AppMotion.easeOut,
+                    transitionBuilder: (child, animation) => FadeTransition(
+                      opacity: animation,
+                      child: ScaleTransition(
+                        scale: Tween<double>(begin: 0.9, end: 1).animate(
+                          animation,
+                        ),
+                        child: child,
+                      ),
+                    ),
+                    child: _selected != null
+                        ? _MapModeChip(
+                            key: const ValueKey('map-mode-chip'),
+                            mode: _mode,
+                            onChanged: (m) => setState(() => _mode = m),
+                          )
+                        : const SizedBox.shrink(),
                   ),
                 ),
               ),

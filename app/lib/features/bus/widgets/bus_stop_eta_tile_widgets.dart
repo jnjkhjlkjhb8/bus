@@ -11,12 +11,17 @@ class _EtaChevronTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final status = arrival.source.displayStatus;
+    final ended =
+        status == BusStopDisplayStatus.lastBusPassed ||
+        status == BusStopDisplayStatus.notOperating;
     return Row(
       children: [
         Expanded(
           child: EtaListTile.fromDisplay(
             arrival.display,
             highlighted: highlighted,
+            muted: ended,
             onTap: () {
               unawaited(HapticService.instance.lightTap());
               final target = arrival.subRouteUid.isNotEmpty

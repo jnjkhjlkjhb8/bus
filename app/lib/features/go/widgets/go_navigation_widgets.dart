@@ -319,7 +319,12 @@ class _NavHeader extends StatelessWidget {
       value = formatClock(section.departure.time);
       label = '發車';
     } else {
-      value = formatClock(route.endTime);
+      // The active section's own arrival time; legs missing a time (e.g. a
+      // trailing walk TDX left blank) fall back to the whole-route arrival.
+      final sectionArrival = formatClock(section.arrival.time);
+      value = sectionArrival.isNotEmpty
+          ? sectionArrival
+          : formatClock(route.endTime);
       label = '預計抵達';
     }
     if (value.isEmpty) return const SizedBox.shrink();

@@ -53,6 +53,7 @@ class EtaListTile extends StatelessWidget {
     this.direction,
     this.onTap,
     this.highlighted = false,
+    this.muted = false,
     this.track,
     this.leading,
     this.destinationStyle,
@@ -74,6 +75,7 @@ class EtaListTile extends StatelessWidget {
     String? direction,
     VoidCallback? onTap,
     bool highlighted = false,
+    bool muted = false,
     Widget? track,
     Widget? leading,
     TextStyle? destinationStyle,
@@ -86,6 +88,7 @@ class EtaListTile extends StatelessWidget {
     direction: direction,
     onTap: onTap,
     highlighted: highlighted,
+    muted: muted,
     track: track,
     leading: leading,
     destinationStyle: destinationStyle,
@@ -98,6 +101,11 @@ class EtaListTile extends StatelessWidget {
   final String? direction;
   final VoidCallback? onTap;
   final bool highlighted;
+
+  /// Mutes the whole row to the disabled ink (service-over states like
+  /// 末班已過 / 今日未營運), so ended rows stop competing with live ETAs.
+  final bool muted;
+
   final Widget? track;
 
   /// Custom leading widget in place of the [routeNo] text (a line roundel).
@@ -115,8 +123,8 @@ class EtaListTile extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     // The coming-soon highlight is achromatic: same Ink text as every other
     // row, emphasis carried by the surface-highlight background alone.
-    final routeColor = cs.onSurface;
-    final destColor = cs.onSurfaceVariant;
+    final routeColor = muted ? cs.outline : cs.onSurface;
+    final destColor = muted ? cs.outline : cs.onSurfaceVariant;
 
     final row = Row(
       children: [
@@ -156,7 +164,7 @@ class EtaListTile extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 12),
-        EtaValue(status: status),
+        EtaValue(status: status, muted: muted),
       ],
     );
 
@@ -208,8 +216,12 @@ class EtaListTile extends StatelessWidget {
 }
 
 class EtaValue extends StatelessWidget {
-  const EtaValue({required this.status, super.key});
+  const EtaValue({required this.status, this.muted = false, super.key});
   final EtaStatus status;
+
+  /// Disabled-ink rendering for service-over rows; only the label and unknown
+  /// shapes can appear muted (live countdowns are never service-over).
+  final bool muted;
 
   @override
   Widget build(BuildContext context) {
@@ -253,8 +265,9 @@ class EtaValue extends StatelessWidget {
       EtaLabel(:final text) => Text(
         text,
         style: AppTextStyles.bodyLarge.copyWith(
-          fontWeight: FontWeight.w600,
-          color: cs.onSurfaceVariant,
+          fontWeight: muted ? FontWeight.w400 : FontWeight.w600,
+          fontSize: muted ? AppTextStyles.bodyRegular.fontSize : null,
+          color: muted ? cs.outline : cs.onSurfaceVariant,
         ),
       ),
       EtaUnknown() => Text(

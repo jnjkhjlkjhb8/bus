@@ -24,8 +24,7 @@ enum Appearance {
 /// screen behavior, where language reset to [system] on each rebuild).
 enum Language {
   system('跟隨系統'),
-  zh('繁體中文'),
-  en('English');
+  zh('繁體中文');
 
   const Language(this.label);
   final String label;

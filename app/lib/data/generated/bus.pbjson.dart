@@ -486,6 +486,7 @@ const Bus_StopEstimate$json = {
       '10': 'Buses'
     },
     {'1': 'arrival_unix', '3': 10, '4': 1, '5': 3, '10': 'arrivalUnix'},
+    {'1': 'destination', '3': 11, '4': 1, '5': 9, '10': 'destination'},
   ],
 };
 
@@ -497,7 +498,7 @@ final $typed_data.Uint8List bus_StopEstimateDescriptor = $convert.base64Decode(
     '1hdGUSIAoLTmV4dEJ1c1RpbWUYBiABKAlSC05leHRCdXNUaW1lEh8KC1N0b3Bfc3RhdHVzGAcg'
     'ASgFUgpTdG9wU3RhdHVzEiYKD3NyY191cGRhdGVfdGltZRgIIAEoCVINc3JjVXBkYXRlVGltZR'
     'IjCgVCdXNlcxgJIAMoCzINLkJ1c19wb3NpdGlvblIFQnVzZXMSIQoMYXJyaXZhbF91bml4GAog'
-    'ASgDUgthcnJpdmFsVW5peA==');
+    'ASgDUgthcnJpdmFsVW5peBIgCgtkZXN0aW5hdGlvbhgLIAEoCVILZGVzdGluYXRpb24=');
 
 @$core.Deprecated('Use bus_positionDescriptor instead')
 const Bus_position$json = {
