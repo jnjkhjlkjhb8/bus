@@ -287,7 +287,7 @@ func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxA
 			// attaches the street geometry plus turn-by-turn steps. On any OSRM
 			// error or missing coordinate the TDX value is left untouched and the
 			// path and steps stay empty.
-			if isWalkMode(sec.Transport.Mode) {
+			if isWalkSection(sec) {
 				if secs, path, steps, ok := walkRoute(ctx, osrmClient, pbSec.Departure.Location, pbSec.Arrival.Location); ok {
 					pbSec.TravelSummary.Duration = secs
 					pbSec.WalkPath = path
@@ -307,10 +307,14 @@ func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxA
 	return out
 }
 
-// isWalkMode reports whether a section's transport mode is a pedestrian leg.
-// TDX emits an empty mode or "WALK" for walking sections.
-func isWalkMode(mode string) bool {
-	return mode == "" || strings.EqualFold(mode, "walk")
+// isWalkSection reports whether a section is a pedestrian leg. Keyed off the
+// section type: live TDX MaaS responses emit type "pedestrian" with mode
+// "pedestrian" (not the documented "WALK"), and walk legs still carry a
+// transport block, so the type field is the reliable discriminator — mirrors
+// the app's isWalk. The legacy ""/"walk" modes are kept for older payloads.
+func isWalkSection(sec tdxSection) bool {
+	return strings.EqualFold(sec.Type, "pedestrian") ||
+		sec.Transport.Mode == "" || strings.EqualFold(sec.Transport.Mode, "walk")
 }
 
 // osrmRouteResponse is the subset of the OSRM /route/v1/foot response the

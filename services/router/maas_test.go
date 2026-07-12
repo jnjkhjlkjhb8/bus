@@ -271,7 +271,7 @@ func TestConvertWalkRouteMapsTransferSection(t *testing.T) {
 			{Type: "transit", Transport: tdxTransport{Mode: "BUS"},
 				Departure: tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.00, Lng: 121.50}}},
 				Arrival:   tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.00, Lng: 121.50}}}},
-			{Type: "walk", Transport: tdxTransport{Mode: "walk"},
+			{Type: "pedestrian", Transport: tdxTransport{Mode: "pedestrian"},
 				TravelSummary: tdxSummary{Duration: 600},
 				Departure:     tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.00, Lng: 121.50}}},
 				Arrival:       tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.02, Lng: 121.52}}}},
@@ -312,7 +312,7 @@ func TestConvertWalkRouteFailureLeavesSectionUntouched(t *testing.T) {
 	api := &tdxAPIResponse{}
 	api.Data.Routes = []tdxRoute{{
 		Sections: []tdxSection{
-			{Type: "walk", Transport: tdxTransport{Mode: "walk"},
+			{Type: "pedestrian", Transport: tdxTransport{Mode: "pedestrian"},
 				TravelSummary: tdxSummary{Duration: 600},
 				Departure:     tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.00, Lng: 121.50}}},
 				Arrival:       tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.02, Lng: 121.52}}}},
