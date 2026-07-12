@@ -270,6 +270,23 @@ func TestTraSpecMergesDelayIntoLiveboard(t *testing.T) {
 	if board.Items[0].Delay != 9 {
 		t.Fatalf("merged delay = %d, want 9 (from the sink-read delay hash)", board.Items[0].Delay)
 	}
+	// TDX sends Direction as a number (0/1), which the board carries as a bool.
+	// Both values are pinned because a struct field typed bool decodes neither and
+	// makes decodeItems drop every entry silently — the board then caches nothing.
+	if board.Items[0].Direction {
+		t.Fatalf("station 1000 direction = true, want false (TDX Direction 0)")
+	}
+	var board1010 models.Tra_LiveBoards
+	sw1010 := sink.setFor(shared.TraLiveboardKey("1010"))
+	if sw1010 == nil {
+		t.Fatalf("expected liveboard SET for station 1010; got %v", setKeys(sink))
+	}
+	if err := proto.Unmarshal(sw1010.value, &board1010); err != nil {
+		t.Fatalf("unmarshal Tra_LiveBoards for 1010: %v", err)
+	}
+	if len(board1010.Items) != 1 || !board1010.Items[0].Direction {
+		t.Fatalf("station 1010 direction = false, want true (TDX Direction 1)")
+	}
 	// The board must also PUBLISH to its key-as-channel with the same payload, or
 	// the router's LiveBoard stream only ever gets the seed GET and never updates.
 	ch := shared.TraLiveboardKey("1000")

@@ -74,8 +74,11 @@ type traLiveboard struct {
 	StationName struct {
 		ZhTw string `json:"Zh_tw"`
 	} `json:"StationName"`
-	TrainNo       string `json:"TrainNo"`
-	Direction     bool   `json:"Direction"`
+	TrainNo string `json:"TrainNo"`
+	// TDX emits Direction as a number (0 順行 / 1 逆行), not a bool. Decoding it
+	// into a bool fails per item, and decodeItems skips a failed item silently, so
+	// a bool here drops every board entry and caches nothing.
+	Direction     uint8  `json:"Direction"`
 	TrainTypeID   string `json:"TrainTypeID"`
 	TrainTypeCode string `json:"TrainTypeCode"`
 	TrainTypeName struct {
@@ -606,7 +609,13 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 		if flipopen != nil {
 			defer flipopen()
 		}
-		if err != nil || !comp {
+		if err != nil {
+			log.Infof("[TRA_ETA] action=tra_eta event=skip_liveboard reason=api_error error=%v", err)
+			return
+		}
+		if !comp {
+			// On a 304, boundFetch has already re-armed the liveboard keys' TTL.
+			log.Infof("[TRA_ETA] action=tra_eta event=skip_liveboard reason=not_modified")
 			return
 		}
 		// The delay hash is read back through the sink to merge live delays into
@@ -622,7 +631,7 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 			}
 			pb := &models.Tra_LiveBoard{
 				TrainNo:                temp.TrainNo,
-				Direction:              temp.Direction,
+				Direction:              temp.Direction != 0,
 				TrainTypeId:            temp.TrainTypeID,
 				TrainTypeCode:          temp.TrainTypeCode,
 				TrainTypeName:          temp.TrainTypeName.ZhTw,
@@ -635,9 +644,11 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 			}
 			res[temp.StationID] = append(res[temp.StationID], pb)
 		}); decErr != nil {
+			log.Infof("[TRA_ETA] action=tra_eta event=liveboard_decode_error error=%v", decErr)
 			return
 		}
 		pipe := sink.pipeline()
+		trains := 0
 		for a, b := range res {
 			pb := &models.Tra_LiveBoards{
 				StationId: a,
@@ -652,8 +663,16 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 			// subscribes to; without this publish the stream only ever gets the
 			// seed GET and never updates.
 			pipe.Publish(shared.TraLiveboardKey(a), string(pbs))
+			trains += len(b)
 		}
-		_ = pipe.Exec()
+		if pipErr := pipe.Exec(); pipErr != nil {
+			log.Infof("[TRA_ETA] action=tra_eta event=liveboard_redis_error error=%v", pipErr)
+			return
+		}
+		// station_count=0 is the signature of a decode that silently dropped every
+		// item (decodeItems skips a bad item rather than failing the batch), so it
+		// is logged rather than passed over in silence.
+		log.Infof("[TRA_ETA] action=tra_eta event=liveboard_redis_success station_count=%d train_count=%d", len(res), trains)
 	}()
 	log.Infof("[TRA_ETA] action=tra_eta event=complete")
 }
