@@ -15,11 +15,16 @@ import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/bus_route_detail.dart';
 import 'package:wheres_the_car/data/models/eta_format.dart';
+import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/data/models/timeline_stop.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
 import 'package:wheres_the_car/features/bus/widgets/bus_timeline_stops.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 import 'package:wheres_the_car/shared/map/bus_sprite.dart';
 import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
@@ -101,7 +106,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         '${route.subRouteUid}:${s.direction}:${stops.length}:'
         '${stops.map((st) => _markerEta(_etaFor(s, st))).join(',')}:'
         '${vehicles.map(
-          (v) => '${v.plate}@${v.lat},${v.lon},${v.azimuth}',
+          (v) =>
+              '${v.plate}@${v.lat},${v.lon},${v.azimuth},'
+              '${_bubbleInfoFor(s, stops, v.plate)}',
         ).join(';')}';
     if (sig == _mapSig) return;
     _mapSig = sig;
@@ -164,27 +171,62 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       markers.add(marker);
     }
 
+    final isLight = cs.brightness == Brightness.light;
     for (final v in vehicles) {
       final id = 'bus:${v.plate}';
       final key = '${v.lat},${v.lon},${v.azimuth}';
       final cached = _markerCache[id];
       if (cached != null && cached.key == key) {
         markers.add(cached.marker);
+      } else {
+        final icon = await MapMarkers.busMarker(
+          busSpriteAsset(v.azimuth.toDouble()),
+        );
+        final marker = Marker(
+          markerId: MarkerId(id),
+          position: LatLng(v.lat, v.lon),
+          icon: icon,
+          anchor: const Offset(0.5, 0.5),
+          zIndexInt: 1,
+        );
+        _markerCache[id] = (key: key, marker: marker);
+        markers.add(marker);
+      }
+
+      // Always-on info bubble above the sprite: plate + next stop + countdown,
+      // replacing the tap-only default InfoWindow.
+      final info = _bubbleInfoFor(s, stops, v.plate);
+      final bubbleId = 'bubble:${v.plate}';
+      final bubbleKey = '${v.lat},${v.lon}:${info.stopName}:${info.etaText}';
+      final cachedBubble = _markerCache[bubbleId];
+      if (cachedBubble != null && cachedBubble.key == bubbleKey) {
+        markers.add(cachedBubble.marker);
         continue;
       }
-      final icon = await MapMarkers.busMarker(
-        busSpriteAsset(v.azimuth.toDouble()),
+      final etaColor = switch (info.state) {
+        TimelineStopState.arriving =>
+          isLight ? AppTheme.statusArrivingText : AppTheme.statusArriving,
+        TimelineStopState.approaching =>
+          isLight ? AppTheme.etaApproaching : AppTheme.statusApproach,
+        TimelineStopState.none => cs.onSurface,
+      };
+      final bubbleIcon = await MapMarkers.busBubble(
+        plate: v.plate,
+        fill: isLight ? Colors.white : cs.surfaceContainerHigh,
+        ink: cs.onSurface,
+        inkSecondary: cs.onSurfaceVariant,
+        stopName: info.stopName,
+        etaText: info.etaText,
+        etaColor: etaColor,
       );
-      final marker = Marker(
-        markerId: MarkerId(id),
+      final bubbleMarker = Marker(
+        markerId: MarkerId(bubbleId),
         position: LatLng(v.lat, v.lon),
-        icon: icon,
-        anchor: const Offset(0.5, 0.5),
-        zIndexInt: 1,
-        infoWindow: InfoWindow(title: v.plate),
+        icon: bubbleIcon,
+        zIndexInt: 2,
       );
-      _markerCache[id] = (key: key, marker: marker);
-      markers.add(marker);
+      _markerCache[bubbleId] = (key: bubbleKey, marker: bubbleMarker);
+      markers.add(bubbleMarker);
     }
 
     if (!mounted) return;

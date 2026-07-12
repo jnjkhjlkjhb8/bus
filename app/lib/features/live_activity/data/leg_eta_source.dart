@@ -25,6 +25,29 @@ Stream<Duration?> defaultLegEtaStream(JourneyLeg leg) {
           return null;
         });
   }
+  // Synthetic identities from the in-app 追蹤 toggle (bus route screen) carry
+  // the subroute uid in routeKey and the boarding stop uid in
+  // departureStopKey; live ETA comes from the same stream the route screen
+  // renders. stopStatus semantics follow eta_format.dart: only a live bus at
+  // zero reads as arriving, positive seconds read as a countdown, everything
+  // else is "no estimate".
+  if (leg.kind == JourneyLegKind.bus &&
+      leg.identity.routeKey.isNotEmpty &&
+      stopKey.isNotEmpty) {
+    return BusRepository.instance.routeEta(leg.identity.routeKey).map((etas) {
+      for (final e in etas) {
+        if (e.stopUid != stopKey) continue;
+        if (leg.identity.direction.isNotEmpty &&
+            '${e.direction}' != leg.identity.direction) {
+          continue;
+        }
+        if (e.stopStatus == 0 && e.estimateSeconds == 0) return Duration.zero;
+        if (e.estimateSeconds > 0) return Duration(seconds: e.estimateSeconds);
+        return null;
+      }
+      return null;
+    });
+  }
   return scheduledCountdown(leg.scheduledDeparture);
 }
 

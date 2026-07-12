@@ -15,6 +15,7 @@ class JourneySessionBloc
     LiveActivityChannel? channel,
     Stream<Position> Function()? positions,
     this.sessionTimeout = const Duration(hours: 8),
+    this.trackOnlyLinger = const Duration(minutes: 2),
   }) : _etaStream = etaStream,
        _channel = channel,
        _positions = positions,
@@ -34,9 +35,15 @@ class JourneySessionBloc
   /// ActivityKit hard-caps activities at 8h; the session ends itself first.
   final Duration sessionTimeout;
 
+  /// How long a trackOnly session keeps showing 進站中 after arrival before
+  /// ending itself, when no follow-up ETA frame reveals the bus has left.
+  final Duration trackOnlyLinger;
+
   StreamSubscription<Duration?>? _etaSub;
   StreamSubscription<Position>? _posSub;
   Timer? _timeout;
+  Timer? _linger;
+  bool _trackedArrived = false;
 
   Future<void> _onStarted(
     JourneyStarted event,
@@ -45,15 +52,21 @@ class JourneySessionBloc
     if (event.legs.isEmpty) return;
     _timeout?.cancel();
     _timeout = Timer(sessionTimeout, () => add(const JourneyCancelled()));
+    _linger?.cancel();
+    _trackedArrived = false;
     emit(
-      JourneySessionState(phase: JourneyPhase.waiting, legs: event.legs),
+      JourneySessionState(
+        phase: JourneyPhase.waiting,
+        legs: event.legs,
+        trackOnly: event.trackOnly,
+      ),
     );
     _subscribeEta(event.legs.first);
     await _channel?.start(_content(state));
   }
 
   void _onBoarded(BoardConfirmed _, Emitter<JourneySessionState> emit) {
-    if (state.phase != JourneyPhase.waiting) return;
+    if (state.phase != JourneyPhase.waiting || state.trackOnly) return;
     unawaited(_etaSub?.cancel());
     emit(
       state.copyWith(
@@ -95,9 +108,27 @@ class JourneySessionBloc
 
   void _onEta(EtaTicked event, Emitter<JourneySessionState> emit) {
     if (state.phase != JourneyPhase.waiting) return;
-    final suggest = event.eta != null && event.eta! <= Duration.zero;
-    emit(state.copyWith(eta: event.eta, suggestBoarding: suggest));
+    final arrived = event.eta != null && event.eta! <= Duration.zero;
+    // trackOnly never rides, so 進站中 is the terminal display, not a
+    // boarding prompt.
+    emit(
+      state.copyWith(
+        eta: event.eta,
+        suggestBoarding: arrived && !state.trackOnly,
+      ),
+    );
     unawaited(_channel?.update(_content(state)));
+    if (!state.trackOnly) return;
+    if (arrived && !_trackedArrived) {
+      _trackedArrived = true;
+      _linger = Timer(trackOnlyLinger, () => add(const JourneyCancelled()));
+    } else if (_trackedArrived &&
+        event.eta != null &&
+        event.eta! > const Duration(minutes: 1)) {
+      // The ETA jumped back up after arrival: the tracked bus has left and
+      // the stream now counts down the following one — end the session.
+      add(const JourneyCancelled());
+    }
   }
 
   void _onProgress(ProgressTicked event, Emitter<JourneySessionState> emit) {
@@ -111,6 +142,7 @@ class JourneySessionBloc
     unawaited(_etaSub?.cancel());
     unawaited(_posSub?.cancel());
     _timeout?.cancel();
+    _linger?.cancel();
     emit(state.copyWith(phase: JourneyPhase.done, suggestBoarding: false));
     unawaited(_channel?.stop());
   }
@@ -192,6 +224,7 @@ class JourneySessionBloc
     unawaited(_etaSub?.cancel());
     unawaited(_posSub?.cancel());
     _timeout?.cancel();
+    _linger?.cancel();
     return super.close();
   }
 }

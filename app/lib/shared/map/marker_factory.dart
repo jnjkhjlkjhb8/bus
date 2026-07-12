@@ -272,6 +272,130 @@ class MapMarkers {
     });
   }
 
+  /// Live-vehicle info bubble: plate on top, next stop + countdown below,
+  /// with a tail pointing down at the bus sprite. Rendered as its own marker
+  /// anchored (0.5, 1.0) at the vehicle position; [clearance] is transparent
+  /// space below the tail so the bubble floats above the sprite. When
+  /// [stopName]/[etaText] are absent the bubble degrades to a plate-only chip.
+  static Future<BitmapDescriptor> busBubble({
+    required String plate,
+    required Color fill,
+    required Color ink,
+    required Color inkSecondary,
+    String? stopName,
+    String? etaText,
+    Color? etaColor,
+    double clearance = 26,
+  }) {
+    final key =
+        'bubble:$plate:$stopName:$etaText:${fill.toARGB32()}:'
+        '${ink.toARGB32()}:${(etaColor ?? ink).toARGB32()}';
+    return _memo(key, () async {
+      final hasDetail = stopName != null && etaText != null;
+      final platePainter = TextPainter(
+        text: TextSpan(
+          text: plate,
+          style: TextStyle(
+            color: hasDetail ? inkSecondary : ink,
+            fontSize: (hasDetail ? 10.5 : 12.0) * _dpr,
+            fontWeight: FontWeight.w600,
+            fontFamily: 'IBMPlexMono',
+            letterSpacing: 0.3 * _dpr,
+            height: 1.2,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      TextPainter? destPainter;
+      if (hasDetail) {
+        destPainter = TextPainter(
+          text: TextSpan(
+            children: [
+              TextSpan(
+                text: stopName,
+                style: TextStyle(
+                  color: ink,
+                  fontSize: 13.5 * _dpr,
+                  fontWeight: FontWeight.w600,
+                  fontFamily: 'IBMPlexSans',
+                  height: 1.2,
+                ),
+              ),
+              TextSpan(text: ' ', style: TextStyle(fontSize: 5.0 * _dpr)),
+              TextSpan(
+                text: etaText,
+                style: TextStyle(
+                  color: etaColor ?? ink,
+                  fontSize: 13.5 * _dpr,
+                  fontWeight: FontWeight.w700,
+                  fontFamily: 'IBMPlexMono',
+                  fontFeatures: const [ui.FontFeature.tabularFigures()],
+                  height: 1.2,
+                ),
+              ),
+            ],
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+      }
+
+      final padH = 11.0 * _dpr;
+      final padTop = 6.0 * _dpr;
+      final padBottom = 7.0 * _dpr;
+      final lineGap = 1.0 * _dpr;
+      final tailW = 12.0 * _dpr;
+      final tailH = 6.0 * _dpr;
+      final margin = 12.0 * _dpr;
+
+      final contentW = [
+        platePainter.width,
+        destPainter?.width ?? 0.0,
+      ].reduce((a, b) => a > b ? a : b);
+      final bubbleW = contentW + padH * 2;
+      final bubbleH =
+          padTop +
+          platePainter.height +
+          (destPainter == null ? 0 : lineGap + destPainter.height) +
+          padBottom;
+      final w = (bubbleW + margin * 2).ceil();
+      final h = (margin + bubbleH + tailH + clearance * _dpr).ceil();
+      final cx = w / 2;
+
+      final image = await _recordSized(w, h, (canvas) {
+        final rect = RRect.fromRectAndRadius(
+          Rect.fromLTWH(margin, margin, bubbleW, bubbleH),
+          Radius.circular(10 * _dpr),
+        );
+        final body = Path()
+          ..addRRect(rect)
+          ..moveTo(cx - tailW / 2, margin + bubbleH)
+          ..lineTo(cx + tailW / 2, margin + bubbleH)
+          ..lineTo(cx, margin + bubbleH + tailH)
+          ..close();
+        canvas
+          ..drawPath(
+            body.shift(Offset(0, 2 * _dpr)),
+            Paint()
+              ..color = const Color(0x29000000)
+              ..maskFilter = MaskFilter.blur(BlurStyle.normal, 3 * _dpr),
+          )
+          ..drawPath(body, Paint()..color = fill);
+        platePainter.paint(
+          canvas,
+          Offset(cx - platePainter.width / 2, margin + padTop),
+        );
+        destPainter?.paint(
+          canvas,
+          Offset(
+            cx - destPainter.width / 2,
+            margin + padTop + platePainter.height + lineGap,
+          ),
+        );
+      });
+      return _toBitmap(image);
+    });
+  }
+
   static Future<BitmapDescriptor> _memo(
     String key,
     Future<BitmapDescriptor> Function() build,
@@ -284,11 +408,18 @@ class MapMarkers {
     return made;
   }
 
-  static Future<ui.Image> _record(int px, void Function(Canvas) draw) async {
+  static Future<ui.Image> _record(int px, void Function(Canvas) draw) =>
+      _recordSized(px, px, draw);
+
+  static Future<ui.Image> _recordSized(
+    int w,
+    int h,
+    void Function(Canvas) draw,
+  ) async {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     draw(canvas);
-    return recorder.endRecording().toImage(px, px);
+    return recorder.endRecording().toImage(w, h);
   }
 
   static Future<BitmapDescriptor> _toBitmap(ui.Image image) async {

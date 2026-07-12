@@ -78,7 +78,7 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 
 	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, taipei)
 	src := &fakeLiveSource{fixtures: map[string][]byte{
-		"bus_EstimatedTimeOfArrivalInterCity": []byte(`[{"PlateNumb":"KKA-1234","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":9,"EstimatedTime":120,"StopStatus":0,"SrcUpdateTime":"2026-07-10T09:00:00+08:00"}]`),
+		"bus_EstimatedTimeOfArrivalInterCity": []byte(`[{"PlateNumb":"KKA-1234","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":9,"EstimateTime":120,"StopStatus":0,"SrcUpdateTime":"2026-07-10T09:00:00+08:00"}]`),
 		"bus_RealTimeByFrequencyInterCity":    []byte(`[{"PlateNumb":"KKA-1234","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":9,"BusPosition":{"PositionLon":121.5,"PositionLat":25.05},"Azimuth":90,"Speed":30}]`),
 	}}
 	sink := &captureLiveSink{}

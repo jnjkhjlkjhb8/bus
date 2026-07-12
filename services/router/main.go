@@ -101,16 +101,6 @@ type ThsrServer struct {
 	live liveSource
 }
 
-// Tra_StationServer streams the live arrival board for a TRA station from Redis
-// Pub/Sub.
-type Tra_StationServer struct {
-	pb.UnimplementedTRAStationServiceServer
-	mu   sync.Mutex
-	db   *pgxpool.Pool
-	rc   *redis.Client
-	live liveSource
-}
-
 // Tra_TimetableServer serves TRA fares and timetables and streams system-wide
 // delays. Fare/timetable lookups are Redis-cached and, on a miss, read from the
 // loaded env schema; empty results return NotFound (no TDX fetch, ADR-0005).
@@ -261,7 +251,6 @@ func main() {
 	pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: newTTLCache(), live: live})
 	pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{db: db, rc: rc, live: live})
 	pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, rc: rc, live: live})
-	pb.RegisterTRAStationServiceServer(grpcServer, &Tra_StationServer{db: db, rc: rc, live: live})
 	pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc, live: live})
 	pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc, live: live})
 	pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, rc: rc, live: live})

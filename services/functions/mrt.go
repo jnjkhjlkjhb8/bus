@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"sync"
+	"time"
 
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 
@@ -193,14 +195,131 @@ func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, sink loadSink, sys
 	}, row)
 }
 
+// mrtServiceWindow is one first/last-train window from mrt_schedule, in minutes
+// since midnight; last exceeds 1440 when the last train runs past midnight.
+type mrtServiceWindow struct {
+	first, last int
+}
+
+// mrtWindowGraceMin pads each service window: a train can legitimately appear on
+// the live board a few minutes before the first departure and linger a few
+// minutes after the station's last-train time.
+const mrtWindowGraceMin = 10
+
+// mrtWindowCacheTTL bounds how long the in-memory schedule windows are reused
+// before re-reading mrt_schedule. The table only changes at the 03:30 daily
+// load, so an hourly reload tracks it without a loader-side invalidation hook.
+const mrtWindowCacheTTL = time.Hour
+
+var mrtWindowCache struct {
+	sync.Mutex
+	loaded time.Time
+	byKey  map[string][]mrtServiceWindow
+}
+
+func mrtWindowKey(system, stationID, lineID, destStationID string) string {
+	return system + "|" + stationID + "|" + lineID + "|" + destStationID
+}
+
+// parseHHMM parses "HH:MM" into minutes since midnight; ok is false for any
+// other shape (mrt_schedule stores times as text straight from TDX).
+func parseHHMM(s string) (int, bool) {
+	if len(s) != 5 || s[2] != ':' {
+		return 0, false
+	}
+	h := int(s[0]-'0')*10 + int(s[1]-'0')
+	m := int(s[3]-'0')*10 + int(s[4]-'0')
+	if s[0] < '0' || s[0] > '9' || s[1] < '0' || s[1] > '9' ||
+		s[3] < '0' || s[3] > '9' || s[4] < '0' || s[4] > '9' ||
+		h > 29 || m > 59 {
+		return 0, false
+	}
+	return h*60 + m, true
+}
+
+// mrtServiceWindows returns the schedule windows keyed by
+// system|station|line|destination, reloading from mrt_schedule at most once per
+// mrtWindowCacheTTL. Service-day masks are deliberately ignored: a row for any
+// day widens the window, so filtering only ever drops entries outside every
+// documented service window. Returns nil (callers fail open) on query error or
+// nil db.
+func mrtServiceWindows(ctx context.Context, db *pgxpool.Pool) map[string][]mrtServiceWindow {
+	if db == nil {
+		return nil
+	}
+	mrtWindowCache.Lock()
+	defer mrtWindowCache.Unlock()
+	if mrtWindowCache.byKey != nil && time.Since(mrtWindowCache.loaded) < mrtWindowCacheTTL {
+		return mrtWindowCache.byKey
+	}
+	rows, err := db.Query(ctx, `SELECT system, station_id, lineid, destinationstaionid, firsttraintime, lasttraintime FROM mrt_schedule`)
+	if err != nil {
+		log.Infof("[MRT_ETA] action=mrt_windows event=query_error error=%v", err)
+		return mrtWindowCache.byKey // stale beats none; nil on first failure
+	}
+	defer rows.Close()
+	byKey := map[string][]mrtServiceWindow{}
+	for rows.Next() {
+		var system, station, line, dest, ft, lt string
+		if err := rows.Scan(&system, &station, &line, &dest, &ft, &lt); err != nil {
+			continue
+		}
+		first, ok1 := parseHHMM(ft)
+		last, ok2 := parseHHMM(lt)
+		if !ok1 || !ok2 {
+			continue
+		}
+		if last <= first {
+			last += 24 * 60 // last train past midnight belongs to the same service day
+		}
+		k := mrtWindowKey(system, station, line, dest)
+		byKey[k] = append(byKey[k], mrtServiceWindow{first: first, last: last})
+	}
+	if err := rows.Err(); err != nil {
+		log.Infof("[MRT_ETA] action=mrt_windows event=scan_error error=%v", err)
+		return mrtWindowCache.byKey
+	}
+	mrtWindowCache.byKey = byKey
+	mrtWindowCache.loaded = time.Now()
+	log.Infof("[MRT_ETA] action=mrt_windows event=reloaded keys=%d", len(byKey))
+	return byKey
+}
+
+// mrtInService reports whether a live-board entry falls inside any schedule
+// window for its key (with grace padding). Entries with no schedule rows pass:
+// TDX emits stale zero-estimate rows after close, so the filter only drops what
+// the static timetable positively places outside service hours.
+func mrtInService(windows map[string][]mrtServiceWindow, key string, now time.Time) bool {
+	ws, ok := windows[key]
+	if !ok || len(ws) == 0 {
+		return true
+	}
+	minutes := now.Hour()*60 + now.Minute()
+	for _, w := range ws {
+		lo, hi := w.first-mrtWindowGraceMin, w.last+mrtWindowGraceMin
+		// Check the same clock time on both the current and previous service
+		// day, so 00:30 matches a 06:00–24:40 window via +24h.
+		if (minutes >= lo && minutes <= hi) || (minutes+24*60 >= lo && minutes+24*60 <= hi) {
+			return true
+		}
+	}
+	return false
+}
+
 // mrtEta refreshes live metro arrivals into Redis on the 10s cron. Per system it
 // pipelines a protobuf MrtLive per (station, line) under mrt_live:... with a
 // 2-minute TTL and publishes per-station updates for live streaming. NTMC is
 // excluded (no live board). Per-system failures are logged and skipped.
-func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink) {
+// Entries outside their static first/last-train window are dropped: after close
+// TDX keeps returning rows with EstimateTime 0 and ServiceStatus 0, which would
+// otherwise surface as "approaching" in the app at night.
+func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) {
 	log.Infof("[MRT_ETA] action=mrt_eta event=start")
+	windows := mrtServiceWindows(ctx, db)
+	now := time.Now().In(taipei)
 	var systems = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
 	for _, system := range systems {
+		filtered := 0
 		log.Infof("[MRT_ETA] action=mrt_eta system=%s event=system_start", system)
 		dec, comp, flipopen, err := fetch(ctx, fmt.Sprintf("/v2/Rail/Metro/LiveBoard/%s", system), "mrt_LiveBoard"+system)
 		if !comp {
@@ -216,6 +335,10 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 			defer flipopen()
 			pipe := sink.pipeline()
 			if err := publishProto(dec, pipe, mrtLiveTTL, func(temp mrtLive) (string, string, proto.Message, bool) {
+				if !mrtInService(windows, mrtWindowKey(system, temp.StationID, temp.LineID, temp.DestinationStaionID), now) {
+					filtered++
+					return "", "", nil, false
+				}
 				raw := &models.MrtLive{
 					LineID:                 temp.LineID,
 					StationID:              temp.StationID,
@@ -234,6 +357,9 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 			}
 			_ = pipe.Exec()
 		}()
+		if filtered > 0 {
+			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=out_of_service_filtered count=%d", system, filtered)
+		}
 	}
 	log.Infof("[MRT_ETA] action=mrt_eta event=complete")
 }

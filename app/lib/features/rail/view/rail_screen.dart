@@ -11,29 +11,27 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
+import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_bloc.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
 import 'package:wheres_the_car/features/rail/rail_navigation_request.dart';
 import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';
+import 'package:wheres_the_car/features/rail/widgets/rail_query_sheet.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
-import 'package:wheres_the_car/shared/widgets/app_date_picker.dart';
-import 'package:wheres_the_car/shared/widgets/app_sliding_segment.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
-import 'package:wheres_the_car/shared/widgets/app_time_picker.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
-import 'package:wheres_the_car/shared/widgets/thsr_station_picker.dart';
-import 'package:wheres_the_car/shared/widgets/tra_station_picker.dart';
 import 'package:wheres_the_car/shared/widgets/train_type_chip.dart';
 
-part '../widgets/rail_query_sheet_widgets.dart';
 part '../widgets/rail_shimmer_widgets.dart';
 part '../widgets/rail_train_card_widgets.dart';
-
-const List<FontFeature> _tnum = AppTextStyles.tabularFigures;
 
 final _dateFormat = DateFormat('yyyy-MM-dd');
 
@@ -85,6 +83,9 @@ class RailScreen extends StatefulWidget {
 class _RailScreenState extends State<RailScreen> {
   final _bloc = RailBloc();
   RailSystem _system = RailSystem.tra;
+  // Header + retry state, mirrored from the most recent O/D submission. The
+  // query form itself lives in [RailQuerySheetContent]; these fields only feed
+  // the top pill and the pull-to-refresh / error retry re-dispatch.
   String _originName = '台北';
   String _originId = '';
   String _destName = '花蓮';
@@ -93,6 +94,7 @@ class _RailScreenState extends State<RailScreen> {
   DateTime _selectedDate = DateTime.now();
   bool _initialized = false;
   bool _hasSubmittedQuery = false;
+  RailQueryPreset? _preset;
 
   @override
   void initState() {
@@ -109,20 +111,44 @@ class _RailScreenState extends State<RailScreen> {
     _initialized = true;
 
     final request = RailNavigationRequest.consume();
-    if (request != null) {
-      _system = request.system;
-      _originName = request.stationName;
-      // The near station id is already a valid tra/thsr station_id, so carry it
-      // directly rather than re-resolving by name.
-      _originId = request.stationId;
-      _destName = _defaultDest(request.system);
-      // If the preset station is itself the default destination, fall back to
-      // the default origin so the initial query is a real O/D pair.
-      if (_originName == _destName) _destName = _defaultOrigin(request.system);
-      _destId = '';
+    if (request == null) return;
+
+    _system = request.system;
+    _originName = request.originName;
+    // The near station id is already a valid tra/thsr station_id, so carry it
+    // directly rather than re-resolving by name.
+    _originId = request.originId ?? '';
+    _destName = request.destName ?? _defaultDest(request.system);
+    // If the preset station is itself the default destination, fall back to the
+    // default origin so the O/D pair is real.
+    if (_originName == _destName) _destName = _defaultOrigin(request.system);
+    _destId = request.destId ?? '';
+    _selectedDate = request.date;
+    // Seed the form with the full effective query (not just the origin) so the
+    // sheet and the auto-submitted results can't disagree.
+    _preset = RailQueryPreset(
+      system: request.system,
+      originName: _originName,
+      originId: request.originId,
+      destName: _destName,
+      destId: request.destId,
+      date: request.date,
+    );
+
+    if (request.autoSubmit) {
+      // A full O/D hand-off (from the home sheet): run it immediately and drop
+      // the query sheet out of the way so results are the first thing shown.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() => _hasSubmittedQuery = true);
+        _dispatchSearch();
+        unawaited(
+          _sheetController.animateTo(
+            const SheetOffset.proportionalToViewport(0.15),
+          ),
+        );
+      });
     }
-    // No auto-query: the default O/D is just a placeholder for the picker, not
-    // a real request. A timetable is only fetched when the user taps 查詢.
   }
 
   String _defaultOrigin(RailSystem system) =>
@@ -130,10 +156,6 @@ class _RailScreenState extends State<RailScreen> {
 
   String _defaultDest(RailSystem system) =>
       system == RailSystem.thsr ? '左營' : '花蓮';
-
-  Future<String?> _showStationPicker() => _system == RailSystem.thsr
-      ? showTHSRStationPicker(context)
-      : showTRAStationPicker(context);
 
   // Derived card rows, cached per loaded-state instance so local setState
   // (date picks, station picks, sheet drags) doesn't re-parse every train's
@@ -177,32 +199,50 @@ class _RailScreenState extends State<RailScreen> {
     super.dispose();
   }
 
-  void _switchSystem(RailSystem system) {
-    if (system == _system) return;
-    unawaited(HapticService.instance.lightTap());
+  void _onSystemChanged(RailSystem system) {
     setState(() {
       _system = system;
-      _originName = _defaultOrigin(system);
-      _destName = _defaultDest(system);
-      _originId = '';
-      _destId = '';
       _hasSubmittedQuery = false;
     });
     // Clear stale results back to the prompt (no query until user searches).
     _bloc.add(RailSystemChanged(system));
   }
 
-  void _swap() {
-    unawaited(HapticService.instance.lightTap());
-    setState(() {
-      final tmpName = _originName;
-      final tmpId = _originId;
-      _originName = _destName;
-      _originId = _destId;
-      _destName = tmpName;
-      _destId = tmpId;
-    });
-    if (_hasSubmittedQuery) _dispatchSearch();
+  void _onSubmit(RailQuerySubmission submission) {
+    switch (submission) {
+      case RailOdQuerySubmission():
+        setState(() {
+          _system = submission.system;
+          _originName = submission.originName;
+          _originId = submission.originId ?? '';
+          _destName = submission.destName;
+          _destId = submission.destId ?? '';
+          _selectedDate = submission.date;
+          _hasSubmittedQuery = true;
+        });
+        _dispatchSearch();
+        // Collapse the inline sheet to reveal results. Never pop the navigator
+        // here — the sheet is part of this screen's Stack, so popping unwinds
+        // back to home.
+        unawaited(
+          _sheetController.animateTo(
+            const SheetOffset.proportionalToViewport(0.15),
+          ),
+        );
+      case RailTrainQuerySubmission():
+        unawaited(
+          Navigator.push(
+            context,
+            MaterialPageRoute<void>(
+              builder: (_) => RailTrainScreen(
+                type: submission.system == RailSystem.thsr ? '高鐵' : '台鐵',
+                trainNo: submission.trainNo,
+                date: _dateFormat.format(submission.date),
+              ),
+            ),
+          ),
+        );
+    }
   }
 
   void _dispatchSearch() {
@@ -221,28 +261,6 @@ class _RailScreenState extends State<RailScreen> {
         date: _dateFormat.format(_selectedDate),
       ),
     );
-  }
-
-  Future<void> _pickOrigin() async {
-    unawaited(HapticService.instance.lightTap());
-    final name = await _showStationPicker();
-    if (name != null && mounted) {
-      setState(() {
-        _originName = name;
-        _originId = '';
-      });
-    }
-  }
-
-  Future<void> _pickDest() async {
-    unawaited(HapticService.instance.lightTap());
-    final name = await _showStationPicker();
-    if (name != null && mounted) {
-      setState(() {
-        _destName = name;
-        _destId = '';
-      });
-    }
   }
 
   @override
@@ -352,6 +370,7 @@ class _RailScreenState extends State<RailScreen> {
                                 origin: state.originName,
                                 destination: state.destName,
                                 date: state.date,
+                                isThsr: state.system == RailSystem.thsr,
                               ),
                             );
                           },
@@ -413,7 +432,9 @@ class _RailScreenState extends State<RailScreen> {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Text(
-                              '$_originName ➔ $_destName',
+                              _hasSubmittedQuery
+                                  ? '$_originName ➔ $_destName'
+                                  : '列車時刻查詢',
                               style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w700,
@@ -471,29 +492,10 @@ class _RailScreenState extends State<RailScreen> {
                         top: Radius.circular(AppTheme.radiusBottomSheet),
                       ),
                     ),
-                    child: _QuerySheetContent(
-                      system: _system,
-                      origin: _originName,
-                      destination: _destName,
-                      selectedDate: _selectedDate,
-                      onSystemChanged: _switchSystem,
-                      onSwap: _swap,
-                      onDateChanged: (date) {
-                        setState(() => _selectedDate = date);
-                      },
-                      onOriginTap: _pickOrigin,
-                      onDestTap: _pickDest,
-                      onSearch: () {
-                        _dispatchSearch();
-                        // Collapse the inline sheet to reveal results. Never
-                        // pop the navigator here — the sheet is part of this
-                        // screen's Stack, so popping unwinds back to home.
-                        unawaited(
-                          _sheetController.animateTo(
-                            const SheetOffset.proportionalToViewport(0.15),
-                          ),
-                        );
-                      },
+                    child: RailQuerySheetContent(
+                      preset: _preset,
+                      onSubmit: _onSubmit,
+                      onSystemChanged: _onSystemChanged,
                     ),
                   ),
                 ),

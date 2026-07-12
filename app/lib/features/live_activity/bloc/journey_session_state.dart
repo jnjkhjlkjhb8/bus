@@ -11,6 +11,7 @@ class JourneySessionState extends Equatable {
     this.eta,
     this.nextStopIndex = 0,
     this.suggestBoarding = false,
+    this.trackOnly = false,
   });
 
   final JourneyPhase phase;
@@ -19,6 +20,9 @@ class JourneySessionState extends Equatable {
   final Duration? eta;
   final int nextStopIndex;
   final bool suggestBoarding;
+
+  /// Standalone arrival-countdown session; see [JourneyStarted.trackOnly].
+  final bool trackOnly;
 
   JourneyLeg? get currentLeg =>
       legIndex < legs.length ? legs[legIndex] : null;
@@ -33,6 +37,7 @@ class JourneySessionState extends Equatable {
     bool clearEta = false,
     int? nextStopIndex,
     bool? suggestBoarding,
+    bool? trackOnly,
   }) {
     return JourneySessionState(
       phase: phase ?? this.phase,
@@ -41,10 +46,11 @@ class JourneySessionState extends Equatable {
       eta: clearEta ? null : eta ?? this.eta,
       nextStopIndex: nextStopIndex ?? this.nextStopIndex,
       suggestBoarding: suggestBoarding ?? this.suggestBoarding,
+      trackOnly: trackOnly ?? this.trackOnly,
     );
   }
 
   @override
   List<Object?> get props =>
-      [phase, legs, legIndex, eta, nextStopIndex, suggestBoarding];
+      [phase, legs, legIndex, eta, nextStopIndex, suggestBoarding, trackOnly];
 }

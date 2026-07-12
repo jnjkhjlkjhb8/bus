@@ -78,11 +78,6 @@ func TraDelayTrainChannel(trainNo string) string {
 	return "tra:delay:" + trainNo
 }
 
-// TraLiveboardKey returns the key holding a TRA station's live board.
-func TraLiveboardKey(stationID string) string {
-	return "tra:liveboard:" + stationID
-}
-
 // BikeAvailabilityKey returns the key holding (and channel publishing) a bike
 // station's live availability.
 func BikeAvailabilityKey(stationUID string) string {

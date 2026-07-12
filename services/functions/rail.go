@@ -67,34 +67,6 @@ type traDelay struct {
 	SrcUpdateTime string `json:"SrcUpdateTime"`
 }
 
-// traLiveboard decodes a TDX TRA/LiveBoard element: a train's scheduled times
-// and live delay at a station, merged with LiveTrainDelay data before caching.
-type traLiveboard struct {
-	StationID   string `json:"StationID"`
-	StationName struct {
-		ZhTw string `json:"Zh_tw"`
-	} `json:"StationName"`
-	TrainNo string `json:"TrainNo"`
-	// TDX emits Direction as a number (0 順行 / 1 逆行), not a bool. Decoding it
-	// into a bool fails per item, and decodeItems skips a failed item silently, so
-	// a bool here drops every board entry and caches nothing.
-	Direction     uint8  `json:"Direction"`
-	TrainTypeID   string `json:"TrainTypeID"`
-	TrainTypeCode string `json:"TrainTypeCode"`
-	TrainTypeName struct {
-		ZhTw string `json:"Zh_tw"`
-	} `json:"TrainTypeName"`
-	TripLine          uint8  `json:"TripLine"`
-	EndingStationID   string `json:"EndingStationID"`
-	EndingStationName struct {
-		ZhTw string `json:"Zh_tw"`
-	} `json:"EndingStationName"`
-	ScheduledArrivalTime   string `json:"ScheduledArrivalTime"`
-	ScheduledDepartureTime string `json:"ScheduledDepartureTime"`
-	DelayTime              uint16 `json:"DelayTime"`
-	SrcUpdateTime          string `json:"SrcUpdateTime"`
-}
-
 // raw_tra_timetable decodes a TDX TRA/DailyTimetable element: one train's info
 // and its ordered stop times for a given service date.
 type raw_tra_timetable struct {
@@ -566,11 +538,9 @@ func loadThsrFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ strin
 	}, row)
 }
 
-// traEta refreshes TRA realtime data into Redis on the 2-minute cron. It caches
-// per-train delays (hash tra:delay plus a published tra:delay:all snapshot), then
-// builds per-station live boards, merging in those delays, and caches each under
-// tra:liveboard:<stationID>. All cached values carry a 3-minute TTL so stale data
-// expires. A missing delay feed is logged but does not block the live board.
+// traEta refreshes TRA realtime data into Redis on the 2-minute cron: per-train
+// delays as hash tra:delay plus a published tra:delay:all snapshot, all with a
+// 3-minute TTL so stale data expires.
 func traEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 	log.Infof("[TRA_ETA] action=tra_eta event=start")
 	dec, comp, flipopen, err := fetch(ctx, "/v2/Rail/TRA/LiveTrainDelay", "tra_delay")
@@ -604,75 +574,5 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) {
 		// On a 304, boundFetch has already re-armed the delay keys' TTL.
 		log.Infof("[TRA_ETA] action=tra_eta event=skip_delay reason=api_error")
 	}
-	dec, comp, flipopen, err = fetch(ctx, "/v2/Rail/TRA/LiveBoard", "tra_liveboard")
-	func() {
-		if flipopen != nil {
-			defer flipopen()
-		}
-		if err != nil {
-			log.Infof("[TRA_ETA] action=tra_eta event=skip_liveboard reason=api_error error=%v", err)
-			return
-		}
-		if !comp {
-			// On a 304, boundFetch has already re-armed the liveboard keys' TTL.
-			log.Infof("[TRA_ETA] action=tra_eta event=skip_liveboard reason=not_modified")
-			return
-		}
-		// The delay hash is read back through the sink to merge live delays into
-		// the board; a missing hash yields no delays and the board still builds.
-		delays, _ := sink.getHash(shared.TraDelayHashKey)
-		res := make(map[string][]*models.Tra_LiveBoard)
-		if decErr := decodeItems(dec, func(temp traLiveboard) {
-			if delay, ok := delays[temp.TrainNo]; ok {
-				var inter uint16
-				if _, err := fmt.Sscanf(delay, "%d", &inter); err == nil {
-					temp.DelayTime = inter
-				}
-			}
-			pb := &models.Tra_LiveBoard{
-				TrainNo:                temp.TrainNo,
-				Direction:              temp.Direction != 0,
-				TrainTypeId:            temp.TrainTypeID,
-				TrainTypeCode:          temp.TrainTypeCode,
-				TrainTypeName:          temp.TrainTypeName.ZhTw,
-				EndingStationId:        temp.EndingStationID,
-				EndingStationName:      temp.EndingStationName.ZhTw,
-				ScheduledArrivalTime:   temp.ScheduledArrivalTime,
-				ScheduledDepartureTime: temp.ScheduledDepartureTime,
-				Delay:                  int32(temp.DelayTime),
-				TripLine:               int32(temp.TripLine),
-			}
-			res[temp.StationID] = append(res[temp.StationID], pb)
-		}); decErr != nil {
-			log.Infof("[TRA_ETA] action=tra_eta event=liveboard_decode_error error=%v", decErr)
-			return
-		}
-		pipe := sink.pipeline()
-		trains := 0
-		for a, b := range res {
-			pb := &models.Tra_LiveBoards{
-				StationId: a,
-				Items:     b,
-			}
-			pbs, err := proto.Marshal(pb)
-			if err != nil {
-				continue
-			}
-			pipe.Set(shared.TraLiveboardKey(a), pbs, traLiveTTL)
-			// Same key doubles as the channel the router's LiveBoard stream
-			// subscribes to; without this publish the stream only ever gets the
-			// seed GET and never updates.
-			pipe.Publish(shared.TraLiveboardKey(a), string(pbs))
-			trains += len(b)
-		}
-		if pipErr := pipe.Exec(); pipErr != nil {
-			log.Infof("[TRA_ETA] action=tra_eta event=liveboard_redis_error error=%v", pipErr)
-			return
-		}
-		// station_count=0 is the signature of a decode that silently dropped every
-		// item (decodeItems skips a bad item rather than failing the batch), so it
-		// is logged rather than passed over in silence.
-		log.Infof("[TRA_ETA] action=tra_eta event=liveboard_redis_success station_count=%d train_count=%d", len(res), trains)
-	}()
 	log.Infof("[TRA_ETA] action=tra_eta event=complete")
 }

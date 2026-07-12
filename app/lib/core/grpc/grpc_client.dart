@@ -62,10 +62,6 @@ class GrpcClient {
     _channel,
     interceptors: _interceptors,
   );
-  late final TRA_station_serviceClient traStation = TRA_station_serviceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
   late final TRA_timetable_serviceClient traTimetable =
       TRA_timetable_serviceClient(_channel, interceptors: _interceptors);
   late final TRA_Detain_serviceClient traDetain = TRA_Detain_serviceClient(

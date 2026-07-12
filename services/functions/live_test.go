@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,15 +217,13 @@ func TestMrtSpecRunWritesArrivals(t *testing.T) {
 	}
 }
 
-func TestTraSpecMergesDelayIntoLiveboard(t *testing.T) {
-	// The tra spec must cache the delay hash + all-snapshot from the delay feed,
-	// then build per-station live boards from the liveboard feed. The delay hash is
-	// read back through the sink seam (getHash) for the merge; seeding the fake
-	// sink's hash exercises the merge-when-present branch that needed a live Redis
-	// before the read moved behind the seam.
+func TestTraSpecCachesDelays(t *testing.T) {
+	// The tra spec caches the delay hash + all-snapshot from the delay feed.
+	// Per-station live boards are no longer built here (the liveboard write path
+	// was removed with the TRA read-path migration), so no tra:liveboard key may
+	// be written.
 	src := &fakeLiveSource{fixtures: map[string][]byte{
-		"tra_delay":     readFixture(t, "tdx_tra_delay.json"),
-		"tra_liveboard": readFixture(t, "tdx_tra_liveboard.json"),
+		"tra_delay": readFixture(t, "tdx_tra_delay.json"),
 	}}
 	sink := &captureLiveSink{
 		hashes: map[string]map[string]string{
@@ -243,67 +242,26 @@ func TestTraSpecMergesDelayIntoLiveboard(t *testing.T) {
 	if hset == nil || hset.value != "5" {
 		t.Fatalf("expected HSET %s 1234 = 5; got %+v", shared.TraDelayHashKey, sink.hsets)
 	}
-	// All-delay snapshot cached with the 3m TTL.
+	// All-delay snapshot cached with the 3m TTL and published for streaming.
 	if sw := sink.setFor(shared.TraDelayAllKey); sw == nil || sw.ttl != traLiveTTL {
 		t.Fatalf("expected SET %s ttl=%v; got %+v", shared.TraDelayAllKey, traLiveTTL, sw)
 	}
-	// Liveboard for station 1000 carries train 1234, built and cached with 3m TTL.
-	sw := sink.setFor(shared.TraLiveboardKey("1000"))
-	if sw == nil {
-		t.Fatalf("expected liveboard SET for station 1000; got %v", setKeys(sink))
-	}
-	if sw.ttl != traLiveTTL {
-		t.Fatalf("liveboard ttl = %v, want %v", sw.ttl, traLiveTTL)
-	}
-	var board models.Tra_LiveBoards
-	if err := proto.Unmarshal(sw.value, &board); err != nil {
-		t.Fatalf("unmarshal Tra_LiveBoards: %v", err)
-	}
-	if len(board.Items) != 1 || board.Items[0].TrainNo != "1234" {
-		t.Fatalf("liveboard items = %+v", board.Items)
-	}
-	if board.Items[0].EndingStationName != "屏東" || board.Items[0].TrainTypeName != "自強" {
-		t.Fatalf("liveboard payload = %+v", board.Items[0])
-	}
-	// The seeded delay hash (1234→9) is merged into the board through the sink
-	// read seam, overriding the liveboard feed's own DelayTime for that train.
-	if board.Items[0].Delay != 9 {
-		t.Fatalf("merged delay = %d, want 9 (from the sink-read delay hash)", board.Items[0].Delay)
-	}
-	// TDX sends Direction as a number (0/1), which the board carries as a bool.
-	// Both values are pinned because a struct field typed bool decodes neither and
-	// makes decodeItems drop every entry silently — the board then caches nothing.
-	if board.Items[0].Direction {
-		t.Fatalf("station 1000 direction = true, want false (TDX Direction 0)")
-	}
-	var board1010 models.Tra_LiveBoards
-	sw1010 := sink.setFor(shared.TraLiveboardKey("1010"))
-	if sw1010 == nil {
-		t.Fatalf("expected liveboard SET for station 1010; got %v", setKeys(sink))
-	}
-	if err := proto.Unmarshal(sw1010.value, &board1010); err != nil {
-		t.Fatalf("unmarshal Tra_LiveBoards for 1010: %v", err)
-	}
-	if len(board1010.Items) != 1 || !board1010.Items[0].Direction {
-		t.Fatalf("station 1010 direction = false, want true (TDX Direction 1)")
-	}
-	// The board must also PUBLISH to its key-as-channel with the same payload, or
-	// the router's LiveBoard stream only ever gets the seed GET and never updates.
-	ch := shared.TraLiveboardKey("1000")
 	var pub *publishWrite
 	for i := range sink.publishs {
-		if sink.publishs[i].channel == ch {
+		if sink.publishs[i].channel == shared.TraDelayAllKey {
 			pub = &sink.publishs[i]
 		}
 	}
 	if pub == nil {
-		t.Fatalf("expected PUBLISH to %s; got channels %v", ch, sink.publishs)
+		t.Fatalf("expected PUBLISH to %s; got %+v", shared.TraDelayAllKey, sink.publishs)
 	}
-	if !bytes.Equal(pub.value, sw.value) {
-		t.Fatalf("published payload != cached payload for %s", ch)
+	// No liveboard writes remain.
+	for _, k := range setKeys(sink) {
+		if strings.HasPrefix(k, "tra:liveboard") {
+			t.Fatalf("unexpected liveboard write %s", k)
+		}
 	}
 }
-
 func TestBikeSpecWritesAvailability(t *testing.T) {
 	// The bike spec must write one BikeEta per station under its availability key
 	// with the 2-minute TTL and the decoded rentable/returnable counts. db is nil

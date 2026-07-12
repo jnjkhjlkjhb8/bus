@@ -5,8 +5,13 @@ abstract class JourneySessionEvent {
 }
 
 class JourneyStarted extends JourneySessionEvent {
-  const JourneyStarted({required this.legs});
+  const JourneyStarted({required this.legs, this.trackOnly = false});
   final List<JourneyLeg> legs;
+
+  /// A standalone arrival-countdown session (bus stop / rail departure
+  /// tracking): the session never rides and ends itself once the tracked
+  /// vehicle has arrived and left.
+  final bool trackOnly;
 }
 
 class BoardConfirmed extends JourneySessionEvent {

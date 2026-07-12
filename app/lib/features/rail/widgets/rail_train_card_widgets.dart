@@ -11,6 +11,7 @@ class _TrainCard extends StatefulWidget {
     required this.origin,
     required this.destination,
     required this.date,
+    required this.isThsr,
   });
 
   final String type;
@@ -22,12 +23,103 @@ class _TrainCard extends StatefulWidget {
   final String origin;
   final String destination;
   final String date;
+  final bool isThsr;
 
   @override
   State<_TrainCard> createState() => _TrainCardState();
 }
 
 class _TrainCardState extends State<_TrainCard> {
+  // trainNo lives in identity.routeKey and the service date in
+  // identity.direction (trackOnly rail legs carry no real O/D keys), so both
+  // must match to recognise this card's train as the one being tracked.
+  bool _isTracking(JourneySessionState s) {
+    final leg = s.currentLeg;
+    return s.trackOnly &&
+        s.phase == JourneyPhase.waiting &&
+        leg != null &&
+        (leg.kind == JourneyLegKind.tra || leg.kind == JourneyLegKind.thsr) &&
+        leg.identity.routeKey == widget.number &&
+        leg.identity.direction == widget.date;
+  }
+
+  JourneyLeg _buildLeg() {
+    final departAt = DateTime.tryParse('${widget.date} ${widget.depart}');
+    // Fold the current delay into the countdown so 追蹤 reflects live 誤點.
+    final scheduledDeparture = departAt?.add(Duration(minutes: widget.delay));
+    return JourneyLeg(
+      kind: widget.isThsr ? JourneyLegKind.thsr : JourneyLegKind.tra,
+      routeLabel: '${widget.type} ${widget.number} 往${widget.destination}',
+      boardStop: widget.origin,
+      alightStop: widget.destination,
+      stopNames: const [],
+      identity: PlanIdentity(
+        routeType: widget.isThsr ? 'thsr' : 'tra',
+        routeKey: widget.number,
+        direction: widget.date,
+        departureStopKey: '',
+        arrivalStopKey: '',
+        supported: false,
+      ),
+      leadingWalkMinutes: 0,
+      scheduledDeparture: scheduledDeparture,
+      scheduledArrival: DateTime.tryParse('${widget.date} ${widget.arrive}'),
+      boardLocation: const PlanPoint(lat: 0, lng: 0),
+      stopLocations: const [],
+    );
+  }
+
+  Widget _trackButton(BuildContext context, ColorScheme cs) {
+    final session = context.read<JourneySessionBloc>();
+    return BlocSelector<JourneySessionBloc, JourneySessionState, bool>(
+      selector: _isTracking,
+      builder: (context, active) {
+        return Pressable(
+          onTap: () {
+            unawaited(HapticService.instance.lightTap());
+            if (active) {
+              session.add(const JourneyCancelled());
+            } else {
+              session.add(
+                JourneyStarted(trackOnly: true, legs: [_buildLeg()]),
+              );
+            }
+          },
+          child: Container(
+            height: 28,
+            padding: const EdgeInsets.symmetric(horizontal: 11),
+            decoration: BoxDecoration(
+              color: active ? cs.onSurface : Colors.transparent,
+              borderRadius: BorderRadius.circular(8),
+              // Keep the border in both states so the button width is stable.
+              border: Border.all(color: cs.onSurface),
+            ),
+            alignment: Alignment.center,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.radar_rounded,
+                  size: 13,
+                  color: active ? cs.surface : cs.onSurface,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  active ? '追蹤中' : '追蹤',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: active ? cs.surface : cs.onSurface,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   int _getPrice() {
     if (widget.type.contains('自強') || widget.type.contains('普悠瑪')) {
       return 443;
@@ -94,6 +186,8 @@ class _TrainCardState extends State<_TrainCard> {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    _trackButton(context, cs),
+                    const SizedBox(width: 12),
                     Text(
                       'NT\$ ${_getPrice()}',
                       style: AppTextStyles.bodyLarge.copyWith(

@@ -45,6 +45,25 @@ class HiveStore {
     await recents.put('items', items.take(10).toList());
   }
 
+  /// Recent rail train-number queries as `{system, trainNo}`, newest first.
+  static List<Map<String, dynamic>> get recentTrainQueries =>
+      (recents.get('train_queries', defaultValue: const <dynamic>[]) as List)
+          .cast<Map<dynamic, dynamic>>()
+          .map((m) => m.cast<String, dynamic>())
+          .toList();
+
+  static Future<void> addRecentTrainQuery(
+    String system,
+    String trainNo,
+  ) async {
+    final items = recentTrainQueries
+      ..removeWhere(
+        (e) => e['system'] == system && e['trainNo'] == trainNo,
+      )
+      ..insert(0, {'system': system, 'trainNo': trainNo});
+    await recents.put('train_queries', items.take(6).toList());
+  }
+
   static Box<dynamic> get savedPlans => Hive.box(_boxSavedPlans);
   static bool get savedPlansReady => Hive.isBoxOpen(_boxSavedPlans);
 

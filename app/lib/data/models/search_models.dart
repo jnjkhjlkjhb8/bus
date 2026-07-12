@@ -6,8 +6,6 @@ enum SearchResultType {
   busStation,
   bikeStation,
   mrtStation,
-  traStation,
-  thsrStation,
   traTrain,
   thsrTrain,
 }

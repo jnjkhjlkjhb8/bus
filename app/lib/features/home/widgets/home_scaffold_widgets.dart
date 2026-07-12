@@ -138,6 +138,23 @@ extension _HomeScreenScaffold on _HomeScreenState {
                       ),
                     ),
                   ),
+                  Pressable(
+                    onTap: _openRailQuerySheet,
+                    semanticLabel: '雙鐵',
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: AppTheme.floatingControl(
+                        cs,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        Icons.train_rounded,
+                        size: 20,
+                        color: cs.onSurface,
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),

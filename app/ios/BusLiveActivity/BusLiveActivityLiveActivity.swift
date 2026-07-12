@@ -2,111 +2,136 @@ import ActivityKit
 import SwiftUI
 import WidgetKit
 
+/// SF Symbol for the transit type. All glyphs used here exist on iOS 16.
+/// "train.side.front.car" is available from iOS 16, so no availability guard
+/// is required; kept centralized so every region renders the same glyph.
+private func typeGlyph(_ type: String) -> String {
+    switch type {
+    case "bus":
+        return "bus.fill"
+    case "mrt":
+        return "tram.fill"
+    case "tra", "thsr":
+        return "train.side.front.car"
+    default:
+        return "tram.fill"
+    }
+}
+
+/// Whole minutes until `eta`, clamped to at least 1 so the minimal view never
+/// shows "0分" while a countdown is still pending.
+private func minutesUntil(_ eta: Date) -> Int {
+    max(1, Int(ceil(eta.timeIntervalSinceNow / 60)))
+}
+
 struct BusLiveActivityLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: BusLiveActivityAttributes.self) { context in
-            if context.state.mode == "waiting" {
-                WaitingCard(context: context)
-            } else {
-                RidingCard(context: context)
+            // Lock-screen / banner presentation.
+            Group {
+                if context.state.mode == "waiting" {
+                    WaitingCard(context: context)
+                } else {
+                    RidingCard(context: context)
+                }
             }
+            // Keep the system default background for lock-screen cards.
+            .activityBackgroundTint(nil)
         } dynamicIsland: { context in
             let waiting = context.state.mode == "waiting"
+            let glyph = typeGlyph(context.attributes.type)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     HStack(spacing: 8) {
-                        Image(systemName: waiting ? "figure.wave" : "tram.circle.fill")
-                            .font(.system(size: 32))
+                        Image(systemName: glyph)
+                            .font(.system(size: 24))
                             .foregroundColor(.white)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(context.attributes.routeOrTrain)
-                                .font(.system(size: 15))
+                            Text(waiting ? "下一班" : context.attributes.routeOrTrain)
+                                .font(.system(size: 12))
                                 .foregroundColor(Color(.systemGray))
+                                .lineLimit(1)
                             Text(waiting
-                                 ? "於 \(context.attributes.fromStation) 上車"
+                                 ? context.attributes.routeOrTrain
                                  : "下一站 \(context.state.nextStation)")
-                                .font(.system(size: 16, weight: .semibold))
+                                .font(.system(size: 15, weight: .semibold))
                                 .foregroundColor(.white)
+                                .lineLimit(1)
                         }
                     }
                     .padding(.leading, 4)
                 }
-                DynamicIslandExpandedRegion(.bottom) {
-                    if waiting {
-                        VStack(spacing: 0) {
+                DynamicIslandExpandedRegion(.trailing) {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        if waiting {
                             if let eta = context.state.etaDate, eta > Date() {
+                                // Self-ticking timer: avoids a per-second push
+                                // to refresh the countdown.
                                 Text(timerInterval: Date()...eta, countsDown: true)
-                                    .font(.system(size: 22, weight: .semibold))
+                                    .font(.system(size: 26, weight: .semibold))
                                     .monospacedDigit()
-                                    .multilineTextAlignment(.center)
+                                    .multilineTextAlignment(.trailing)
                                     .foregroundColor(.white)
-                                    .frame(maxWidth: .infinity)
+                                    .frame(width: 78)
+                                Text("後進站")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Color(.systemGray))
                             } else {
                                 Text("進站中")
                                     .font(.system(size: 18, weight: .semibold))
                                     .foregroundColor(.white)
-                                    .frame(maxWidth: .infinity)
                             }
-                            if context.state.walkMinutes > 0 {
-                                Text("步行 \(context.state.walkMinutes) 分至上車站")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(Color(.systemGray))
-                                    .padding(.top, 4)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 4)
-                    } else {
-                        VStack(spacing: 0) {
-                            HStack(spacing: 9) {
-                                Text(context.attributes.fromStation)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(Color(.systemGray))
-                                ProgressView(value: context.state.progressPercent)
-                                    .tint(Color(white: 0.8))
-                                    .background(Color(white: 0.25))
-                                    .clipShape(Capsule())
-                                Text(context.state.nextStation)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(Color(.systemGray))
-                            }
-                            .padding(.horizontal, 16)
-                            Text("\(context.state.alightStation ?? "") 下車・剩 \(context.state.remainingStops ?? 0) 站")
-                                .font(.system(size: 12))
-                                .foregroundColor(Color(.systemGray))
-                                .padding(.top, 8)
-                            Button("開啟詳細資訊") {}
-                                .buttonStyle(.plain)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
-                                .background(Color(.systemGray5))
-                                .clipShape(Capsule())
+                        } else {
+                            Text("\(context.state.remainingStops ?? 0)站")
+                                .font(.system(size: 26, weight: .semibold))
+                                .monospacedDigit()
                                 .foregroundColor(.white)
-                                .font(.system(size: 18, weight: .medium))
-                                .padding(.horizontal, 16)
-                                .padding(.top, 16)
+                            Text("\(context.state.alightStation ?? "") 下車")
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(.systemGray))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                DynamicIslandExpandedRegion(.bottom) {
+                    if waiting {
+                        Text("於 \(context.attributes.fromStation) 上車"
+                             + (context.state.walkMinutes > 0
+                                ? "・步行 \(context.state.walkMinutes) 分"
+                                : ""))
+                            .font(.system(size: 12))
+                            .foregroundColor(Color(.systemGray))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(1)
+                    } else {
+                        HStack(spacing: 9) {
+                            Text(context.attributes.fromStation)
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(.systemGray))
+                                .lineLimit(1)
+                            ProgressView(value: context.state.progressPercent)
+                                .tint(.white)
+                                .background(Color(white: 0.25))
+                                .clipShape(Capsule())
+                            Text(context.state.alightStation ?? context.state.nextStation)
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(.systemGray))
+                                .lineLimit(1)
                         }
                     }
                 }
             } compactLeading: {
-                HStack(spacing: 4) {
-                    Image(systemName: waiting ? "figure.wave" : "tram.circle.fill")
-                        .foregroundColor(.white)
-                    Text(waiting
-                         ? "下一班 \(context.attributes.routeOrTrain)"
-                         : "下一站 \(context.state.nextStation)")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                }
+                Image(systemName: glyph)
+                    .font(.system(size: 15))
+                    .foregroundColor(.white)
             } compactTrailing: {
                 if waiting {
                     if let eta = context.state.etaDate, eta > Date() {
                         Text(timerInterval: Date()...eta, countsDown: true)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.system(size: 14, weight: .semibold))
                             .monospacedDigit()
                             .foregroundColor(.white)
-                            .frame(maxWidth: 44)
+                            .frame(maxWidth: 48)
                     } else {
                         Text("進站中")
                             .font(.system(size: 13, weight: .semibold))
@@ -114,10 +139,26 @@ struct BusLiveActivityLiveActivity: Widget {
                             .lineLimit(1)
                     }
                 } else {
-                    _CircularProgress(value: context.state.progressPercent)
+                    Text("剩 \(context.state.remainingStops ?? 0) 站")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
                 }
             } minimal: {
-                _CircularProgress(value: context.state.progressPercent)
+                if waiting {
+                    if let eta = context.state.etaDate, eta > Date() {
+                        Text("\(minutesUntil(eta))分")
+                            .font(.system(size: 11, weight: .bold))
+                            .monospacedDigit()
+                            .foregroundColor(.white)
+                    } else {
+                        Image(systemName: glyph)
+                            .font(.system(size: 15))
+                            .foregroundColor(.white)
+                    }
+                } else {
+                    _CircularProgress(value: context.state.progressPercent)
+                }
             }
         }
     }
@@ -129,25 +170,33 @@ private struct RidingCard: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: "tram.circle.fill")
-                .font(.system(size: 44))
-                .foregroundColor(.accentColor)
+            Image(systemName: typeGlyph(context.attributes.type))
+                .font(.system(size: 36))
+                .foregroundColor(.primary)
             VStack(alignment: .leading, spacing: 4) {
                 Text(context.attributes.routeOrTrain)
-                    .font(.system(size: 14))
+                    .font(.system(size: 13))
                     .foregroundColor(.secondary)
                 Text("下一站 \(context.state.nextStation)")
                     .font(.system(size: 16, weight: .semibold))
                 HStack(spacing: 8) {
                     Text(context.attributes.fromStation)
-                        .font(.system(size: 12))
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
                     ProgressView(value: context.state.progressPercent)
                         .tint(.primary)
-                    Text(context.state.nextStation)
-                        .font(.system(size: 12))
+                    Text(context.state.alightStation ?? context.state.nextStation)
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
                 }
+                // Trailing block folded into a single caption line keeps the
+                // card uncluttered on narrow lock-screen widths.
+                Text("\(context.state.alightStation ?? "") 下車・剩 \(context.state.remainingStops ?? 0) 站")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
         }
         .padding(16)
@@ -160,8 +209,9 @@ private struct WaitingCard: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: "figure.wave")
-                .font(.system(size: 40))
+            Image(systemName: typeGlyph(context.attributes.type))
+                .font(.system(size: 36))
+                .foregroundColor(.primary)
             VStack(alignment: .leading, spacing: 4) {
                 Text("下一班 \(context.attributes.routeOrTrain)")
                     .font(.system(size: 16, weight: .semibold))
@@ -180,7 +230,7 @@ private struct WaitingCard: View {
                 Text(timerInterval: Date()...eta, countsDown: true)
                     .font(.system(size: 24, weight: .semibold))
                     .monospacedDigit()
-                    .frame(width: 72)
+                    .frame(width: 76)
             } else {
                 Text("進站中")
                     .font(.system(size: 18, weight: .semibold))
@@ -190,6 +240,8 @@ private struct WaitingCard: View {
     }
 }
 
+/// Monochrome progress ring for the minimal riding presentation.
+/// White arc over a 20%-white track; no percentage label, no accent color.
 private struct _CircularProgress: View {
     let value: Double
     var body: some View {
@@ -197,12 +249,9 @@ private struct _CircularProgress: View {
             Circle().stroke(Color.white.opacity(0.2), lineWidth: 3)
             Circle()
                 .trim(from: 0, to: value)
-                .stroke(Color(red: 1, green: 0.22, blue: 0.24), lineWidth: 3)
+                .stroke(Color.white, lineWidth: 3)
                 .rotationEffect(.degrees(-90))
-            Text("\(Int(value * 100))")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(Color(red: 1, green: 0.22, blue: 0.24))
         }
-        .frame(width: 28, height: 28)
+        .frame(width: 24, height: 24)
     }
 }

@@ -20,59 +20,6 @@ import 'tra.pb.dart' as $0;
 
 export 'tra.pb.dart';
 
-@$pb.GrpcServiceName('TRA_station_service')
-class TRA_station_serviceClient extends $grpc.Client {
-  /// The hostname for this service.
-  static const $core.String defaultHost = '';
-
-  /// OAuth scopes needed for the client.
-  static const $core.List<$core.String> oauthScopes = [
-    '',
-  ];
-
-  TRA_station_serviceClient(super.channel, {super.options, super.interceptors});
-
-  $grpc.ResponseStream<$0.Resp_tra_live_board> live_board(
-    $0.ask_staiton request, {
-    $grpc.CallOptions? options,
-  }) {
-    return $createStreamingCall(
-        _$live_board, $async.Stream.fromIterable([request]),
-        options: options);
-  }
-
-  // method descriptors
-
-  static final _$live_board =
-      $grpc.ClientMethod<$0.ask_staiton, $0.Resp_tra_live_board>(
-          '/TRA_station_service/live_board',
-          ($0.ask_staiton value) => value.writeToBuffer(),
-          $0.Resp_tra_live_board.fromBuffer);
-}
-
-@$pb.GrpcServiceName('TRA_station_service')
-abstract class TRA_station_serviceServiceBase extends $grpc.Service {
-  $core.String get $name => 'TRA_station_service';
-
-  TRA_station_serviceServiceBase() {
-    $addMethod($grpc.ServiceMethod<$0.ask_staiton, $0.Resp_tra_live_board>(
-        'live_board',
-        live_board_Pre,
-        false,
-        true,
-        ($core.List<$core.int> value) => $0.ask_staiton.fromBuffer(value),
-        ($0.Resp_tra_live_board value) => value.writeToBuffer()));
-  }
-
-  $async.Stream<$0.Resp_tra_live_board> live_board_Pre(
-      $grpc.ServiceCall $call, $async.Future<$0.ask_staiton> $request) async* {
-    yield* live_board($call, await $request);
-  }
-
-  $async.Stream<$0.Resp_tra_live_board> live_board(
-      $grpc.ServiceCall call, $0.ask_staiton request);
-}
-
 @$pb.GrpcServiceName('TRA_timetable_service')
 class TRA_timetable_serviceClient extends $grpc.Client {
   /// The hostname for this service.

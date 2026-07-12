@@ -286,31 +286,6 @@ func (s *MrtServer) MrtEta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error
 	return g.Wait()
 }
 
-// LiveBoard implements the TRAStationService LiveBoard streaming RPC by
-// delegating to traLiveboard.
-func (s *Tra_StationServer) LiveBoard(in *pb.AskStaiton, stream pb.TRAStationService_LiveBoardServer) error {
-	return s.traLiveboard(in, stream)
-}
-
-// traLiveboard streams the TRA live board for a station. It subscribes to the
-// station's Redis channel first, seeds a new client from the cached value, then
-// forwards published updates until the client disconnects. An empty cached value
-// is skipped rather than sent as a seed frame.
-func (s *Tra_StationServer) traLiveboard(in *pb.AskStaiton, stream pb.TRAStationService_LiveBoardServer) error {
-	log.Infof("call tra_liveboard %s", in.StationId)
-	key := shared.TraLiveboardKey(in.StationId)
-	return streamLive(stream.Context(), s.live, liveStreamSpec{
-		channel:  key,
-		seedKeys: []string{key},
-	}, func(data []byte) error {
-		board, err := decodePayload(data, &pb.Tra_LiveBoards{})
-		if err != nil {
-			return err
-		}
-		return stream.Send(&pb.RespTraLiveBoard{Data: board})
-	})
-}
-
 // Delay implements the TRATimetableService Delay streaming RPC. The request
 // carries no fields; it streams the system-wide TRA delay board via traDelay.
 func (s *Tra_TimetableServer) Delay(_ *pb.AskRoute, stream pb.TRATimetableService_DelayServer) error {

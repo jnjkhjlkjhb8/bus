@@ -11,7 +11,6 @@ import 'package:wheres_the_car/features/go/view/go_screen.dart';
 import 'package:wheres_the_car/features/home/home_screen.dart';
 import 'package:wheres_the_car/features/metro/view/metro_screen.dart';
 import 'package:wheres_the_car/features/rail/view/rail_screen.dart';
-import 'package:wheres_the_car/features/rail/view/tra_station_board_view.dart';
 import 'package:wheres_the_car/features/search/view/search_screen.dart';
 import 'package:wheres_the_car/features/settings/settings_option_screen.dart';
 import 'package:wheres_the_car/features/settings/settings_screen.dart';
@@ -152,18 +151,6 @@ class AppRouter {
       GoRoute(
         path: '/rail',
         pageBuilder: (_, _) => _page(const RailScreen()),
-      ),
-      GoRoute(
-        path: '/rail/station',
-        pageBuilder: (_, state) {
-          final extra = state.extra! as Map<String, dynamic>;
-          return _page(
-            TraStationScreen(
-              stationId: extra['stationId'] as String,
-              name: extra['name'] as String,
-            ),
-          );
-        },
       ),
       GoRoute(
         path: '/metro',

@@ -128,7 +128,7 @@ class _SettingsView extends StatelessWidget {
               _SettingsSwitchRow(
                 icon: Icons.dashboard_customize_outlined,
                 label: '即時動態',
-                subtitle: '鎖定畫面與動態島顯示導航資訊',
+                subtitle: '鎖定畫面、動態島與狀態列顯示即時資訊',
                 value: state.liveActivityEnabled,
                 onChanged: (v) => bloc.add(LiveActivityToggled(value: v)),
               ),

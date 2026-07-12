@@ -15,26 +15,6 @@ import 'dart:convert' as $convert;
 import 'dart:core' as $core;
 import 'dart:typed_data' as $typed_data;
 
-@$core.Deprecated('Use resp_tra_live_boardDescriptor instead')
-const Resp_tra_live_board$json = {
-  '1': 'Resp_tra_live_board',
-  '2': [
-    {
-      '1': 'data',
-      '3': 1,
-      '4': 1,
-      '5': 11,
-      '6': '.tra_LiveBoards',
-      '10': 'data'
-    },
-  ],
-};
-
-/// Descriptor for `Resp_tra_live_board`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List resp_tra_live_boardDescriptor = $convert.base64Decode(
-    'ChNSZXNwX3RyYV9saXZlX2JvYXJkEiMKBGRhdGEYASABKAsyDy50cmFfTGl2ZUJvYXJkc1IEZG'
-    'F0YQ==');
-
 @$core.Deprecated('Use resp_tra_delayDescriptor instead')
 const Resp_tra_delay$json = {
   '1': 'Resp_tra_delay',
@@ -283,71 +263,3 @@ const tra_delay$json = {
 final $typed_data.Uint8List tra_delayDescriptor = $convert.base64Decode(
     'Cgl0cmFfZGVsYXkSGQoIdHJhaW5fbm8YASABKAlSB3RyYWluTm8SHQoKc3RhdGlvbl9pZBgCIA'
     'EoCVIJc3RhdGlvbklkEhQKBWRlbGF5GAMgASgFUgVkZWxheQ==');
-
-@$core.Deprecated('Use tra_LiveBoardDescriptor instead')
-const tra_LiveBoard$json = {
-  '1': 'tra_LiveBoard',
-  '2': [
-    {'1': 'train_no', '3': 1, '4': 1, '5': 9, '10': 'trainNo'},
-    {'1': 'direction', '3': 2, '4': 1, '5': 8, '10': 'direction'},
-    {'1': 'train_type_id', '3': 3, '4': 1, '5': 9, '10': 'trainTypeId'},
-    {'1': 'train_type_code', '3': 4, '4': 1, '5': 9, '10': 'trainTypeCode'},
-    {'1': 'train_type_name', '3': 5, '4': 1, '5': 9, '10': 'trainTypeName'},
-    {'1': 'ending_station_id', '3': 6, '4': 1, '5': 9, '10': 'endingStationId'},
-    {
-      '1': 'ending_station_name',
-      '3': 7,
-      '4': 1,
-      '5': 9,
-      '10': 'endingStationName'
-    },
-    {
-      '1': 'scheduled_arrival_time',
-      '3': 8,
-      '4': 1,
-      '5': 9,
-      '10': 'scheduledArrivalTime'
-    },
-    {
-      '1': 'scheduled_departure_time',
-      '3': 9,
-      '4': 1,
-      '5': 9,
-      '10': 'scheduledDepartureTime'
-    },
-    {'1': 'delay', '3': 10, '4': 1, '5': 5, '10': 'delay'},
-    {'1': 'trip_line', '3': 11, '4': 1, '5': 5, '10': 'tripLine'},
-  ],
-};
-
-/// Descriptor for `tra_LiveBoard`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List tra_LiveBoardDescriptor = $convert.base64Decode(
-    'Cg10cmFfTGl2ZUJvYXJkEhkKCHRyYWluX25vGAEgASgJUgd0cmFpbk5vEhwKCWRpcmVjdGlvbh'
-    'gCIAEoCFIJZGlyZWN0aW9uEiIKDXRyYWluX3R5cGVfaWQYAyABKAlSC3RyYWluVHlwZUlkEiYK'
-    'D3RyYWluX3R5cGVfY29kZRgEIAEoCVINdHJhaW5UeXBlQ29kZRImCg90cmFpbl90eXBlX25hbW'
-    'UYBSABKAlSDXRyYWluVHlwZU5hbWUSKgoRZW5kaW5nX3N0YXRpb25faWQYBiABKAlSD2VuZGlu'
-    'Z1N0YXRpb25JZBIuChNlbmRpbmdfc3RhdGlvbl9uYW1lGAcgASgJUhFlbmRpbmdTdGF0aW9uTm'
-    'FtZRI0ChZzY2hlZHVsZWRfYXJyaXZhbF90aW1lGAggASgJUhRzY2hlZHVsZWRBcnJpdmFsVGlt'
-    'ZRI4ChhzY2hlZHVsZWRfZGVwYXJ0dXJlX3RpbWUYCSABKAlSFnNjaGVkdWxlZERlcGFydHVyZV'
-    'RpbWUSFAoFZGVsYXkYCiABKAVSBWRlbGF5EhsKCXRyaXBfbGluZRgLIAEoBVIIdHJpcExpbmU=');
-
-@$core.Deprecated('Use tra_LiveBoardsDescriptor instead')
-const tra_LiveBoards$json = {
-  '1': 'tra_LiveBoards',
-  '2': [
-    {'1': 'station_id', '3': 1, '4': 1, '5': 9, '10': 'stationId'},
-    {
-      '1': 'items',
-      '3': 2,
-      '4': 3,
-      '5': 11,
-      '6': '.tra_LiveBoard',
-      '10': 'items'
-    },
-  ],
-};
-
-/// Descriptor for `tra_LiveBoards`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List tra_LiveBoardsDescriptor = $convert.base64Decode(
-    'Cg50cmFfTGl2ZUJvYXJkcxIdCgpzdGF0aW9uX2lkGAEgASgJUglzdGF0aW9uSWQSJAoFaXRlbX'
-    'MYAiADKAsyDi50cmFfTGl2ZUJvYXJkUgVpdGVtcw==');

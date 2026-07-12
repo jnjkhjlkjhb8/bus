@@ -19,21 +19,6 @@ class TraDecoder {
     travelTime: t.travelTime,
   );
 
-  List<TraLiveBoardItem> decodeLiveBoard(tra_LiveBoards board) {
-    return board.items
-        .map(
-          (t) => TraLiveBoardItem(
-            trainNo: t.trainNo,
-            direction: t.direction ? '北上' : '南下',
-            trainType: t.trainTypeName,
-            destStation: t.endingStationName,
-            departureTime: t.scheduledDepartureTime,
-            delayMinutes: t.delay,
-          ),
-        )
-        .toList();
-  }
-
   TraFare decodeFare(TraFareItem f) =>
       TraFare(ticketType: f.ticketType, price: f.price);
 

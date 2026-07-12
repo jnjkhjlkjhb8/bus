@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_shadows.dart';
+import 'package:wheres_the_car/shared/motion/predictive_back.dart';
 
 class AppTheme {
   AppTheme._();
@@ -250,7 +251,7 @@ class AppTheme {
     cardTheme: _card(cs),
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
-        TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
+        TargetPlatform.android: BigPredictiveBackPageTransitionsBuilder(),
         TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
         TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
       },

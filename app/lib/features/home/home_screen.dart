@@ -27,6 +27,7 @@ import 'package:wheres_the_car/features/home/bloc/nearby_event.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_state.dart';
 import 'package:wheres_the_car/features/home/widgets/home_station_detail.dart';
 import 'package:wheres_the_car/features/metro/widgets/metro_svg_map.dart';
+import 'package:wheres_the_car/features/rail/view/home_rail_query_sheet.dart';
 import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
@@ -134,6 +135,28 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           )
           .then((_) => _unfocusStationOnMap()),
+    );
+  }
+
+  void _openRailQuerySheet() {
+    unawaited(HapticService.instance.lightTap());
+    final navigator = _sheetNavigatorKey.currentState;
+    if (navigator == null) return;
+    unawaited(
+      navigator.push(
+        PagedSheetRoute<void>(
+          scrollConfiguration: const SheetScrollConfiguration(),
+          initialOffset: const SheetOffset.proportionalToViewport(0.85),
+          snapGrid: const SheetSnapGrid(
+            snaps: [
+              SheetOffset.proportionalToViewport(0.30),
+              SheetOffset.proportionalToViewport(0.85),
+              SheetOffset.proportionalToViewport(1),
+            ],
+          ),
+          builder: (_) => const HomeRailQuerySheet(),
+        ),
+      ),
     );
   }
 

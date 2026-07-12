@@ -1,23 +1,49 @@
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 
-/// One-shot channel: search overlay → rail screen.
-/// The overlay can't reach RailBloc (root navigator boundary), so it writes
-/// here; the rail screen reads and clears on didChangeDependencies.
+/// One-shot hand-off channel into the rail screen.
+///
+/// Producers sit above the rail screen's navigator boundary (the home sheet, a
+/// station detail view) and can't reach the rail bloc directly, so they write a
+/// request here; the rail screen reads and clears it on didChangeDependencies.
+///
+/// Two shapes:
+/// - a station preset (origin only, [autoSubmit] false) — pre-fills the picker
+///   without running a query;
+/// - a full O/D query ([autoSubmit] true) — the rail screen dispatches the
+///   timetable request immediately on open.
+class RailQueryRequest {
+  const RailQueryRequest({
+    required this.system,
+    required this.originName,
+    required this.date,
+    this.originId,
+    this.destName,
+    this.destId,
+    this.autoSubmit = false,
+  });
+
+  final RailSystem system;
+  final String originName;
+  final String? originId;
+  final String? destName;
+  final String? destId;
+  final DateTime date;
+  final bool autoSubmit;
+}
+
 class RailNavigationRequest {
   RailNavigationRequest._();
 
-  static ({String stationId, String stationName, RailSystem system})? _pending;
+  static RailQueryRequest? _pending;
 
-  static void set({
-    required String stationId,
-    required String stationName,
-    required RailSystem system,
-  }) {
-    _pending = (stationId: stationId, stationName: stationName, system: system);
+  // A named method reads better than a setter at the call sites
+  // (`RailNavigationRequest.set(...)`) and pairs with `consume()`.
+  // ignore: use_setters_to_change_properties
+  static void set(RailQueryRequest request) {
+    _pending = request;
   }
 
-  static ({String stationId, String stationName, RailSystem system})?
-  consume() {
+  static RailQueryRequest? consume() {
     final v = _pending;
     _pending = null;
     return v;

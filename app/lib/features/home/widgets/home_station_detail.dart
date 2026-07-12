@@ -3,8 +3,8 @@ import 'package:wheres_the_car/data/models/near_models.dart';
 import 'package:wheres_the_car/features/bike/view/bike_station_detail_view.dart';
 import 'package:wheres_the_car/features/bus/view/bus_stop_detail_view.dart';
 import 'package:wheres_the_car/features/metro/view/metro_station_detail_view.dart';
-import 'package:wheres_the_car/features/rail/view/thsr_station_detail_view.dart';
-import 'package:wheres_the_car/features/rail/view/tra_station_detail_view.dart';
+import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_car/features/rail/view/rail_station_detail_view.dart';
 
 /// 依站別回傳首頁第二層 sheet 要顯示的 detail 內容。
 Widget stationDetailPage(NearStationViewModel station) {
@@ -27,12 +27,14 @@ Widget stationDetailPage(NearStationViewModel station) {
         name: station.stationName,
       );
     case NearStationType.tra:
-      return TraStationDetailView(
+      return RailStationDetailView(
+        system: RailSystem.tra,
         stationId: station.stationId,
         name: station.stationName,
       );
     case NearStationType.thsr:
-      return ThsrStationDetailView(
+      return RailStationDetailView(
+        system: RailSystem.thsr,
         stationId: station.stationId,
         name: station.stationName,
       );

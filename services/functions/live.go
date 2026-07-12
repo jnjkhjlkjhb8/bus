@@ -271,7 +271,6 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 	}
 	traPatterns := func() []ttlPattern {
 		return []ttlPattern{
-			{pattern: shared.TraLiveboardKey("*"), ttl: traLiveTTL},
 			{pattern: shared.TraDelayAllKey, ttl: traLiveTTL},
 			{pattern: shared.TraDelayHashKey, ttl: traLiveTTL},
 		}
@@ -299,7 +298,7 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 			}},
 		{key: "mrt", cadence: "@every 10s", ttlPatterns: mrtPatterns,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				mrtEta(ctx, fetch, sink)
+				mrtEta(ctx, fetch, sink, db)
 				return nil
 			}},
 		{key: "tra", cadence: "@every 2m", ttlPatterns: traPatterns,

@@ -37,7 +37,6 @@ class _SwitchPageState extends State<SwitchPage> {
                 AppSwitch(
                   value: _a,
                   onChanged: (v) => setState(() => _a = v),
-                  label: '即時動態',
                 ),
                 const SizedBox(height: 8),
                 AppSwitch(

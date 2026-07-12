@@ -7,8 +7,6 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/models/search_models.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
-import 'package:wheres_the_car/features/rail/rail_navigation_request.dart';
 import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';
 import 'package:wheres_the_car/features/search/bloc/search_bloc.dart';
 import 'package:wheres_the_car/features/search/bloc/search_event.dart';
@@ -58,22 +56,6 @@ void _navigateToResult(BuildContext context, SearchResult result) {
       );
     case SearchResultType.mrtStation:
       unawaited(context.push('/metro'));
-    case SearchResultType.traStation:
-      unawaited(
-        context.push(
-          '/rail/station',
-          extra: {'stationId': result.uid, 'name': result.name},
-        ),
-      );
-    case SearchResultType.thsrStation:
-      // THSR has no through-station live board, so route to the O/D query
-      // screen with this station preset as the origin (user picks the dest).
-      RailNavigationRequest.set(
-        stationId: result.uid,
-        stationName: result.name,
-        system: RailSystem.thsr,
-      );
-      unawaited(context.push('/rail'));
     case SearchResultType.traTrain:
     case SearchResultType.thsrTrain:
       unawaited(
@@ -159,9 +141,7 @@ class _SearchViewState extends State<_SearchView> {
     SearchResultType.busRoute => TransportType.bus,
     SearchResultType.busStation => TransportType.busStop,
     SearchResultType.bikeStation => TransportType.bike,
-    SearchResultType.traStation ||
     SearchResultType.traTrain => TransportType.tra,
-    SearchResultType.thsrStation ||
     SearchResultType.thsrTrain => TransportType.thsr,
     SearchResultType.mrtStation => TransportType.mrtBL,
   };

@@ -7,12 +7,10 @@ import 'package:wheres_the_car/data/models/tra_models.dart';
 
 class TraRepository {
   TraRepository({
-    TRA_station_serviceClient? stationClient,
     TRA_timetable_serviceClient? timetableClient,
     TRA_Detain_serviceClient? detainClient,
     LocalDb? localDb,
-  }) : _stationClient = stationClient,
-       _timetableClient = timetableClient,
+  }) : _timetableClient = timetableClient,
        _detainClient = detainClient,
        _localDb = localDb;
 
@@ -23,10 +21,6 @@ class TraRepository {
   LocalDb? _localDb;
   LocalDb get _db => _localDb ??= PowerSyncService.instance;
 
-  TRA_station_serviceClient? _stationClient;
-  TRA_station_serviceClient get _station =>
-      _stationClient ??= GrpcClient.instance.traStation;
-
   TRA_timetable_serviceClient? _timetableClient;
   TRA_timetable_serviceClient get _timetable =>
       _timetableClient ??= GrpcClient.instance.traTimetable;
@@ -34,15 +28,6 @@ class TraRepository {
   TRA_Detain_serviceClient? _detainClient;
   TRA_Detain_serviceClient get _detain =>
       _detainClient ??= GrpcClient.instance.traDetain;
-
-  /// Server-streaming: emits the decoded live departure/arrival board for
-  /// [stationId] on [date] (format `'yyyy-MM-dd'`).
-  Stream<List<TraLiveBoardItem>> liveBoard(String stationId, String date) =>
-      _station
-          .live_board(ask_staiton(stationId: stationId, date: date))
-          .map(
-            (resp) => TraDecoder.instance.decodeLiveBoard(resp.data),
-          );
 
   Future<List<TraTimetableItem>> timetable(
     String date,

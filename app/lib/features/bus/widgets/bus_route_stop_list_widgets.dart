@@ -6,12 +6,16 @@ class _StopListTab extends StatelessWidget {
     required this.scrollController,
     required this.reminders,
     required this.onReminderToggled,
+    required this.trackedStopUid,
+    required this.onTrackToggled,
   });
 
   final List<TimelineStop> stops;
   final ScrollController scrollController;
   final Map<String, String> reminders;
   final void Function(String) onReminderToggled;
+  final String? trackedStopUid;
+  final void Function(TimelineStop) onTrackToggled;
 
   @override
   Widget build(BuildContext context) {
@@ -32,6 +36,8 @@ class _StopListTab extends StatelessWidget {
             totalStops: stops.length,
             isReminderActive: reminders.containsKey(stop.uid),
             onReminderToggled: () => onReminderToggled(stop.uid),
+            isTracking: trackedStopUid == stop.uid,
+            onTrackToggled: () => onTrackToggled(stop),
           );
         },
       ),
@@ -46,6 +52,8 @@ class _StopListItem extends StatelessWidget {
     required this.totalStops,
     required this.isReminderActive,
     required this.onReminderToggled,
+    required this.isTracking,
+    required this.onTrackToggled,
   });
 
   final TimelineStop stop;
@@ -53,6 +61,8 @@ class _StopListItem extends StatelessWidget {
   final int totalStops;
   final bool isReminderActive;
   final VoidCallback onReminderToggled;
+  final bool isTracking;
+  final VoidCallback onTrackToggled;
 
   @override
   Widget build(BuildContext context) {
@@ -141,6 +151,26 @@ class _StopListItem extends StatelessWidget {
       bellColor = cs.onSurface;
     }
 
+    final trackBtn = Pressable(
+      onTap: onTrackToggled,
+      semanticLabel: isTracking ? '停止追蹤' : '追蹤到站',
+      child: Container(
+        width: 28,
+        height: 28,
+        decoration: BoxDecoration(
+          color: isTracking ? cs.onSurface : bellBg,
+          borderRadius: BorderRadius.circular(7),
+        ),
+        child: Center(
+          child: Icon(
+            Icons.radar_rounded,
+            size: 16,
+            color: isTracking ? cs.surface : bellColor,
+          ),
+        ),
+      ),
+    );
+
     final bellBtn = Pressable(
       onTap: onReminderToggled,
       semanticLabel: isReminderActive ? '取消提醒' : '設定提醒',
@@ -179,6 +209,8 @@ class _StopListItem extends StatelessWidget {
           const SizedBox(width: 12),
           etaWidget,
           const SizedBox(width: 12),
+          trackBtn,
+          const SizedBox(width: 8),
           bellBtn,
         ],
       ),
