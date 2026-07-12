@@ -24,7 +24,15 @@ class FirebaseCallOptions {
     if (installId.isEmpty || installSecret.isEmpty) {
       throw StateError('installation credential is unavailable');
     }
-    final token = await (tokenLoader ?? FirebaseAppCheck.instance.getToken)();
+    // App Check attestation can fail (unregistered debug token, transient
+    // backend 403); the header below is optional, so degrade to no token
+    // instead of aborting device registration.
+    String? token;
+    try {
+      token = await (tokenLoader ?? FirebaseAppCheck.instance.getToken)();
+    } on Object catch (_) {
+      token = null;
+    }
     return CallOptions(
       metadata: {
         'x-install-id': installId,

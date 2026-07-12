@@ -10,28 +10,84 @@ String _lastNamedArrival(List<PlanSection> sections) {
   return '目的地';
 }
 
+/// A bus leg carries the notification identity's `bus` route type (mode is a
+/// fallback for pre-identity data).
+bool _isBusLeg(PlanSection s) =>
+    s.identity.routeType == 'bus' || s.transport.mode.toLowerCase() == 'bus';
+
+/// A rail leg is TRA or THSR (identity route type first, transport mode as the
+/// fallback for legs the planner could not resolve an identity for).
+bool _isRailLeg(PlanSection s) {
+  if (s.identity.routeType == 'tra' || s.identity.routeType == 'thsr') {
+    return true;
+  }
+  return const {'tra', 'thsr', 'rail', 'train', 'highspeedtrain'}.contains(
+    s.transport.mode.toLowerCase(),
+  );
+}
+
+/// Material maneuver glyph for a walk step, mapped from the OSRM
+/// maneuverType/modifier. Arrival shows a finish flag; an unresolved turn falls
+/// back to a straight arrow so the leading slot is never empty.
+IconData _maneuverIcon(PlanWalkStep step) {
+  if (step.maneuverType == 'arrive') return Icons.sports_score_rounded;
+  return switch (step.modifier.toLowerCase()) {
+    'left' => Icons.turn_left_rounded,
+    'right' => Icons.turn_right_rounded,
+    'slight left' => Icons.turn_slight_left_rounded,
+    'slight right' => Icons.turn_slight_right_rounded,
+    'sharp left' => Icons.turn_sharp_left_rounded,
+    'sharp right' => Icons.turn_sharp_right_rounded,
+    'uturn' => Icons.u_turn_left_rounded,
+    // depart / straight / continue / unknown.
+    _ => Icons.straight_rounded,
+  };
+}
+
+/// Remaining distance for a walk step, split into value + unit so the unit can
+/// render smaller. ≥1km switches to 公里.
+(String, String) _stepDistanceParts(double meters) => meters >= 1000
+    ? ((meters / 1000).toStringAsFixed(1), '公里')
+    : ('${meters.round()}', '公尺');
+
 class _NavHeader extends StatelessWidget {
-  const _NavHeader({required this.route, required this.activeLeg});
+  const _NavHeader({
+    required this.route,
+    required this.activeLeg,
+    required this.walkStepIndex,
+  });
 
   final PlanRoute route;
   final int activeLeg;
+  final int walkStepIndex;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final reduce = MediaQuery.disableAnimationsOf(context);
     final section = route.sections[activeLeg];
-    final instruction = isWalk(section)
-        ? '步行前往${section.arrival.name}'
-        : '搭乘${sectionLabel(section)}';
-    final remaining = section.intermediateStops.length;
-    final headsign = section.transport.headsign.isEmpty
-        ? section.arrival.name
-        : section.transport.headsign;
-    final sub = isWalk(section)
-        ? '約 ${sectionMinutes(section)} 分'
-        : '往$headsign · 剩 $remaining 站';
-    final arrival = formatClock(route.endTime);
+    final walk = isWalk(section);
+    // Turn-by-turn takes over whenever OSRM resolved steps for this walk;
+    // otherwise fall back to the coarse 「步行前往X」 title layout.
+    final steps = section.walkSteps;
+    final hasSteps = walk && steps.isNotEmpty;
+    final index = hasSteps ? walkStepIndex.clamp(0, steps.length - 1) : 0;
+    final step = hasSteps ? steps[index] : null;
+    // OSRM banner convention: while traversing step i the header announces
+    // step i+1's maneuver, and the distance to it is step i's own length (a
+    // maneuver sits at the START of its step). The final (arrive) step
+    // announces itself; `arrived` then drops the distance for 即將抵達.
+    final announced = hasSteps
+        ? steps[(index + 1).clamp(0, steps.length - 1)]
+        : null;
+    final arrived = hasSteps && index == steps.length - 1;
+    final nextStep = hasSteps && index + 2 < steps.length
+        ? steps[index + 2]
+        : null;
+
     return Container(
+      // Clip so the tinted 「接著」 strip honours the card's bottom corners.
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
         color: cs.brightness == Brightness.light
             ? Colors.white
@@ -39,61 +95,333 @@ class _NavHeader extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppTheme.radiusCard),
         boxShadow: AppShadows.floating,
       ),
-      padding: const EdgeInsets.all(12),
-      child: Row(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(sectionIcon(section), color: cs.onSurface, size: 28),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
               children: [
-                Text(
-                  instruction,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.bodyLarge.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: cs.onSurface,
-                  ),
+                _leading(context, section, announced, reduce),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: step != null
+                      ? _stepPrimary(
+                          context,
+                          announced!,
+                          arrived ? null : step.distanceMeters,
+                          index,
+                          reduce,
+                        )
+                      : _titlePrimary(context, section, walk),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  sub,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppTextStyles.bodySmall.copyWith(
-                    color: cs.onSurfaceVariant,
-                  ),
+                // The right column reacts to the transit-only session phase, so
+                // it watches JourneySessionBloc (phase + boarding ETA) rather
+                // than PlanBloc. It always shows the time value.
+                BlocBuilder<JourneySessionBloc, JourneySessionState>(
+                  buildWhen: (p, c) => p.phase != c.phase || p.eta != c.eta,
+                  builder: (context, js) =>
+                      _headerTrailing(context, section, js, reduce),
                 ),
               ],
             ),
           ),
-          if (arrival.isNotEmpty) ...[
-            const SizedBox(width: 12),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  arrival,
-                  style: AppTextStyles.heading2.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: cs.onSurface,
-                    fontFeatures: AppTextStyles.tabularFigures,
-                  ),
-                ),
-                Text(
-                  '預計抵達',
-                  style: AppTextStyles.bodyVerySmall.copyWith(
-                    color: cs.onSurfaceVariant,
-                  ),
-                ),
-              ],
+          // 「接著」 preview: the next maneuver, so continuous short-alley turns
+          // are known before the junction. Hidden when there is no next step.
+          if (nextStep != null)
+            _NextStrip(
+              step: nextStep,
+              // Distance to reach that maneuver = the announced step's length.
+              distanceMeters: steps[index + 1].distanceMeters,
+              reduce: reduce,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _leading(
+    BuildContext context,
+    PlanSection section,
+    PlanWalkStep? step,
+    bool reduce,
+  ) {
+    final cs = Theme.of(context).colorScheme;
+    if (step == null) {
+      return Icon(sectionIcon(section), color: cs.onSurface, size: 28);
+    }
+    final icon = _maneuverIcon(step);
+    return SizedBox(
+      width: 44,
+      height: 44,
+      child: AnimatedSwitcher(
+        duration: reduce ? Duration.zero : AppMotion.short,
+        switchInCurve: AppMotion.easeOut,
+        child: Icon(
+          icon,
+          key: ValueKey(icon.codePoint),
+          color: cs.onSurface,
+          size: 36,
+        ),
+      ),
+    );
+  }
+
+  // Walk turn-by-turn primary: distance to the announced maneuver over its
+  // street sentence; a null distance means the destination is reached and only
+  // 即將抵達 shows. Keyed by step index so the block fades up as one on advance.
+  Widget _stepPrimary(
+    BuildContext context,
+    PlanWalkStep announced,
+    double? metersToManeuver,
+    int index,
+    bool reduce,
+  ) {
+    final cs = Theme.of(context).colorScheme;
+    return AnimatedSwitcher(
+      duration: reduce ? Duration.zero : AppMotion.short,
+      switchInCurve: AppMotion.easeOut,
+      transitionBuilder: (child, anim) => FadeTransition(
+        opacity: anim,
+        child: AnimatedBuilder(
+          animation: anim,
+          builder: (context, c) => Transform.translate(
+            offset: Offset(0, (1 - anim.value) * 8),
+            child: c,
+          ),
+          child: child,
+        ),
+      ),
+      child: Column(
+        key: ValueKey(index),
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _stepDistanceLine(context, metersToManeuver),
+          if (metersToManeuver != null) ...[
+            const SizedBox(height: 2),
+            Text(
+              announced.instruction,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppTextStyles.bodyLarge.copyWith(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface,
+              ),
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _stepDistanceLine(BuildContext context, double? metersToManeuver) {
+    final cs = Theme.of(context).colorScheme;
+    if (metersToManeuver == null) {
+      return Text(
+        '即將抵達',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: AppTextStyles.bodyLarge.copyWith(
+          fontSize: 22,
+          fontWeight: FontWeight.w700,
+          color: cs.onSurface,
+        ),
+      );
+    }
+    final (value, unit) = _stepDistanceParts(metersToManeuver);
+    return Text.rich(
+      TextSpan(
+        children: [
+          TextSpan(text: value),
+          TextSpan(
+            text: ' $unit',
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+      style: AppTextStyles.memo.copyWith(
+        fontSize: 26,
+        fontWeight: FontWeight.w700,
+        height: 1.15,
+        color: cs.onSurface,
+        fontFeatures: AppTextStyles.tabularFigures,
+      ),
+    );
+  }
+
+  // Transit legs and step-less walk fallbacks share a title + subtitle layout.
+  Widget _titlePrimary(BuildContext context, PlanSection section, bool walk) {
+    final cs = Theme.of(context).colorScheme;
+    final headsign = section.transport.headsign.isEmpty
+        ? section.arrival.name
+        : section.transport.headsign;
+    final String title;
+    final String sub;
+    if (walk) {
+      title = '步行前往${section.arrival.name}';
+      sub = '約 ${sectionMinutes(section)} 分';
+    } else {
+      title = '搭乘${sectionLabel(section)}';
+      sub = '往$headsign · 剩 ${section.intermediateStops.length} 站';
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: AppTextStyles.bodyLarge.copyWith(
+            fontSize: 17,
+            fontWeight: FontWeight.w700,
+            color: cs.onSurface,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          sub,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: AppTextStyles.bodySmall.copyWith(
+            fontSize: 13,
+            color: cs.onSurfaceVariant,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _headerTrailing(
+    BuildContext context,
+    PlanSection section,
+    JourneySessionState js,
+    bool reduce,
+  ) {
+    final cs = Theme.of(context).colorScheme;
+    final waiting = js.phase == JourneyPhase.waiting;
+    String value;
+    String label;
+    // Only the live bus countdown claims the biggest weight; clocks stay 24px.
+    var big = false;
+    if (waiting &&
+        _isBusLeg(section) &&
+        section.identity.supported &&
+        js.eta != null) {
+      // Ceil seconds to minutes (project rule); a due bus reads 進站中.
+      final secs = js.eta!.inSeconds;
+      value = secs <= 0 ? '進站中' : '${(secs / 60).ceil()} 分';
+      label = '公車進站';
+      big = true;
+    } else if (waiting && _isRailLeg(section)) {
+      value = formatClock(section.departure.time);
+      label = '發車';
+    } else {
+      value = formatClock(route.endTime);
+      label = '預計抵達';
+    }
+    if (value.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(left: 12),
+      child: AnimatedSwitcher(
+        duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
+        child: Column(
+          key: ValueKey('$value|$label'),
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              value,
+              style: AppTextStyles.memo.copyWith(
+                fontSize: big ? 28 : 24,
+                fontWeight: FontWeight.w700,
+                height: 1.1,
+                color: cs.onSurface,
+                fontFeatures: AppTextStyles.tabularFigures,
+              ),
+            ),
+            Text(
+              label,
+              style: AppTextStyles.bodySmall.copyWith(
+                fontSize: 11,
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 「接著」 preview strip under the header's main row: the next walk maneuver as
+/// a small glyph + the street sentence + remaining distance. A surface-tinted
+/// band with a hairline top border; content crossfades as the step advances.
+class _NextStrip extends StatelessWidget {
+  const _NextStrip({
+    required this.step,
+    required this.distanceMeters,
+    required this.reduce,
+  });
+
+  final PlanWalkStep step;
+  // Distance to reach [step]'s maneuver (the preceding step's length), not
+  // step.distanceMeters — same banner pairing as the primary line.
+  final double distanceMeters;
+  final bool reduce;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final (dist, unit) = _stepDistanceParts(distanceMeters);
+    return AnimatedSwitcher(
+      duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
+      child: Container(
+        key: ValueKey('${step.instruction}|$distanceMeters'),
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerHighest,
+          border: Border(top: BorderSide(color: cs.outlineVariant)),
+        ),
+        child: Row(
+          children: [
+            Text(
+              '接著',
+              style: AppTextStyles.bodySmall.copyWith(
+                fontSize: 12.5,
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(_maneuverIcon(step), size: 16, color: cs.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: step.instruction,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        color: cs.onSurface,
+                      ),
+                    ),
+                    TextSpan(text: '・$dist $unit'),
+                  ],
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTextStyles.bodySmall.copyWith(
+                  fontSize: 12.5,
+                  color: cs.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -106,6 +434,7 @@ class _NavSheet extends StatelessWidget {
     required this.activeLeg,
     required this.onAdvance,
     required this.onEnd,
+    required this.showManualControls,
   });
 
   final SheetController controller;
@@ -113,6 +442,7 @@ class _NavSheet extends StatelessWidget {
   final int activeLeg;
   final VoidCallback onAdvance;
   final VoidCallback onEnd;
+  final bool showManualControls;
 
   @override
   Widget build(BuildContext context) {
@@ -182,7 +512,12 @@ class _NavSheet extends StatelessWidget {
                   ],
                 ),
               ),
-              _NavFooter(onAdvance: onAdvance, onEnd: onEnd, isLast: isLast),
+              _NavFooter(
+                onAdvance: onAdvance,
+                onEnd: onEnd,
+                isLast: isLast,
+                showManualControls: showManualControls,
+              ),
             ],
           ),
         ),
@@ -485,61 +820,72 @@ class _NavSheetHeader extends StatelessWidget {
 /// Pinned action zone at the sheet foot (always thumb-reachable). The board /
 /// alight control owns the filled primary during a transit leg; on walk legs
 /// (no phase action) 完成此段 becomes the primary instead of a muted secondary.
+///
+/// When the autopilot has a live GPS fix ([showManualControls] false) it
+/// drives progression on its own, so only the always-present 結束導航 abort
+/// shows — the board/alight and advance controls would be redundant (and
+/// tempting to mis-tap) while GPS is already doing the work. They reappear
+/// the moment GPS drops (no permission / location services off).
 class _NavFooter extends StatelessWidget {
   const _NavFooter({
     required this.onAdvance,
     required this.onEnd,
     required this.isLast,
+    required this.showManualControls,
   });
 
   final VoidCallback onAdvance;
   final VoidCallback onEnd;
   final bool isLast;
+  final bool showManualControls;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
+    final endButton = Pressable(
+      onTap: onEnd,
+      semanticLabel: '結束導航',
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Text(
+          '結束導航',
+          style: AppTextStyles.bodyRegular.copyWith(
+            color: cs.error,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
     return Container(
       decoration: BoxDecoration(
         color: cs.surface,
         border: Border(top: BorderSide(color: cs.outlineVariant)),
       ),
       padding: EdgeInsets.fromLTRB(20, 14, 20, 12 + bottomInset),
-      child: BlocBuilder<JourneySessionBloc, JourneySessionState>(
-        buildWhen: (p, c) => p.phase != c.phase,
-        builder: (context, state) {
-          final hasPhaseAction =
-              state.phase == JourneyPhase.waiting ||
-              state.phase == JourneyPhase.riding;
-          return Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const JourneyControls(),
-              _SheetButton(
-                label: isLast ? '完成行程' : '完成此段，前往下一段',
-                onTap: onAdvance,
-                filled: !hasPhaseAction,
-              ),
-              const SizedBox(height: 4),
-              Pressable(
-                onTap: onEnd,
-                semanticLabel: '結束導航',
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text(
-                    '結束導航',
-                    style: AppTextStyles.bodyRegular.copyWith(
-                      color: cs.error,
-                      fontWeight: FontWeight.w600,
+      child: !showManualControls
+          ? Column(mainAxisSize: MainAxisSize.min, children: [endButton])
+          : BlocBuilder<JourneySessionBloc, JourneySessionState>(
+              buildWhen: (p, c) => p.phase != c.phase,
+              builder: (context, state) {
+                final hasPhaseAction =
+                    state.phase == JourneyPhase.waiting ||
+                    state.phase == JourneyPhase.riding;
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const JourneyControls(),
+                    _SheetButton(
+                      label: isLast ? '完成行程' : '完成此段，前往下一段',
+                      onTap: onAdvance,
+                      filled: !hasPhaseAction,
                     ),
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
+                    const SizedBox(height: 4),
+                    endButton,
+                  ],
+                );
+              },
+            ),
     );
   }
 }

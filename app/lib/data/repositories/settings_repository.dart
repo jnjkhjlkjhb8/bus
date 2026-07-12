@@ -32,11 +32,6 @@ class SettingsRepository {
   set liveActivityEnabled(bool value) =>
       _store.put('live_activity_enabled', value);
 
-  bool get navigationLocationEnabled =>
-      _boolValue('navigation_location_enabled', defaultValue: true);
-  set navigationLocationEnabled(bool value) =>
-      _store.put('navigation_location_enabled', value);
-
   bool get devModeEnabled =>
       _boolValue('dev_mode_enabled', defaultValue: false);
   set devModeEnabled(bool value) => _store.put('dev_mode_enabled', value);

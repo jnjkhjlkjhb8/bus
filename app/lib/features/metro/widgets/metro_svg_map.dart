@@ -28,6 +28,7 @@ class MetroSvgMap extends StatelessWidget {
     builder: (context, constraints) {
       final s = constraints.maxWidth / _mapW;
       final mapH = _mapH * s;
+      final isDark = Theme.of(context).brightness == Brightness.dark;
 
       final selectedStation = selectedStationId != null
           ? metroMapStations.firstWhere(
@@ -56,7 +57,9 @@ class MetroSvgMap extends StatelessWidget {
             children: [
               Positioned.fill(
                 child: SvgPicture.asset(
-                  'assets/mrt/TRTC_map.svg',
+                  isDark
+                      ? 'assets/mrt/TRTC_map_dark.svg'
+                      : 'assets/mrt/TRTC_map_light.svg',
                   fit: BoxFit.fill,
                 ),
               ),
@@ -98,6 +101,7 @@ class MetroSvgMap extends StatelessWidget {
                         delayMs: getDelayMs(station),
                         animate: animate,
                         isSelected: station.id == selectedStationId,
+                        color: isDark ? Colors.white : Colors.black,
                       ),
                     ),
                   ),
@@ -115,6 +119,7 @@ class _AnimatedLabel extends StatefulWidget {
     required this.delayMs,
     required this.animate,
     required this.isSelected,
+    required this.color,
     super.key,
   });
 
@@ -122,6 +127,7 @@ class _AnimatedLabel extends StatefulWidget {
   final int delayMs;
   final bool animate;
   final bool isSelected;
+  final Color color;
 
   @override
   State<_AnimatedLabel> createState() => _AnimatedLabelState();
@@ -189,10 +195,10 @@ class _AnimatedLabelState extends State<_AnimatedLabel>
         child: Text(
           widget.label,
           textAlign: TextAlign.center,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 4,
             fontWeight: FontWeight.w800,
-            color: Colors.black,
+            color: widget.color,
             height: 1,
           ),
         ),
@@ -311,8 +317,8 @@ class _SelectedMarkerState extends State<_SelectedMarker>
                 ),
               ),
               Container(
-                width: 14,
-                height: 14,
+                width: 4,
+                height: 4,
                 decoration: const BoxDecoration(
                   shape: BoxShape.circle,
                   color: Colors.white,

@@ -10,7 +10,6 @@ void main() {
   test('bool settings default to their documented values', () {
     final repo = build();
     expect(repo.liveActivityEnabled, isTrue);
-    expect(repo.navigationLocationEnabled, isTrue);
     expect(repo.pushEnabled, isTrue);
     expect(repo.analyticsEnabled, isTrue);
     expect(repo.crashlyticsEnabled, isTrue);

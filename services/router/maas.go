@@ -122,7 +122,7 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 			return &resp, nil
 		}
 	}
-	raw, err, _ := s.sfGroup.Do(cacheKey, func() (interface{}, error) {
+	raw, err, _ := s.sfGroup.Do(cacheKey, func() (any, error) {
 		return s.get(ctx, req)
 	})
 	if err != nil {
@@ -137,15 +137,30 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 
 	return resp, nil
 }
-func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
-	// TDX requires the full yyyy-mm-ddTHH:mm:ss format (code 40001 otherwise);
-	// the app sends HH:mm, so pad the seconds when missing.
-	timeStr := req.Time
+
+// maasTimeParam builds the TDX routing time query params. Despite the docs
+// saying depart and arrival are mutually exclusive, TDX's validator requires
+// BOTH to be present — omitting either returns code 40001 — so both are sent
+// with the same value. TDX also rejects a depart at/before now with code
+// 20001, so a depart search bumps the time one minute ahead when it is not in
+// the future. The app sends HH:mm, so the seconds are padded (40001
+// otherwise). Times are Taipei (server local per TDX); an unparseable value
+// falls through as-is.
+func maasTimeParam(date, timeStr string, arriveBy bool, now time.Time) (depart, arrival string) {
 	if len(timeStr) == len("HH:mm") {
 		timeStr += ":00"
 	}
-	paramTime := fmt.Sprintf("%sT%s", req.Date, timeStr)
+	const layout = "2006-01-02T15:04:05"
+	value := fmt.Sprintf("%sT%s", date, timeStr)
+	if !arriveBy {
+		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil && !t.After(now) {
+			value = now.Add(time.Minute).Format(layout)
+		}
+	}
+	return value, value
+}
 
+func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
 	gc := req.Gc
 	if gc < 0 || gc > 1 {
 		gc = 0.0
@@ -186,20 +201,9 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 		SetQueryParam("last_mile_mode", fmt.Sprintf("%d", lastMode)).
 		SetQueryParam("last_mile_time", fmt.Sprintf("%d", lastTime)).
 		SetResult(&apiResp)
-	// depart and arrival are mutually exclusive (TDX: pick one). Send arrival
-	// only when the user asked to arrive by a time. Otherwise send depart only
-	// when it is in the future: a depart at/before now trips TDX's 20001
-	// "depart time before now", and omitting it makes TDX default to its own
-	// current time — exactly what a "depart now" search wants. Times are Taipei
-	// (server local per TDX); an unparseable value falls through as-is.
-	switch {
-	case req.ArriveBy:
-		r.SetQueryParam("arrival", paramTime)
-	default:
-		if t, perr := time.ParseInLocation("2006-01-02T15:04:05", paramTime, time.Local); perr != nil || t.After(time.Now()) {
-			r.SetQueryParam("depart", paramTime)
-		}
-	}
+	depart, arrival := maasTimeParam(req.Date, req.Time, req.ArriveBy, time.Now())
+	r.SetQueryParam("depart", depart)
+	r.SetQueryParam("arrival", arrival)
 	resp, err := r.Get("/routing")
 	if err != nil {
 		return nil, err
@@ -219,7 +223,7 @@ func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxA
 			EndTime:    route.EndTime,
 			Transfers:  route.Transfers,
 		}
-		for secIdx, sec := range route.Sections {
+		for _, sec := range route.Sections {
 			pbSec := &pb.Section{
 				Type: sec.Type,
 				TravelSummary: &pb.Summary{
@@ -277,13 +281,17 @@ func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxA
 			}
 			pbSec.NotificationIdentity = resolveBusNotificationIdentity(ctx, db, sec)
 
-			// First/last-mile walks: TDX bakes the fixed first_mile_time /
-			// last_mile_time budget into their duration. Replace it with the real
-			// OSRM foot time when both endpoints have coordinates; on any OSRM
-			// error or missing coordinate the TDX value is left untouched.
-			if isWalkMode(sec.Transport.Mode) && (secIdx == 0 || secIdx == len(route.Sections)-1) {
-				if secs, ok := walkDurationSeconds(ctx, osrmClient, pbSec.Departure.Location, pbSec.Arrival.Location); ok {
+			// Every walk section (first mile, transfer, last mile): TDX bakes a
+			// fixed walk-time budget into the duration and gives no geometry. One
+			// OSRM foot route replaces the duration with the real time and
+			// attaches the street geometry plus turn-by-turn steps. On any OSRM
+			// error or missing coordinate the TDX value is left untouched and the
+			// path and steps stay empty.
+			if isWalkMode(sec.Transport.Mode) {
+				if secs, path, steps, ok := walkRoute(ctx, osrmClient, pbSec.Departure.Location, pbSec.Arrival.Location); ok {
 					pbSec.TravelSummary.Duration = secs
+					pbSec.WalkPath = path
+					pbSec.WalkSteps = steps
 				}
 			}
 
@@ -305,32 +313,113 @@ func isWalkMode(mode string) bool {
 	return mode == "" || strings.EqualFold(mode, "walk")
 }
 
-// walkDurationSeconds returns the OSRM foot travel time (seconds) between two
-// points. ok is false when either point lacks coordinates or OSRM does not
-// return a usable duration, so the caller keeps the fixed TDX estimate.
-func walkDurationSeconds(ctx context.Context, osrmClient *resty.Client, from, to *pb.Location) (int64, bool) {
+// osrmRouteResponse is the subset of the OSRM /route/v1/foot response the
+// planner consumes: total duration, the geojson geometry, and the per-leg
+// turn-by-turn steps.
+type osrmRouteResponse struct {
+	Code   string `json:"code"`
+	Routes []struct {
+		Duration float64 `json:"duration"`
+		Geometry struct {
+			Coordinates [][]float64 `json:"coordinates"`
+		} `json:"geometry"`
+		Legs []struct {
+			Steps []struct {
+				Distance float64 `json:"distance"`
+				Duration float64 `json:"duration"`
+				Name     string  `json:"name"`
+				Maneuver struct {
+					Type     string    `json:"type"`
+					Modifier string    `json:"modifier"`
+					Location []float64 `json:"location"`
+				} `json:"maneuver"`
+			} `json:"steps"`
+		} `json:"legs"`
+	} `json:"routes"`
+}
+
+// walkRoute resolves the OSRM foot route between two points for a walk section.
+// It returns the real travel time (seconds), the route geometry, and the
+// turn-by-turn steps from a single /route call. ok is false when either point
+// lacks coordinates or OSRM returns no usable route, so the caller keeps the
+// fixed TDX estimate and leaves the path and steps empty.
+func walkRoute(ctx context.Context, osrmClient *resty.Client, from, to *pb.Location) (int64, []*pb.Location, []*pb.WalkStep, bool) {
 	if osrmClient == nil || from == nil || to == nil {
-		return 0, false
+		return 0, nil, nil, false
 	}
 	if (from.Lat == 0 && from.Lng == 0) || (to.Lat == 0 && to.Lng == 0) {
-		return 0, false
+		return 0, nil, nil, false
 	}
 	coords := fmt.Sprintf("%f,%f;%f,%f", from.Lng, from.Lat, to.Lng, to.Lat)
-	var out struct {
-		Code      string      `json:"code"`
-		Durations [][]float64 `json:"durations"`
-	}
+	var out osrmRouteResponse
 	resp, err := osrmClient.R().
 		SetContext(ctx).
-		SetQueryParam("sources", "0").
-		SetQueryParam("destinations", "1").
-		SetQueryParam("annotations", "duration").
+		SetQueryParam("steps", "true").
+		SetQueryParam("geometries", "geojson").
+		SetQueryParam("overview", "full").
 		SetResult(&out).
-		Get(fmt.Sprintf("http://osrm:5000/table/v1/foot/%s", coords))
-	if err != nil || !resp.IsSuccess() || out.Code != "Ok" || len(out.Durations) == 0 || len(out.Durations[0]) == 0 {
-		return 0, false
+		Get(fmt.Sprintf("http://osrm:5000/route/v1/foot/%s", coords))
+	if err != nil || !resp.IsSuccess() || out.Code != "Ok" || len(out.Routes) == 0 {
+		return 0, nil, nil, false
 	}
-	return int64(out.Durations[0][0]), true
+	route := out.Routes[0]
+	path := make([]*pb.Location, 0, len(route.Geometry.Coordinates))
+	for _, c := range route.Geometry.Coordinates {
+		if len(c) < 2 {
+			continue
+		}
+		// geojson coordinates are [lng, lat].
+		path = append(path, &pb.Location{Lng: c[0], Lat: c[1]})
+	}
+	var steps []*pb.WalkStep
+	for _, leg := range route.Legs {
+		for _, st := range leg.Steps {
+			step := &pb.WalkStep{
+				Instruction:     walkInstruction(st.Maneuver.Type, st.Maneuver.Modifier, st.Name),
+				ManeuverType:    st.Maneuver.Type,
+				Modifier:        st.Maneuver.Modifier,
+				DistanceMeters:  st.Distance,
+				DurationSeconds: int64(st.Duration),
+			}
+			if len(st.Maneuver.Location) >= 2 {
+				step.Location = &pb.Location{Lng: st.Maneuver.Location[0], Lat: st.Maneuver.Location[1]}
+			}
+			steps = append(steps, step)
+		}
+	}
+	return int64(route.Duration), path, steps, true
+}
+
+// walkInstruction composes a Traditional Chinese turn-by-turn sentence from one
+// OSRM maneuver. Taiwan OSM street names are already Chinese, so the street
+// name (when present) is used verbatim. Unknown maneuver types fall back to a
+// generic "continue straight" sentence so navigation never shows an empty line.
+func walkInstruction(maneuverType, modifier, name string) string {
+	switch maneuverType {
+	case "arrive":
+		return "抵達目的地"
+	case "depart":
+		if name != "" {
+			return fmt.Sprintf("沿%s出發", name)
+		}
+		return "開始步行"
+	}
+	turn := map[string]string{
+		"left": "左轉", "right": "右轉",
+		"slight left": "稍向左", "slight right": "稍向右",
+		"sharp left": "向左急轉", "sharp right": "向右急轉",
+		"uturn": "迴轉",
+	}[modifier]
+	switch {
+	case turn != "" && name != "":
+		return fmt.Sprintf("%s進入%s", turn, name)
+	case turn != "":
+		return turn
+	case name != "":
+		return fmt.Sprintf("沿%s直走", name)
+	default:
+		return "繼續直走"
+	}
 }
 
 // sectionFare resolves the adult full fare (NT$) for one transit section by

@@ -414,6 +414,8 @@ class Section extends $pb.GeneratedMessage {
     Agency? agency,
     NotificationIdentity? notificationIdentity,
     $core.int? fare,
+    $core.Iterable<Location>? walkPath,
+    $core.Iterable<WalkStep>? walkSteps,
   }) {
     final result = create();
     if (type != null) result.type = type;
@@ -427,6 +429,8 @@ class Section extends $pb.GeneratedMessage {
     if (notificationIdentity != null)
       result.notificationIdentity = notificationIdentity;
     if (fare != null) result.fare = fare;
+    if (walkPath != null) result.walkPath.addAll(walkPath);
+    if (walkSteps != null) result.walkSteps.addAll(walkSteps);
     return result;
   }
 
@@ -457,6 +461,10 @@ class Section extends $pb.GeneratedMessage {
         8, _omitFieldNames ? '' : 'notificationIdentity',
         subBuilder: NotificationIdentity.create)
     ..aI(9, _omitFieldNames ? '' : 'fare')
+    ..pPM<Location>(10, _omitFieldNames ? '' : 'walkPath',
+        protoName: 'walkPath', subBuilder: Location.create)
+    ..pPM<WalkStep>(11, _omitFieldNames ? '' : 'walkSteps',
+        protoName: 'walkSteps', subBuilder: WalkStep.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -565,6 +573,134 @@ class Section extends $pb.GeneratedMessage {
   $core.bool hasFare() => $_has(8);
   @$pb.TagNumber(9)
   void clearFare() => $_clearField(9);
+
+  /// OSRM foot-route geometry for a walk section (first mile, transfer, last
+  /// mile). Empty when the section is not a walk or OSRM did not resolve a
+  /// route; the app then falls back to a straight departure→arrival line.
+  @$pb.TagNumber(10)
+  $pb.PbList<Location> get walkPath => $_getList(9);
+
+  /// Turn-by-turn walk steps for a walk section. Empty under the same
+  /// conditions as walkPath.
+  @$pb.TagNumber(11)
+  $pb.PbList<WalkStep> get walkSteps => $_getList(10);
+}
+
+class WalkStep extends $pb.GeneratedMessage {
+  factory WalkStep({
+    $core.String? instruction,
+    $core.String? maneuverType,
+    $core.String? modifier,
+    $core.double? distanceMeters,
+    $fixnum.Int64? durationSeconds,
+    Location? location,
+  }) {
+    final result = create();
+    if (instruction != null) result.instruction = instruction;
+    if (maneuverType != null) result.maneuverType = maneuverType;
+    if (modifier != null) result.modifier = modifier;
+    if (distanceMeters != null) result.distanceMeters = distanceMeters;
+    if (durationSeconds != null) result.durationSeconds = durationSeconds;
+    if (location != null) result.location = location;
+    return result;
+  }
+
+  WalkStep._();
+
+  factory WalkStep.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory WalkStep.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'WalkStep',
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'instruction')
+    ..aOS(2, _omitFieldNames ? '' : 'maneuverType', protoName: 'maneuverType')
+    ..aOS(3, _omitFieldNames ? '' : 'modifier')
+    ..aD(4, _omitFieldNames ? '' : 'distanceMeters',
+        protoName: 'distanceMeters')
+    ..aInt64(5, _omitFieldNames ? '' : 'durationSeconds',
+        protoName: 'durationSeconds')
+    ..aOM<Location>(6, _omitFieldNames ? '' : 'location',
+        subBuilder: Location.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  WalkStep clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  WalkStep copyWith(void Function(WalkStep) updates) =>
+      super.copyWith((message) => updates(message as WalkStep)) as WalkStep;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static WalkStep create() => WalkStep._();
+  @$core.override
+  WalkStep createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static WalkStep getDefault() =>
+      _defaultInstance ??= $pb.GeneratedMessage.$_defaultFor<WalkStep>(create);
+  static WalkStep? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get instruction => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set instruction($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasInstruction() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearInstruction() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get maneuverType => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set maneuverType($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasManeuverType() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearManeuverType() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get modifier => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set modifier($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasModifier() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearModifier() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.double get distanceMeters => $_getN(3);
+  @$pb.TagNumber(4)
+  set distanceMeters($core.double value) => $_setDouble(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasDistanceMeters() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearDistanceMeters() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $fixnum.Int64 get durationSeconds => $_getI64(4);
+  @$pb.TagNumber(5)
+  set durationSeconds($fixnum.Int64 value) => $_setInt64(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasDurationSeconds() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearDurationSeconds() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  Location get location => $_getN(5);
+  @$pb.TagNumber(6)
+  set location(Location value) => $_setField(6, value);
+  @$pb.TagNumber(6)
+  $core.bool hasLocation() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearLocation() => $_clearField(6);
+  @$pb.TagNumber(6)
+  Location ensureLocation() => $_ensure(5);
 }
 
 class NotificationIdentity extends $pb.GeneratedMessage {

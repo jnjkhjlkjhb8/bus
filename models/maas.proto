@@ -51,6 +51,22 @@ message Section {
   // Adult full fare for this section (NT$). Unset (0) when no fare could be
   // resolved; a missing fare never fails the plan.
   int32 fare = 9;
+  // OSRM foot-route geometry for a walk section (first mile, transfer, last
+  // mile). Empty when the section is not a walk or OSRM did not resolve a
+  // route; the app then falls back to a straight departure→arrival line.
+  repeated Location walkPath = 10;
+  // Turn-by-turn walk steps for a walk section. Empty under the same
+  // conditions as walkPath.
+  repeated WalkStep walkSteps = 11;
+}
+
+message WalkStep {
+  string instruction     = 1; // server-composed Traditional Chinese sentence
+  string maneuverType    = 2; // raw OSRM maneuver type: depart/turn/arrive/…
+  string modifier        = 3; // raw OSRM modifier: left/right/straight/…
+  double distanceMeters  = 4;
+  int64  durationSeconds = 5;
+  Location location      = 6; // maneuver point
 }
 
 message NotificationIdentity {

@@ -20,13 +20,13 @@ class AppSlidingSegment<T> extends StatelessWidget {
     final keys = options.keys.toList();
     final selectedIndex = keys.indexOf(value);
 
-    // The raised thumb is always the lighter of the two surfaces. Light mode
-    // reaches that with the card colour on a pressed track; dark mode has to
-    // take them the other way round, since there depth runs toward lightness.
+    // A recessed groove holding a raised, lighter thumb. The track is a
+    // translucent black overlay, not an opaque surface token, so it darkens
+    // whatever hosts the control — scaffold or bottom sheet alike. An opaque
+    // track keyed to a fixed surface collides with the sheet colour in dark
+    // mode (surfaceContainerLow == the sheet), which erases the track entirely.
     final isDark = cs.brightness == Brightness.dark;
-    final trackColor = isDark
-        ? cs.surfaceContainerLow
-        : cs.surfaceContainerHighest;
+    final trackColor = Colors.black.withValues(alpha: isDark ? 0.30 : 0.05);
     final thumbColor = isDark
         ? cs.surfaceContainerHighest
         : cs.surfaceContainerLow;
@@ -55,15 +55,24 @@ class AppSlidingSegment<T> extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: thumbColor,
                       borderRadius: BorderRadius.circular(7),
-                      boxShadow: isDark
-                          ? const []
-                          : [
-                              BoxShadow(
-                                color: cs.shadow.withValues(alpha: .04),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
+                      // Light: a hairline defines the white thumb when it sits
+                      // on an equally white sheet. Dark needs no edge — the
+                      // lighter thumb already separates from the groove.
+                      border: isDark
+                          ? null
+                          : Border.all(
+                              color: Colors.black.withValues(alpha: .04),
+                              width: .5,
+                            ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(
+                            alpha: isDark ? .25 : .05,
+                          ),
+                          blurRadius: isDark ? 2 : 4,
+                          offset: Offset(0, isDark ? 1 : 2),
+                        ),
+                      ],
                     ),
                   ),
                 ),

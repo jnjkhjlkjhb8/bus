@@ -29,7 +29,6 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
     on<LanguageSelected>(_onLanguageSelected);
     on<LargeTextToggled>(_onLargeTextToggled);
     on<LiveActivityToggled>(_onLiveActivityToggled);
-    on<NavigationLocationToggled>(_onNavigationLocationToggled);
     on<PushToggled>(_onPushToggled);
     on<AnalyticsToggled>(_onAnalyticsToggled);
     on<CrashlyticsToggled>(_onCrashlyticsToggled);
@@ -47,7 +46,6 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
     crashlyticsEnabled: s.crashlyticsEnabled,
     largeText: s.largeText,
     liveActivityEnabled: s.liveActivityEnabled,
-    navigationLocationEnabled: s.navigationLocationEnabled,
   );
 
   void _onAppearanceSelected(
@@ -74,14 +72,6 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
   ) {
     _settings.liveActivityEnabled = e.value;
     emit(state.copyWith(liveActivityEnabled: e.value));
-  }
-
-  void _onNavigationLocationToggled(
-    NavigationLocationToggled e,
-    Emitter<SettingsState> emit,
-  ) {
-    _settings.navigationLocationEnabled = e.value;
-    emit(state.copyWith(navigationLocationEnabled: e.value));
   }
 
   Future<void> _onPushToggled(

@@ -137,6 +137,22 @@ const Section$json = {
       '10': 'notificationIdentity'
     },
     {'1': 'fare', '3': 9, '4': 1, '5': 5, '10': 'fare'},
+    {
+      '1': 'walkPath',
+      '3': 10,
+      '4': 3,
+      '5': 11,
+      '6': '.Location',
+      '10': 'walkPath'
+    },
+    {
+      '1': 'walkSteps',
+      '3': 11,
+      '4': 3,
+      '5': 11,
+      '6': '.WalkStep',
+      '10': 'walkSteps'
+    },
   ],
 };
 
@@ -148,7 +164,37 @@ final $typed_data.Uint8List sectionDescriptor = $convert.base64Decode(
     'gLMgouVHJhbnNwb3J0Ugl0cmFuc3BvcnQSPwoRaW50ZXJtZWRpYXRlU3RvcHMYBiADKAsyES5J'
     'bnRlcm1lZGlhdGVTdG9wUhFpbnRlcm1lZGlhdGVTdG9wcxIfCgZhZ2VuY3kYByABKAsyBy5BZ2'
     'VuY3lSBmFnZW5jeRJKChVub3RpZmljYXRpb25faWRlbnRpdHkYCCABKAsyFS5Ob3RpZmljYXRp'
-    'b25JZGVudGl0eVIUbm90aWZpY2F0aW9uSWRlbnRpdHkSEgoEZmFyZRgJIAEoBVIEZmFyZQ==');
+    'b25JZGVudGl0eVIUbm90aWZpY2F0aW9uSWRlbnRpdHkSEgoEZmFyZRgJIAEoBVIEZmFyZRIlCg'
+    'h3YWxrUGF0aBgKIAMoCzIJLkxvY2F0aW9uUgh3YWxrUGF0aBInCgl3YWxrU3RlcHMYCyADKAsy'
+    'CS5XYWxrU3RlcFIJd2Fsa1N0ZXBz');
+
+@$core.Deprecated('Use walkStepDescriptor instead')
+const WalkStep$json = {
+  '1': 'WalkStep',
+  '2': [
+    {'1': 'instruction', '3': 1, '4': 1, '5': 9, '10': 'instruction'},
+    {'1': 'maneuverType', '3': 2, '4': 1, '5': 9, '10': 'maneuverType'},
+    {'1': 'modifier', '3': 3, '4': 1, '5': 9, '10': 'modifier'},
+    {'1': 'distanceMeters', '3': 4, '4': 1, '5': 1, '10': 'distanceMeters'},
+    {'1': 'durationSeconds', '3': 5, '4': 1, '5': 3, '10': 'durationSeconds'},
+    {
+      '1': 'location',
+      '3': 6,
+      '4': 1,
+      '5': 11,
+      '6': '.Location',
+      '10': 'location'
+    },
+  ],
+};
+
+/// Descriptor for `WalkStep`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List walkStepDescriptor = $convert.base64Decode(
+    'CghXYWxrU3RlcBIgCgtpbnN0cnVjdGlvbhgBIAEoCVILaW5zdHJ1Y3Rpb24SIgoMbWFuZXV2ZX'
+    'JUeXBlGAIgASgJUgxtYW5ldXZlclR5cGUSGgoIbW9kaWZpZXIYAyABKAlSCG1vZGlmaWVyEiYK'
+    'DmRpc3RhbmNlTWV0ZXJzGAQgASgBUg5kaXN0YW5jZU1ldGVycxIoCg9kdXJhdGlvblNlY29uZH'
+    'MYBSABKANSD2R1cmF0aW9uU2Vjb25kcxIlCghsb2NhdGlvbhgGIAEoCzIJLkxvY2F0aW9uUghs'
+    'b2NhdGlvbg==');
 
 @$core.Deprecated('Use notificationIdentityDescriptor instead')
 const NotificationIdentity$json = {

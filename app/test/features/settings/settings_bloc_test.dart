@@ -37,7 +37,6 @@ void main() {
       expect(bloc.state.crashlyticsEnabled, isTrue);
       expect(bloc.state.largeText, isFalse);
       expect(bloc.state.liveActivityEnabled, isTrue);
-      expect(bloc.state.navigationLocationEnabled, isTrue);
     });
 
     test('hydrates from persisted values', () {
@@ -50,7 +49,6 @@ void main() {
           'crashlytics_enabled': false,
           'large_text': true,
           'live_activity_enabled': false,
-          'navigation_location_enabled': false,
         }),
       );
       expect(bloc.state.appearance, Appearance.dark);
@@ -60,7 +58,6 @@ void main() {
       expect(bloc.state.crashlyticsEnabled, isFalse);
       expect(bloc.state.largeText, isTrue);
       expect(bloc.state.liveActivityEnabled, isFalse);
-      expect(bloc.state.navigationLocationEnabled, isFalse);
     });
   });
 
@@ -93,16 +90,6 @@ void main() {
 
       expect(bloc.state.liveActivityEnabled, isFalse);
       expect(settings.liveActivityEnabled, isFalse);
-    });
-
-    test('navigation location toggle persists', () async {
-      final settings = repo();
-      final bloc = build(settings: settings)
-        ..add(const NavigationLocationToggled(value: false));
-      await bloc.stream.first;
-
-      expect(bloc.state.navigationLocationEnabled, isFalse);
-      expect(settings.navigationLocationEnabled, isFalse);
     });
 
     test('analytics toggle persists', () async {

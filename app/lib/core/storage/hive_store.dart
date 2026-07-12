@@ -10,6 +10,7 @@ class HiveStore {
   static const _boxOnboarded = 'onboarded';
   static const _boxRecents = 'recent_searches';
   static const _boxReminders = 'arrival_reminders';
+  static const _boxSavedPlans = 'saved_plans';
 
   static Future<void> init() async {
     await Hive.initFlutter();
@@ -21,6 +22,7 @@ class HiveStore {
       Hive.openBox<bool>(_boxOnboarded),
       Hive.openBox<dynamic>(_boxRecents),
       Hive.openBox<dynamic>(_boxReminders),
+      Hive.openBox<dynamic>(_boxSavedPlans),
     ]);
   }
 
@@ -42,6 +44,32 @@ class HiveStore {
       ..insert(0, item);
     await recents.put('items', items.take(10).toList());
   }
+
+  static Box<dynamic> get savedPlans => Hive.box(_boxSavedPlans);
+  static bool get savedPlansReady => Hive.isBoxOpen(_boxSavedPlans);
+
+  /// Saved route snapshots as `{key, bytes, savedAt}`, newest first. `bytes`
+  /// are the verbatim TDX proto bytes of a single route.
+  static List<Map<String, dynamic>> get savedPlanEntries =>
+      savedPlans.values
+          .cast<Map<dynamic, dynamic>>()
+          .map((m) => m.cast<String, dynamic>())
+          .toList()
+        ..sort(
+          (a, b) => (b['savedAt'] as int? ?? 0).compareTo(
+            a['savedAt'] as int? ?? 0,
+          ),
+        );
+
+  static Future<void> putSavedPlan(String key, List<int> bytes) =>
+      savedPlans.put(key, {
+        'key': key,
+        'bytes': bytes,
+        'savedAt': DateTime.now().millisecondsSinceEpoch,
+      });
+
+  static Future<void> removeSavedPlan(String key) => savedPlans.delete(key);
+
   static Box<dynamic> get favorites => Hive.box(_boxFavorites);
   static bool get favoritesReady => Hive.isBoxOpen(_boxFavorites);
   static Box<dynamic> get settings => Hive.box(_boxSettings);
@@ -52,12 +80,6 @@ class HiveStore {
 
   static set liveActivityEnabled(bool v) =>
       settings.put('live_activity_enabled', v);
-
-  static bool get navigationLocationEnabled =>
-      settings.get('navigation_location_enabled', defaultValue: true) as bool;
-
-  static set navigationLocationEnabled(bool v) =>
-      settings.put('navigation_location_enabled', v);
 
   static bool get devModeEnabled =>
       settings.get('dev_mode_enabled', defaultValue: false) as bool;

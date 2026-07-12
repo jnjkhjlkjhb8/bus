@@ -118,8 +118,8 @@ class _FavoritesEmpty extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 32),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(height: 32),
             Icon(Icons.push_pin_outlined, size: 36, color: cs.outline),
             const SizedBox(height: 12),
             Text(

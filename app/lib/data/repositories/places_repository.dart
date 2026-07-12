@@ -1,6 +1,7 @@
-import 'package:dio/dio.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_google_places_sdk/flutter_google_places_sdk.dart'
+    as places;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:wheres_the_car/core/http/http_client.dart';
 import 'package:wheres_the_car/features/go/model/planned_place.dart';
 
 /// One autocomplete row: a place id plus display text, no coordinates yet.
@@ -17,94 +18,65 @@ class PlaceSuggestion {
   final String secondaryText;
 }
 
-/// Google Places API (New): Autocomplete for type-ahead, Place Details to
-/// resolve the chosen suggestion to a coordinate. Both calls share a session
-/// token so Google bills them as one session.
+/// Google Places API (New) via the native Android/iOS SDK. Going through the
+/// SDK instead of REST lets the API key keep its Android-app restriction: the
+/// native request carries the app package + signature the key is locked to,
+/// which a plain HTTP call cannot. The session token that bills autocomplete +
+/// the follow-up details lookup as one session is managed inside the SDK.
 class PlacesRepository {
   PlacesRepository._();
   static final PlacesRepository instance = PlacesRepository._();
 
   static const _apiKey = String.fromEnvironment('GOOGLE_PLACES_API_KEY');
-  static const _autocompleteUrl =
-      'https://places.googleapis.com/v1/places:autocomplete';
-  static const _detailsBase = 'https://places.googleapis.com/v1/places/';
 
-  Dio get _dio => HttpClient.instance.dio;
-
-  /// Empty result when no key is configured (e.g. test env) so the UI degrades
+  /// Null client when no key is configured (e.g. test env) so the UI degrades
   /// to just the current-location option instead of erroring.
-  bool get _enabled => _apiKey.isNotEmpty;
+  late final places.FlutterGooglePlacesSdk? _client = _apiKey.isEmpty
+      ? null
+      : places.FlutterGooglePlacesSdk(
+          _apiKey,
+          locale: const Locale('zh', 'TW'),
+          useNewApi: true,
+        );
 
-  Future<List<PlaceSuggestion>> autocomplete(
-    String query,
-    String sessionToken,
-  ) async {
-    if (!_enabled || query.isEmpty) return const [];
-    final res = await _dio.post<Map<String, dynamic>>(
-      _autocompleteUrl,
-      data: {
-        'input': query,
-        'sessionToken': sessionToken,
-        'languageCode': 'zh-TW',
-        'regionCode': 'TW',
-        'includedRegionCodes': ['tw'],
-      },
-      options: Options(headers: {'X-Goog-Api-Key': _apiKey}),
+  Future<List<PlaceSuggestion>> autocomplete(String query) async {
+    final client = _client;
+    if (client == null || query.isEmpty) return const [];
+    final res = await client.findAutocompletePredictions(
+      query,
+      countries: const ['tw'],
     );
-    return parseSuggestions(res.data ?? const {});
-  }
-
-  Future<PlannedPlace> details(String placeId, String sessionToken) async {
-    final res = await _dio.get<Map<String, dynamic>>(
-      '$_detailsBase$placeId',
-      queryParameters: {'sessionToken': sessionToken},
-      options: Options(
-        headers: {
-          'X-Goog-Api-Key': _apiKey,
-          'X-Goog-FieldMask': 'location,displayName',
-        },
-      ),
-    );
-    return parseDetails(res.data ?? const {});
-  }
-
-  /// Pure parser (unit-tested): Places Autocomplete (New) response -> rows.
-  /// Skips query predictions that have no place id (e.g. category guesses).
-  static List<PlaceSuggestion> parseSuggestions(Map<String, dynamic> json) {
-    final suggestions = json['suggestions'];
-    if (suggestions is! List) return const [];
-    final out = <PlaceSuggestion>[];
-    for (final s in suggestions) {
-      final pred = (s as Map)['placePrediction'];
-      if (pred is! Map) continue;
-      final placeId = pred['placeId'] as String?;
-      if (placeId == null || placeId.isEmpty) continue;
-      final fmt = pred['structuredFormat'] as Map?;
-      final primary =
-          (fmt?['mainText'] as Map?)?['text'] as String? ??
-          (pred['text'] as Map?)?['text'] as String? ??
-          '';
-      final secondary = (fmt?['secondaryText'] as Map?)?['text'] as String?;
-      out.add(
+    return [
+      for (final p in res.predictions)
         PlaceSuggestion(
-          placeId: placeId,
-          primaryText: primary,
-          secondaryText: secondary ?? '',
+          placeId: p.placeId,
+          primaryText: p.primaryText,
+          secondaryText: p.secondaryText,
         ),
-      );
-    }
-    return out;
+    ];
   }
 
-  /// Pure parser (unit-tested): Places Details (New) response -> a place.
-  static PlannedPlace parseDetails(Map<String, dynamic> json) {
-    final loc = json['location'] as Map?;
-    final lat = (loc?['latitude'] as num?)?.toDouble();
-    final lon = (loc?['longitude'] as num?)?.toDouble();
-    if (lat == null || lon == null) {
+  Future<PlannedPlace> details(String placeId) async {
+    final client = _client;
+    if (client == null) {
+      throw StateError('Places API key not configured');
+    }
+    final res = await client.fetchPlace(
+      placeId,
+      fields: const [places.PlaceField.Location, places.PlaceField.Name],
+    );
+    return plannedPlaceFrom(res.place?.latLng, res.place?.name);
+  }
+
+  /// Pure mapper (unit-tested): SDK place location/name -> a [PlannedPlace].
+  /// Guards the lat/lng ordering and the missing-location case.
+  static PlannedPlace plannedPlaceFrom(places.LatLng? latLng, String? name) {
+    if (latLng == null) {
       throw const FormatException('Place details missing location');
     }
-    final name = (json['displayName'] as Map?)?['text'] as String? ?? '地點';
-    return PlannedPlace(name: name, latLng: LatLng(lat, lon));
+    return PlannedPlace(
+      name: name ?? '地點',
+      latLng: LatLng(latLng.lat, latLng.lng),
+    );
   }
 }

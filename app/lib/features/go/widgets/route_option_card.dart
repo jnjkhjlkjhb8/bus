@@ -3,6 +3,7 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 
 String formatClock(String raw) {
@@ -32,6 +33,8 @@ class RouteOptionCard extends StatelessWidget {
     required this.highlighted,
     required this.onTap,
     this.badge,
+    this.isSaved = false,
+    this.onToggleSave,
     super.key,
   });
 
@@ -39,6 +42,12 @@ class RouteOptionCard extends StatelessWidget {
   final bool highlighted;
   final String? badge;
   final VoidCallback onTap;
+
+  /// Whether this route is currently in the saved snapshots.
+  final bool isSaved;
+
+  /// Tapping the bookmark toggles save state; hidden when null.
+  final VoidCallback? onToggleSave;
 
   @override
   Widget build(BuildContext context) {
@@ -85,6 +94,10 @@ class RouteOptionCard extends StatelessWidget {
               fontFeatures: AppTextStyles.tabularFigures,
             ),
           ),
+        if (onToggleSave != null) ...[
+          const SizedBox(width: 8),
+          _SaveButton(saved: isSaved, onTap: onToggleSave!),
+        ],
       ],
     );
 
@@ -185,6 +198,35 @@ class RouteOptionCard extends StatelessWidget {
           border: highlighted ? null : Border.all(color: cs.outlineVariant),
         ),
         child: content,
+      ),
+    );
+  }
+}
+
+class _SaveButton extends StatelessWidget {
+  const _SaveButton({required this.saved, required this.onTap});
+
+  final bool saved;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Pressable(
+      onTap: onTap,
+      semanticLabel: saved ? '取消保存路線' : '保存路線',
+      child: Padding(
+        padding: const EdgeInsets.all(2),
+        child: AnimatedSwitcher(
+          duration: AppMotion.short,
+          child: Icon(
+            saved ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
+            key: ValueKey(saved),
+            size: 20,
+            // Saved: solid Ink black. Unsaved: hollow, muted outline.
+            color: saved ? cs.onSurface : cs.onSurfaceVariant,
+          ),
+        ),
       ),
     );
   }

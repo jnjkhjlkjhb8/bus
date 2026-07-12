@@ -250,6 +250,13 @@ class _MetroScreenState extends State<MetroScreen> {
     return BlocProvider.value(
       value: _metroBloc,
       child: Scaffold(
+        // The map SVG is transparent, so the Scaffold paints the map canvas.
+        // A dedicated canvas — crisp white in light, deepened near-black in
+        // dark — instead of the grey scaffold surface, so lines and the
+        // #1a1a1a interchange dots lift off the background.
+        backgroundColor: cs.brightness == Brightness.dark
+            ? const Color(0xFF0C0C0C)
+            : Colors.white,
         body: Stack(
           fit: StackFit.expand,
           children: [

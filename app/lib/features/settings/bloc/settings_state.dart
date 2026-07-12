@@ -43,7 +43,6 @@ class SettingsState extends Equatable {
     this.crashlyticsEnabled = true,
     this.largeText = false,
     this.liveActivityEnabled = true,
-    this.navigationLocationEnabled = true,
   });
 
   final Appearance appearance;
@@ -56,7 +55,6 @@ class SettingsState extends Equatable {
   final bool crashlyticsEnabled;
   final bool largeText;
   final bool liveActivityEnabled;
-  final bool navigationLocationEnabled;
 
   SettingsState copyWith({
     Appearance? appearance,
@@ -69,7 +67,6 @@ class SettingsState extends Equatable {
     bool? crashlyticsEnabled,
     bool? largeText,
     bool? liveActivityEnabled,
-    bool? navigationLocationEnabled,
   }) => SettingsState(
     appearance: appearance ?? this.appearance,
     language: language ?? this.language,
@@ -81,8 +78,6 @@ class SettingsState extends Equatable {
     crashlyticsEnabled: crashlyticsEnabled ?? this.crashlyticsEnabled,
     largeText: largeText ?? this.largeText,
     liveActivityEnabled: liveActivityEnabled ?? this.liveActivityEnabled,
-    navigationLocationEnabled:
-        navigationLocationEnabled ?? this.navigationLocationEnabled,
   );
 
   @override
@@ -97,6 +92,5 @@ class SettingsState extends Equatable {
     crashlyticsEnabled,
     largeText,
     liveActivityEnabled,
-    navigationLocationEnabled,
   ];
 }

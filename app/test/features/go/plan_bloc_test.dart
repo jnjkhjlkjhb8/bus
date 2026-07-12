@@ -43,22 +43,154 @@ void main() {
     await next;
   });
 
-  test('selecting a route updates selectedRouteIndex', () async {
+  test('search success enters results phase with the fastest selected',
+      () async {
+    final result = PlanResult(routes: [_route(), _route()]);
+    final bloc = PlanBloc(repository: _FakeMaasRepository(result: result));
+    addTearDown(bloc.close);
+
+    final next = expectLater(
+      bloc.stream,
+      emitsThrough(
+        isA<PlanState>()
+            .having((s) => s.status, 'status', PlanStatus.success)
+            .having((s) => s.selectedRouteIndex, 'selectedRouteIndex', 0)
+            .having((s) => s.previewing, 'previewing', false),
+      ),
+    );
+
+    bloc.add(_search());
+    await next;
+  });
+
+  test('selecting a route enters the preview phase', () async {
     final bloc = PlanBloc(repository: _FakeMaasRepository());
     addTearDown(bloc.close);
 
     final next = expectLater(
       bloc.stream,
-      emits(
-        isA<PlanState>().having(
-          (s) => s.selectedRouteIndex,
-          'selectedRouteIndex',
-          2,
-        ),
+      emitsThrough(
+        isA<PlanState>()
+            .having((s) => s.selectedRouteIndex, 'selectedRouteIndex', 2)
+            .having((s) => s.previewing, 'previewing', true),
       ),
     );
 
     bloc.add(const RouteSelected(index: 2));
+    await next;
+  });
+
+  test('closing a results preview returns to results, keeping the result',
+      () async {
+    final result = PlanResult(routes: [_route(), _route()]);
+    final bloc = PlanBloc(repository: _FakeMaasRepository(result: result));
+    addTearDown(bloc.close);
+
+    bloc.add(_search());
+    await bloc.stream.firstWhere((s) => s.status == PlanStatus.success);
+    bloc.add(const RouteSelected(index: 1));
+    await bloc.stream.firstWhere((s) => s.previewing);
+
+    final next = expectLater(
+      bloc.stream,
+      emitsThrough(
+        isA<PlanState>()
+            .having((s) => s.previewing, 'previewing', false)
+            .having((s) => s.result, 'result', result)
+            .having((s) => s.selectedRouteIndex, 'selectedRouteIndex', 1),
+      ),
+    );
+
+    bloc.add(const PreviewClosed());
+    await next;
+  });
+
+  test('a new search resets an active preview back to results', () async {
+    final bloc = PlanBloc(
+      repository: _FakeMaasRepository(result: PlanResult(routes: [_route()])),
+    );
+    addTearDown(bloc.close);
+
+    bloc.add(const RouteSelected(index: 0));
+    await bloc.stream.firstWhere((s) => s.previewing);
+
+    final next = expectLater(
+      bloc.stream,
+      emitsThrough(
+        isA<PlanState>()
+            .having((s) => s.status, 'status', PlanStatus.success)
+            .having((s) => s.previewing, 'previewing', false),
+      ),
+    );
+
+    bloc.add(_search());
+    await next;
+  });
+
+  test('opening a saved route lands directly in preview', () async {
+    final bloc = PlanBloc(repository: _FakeMaasRepository());
+    addTearDown(bloc.close);
+
+    final next = expectLater(
+      bloc.stream,
+      emitsThrough(
+        isA<PlanState>()
+            .having((s) => s.status, 'status', PlanStatus.success)
+            .having((s) => s.previewing, 'previewing', true)
+            .having((s) => s.previewFromSaved, 'previewFromSaved', true)
+            .having((s) => s.result?.routes.length, 'routes', 1),
+      ),
+    );
+
+    bloc.add(SavedRouteOpened(_route()));
+    await next;
+  });
+
+  test('closing a saved-route preview clears the injected result', () async {
+    final bloc = PlanBloc(repository: _FakeMaasRepository());
+    addTearDown(bloc.close);
+
+    bloc.add(SavedRouteOpened(_route()));
+    await bloc.stream.firstWhere((s) => s.previewing);
+
+    final next = expectLater(
+      bloc.stream,
+      emitsThrough(
+        isA<PlanState>()
+            .having((s) => s.status, 'status', PlanStatus.initial)
+            .having((s) => s.result, 'result', null)
+            .having((s) => s.previewing, 'previewing', false)
+            .having((s) => s.previewFromSaved, 'previewFromSaved', false),
+      ),
+    );
+
+    bloc.add(const PreviewClosed());
+    await next;
+  });
+
+  test('ending navigation returns to the previewed route', () async {
+    final result = PlanResult(routes: [_route(), _route()]);
+    final bloc = PlanBloc(repository: _FakeMaasRepository(result: result));
+    addTearDown(bloc.close);
+
+    bloc.add(_search());
+    await bloc.stream.firstWhere((s) => s.status == PlanStatus.success);
+    bloc.add(const RouteSelected(index: 1));
+    await bloc.stream.firstWhere((s) => s.previewing);
+    bloc.add(const NavigationStarted());
+    await bloc.stream.firstWhere((s) => s.activeLegIndex != null);
+
+    final next = expectLater(
+      bloc.stream,
+      emitsThrough(
+        isA<PlanState>()
+            .having((s) => s.activeLegIndex, 'activeLegIndex', null)
+            .having((s) => s.previewing, 'previewing', true)
+            .having((s) => s.selectedRouteIndex, 'selectedRouteIndex', 1),
+      ),
+    );
+
+    bloc.add(const NavigationEnded());
     await next;
   });
 
@@ -74,7 +206,10 @@ void main() {
     await expectLater(
       bloc.stream,
       emitsInOrder([
-        isA<PlanState>().having((s) => s.activeLegIndex, 'activeLegIndex', 0),
+        // The constructor's SavedRoutesLoaded emits first; skip past it.
+        emitsThrough(
+          isA<PlanState>().having((s) => s.activeLegIndex, 'activeLegIndex', 0),
+        ),
         isA<PlanState>().having((s) => s.activeStopIndex, 'activeStopIndex', 3),
         isA<PlanState>().having(
           (s) => s.activeLegIndex,

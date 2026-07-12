@@ -138,66 +138,69 @@ extension _HomeScreenScaffold on _HomeScreenState {
                       ),
                     ),
                   ),
-                  Pressable(
-                    onTap: () {
-                      unawaited(HapticService.instance.lightTap());
-                      unawaited(context.push('/go'));
-                    },
-                    semanticLabel: '路線規劃',
-                    child: Container(
-                      width: 44,
-                      height: 44,
-                      decoration: AppTheme.floatingControl(
-                        cs,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Icon(
-                        Icons.directions_rounded,
-                        size: 20,
-                        color: cs.onSurface,
-                      ),
-                    ),
-                  ),
                 ],
               ),
             ),
           ),
 
-          // Floating Recenter FAB tracking the bottom sheet's height
-          ValueListenableBuilder<double?>(
-            valueListenable: _sheetController,
-            builder: (context, offset, child) {
-              final currentOffset = offset ?? 0.0;
-              return Positioned(
-                right: 16,
-                bottom: currentOffset + 16,
-                child: child!,
-              );
-            },
-            child: Pressable(
-              onTap: _recenter,
-              semanticLabel: '定位目前位置',
-              child: Container(
-                width: 44,
-                height: 44,
-                decoration: AppTheme.floatingControl(
-                  cs,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Center(
-                  child: AnimatedSwitcher(
-                    duration: AppMotion.short,
-                    child: _locating
-                        ? const AppSpinner(key: ValueKey('locating'), size: 20)
-                        : Icon(
-                            Icons.gps_fixed_rounded,
-                            key: const ValueKey('idle'),
-                            size: 20,
-                            color: cs.onSurface,
-                          ),
+          // Fixed floating controls: recenter above, route planner below.
+          // Anchored above the sheet's default extent; no longer tracks drags.
+          Positioned(
+            right: 16,
+            bottom: MediaQuery.sizeOf(context).height * 0.30 + 16,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              spacing: 8,
+              children: [
+                Pressable(
+                  onTap: _recenter,
+                  semanticLabel: '定位目前位置',
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: AppTheme.floatingControl(
+                      cs,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Center(
+                      child: AnimatedSwitcher(
+                        duration: AppMotion.short,
+                        child: _locating
+                            ? const AppSpinner(
+                                key: ValueKey('locating'),
+                                size: 20,
+                              )
+                            : Icon(
+                                Icons.gps_fixed_rounded,
+                                key: const ValueKey('idle'),
+                                size: 20,
+                                color: cs.onSurface,
+                              ),
+                      ),
+                    ),
                   ),
                 ),
-              ),
+                Pressable(
+                  onTap: () {
+                    unawaited(HapticService.instance.lightTap());
+                    unawaited(context.push('/go'));
+                  },
+                  semanticLabel: '路線規劃',
+                  child: Container(
+                    width: 44,
+                    height: 44,
+                    decoration: AppTheme.floatingControl(
+                      cs,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      Icons.directions_rounded,
+                      size: 20,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
 

@@ -22,6 +22,7 @@ class PlanRoute extends Equatable {
     required this.transfers,
     required this.sections,
     this.totalFare = 0,
+    this.raw,
   });
 
   factory PlanRoute.fromProto(maas.Route proto) => PlanRoute(
@@ -33,7 +34,14 @@ class PlanRoute extends Equatable {
     sections: [
       for (final section in proto.sections) PlanSection.fromProto(section),
     ],
+    raw: proto.writeToBuffer(),
   );
+
+  /// Rebuild a route from bytes produced by [raw] — a lossless round-trip
+  /// through the same proto path, so saved snapshots stay in sync with the
+  /// model without a hand-written serializer.
+  factory PlanRoute.fromBytes(List<int> bytes) =>
+      PlanRoute.fromProto(maas.Route.fromBuffer(bytes));
 
   final int travelTime;
   final String startTime;
@@ -43,6 +51,32 @@ class PlanRoute extends Equatable {
   /// Sum of resolved section fares (NT$); 0 when no fare could be resolved.
   final int totalFare;
   final List<PlanSection> sections;
+
+  /// The verbatim TDX proto bytes this route decoded from; null for routes not
+  /// built via the proto factory. Persisted as-is when a snapshot is saved.
+  final List<int>? raw;
+
+  /// Stable identity for a saved snapshot, derived from the canonical proto
+  /// bytes so sibling options of the same trip (which share origin, dest, and
+  /// departure time) get distinct keys. Identical content collapses to one
+  /// entry; re-serialization is deterministic, so a restored snapshot keys the
+  /// same as the route it came from. Falls back to a field key when [raw] is
+  /// absent.
+  String get savedKey {
+    final bytes = raw;
+    if (bytes == null) {
+      final origin = sections.isNotEmpty ? sections.first.departure.name : '';
+      final dest = sections.isNotEmpty ? sections.last.arrival.name : '';
+      return '$origin|$dest|$startTime';
+    }
+    // FNV-1a over the bytes: deterministic across app restarts (unlike
+    // Object.hashCode), and collision-safe enough for a local bookmark id.
+    var hash = 0x811c9dc5;
+    for (final b in bytes) {
+      hash = ((hash ^ b) * 0x01000193) & 0xffffffff;
+    }
+    return 'r$hash';
+  }
 
   PlanPoint? firstPoint({int leg = 0}) {
     if (leg >= sections.length) return null;
@@ -88,6 +122,8 @@ class PlanSection extends Equatable {
     required this.intermediateStops,
     this.identity = const PlanIdentity.empty(),
     this.fare = 0,
+    this.walkPath = const [],
+    this.walkSteps = const [],
   });
 
   factory PlanSection.fromProto(maas.Section proto) => PlanSection(
@@ -101,6 +137,8 @@ class PlanSection extends Equatable {
     ],
     identity: PlanIdentity.fromProto(proto.notificationIdentity),
     fare: proto.fare,
+    walkPath: [for (final p in proto.walkPath) PlanPoint.fromProto(p)],
+    walkSteps: [for (final s in proto.walkSteps) PlanWalkStep.fromProto(s)],
   );
 
   final String type;
@@ -114,6 +152,14 @@ class PlanSection extends Equatable {
   /// Adult full fare for this section (NT$); 0 when unresolved.
   final int fare;
 
+  /// OSRM foot-route geometry for a walk section; empty when not a walk or
+  /// OSRM did not resolve a route (the map then draws a straight line).
+  final List<PlanPoint> walkPath;
+
+  /// Turn-by-turn walk steps for a walk section; empty under the same
+  /// conditions as [walkPath].
+  final List<PlanWalkStep> walkSteps;
+
   @override
   List<Object?> get props => [
     type,
@@ -124,6 +170,45 @@ class PlanSection extends Equatable {
     intermediateStops,
     identity,
     fare,
+    walkPath,
+    walkSteps,
+  ];
+}
+
+class PlanWalkStep extends Equatable {
+  const PlanWalkStep({
+    required this.instruction,
+    required this.maneuverType,
+    required this.modifier,
+    required this.distanceMeters,
+    required this.durationSeconds,
+    required this.location,
+  });
+
+  factory PlanWalkStep.fromProto(maas.WalkStep proto) => PlanWalkStep(
+    instruction: proto.instruction,
+    maneuverType: proto.maneuverType,
+    modifier: proto.modifier,
+    distanceMeters: proto.distanceMeters,
+    durationSeconds: proto.durationSeconds.toInt(),
+    location: PlanPoint.fromProto(proto.location),
+  );
+
+  final String instruction;
+  final String maneuverType;
+  final String modifier;
+  final double distanceMeters;
+  final int durationSeconds;
+  final PlanPoint location;
+
+  @override
+  List<Object?> get props => [
+    instruction,
+    maneuverType,
+    modifier,
+    distanceMeters,
+    durationSeconds,
+    location,
   ];
 }
 

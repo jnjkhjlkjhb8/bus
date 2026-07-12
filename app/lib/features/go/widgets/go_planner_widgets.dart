@@ -4,7 +4,6 @@ class _PlannerHeader extends StatelessWidget {
   const _PlannerHeader({
     required this.origin,
     required this.dest,
-    required this.onBack,
     required this.onEditOrigin,
     required this.onEditDest,
     required this.onSwap,
@@ -12,7 +11,6 @@ class _PlannerHeader extends StatelessWidget {
 
   final PlannedPlace? origin;
   final PlannedPlace? dest;
-  final VoidCallback onBack;
   final VoidCallback onEditOrigin;
   final VoidCallback onEditDest;
   final VoidCallback onSwap;
@@ -23,16 +21,6 @@ class _PlannerHeader extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        AppBarCircleButton(
-          onTap: onBack,
-          semanticLabel: '返回',
-          child: Icon(
-            Icons.arrow_back_ios_new_rounded,
-            size: 18,
-            color: cs.onSurface,
-          ),
-        ),
-        const SizedBox(width: 10),
         Expanded(
           child: Container(
             decoration: BoxDecoration(
@@ -157,6 +145,9 @@ class _PlannerSheet extends StatelessWidget {
     required this.onRetry,
     required this.onPickDestination,
     required this.onAdjustOptions,
+    required this.onToggleSave,
+    required this.onOpenSaved,
+    super.key,
   });
 
   final SheetController controller;
@@ -166,10 +157,16 @@ class _PlannerSheet extends StatelessWidget {
   final VoidCallback onRetry;
   final VoidCallback onPickDestination;
   final VoidCallback onAdjustOptions;
+  final void Function(PlanRoute) onToggleSave;
+  final void Function(PlanRoute) onOpenSaved;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final showingSaved =
+        !hasDestination &&
+        state.status == PlanStatus.initial &&
+        state.savedRoutes.isNotEmpty;
     return SheetViewport(
       child: SheetExitGestureDetector(
         onExit: () => context.pop(),
@@ -186,7 +183,7 @@ class _PlannerSheet extends StatelessWidget {
           scrollConfiguration: const SheetScrollConfiguration(),
           decoration: MaterialSheetDecoration(
             size: SheetSize.stretch,
-            color: cs.surface,
+            color: cs.surfaceContainerLow,
             borderRadius: const BorderRadius.vertical(
               top: Radius.circular(AppTheme.radiusBottomSheet),
             ),
@@ -200,7 +197,12 @@ class _PlannerSheet extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
                 child: Row(
                   children: [
-                    Expanded(child: _SheetTitle(state: state)),
+                    Expanded(
+                      child: _SheetTitle(
+                        state: state,
+                        showingSaved: showingSaved,
+                      ),
+                    ),
                     _OptionsButton(onTap: onAdjustOptions),
                   ],
                 ),
@@ -210,9 +212,12 @@ class _PlannerSheet extends StatelessWidget {
                 child: _PlannerBody(
                   state: state,
                   hasDestination: hasDestination,
+                  showingSaved: showingSaved,
                   onSelect: onSelect,
                   onRetry: onRetry,
                   onPickDestination: onPickDestination,
+                  onToggleSave: onToggleSave,
+                  onOpenSaved: onOpenSaved,
                 ),
               ),
             ],
@@ -224,9 +229,10 @@ class _PlannerSheet extends StatelessWidget {
 }
 
 class _SheetTitle extends StatelessWidget {
-  const _SheetTitle({required this.state});
+  const _SheetTitle({required this.state, this.showingSaved = false});
 
   final PlanState state;
+  final bool showingSaved;
 
   @override
   Widget build(BuildContext context) {
@@ -234,14 +240,16 @@ class _SheetTitle extends StatelessWidget {
     final count = state.result?.routes.length ?? 0;
     final now = TimeOfDay.now();
     String two(int v) => v.toString().padLeft(2, '0');
-    final sub = state.status == PlanStatus.success && count > 0
+    final sub = showingSaved
+        ? '${state.savedRoutes.length} 條保存路線'
+        : state.status == PlanStatus.success && count > 0
         ? '$count 個建議 · 出發 ${two(now.hour)}:${two(now.minute)}'
         : '出發：現在';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          '建議路線',
+          showingSaved ? '已保存路線' : '建議路線',
           style: AppTextStyles.heading2.copyWith(color: cs.onSurface),
         ),
         const SizedBox(height: 3),
@@ -258,20 +266,42 @@ class _PlannerBody extends StatelessWidget {
   const _PlannerBody({
     required this.state,
     required this.hasDestination,
+    required this.showingSaved,
     required this.onSelect,
     required this.onRetry,
     required this.onPickDestination,
+    required this.onToggleSave,
+    required this.onOpenSaved,
   });
 
   final PlanState state;
   final bool hasDestination;
+  final bool showingSaved;
   final void Function(PlanRoute) onSelect;
   final VoidCallback onRetry;
   final VoidCallback onPickDestination;
+  final void Function(PlanRoute) onToggleSave;
+  final void Function(PlanRoute) onOpenSaved;
 
   @override
   Widget build(BuildContext context) {
     if (!hasDestination && state.status == PlanStatus.initial) {
+      // Saved snapshots take over the empty state, mirroring favorites.
+      if (showingSaved) {
+        final saved = state.savedRoutes;
+        return ListView.separated(
+          padding: const EdgeInsets.all(16),
+          itemCount: saved.length,
+          separatorBuilder: (_, _) => const SizedBox(height: 10),
+          itemBuilder: (context, i) => RouteOptionCard(
+            route: saved[i],
+            highlighted: false,
+            isSaved: true,
+            onTap: () => onOpenSaved(saved[i]),
+            onToggleSave: () => onToggleSave(saved[i]),
+          ),
+        );
+      }
       return _GoMessage(
         icon: Icons.flag_outlined,
         title: '選擇目的地開始規劃',
@@ -309,7 +339,9 @@ class _PlannerBody extends StatelessWidget {
             route: routes[i],
             highlighted: i == 0,
             badge: i == 0 ? '最快' : null,
+            isSaved: state.savedKeys.contains(routes[i].savedKey),
             onTap: () => onSelect(routes[i]),
+            onToggleSave: () => onToggleSave(routes[i]),
           ),
         );
     }

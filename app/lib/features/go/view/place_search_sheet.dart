@@ -2,11 +2,11 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:uuid/uuid.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/location/location_service.dart';
+import 'package:wheres_the_car/data/repositories/place_recent_repository.dart';
 import 'package:wheres_the_car/data/repositories/places_repository.dart';
 import 'package:wheres_the_car/features/go/model/planned_place.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
@@ -56,11 +56,9 @@ class _PlaceSearchSheet extends StatefulWidget {
 class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
-  // One session token per sheet lifetime bills autocomplete + the final
-  // details lookup as a single Google Places session.
-  final String _sessionToken = const Uuid().v4();
   Timer? _debounce;
   List<PlaceSuggestion> _results = const [];
+  List<PlannedPlace> _recents = const [];
   bool _loading = false;
   bool _resolvingLocation = false;
   bool _picking = false;
@@ -68,6 +66,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
   @override
   void initState() {
     super.initState();
+    _recents = PlaceRecentRepository.instance.all();
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => _focusNode.requestFocus(),
     );
@@ -100,10 +99,7 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
 
   Future<void> _search(String query) async {
     try {
-      final results = await PlacesRepository.instance.autocomplete(
-        query,
-        _sessionToken,
-      );
+      final results = await PlacesRepository.instance.autocomplete(query);
       if (!mounted) return;
       setState(() {
         _results = results;
@@ -145,8 +141,8 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
     try {
       final place = await PlacesRepository.instance.details(
         suggestion.placeId,
-        _sessionToken,
       );
+      await PlaceRecentRepository.instance.add(place);
       if (!mounted) return;
       Navigator.of(context).pop(place);
     } on Object catch (_) {
@@ -154,6 +150,30 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
       setState(() => _picking = false);
       AppSnackbar.show(context, '無法取得地點資訊', type: SnackType.error);
     }
+  }
+
+  // A recent already carries coordinates, so it returns straight away without
+  // a fresh Places details lookup.
+  void _pickRecent(PlannedPlace place) {
+    unawaited(HapticService.instance.lightTap());
+    Navigator.of(context).pop(place);
+  }
+
+  Future<void> _removeRecent(PlannedPlace place) async {
+    unawaited(HapticService.instance.lightTap());
+    await PlaceRecentRepository.instance.remove(place);
+    if (!mounted) return;
+    setState(() => _recents = PlaceRecentRepository.instance.all());
+    AppSnackbar.show(
+      context,
+      '已移除搜尋紀錄',
+      action: '復原',
+      onAction: () async {
+        await PlaceRecentRepository.instance.add(place);
+        if (!mounted) return;
+        setState(() => _recents = PlaceRecentRepository.instance.all());
+      },
+    );
   }
 
   @override
@@ -246,6 +266,17 @@ class _PlaceSearchSheetState extends State<_PlaceSearchSheet> {
                       loading: _resolvingLocation,
                       onTap: _useCurrentLocation,
                     ),
+                  if (_controller.text.isEmpty)
+                    for (final place in _recents)
+                      _RecentPlaceRow(
+                        key: ValueKey(
+                          '${place.name}-${place.latLng.latitude}-'
+                          '${place.latLng.longitude}',
+                        ),
+                        place: place,
+                        onTap: () => _pickRecent(place),
+                        onDismissed: () => _removeRecent(place),
+                      ),
                   if (_loading && _results.isEmpty)
                     const _PlaceSkeleton()
                   else if (_controller.text.trim().isNotEmpty &&
@@ -293,6 +324,63 @@ class _CurrentLocationRow extends StatelessWidget {
             if (loading)
               AppSpinner(size: 18, strokeWidth: 2, color: cs.onSurfaceVariant),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RecentPlaceRow extends StatelessWidget {
+  const _RecentPlaceRow({
+    required this.place,
+    required this.onTap,
+    required this.onDismissed,
+    super.key,
+  });
+
+  final PlannedPlace place;
+  final VoidCallback onTap;
+  final VoidCallback onDismissed;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Dismissible(
+      key: ValueKey(
+        'dismiss-${place.name}-${place.latLng.latitude}-'
+        '${place.latLng.longitude}',
+      ),
+      direction: DismissDirection.endToStart,
+      onDismissed: (_) => onDismissed(),
+      background: Container(
+        color: cs.errorContainer,
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Icon(Icons.delete_rounded, color: cs.onErrorContainer, size: 22),
+      ),
+      child: Pressable(
+        onTap: onTap,
+        semanticLabel: place.name,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              Icon(
+                Icons.access_time_rounded,
+                size: 22,
+                color: cs.onSurfaceVariant,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  place.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyles.bodyLarge.copyWith(color: cs.onSurface),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

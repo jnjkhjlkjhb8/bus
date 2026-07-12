@@ -132,14 +132,6 @@ class _SettingsView extends StatelessWidget {
                 value: state.liveActivityEnabled,
                 onChanged: (v) => bloc.add(LiveActivityToggled(value: v)),
               ),
-              _SettingsSwitchRow(
-                icon: Icons.my_location_outlined,
-                label: '導航自動定位',
-                subtitle: '用於自動上車提醒與車上進度；關閉後仍可手動操作',
-                value: state.navigationLocationEnabled,
-                onChanged: (v) =>
-                    bloc.add(NavigationLocationToggled(value: v)),
-              ),
             ],
           ),
           const SizedBox(height: 16),

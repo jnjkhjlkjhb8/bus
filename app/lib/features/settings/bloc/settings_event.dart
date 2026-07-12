@@ -44,15 +44,6 @@ class LiveActivityToggled extends SettingsEvent {
   List<Object?> get props => [value];
 }
 
-class NavigationLocationToggled extends SettingsEvent {
-  const NavigationLocationToggled({required this.value});
-
-  final bool value;
-
-  @override
-  List<Object?> get props => [value];
-}
-
 class PushToggled extends SettingsEvent {
   const PushToggled({required this.value});
 

@@ -106,6 +106,28 @@ class MapMarkers {
     });
   }
 
+  /// Filled disc with a small concentric inner dot — the heaviest node in the
+  /// plan-preview marker language, used for the destination. [fill] is the
+  /// outer body, [inner] the centre dot.
+  static Future<BitmapDescriptor> targetDot(
+    Color fill,
+    Color inner, {
+    double size = 22,
+  }) {
+    final key = 'target:${fill.toARGB32()}:${inner.toARGB32()}:$size';
+    return _memo(key, () async {
+      final px = (size * _dpr).round();
+      final r = px / 2;
+      final image = await _record(px, (canvas) {
+        final c = Offset(r, r);
+        canvas
+          ..drawCircle(c, r, Paint()..color = fill)
+          ..drawCircle(c, r * 0.32, Paint()..color = inner);
+      });
+      return _toBitmap(image);
+    });
+  }
+
   static Future<BitmapDescriptor> etaStop(
     String text, {
     double size = 44,
