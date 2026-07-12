@@ -128,12 +128,16 @@ func loadMrtStations(ctx context.Context, dec *json.Decoder, sink loadSink, syst
 
 // loadMrtFirstlast rebuilds mrt_schedule (first/last train times) for one metro
 // system as partition-replace: within ONE transaction it DELETEs the system's
-// rows, COPYs the fresh rows into temp_mrt, then plain-INSERTs them with no
-// DISTINCT ON and no ON CONFLICT. The natural key (station_id, lineid,
-// destinationstaionid, serviceday, system) is not unique in real data, so every
-// raw row must survive rather than be collapsed. It consumes an already-opened
-// decoder. updated_at is stamped NOW() so the freshness probe (main.go's
-// MAX(updated_at) per system) keeps working.
+// rows, COPYs the fresh rows into temp_mrt, then INSERTs them DISTINCT ON the
+// natural key (station_id, lineid, destinationstaionid, serviceday, system).
+// TDX FirstLastTimetable repeats that key within one system's payload (TRTC
+// especially), so the drain MUST collapse the duplicates: the mrt_schedule_natural_key
+// UNIQUE constraint (2026-06-14-perf-indexes.sql) — the same tuple PowerSync
+// derives its row id from — rejects duplicate rows, so an un-deduped INSERT
+// aborts the whole transaction and rolls back the partition DELETE, leaving the
+// system's schedule permanently empty. It consumes an already-opened decoder.
+// updated_at is stamped NOW() so the freshness probe (main.go's MAX(updated_at)
+// per system) keeps working.
 func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, sink loadSink, system string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[MRT] action=getmrt_firstlast system=%s event=decode_error error=%v", system, err)
@@ -159,9 +163,12 @@ func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, sink loadSink, sys
 	if len(row) == 0 {
 		return nil
 	}
-	// Partition-replace: DELETE this system's rows before re-inserting, and the
-	// drain is a plain INSERT (no ON CONFLICT) because the natural key is not
-	// unique in real data so every raw row must survive.
+	// Partition-replace: DELETE this system's rows before re-inserting, then
+	// DISTINCT ON the natural key so duplicates within the payload collapse to
+	// one row. The DELETE clears the partition first, so the deduped batch can
+	// never trip mrt_schedule_natural_key. (ON CONFLICT DO UPDATE would not help
+	// here: two conflicting rows in one INSERT raise "cannot affect row a second
+	// time" — the dedupe has to happen in the SELECT.)
 	return sink.copyUpsert(ctx, copyUpsertSpec{
 		key:     "mrt_firstlast",
 		preExec: []copyUpsertStmt{{sql: `DELETE FROM mrt_schedule WHERE system = $1`, args: []any{system}}},
@@ -191,7 +198,9 @@ func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, sink loadSink, sys
 						updated_at,
 						trip_head_sign
 					)
-					SELECT id,lid, dsid, dsname, ft, lt,mask,sys,NOW(),NOW(),sign FROM temp_mrt`,
+					SELECT DISTINCT ON (id, lid, dsid, mask, sys)
+						id,lid, dsid, dsname, ft, lt,mask,sys,NOW(),NOW(),sign FROM temp_mrt
+					ORDER BY id, lid, dsid, mask, sys, ft, lt`,
 	}, row)
 }
 
