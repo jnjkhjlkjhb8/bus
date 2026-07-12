@@ -210,10 +210,11 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 	query := `SELECT bssm.station_id, bssm.station_name,
 	                 COALESCE(bsgm.group_uid, bssm.station_id),
 	                 COALESCE(bg.group_name, bssm.station_name),
-	                 bssm.sub_route_uid, bssm.route_name,
+	                 bssm.sub_route_uid, COALESCE(bst.route_uid, ''), bssm.route_name,
 	                 bssm.direction, bssm.stop_uid, bssm.stop_sequence,
 	                 COALESCE(ST_Y(bs.position), 0), COALESCE(ST_X(bs.position), 0)
 	          FROM bus_station_stop_map bssm
+	          LEFT JOIN bus_static bst ON bst.sub_route_uid = bssm.sub_route_uid
 	          LEFT JOIN bus_stations bs ON bs.station_uid = bssm.station_id
 	          LEFT JOIN bus_station_group_members bsgm ON bsgm.station_uid = bssm.station_id
 	          LEFT JOIN bus_station_groups bg ON bg.group_uid = bsgm.group_uid
@@ -227,7 +228,7 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 	for rows.Next() {
 		var temp busStationmap
 		err := rows.Scan(&temp.StationUID, &temp.StationName, &temp.GroupUID,
-			&temp.GroupName, &temp.SubRouteUID, &temp.SubRouteName, &temp.Direction, &temp.StopUID, &temp.StopSequence,
+			&temp.GroupName, &temp.SubRouteUID, &temp.RouteUID, &temp.SubRouteName, &temp.Direction, &temp.StopUID, &temp.StopSequence,
 			&temp.Lat, &temp.Lon)
 		if err != nil {
 			log.Infof("[BUS_STATIC] action=station_map event=scan_error error=%v", err)

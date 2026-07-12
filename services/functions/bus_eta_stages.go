@@ -32,16 +32,42 @@ func adjustedEstimate(eta rawBusEsimated, now time.Time) int32 {
 // subroute x direction); canonicalizing the subroute/direction (ADR-0006) keeps
 // multi-route stops from overwriting each other, and pickBusEstimate resolves
 // collisions (prefer a bus en route, then the soonest).
-func buildBusEtaMap(city string, eat []rawBusEsimated) map[etaKey]rawBusEsimated {
+//
+// Taipei and NewTaipei are the exception: their EstimatedTimeOfArrival feed omits
+// SubRouteUID entirely and identifies arrivals only by RouteUID, so keying on the
+// subroute alone leaves every one of their stops unmatched (StopStatus 67, no
+// estimate). Such an entry is fanned out to every subroute of its route, taken
+// from mp — the same stop map the emit loop joins against. The fan-out cannot
+// invent arrivals: etaKey still carries the StopUID, so a subroute only picks up
+// the entry if it actually serves that stop.
+func buildBusEtaMap(city string, eat []rawBusEsimated, mp []busStationmap) map[etaKey]rawBusEsimated {
+	subsByRoute := make(map[string][]string)
+	seenSub := make(map[string]bool)
+	for _, b := range mp {
+		if b.RouteUID == "" || seenSub[b.SubRouteUID] {
+			continue
+		}
+		seenSub[b.SubRouteUID] = true
+		subsByRoute[b.RouteUID] = append(subsByRoute[b.RouteUID], b.SubRouteUID)
+	}
 	etamap := make(map[etaKey]rawBusEsimated)
-	for _, e := range eat {
-		uid, dir := shared.CanonicalSubroute(city, e.SubRouteUID, e.Direction)
-		k := etaKey{uid, dir, e.StopUID}
+	put := func(k etaKey, e rawBusEsimated) {
 		if prev, seen := etamap[k]; seen {
 			etamap[k] = pickBusEstimate(prev, e)
 		} else {
 			etamap[k] = e
 		}
+	}
+	for _, e := range eat {
+		if e.SubRouteUID == "" {
+			for _, sub := range subsByRoute[e.RouteUID] {
+				uid, dir := shared.CanonicalSubroute(city, sub, e.Direction)
+				put(etaKey{uid, dir, e.StopUID}, e)
+			}
+			continue
+		}
+		uid, dir := shared.CanonicalSubroute(city, e.SubRouteUID, e.Direction)
+		put(etaKey{uid, dir, e.StopUID}, e)
 	}
 	return etamap
 }

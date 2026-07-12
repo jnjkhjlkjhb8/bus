@@ -215,7 +215,12 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 	savestations(ctx, db, city)
 	saveStationGroups(ctx, db, city, syncStart)
 	saveschedule(ctx, db, city)
-	if _, delErr := db.Exec(ctx, `DELETE FROM bus_station_stop_map WHERE sub_route_uid LIKE $1`, citymap[city]+"%"); delErr != nil {
+	if prefix := citymap[city]; prefix == "" {
+		// An unmapped city would make the partition pattern '%', deleting every
+		// city's rows. The upsert below still refreshes this city's own rows; only
+		// stale-row pruning is skipped, which is strictly safer than a full wipe.
+		log.Infof("[LOAD] action=bus city=%s event=delete_stop_map_skipped reason=no_prefix", city)
+	} else if _, delErr := db.Exec(ctx, `DELETE FROM bus_station_stop_map WHERE sub_route_uid LIKE $1`, prefix+"%"); delErr != nil {
 		log.Infof("[LOAD] action=bus city=%s event=delete_stop_map_error error=%v", city, delErr)
 	}
 	savestatictodb(ctx, db, &subRoutemap)
@@ -689,7 +694,12 @@ func saveschedule(ctx context.Context, db *pgxpool.Pool, city string) {
 	defer func(b pgx.Tx, ctx context.Context) {
 		_ = b.Rollback(ctx)
 	}(b, ctx)
-	if _, err := b.Exec(ctx, `DELETE FROM bus_schedule WHERE sub_route_uid LIKE $1`, citymap[city]+"%"); err != nil {
+	prefix := citymap[city]
+	if prefix == "" {
+		// Same guard as loadBus's stop-map partition: an empty prefix degrades the
+		// pattern to '%' and would delete every city's schedule rows.
+		log.Infof("[BUS] action=saveschedule city=%s event=delete_partition_skipped reason=no_prefix", city)
+	} else if _, err := b.Exec(ctx, `DELETE FROM bus_schedule WHERE sub_route_uid LIKE $1`, prefix+"%"); err != nil {
 		log.Infof("[BUS] action=saveschedule city=%s event=delete_partition_error error=%v", city, err)
 		return
 	}

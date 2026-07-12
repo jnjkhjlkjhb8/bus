@@ -46,7 +46,7 @@ func TestBuildBusEtaMap(t *testing.T) {
 			{SubRouteUID: "R1", Direction: 0, StopUID: "S1", StopStatus: 0, EstimatedTime: 300},
 			{SubRouteUID: "R1", Direction: 0, StopUID: "S2", StopStatus: 1, EstimatedTime: 45},
 		}
-		m := buildBusEtaMap("Taipei", eat)
+		m := buildBusEtaMap("Taipei", eat, nil)
 		if len(m) != 2 {
 			t.Fatalf("len = %d, want 2", len(m))
 		}
@@ -61,12 +61,59 @@ func TestBuildBusEtaMap(t *testing.T) {
 			{SubRouteUID: "ABC01", Direction: 9, StopUID: "S1", EstimatedTime: 60},
 			{SubRouteUID: "ABC02", Direction: 9, StopUID: "S1", EstimatedTime: 90},
 		}
-		m := buildBusEtaMap("InterCity", eat)
+		m := buildBusEtaMap("InterCity", eat, nil)
 		if _, ok := m[etaKey{"ABC", 0, "S1"}]; !ok {
 			t.Errorf("missing canonical outbound key ABC/0")
 		}
 		if _, ok := m[etaKey{"ABC", 1, "S1"}]; !ok {
 			t.Errorf("missing canonical inbound key ABC/1")
+		}
+	})
+
+	// Taipei/NewTaipei publish arrivals with RouteUID only. Route 261 (TPE10414)
+	// has two subroutes; each must pick up the route-level entry, but only for the
+	// stops it actually serves.
+	t.Run("route-level entry fans out to the route's subroutes", func(t *testing.T) {
+		mp := []busStationmap{
+			{SubRouteUID: "TPE104140", RouteUID: "TPE10414", Direction: 1, StopUID: "S1"},
+			{SubRouteUID: "TPE104140", RouteUID: "TPE10414", Direction: 1, StopUID: "S2"},
+			{SubRouteUID: "TPE162278", RouteUID: "TPE10414", Direction: 1, StopUID: "S1"},
+			{SubRouteUID: "TPE999990", RouteUID: "TPE99999", Direction: 1, StopUID: "S9"},
+		}
+		eat := []rawBusEsimated{
+			{RouteUID: "TPE10414", Direction: 1, StopUID: "S1", StopStatus: 0, EstimatedTime: 240},
+		}
+		m := buildBusEtaMap("Taipei", eat, mp)
+		for _, sub := range []string{"TPE104140", "TPE162278"} {
+			got, ok := m[etaKey{sub, 1, "S1"}]
+			if !ok {
+				t.Fatalf("subroute %s did not pick up the route-level arrival", sub)
+			}
+			if got.EstimatedTime != 240 {
+				t.Errorf("%s estimate = %d, want 240", sub, got.EstimatedTime)
+			}
+		}
+		if _, ok := m[etaKey{"TPE104140", 1, "S2"}]; ok {
+			t.Error("fan-out invented an arrival at S2, which the feed never reported")
+		}
+		if _, ok := m[etaKey{"TPE999990", 1, "S1"}]; ok {
+			t.Error("fan-out leaked the arrival to an unrelated route")
+		}
+	})
+
+	// A feed that does carry SubRouteUID must not also fan out by RouteUID, or one
+	// subroute's arrival would be copied onto its siblings.
+	t.Run("subroute-level entry does not fan out", func(t *testing.T) {
+		mp := []busStationmap{
+			{SubRouteUID: "KEE015801", RouteUID: "KEE0158", Direction: 0, StopUID: "S1"},
+			{SubRouteUID: "KEE015802", RouteUID: "KEE0158", Direction: 0, StopUID: "S1"},
+		}
+		eat := []rawBusEsimated{
+			{SubRouteUID: "KEE015801", RouteUID: "KEE0158", Direction: 0, StopUID: "S1", EstimatedTime: 60},
+		}
+		m := buildBusEtaMap("Keelung", eat, mp)
+		if _, ok := m[etaKey{"KEE015802", 0, "S1"}]; ok {
+			t.Error("sibling subroute picked up an arrival that named a specific subroute")
 		}
 	})
 }

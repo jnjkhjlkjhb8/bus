@@ -215,7 +215,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) {
 	routes := make(map[string]*models.Bus_RouteArrival)
 	// Assemble-inputs stage: collapse the raw TDX ETA array, group live positions,
 	// and count route lengths, all keyed on canonical subroute/direction (ADR-0006).
-	etamap := buildBusEtaMap(city, eat)
+	etamap := buildBusEtaMap(city, eat, mp)
 	busmap := buildBusPositionMap(city, posit)
 	totalStops := buildTotalStops(city, mp)
 	var weather *weatherData

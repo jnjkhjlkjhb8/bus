@@ -28,15 +28,16 @@ var cities = []string{
 }
 
 // citymap maps a TDX city code to its short prefix used in UID construction and
-// as the authority_code for operators. Note it lacks the "County" suffixes that
-// appear in cities (e.g. "Miaoli" not "MiaoliCounty").
+// as the authority_code for operators. Every entry in cities must have a key
+// here: an unmapped city yields an empty prefix, which degrades the LIKE
+// patterns built from it into '%' — see the guards in loadBus/saveschedule.
 var citymap = map[string]string{
 	"Taipei": "TPE", "NewTaipei": "NWT", "Taoyuan": "TAO", "Taichung": "TXG",
 	"Tainan": "TNN", "Kaohsiung": "KHH", "InterCity": "THB", "Keelung": "KEE",
-	"Hsinchu": "HSZ", "HsinchuCounty": "HSQ", "Miaoli": "MIA", "Changhua": "CHA",
-	"Nantou": "NAN", "Chiayi": "CYI", "ChiayiCounty": "CYQ", "Yunlin": "YUN",
-	"Pingtung": "PIF", "Yilan": "ILA", "Hualien": "HUA", "Taitung": "TTT",
-	"Penghu": "PEN", "Kinmen": "KIN", "Lienchiang": "LIE",
+	"Hsinchu": "HSZ", "HsinchuCounty": "HSQ", "MiaoliCounty": "MIA", "ChanghuaCounty": "CHA",
+	"NantouCounty": "NAN", "Chiayi": "CYI", "ChiayiCounty": "CYQ", "YunlinCounty": "YUN",
+	"PingtungCounty": "PIF", "YilanCounty": "ILA", "HualienCounty": "HUA", "TaitungCounty": "TTT",
+	"PenghuCounty": "PEN", "KinmenCounty": "KIN", "LienchiangCounty": "LIE",
 }
 
 // citymap2 is the inverse of citymap, resolving a short prefix back to a TDX
@@ -44,10 +45,10 @@ var citymap = map[string]string{
 var citymap2 = map[string]string{
 	"TPE": "Taipei", "NWT": "NewTaipei", "TAO": "Taoyuan", "TXG": "Taichung",
 	"TNN": "Tainan", "KHH": "Kaohsiung", "THB": "InterCity", "KEE": "Keelung",
-	"HSZ": "Hsinchu", "HSQ": "HsinchuCounty", "MIA": "Miaoli", "CHA": "Changhua",
-	"NAN": "Nantou", "CYI": "Chiayi", "CYQ": "ChiayiCounty", "YUN": "Yunlin",
-	"PIF": "Pingtung", "ILA": "Yilan", "HUA": "Hualien", "TTT": "Taitung",
-	"PEN": "Penghu", "KIN": "Kinmen", "LIE": "Lienchiang",
+	"HSZ": "Hsinchu", "HSQ": "HsinchuCounty", "MIA": "MiaoliCounty", "CHA": "ChanghuaCounty",
+	"NAN": "NantouCounty", "CYI": "Chiayi", "CYQ": "ChiayiCounty", "YUN": "YunlinCounty",
+	"PIF": "PingtungCounty", "ILA": "YilanCounty", "HUA": "HualienCounty", "TTT": "TaitungCounty",
+	"PEN": "PenghuCounty", "KIN": "KinmenCounty", "LIE": "LienchiangCounty",
 }
 
 // busSubroutesUpsertSQL upserts one subroute per (sub_route_uid, direction) into
@@ -229,11 +230,17 @@ type rawBusSchedule struct {
 // is en route; an empty NextBusTime with StopStatus 1 is the gap that ETA
 // prediction fills. The type name's misspelling is retained to match existing code.
 type rawBusEsimated struct {
-	PlateNumb     string `json:"PlateNumb"`
-	StopUID       string `json:"StopUID"`
-	SubRouteUID   string `json:"SubRouteUID"`
-	Direction     uint8  `json:"Direction"`
-	EstimatedTime int32  `json:"EstimatedTime"`
+	PlateNumb string `json:"PlateNumb"`
+	StopUID   string `json:"StopUID"`
+	// Taipei and NewTaipei publish route-level arrivals: their entries carry only
+	// RouteUID, with SubRouteUID absent. buildBusEtaMap fans those out across the
+	// route's subroutes, so both fields must be decoded.
+	SubRouteUID string `json:"SubRouteUID"`
+	RouteUID    string `json:"RouteUID"`
+	Direction   uint8  `json:"Direction"`
+	// TDX spells this "EstimateTime", not "EstimatedTime". The struct field keeps
+	// the grammatical name; only the tag has to match the wire.
+	EstimatedTime int32  `json:"EstimateTime"`
 	NextBusTime   string `json:"NextBusTime"`
 	StopStatus    uint8  `json:"StopStatus"`
 	SrcUpdateTime string `json:"SrcUpdateTime"`
@@ -265,6 +272,7 @@ type busStationmap struct {
 	GroupUID     string
 	GroupName    string
 	SubRouteUID  string
+	RouteUID     string
 	SubRouteName string
 	Direction    uint8
 	StopUID      string
