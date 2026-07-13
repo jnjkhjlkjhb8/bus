@@ -194,6 +194,67 @@ void main() {
     },
   );
 
+  test(
+    'pinned stops-remaining holds last-known when a frame cannot resolve '
+    'the plate',
+    () async {
+      final b = bloc()
+        ..add(
+          JourneyStarted(legs: [_leg()], trackOnly: true, plate: 'KKA-1288'),
+        );
+      await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+
+      BusStopEtaViewModel target(int sequence) => BusStopEtaViewModel(
+        stopUid: 'stop-1',
+        direction: 0,
+        sequence: sequence,
+        estimateSeconds: 0,
+        nextBusTime: '',
+        stopStatus: 0,
+        vehiclePlates: const [],
+      );
+      BusStopEtaViewModel plateAt(int sequence) => BusStopEtaViewModel(
+        stopUid: 'stop-0',
+        direction: 0,
+        sequence: sequence,
+        estimateSeconds: 0,
+        nextBusTime: '',
+        stopStatus: 0,
+        vehiclePlates: const ['KKA-1288'],
+        vehicles: const [
+          BusVehiclePosition(
+            plate: 'KKA-1288',
+            lat: 25,
+            lon: 121.5,
+            azimuth: 0,
+          ),
+        ],
+      );
+
+      // Frame 1: the pinned plate sits 3 stops before the target.
+      routeEtaCtrl.add([target(10), plateAt(7)]);
+      final s1 = await b.stream.firstWhere(
+        (s) => s.pinnedStopsRemaining != null,
+      );
+      expect(s1.pinnedStopsRemaining, 3);
+
+      // Frame 2: the plate is absent from every stop's vehicle list this
+      // frame (momentarily between stops) — the last-known value holds.
+      routeEtaCtrl.add([target(10)]);
+      await Future<void>.delayed(Duration.zero);
+      expect(b.state.pinnedStopsRemaining, 3);
+
+      // Frame 3: the plate resolves again, now 2 stops out.
+      routeEtaCtrl.add([target(10), plateAt(8)]);
+      final s3 = await b.stream.firstWhere(
+        (s) => s.pinnedStopsRemaining == 2,
+      );
+      expect(s3.pinnedStopsRemaining, 2);
+
+      await b.close();
+    },
+  );
+
   test('unpinned waiting session never subscribes to route ETA', () async {
     final channel = _CapturingChannel();
     final b = bloc(channel: channel)..add(JourneyStarted(legs: [_leg()]));

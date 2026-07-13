@@ -151,12 +151,11 @@ class JourneySessionBloc
     Emitter<JourneySessionState> emit,
   ) {
     if (state.phase != JourneyPhase.waiting) return;
-    emit(
-      state.copyWith(
-        pinnedStopsRemaining: event.stopsRemaining,
-        clearPinnedStopsRemaining: event.stopsRemaining == null,
-      ),
-    );
+    // A frame that can't resolve the target stop or the pinned plate (bus
+    // momentarily between stops) leaves the prior stops-remaining in place
+    // rather than blanking the Live Activity's 還剩 N 站 back to null.
+    if (event.stopsRemaining == null) return;
+    emit(state.copyWith(pinnedStopsRemaining: event.stopsRemaining));
     unawaited(_channel?.update(_content(state)));
   }
 

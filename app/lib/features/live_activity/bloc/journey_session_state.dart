@@ -51,7 +51,6 @@ class JourneySessionState extends Equatable {
     bool? trackOnly,
     String? plate,
     int? pinnedStopsRemaining,
-    bool clearPinnedStopsRemaining = false,
   }) {
     return JourneySessionState(
       phase: phase ?? this.phase,
@@ -62,9 +61,7 @@ class JourneySessionState extends Equatable {
       suggestBoarding: suggestBoarding ?? this.suggestBoarding,
       trackOnly: trackOnly ?? this.trackOnly,
       plate: plate ?? this.plate,
-      pinnedStopsRemaining: clearPinnedStopsRemaining
-          ? null
-          : pinnedStopsRemaining ?? this.pinnedStopsRemaining,
+      pinnedStopsRemaining: pinnedStopsRemaining ?? this.pinnedStopsRemaining,
     );
   }
 
