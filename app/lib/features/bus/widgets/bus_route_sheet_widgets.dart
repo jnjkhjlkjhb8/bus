@@ -48,6 +48,7 @@ class _RouteSheet extends StatelessWidget {
     required this.tabController,
     required this.sheetController,
     required this.scrollController,
+    required this.flashStopUid,
     required this.vehicles,
     required this.direction,
     required this.isLoading,
@@ -63,6 +64,7 @@ class _RouteSheet extends StatelessWidget {
   final TabController tabController;
   final SheetController sheetController;
   final ScrollController scrollController;
+  final String? flashStopUid;
   final List<_BusVehicle> vehicles;
   final int direction;
   final bool isLoading;
@@ -188,6 +190,7 @@ class _RouteSheet extends StatelessWidget {
                         builder: (context, trackedStopUid) => _StopListTab(
                           stops: stops,
                           scrollController: scrollController,
+                          flashStopUid: flashStopUid,
                           reminders: reminders,
                           onReminderToggled: onReminderToggled,
                           trackedStopUid: trackedStopUid,

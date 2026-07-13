@@ -31,13 +31,26 @@ final class RailTimetableRequested extends RailEvent {
     required this.origin,
     required this.destination,
     required this.date,
+    this.cutoffMinutes,
+    this.isDeparture = true,
   });
   final RailSystem system;
   final RailStationSelection origin;
   final RailStationSelection destination;
   final String date;
+  // Minutes-of-day the user picked. With [isDeparture] it bounds the results:
+  // depart at/after it (true) or arrive at/before it (false). null = no bound.
+  final int? cutoffMinutes;
+  final bool isDeparture;
   @override
-  List<Object?> get props => [system, origin, destination, date];
+  List<Object?> get props => [
+    system,
+    origin,
+    destination,
+    date,
+    cutoffMinutes,
+    isDeparture,
+  ];
 }
 
 final class RailTrainStopsRequested extends RailEvent {

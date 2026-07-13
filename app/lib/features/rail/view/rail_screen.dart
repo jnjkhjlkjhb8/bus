@@ -35,6 +35,15 @@ part '../widgets/rail_train_card_widgets.dart';
 
 final _dateFormat = DateFormat('yyyy-MM-dd');
 
+// One summary-card row: the exact fields the card renders, times as "HH:mm".
+typedef _RailRow = ({
+  String type,
+  String number,
+  int delay,
+  String depart,
+  String arrive,
+});
+
 const Map<int, String> _weekdayMap = {
   DateTime.monday: '一',
   DateTime.tuesday: '二',
@@ -91,7 +100,12 @@ class _RailScreenState extends State<RailScreen> {
   String _destName = '花蓮';
   String _destId = '';
   late final SheetController _sheetController;
+  // [_selectedDate] carries the query's time-of-day too; the backend request
+  // stays date-only, but the time (with [_isDeparture]) is sent to the bloc as
+  // a cutoff so results start at the time the user picked — depart at/after it,
+  // or (arrive mode) arrive at/before it — not the first train of the day.
   DateTime _selectedDate = DateTime.now();
+  bool _isDeparture = true;
   bool _initialized = false;
   bool _hasSubmittedQuery = false;
   RailQueryPreset? _preset;
@@ -124,6 +138,7 @@ class _RailScreenState extends State<RailScreen> {
     if (_originName == _destName) _destName = _defaultOrigin(request.system);
     _destId = request.destId ?? '';
     _selectedDate = request.date;
+    _isDeparture = request.isDeparture;
     // Seed the form with the full effective query (not just the origin) so the
     // sheet and the auto-submitted results can't disagree.
     _preset = RailQueryPreset(
@@ -133,6 +148,7 @@ class _RailScreenState extends State<RailScreen> {
       destName: _destName,
       destId: request.destId,
       date: request.date,
+      isDeparture: request.isDeparture,
     );
 
     if (request.autoSubmit) {
@@ -161,13 +177,9 @@ class _RailScreenState extends State<RailScreen> {
   // (date picks, station picks, sheet drags) doesn't re-parse every train's
   // times; states are immutable, so identity is a sound cache key.
   RailTimetableLoaded? _rowsSource;
-  late List<
-    ({String type, String number, int delay, String depart, String arrive})
-  >
-  _rowsCache;
+  late List<_RailRow> _rowsCache;
 
-  List<({String type, String number, int delay, String depart, String arrive})>
-  _rowsFor(RailTimetableLoaded state) {
+  List<_RailRow> _rowsFor(RailTimetableLoaded state) {
     if (!identical(state, _rowsSource)) {
       _rowsSource = state;
       _rowsCache = [
@@ -218,6 +230,7 @@ class _RailScreenState extends State<RailScreen> {
           _destName = submission.destName;
           _destId = submission.destId ?? '';
           _selectedDate = submission.date;
+          _isDeparture = submission.isDeparture;
           _hasSubmittedQuery = true;
         });
         _dispatchSearch();
@@ -259,6 +272,8 @@ class _RailScreenState extends State<RailScreen> {
           id: _destId.isEmpty ? null : _destId,
         ),
         date: _dateFormat.format(_selectedDate),
+        cutoffMinutes: _selectedDate.hour * 60 + _selectedDate.minute,
+        isDeparture: _isDeparture,
       ),
     );
   }

@@ -62,6 +62,18 @@ func main() {
 		}
 	}(rc)
 	defer db.Close()
+	// One-shot manual trigger: `functions run <job>` runs the job once and exits,
+	// bypassing cron so an operator can refresh embeddings on demand. Needs the
+	// same env (DATABASE_URL, REDIS_ADDR, EMBED_URL) as the scheduled run.
+	if len(os.Args) > 2 && os.Args[1] == "run" {
+		switch os.Args[2] {
+		case "changetovector":
+			changetovector(context.Background(), rc, db)
+		default:
+			log.Fatalf("unknown job: %s", os.Args[2])
+		}
+		return
+	}
 	tdx := shared.NewTDXClient(shared.TDXConfig{
 		Store:         shared.RedisTDXStore{RC: rc},
 		IMSKey:        imsCacheKey,
@@ -152,7 +164,9 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pg
 		log.Fatal(err)
 	}
 	dispatcher := notify.NewDispatcher(notify.NewStore(db), sender)
-	busDailyroute(tdx, rc)
+	if err := runLoad(context.Background(), rawTDXSource{pool: db}, db, rc, []string{"bus_dailytimetable"}); err != nil {
+		log.Infof("[bus] action=bus_dailyroute event=error error=%v", err)
+	}
 	loadHolidays()
 	loadModel()
 	// Prime the weather cache at boot: the @every 10m cron below does not fire until

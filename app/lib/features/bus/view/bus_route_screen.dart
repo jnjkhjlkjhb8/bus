@@ -58,6 +58,29 @@ const _kDefaultCamera = CameraPosition(
 // keeps that repaint scoped to the GoogleMap layer instead of the whole screen.
 typedef _MapLayer = ({Set<Marker> markers, Set<Polyline> polylines});
 
+// A live vehicle frame lands every ~30 s; Google Maps markers have no position
+// tween, so without this they teleport. Each glide holds the interpolation
+// endpoints plus the (heading-snapped) sprite and info-bubble bitmaps, reused
+// unchanged across every tick of a single glide.
+class _BusGlide {
+  _BusGlide({
+    required this.from,
+    required this.to,
+    required this.icon,
+    required this.bubbleIcon,
+  });
+
+  final LatLng from;
+  final LatLng to;
+  final BitmapDescriptor icon;
+  final BitmapDescriptor bubbleIcon;
+}
+
+LatLng _lerpLatLng(LatLng a, LatLng b, double t) => LatLng(
+  a.latitude + (b.latitude - a.latitude) * t,
+  a.longitude + (b.longitude - a.longitude) * t,
+);
+
 class BusRouteScreen extends StatefulWidget {
   const BusRouteScreen({required this.subRouteUid, super.key});
   final String subRouteUid;
@@ -73,6 +96,14 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   final _scrollController = ScrollController();
   GoogleMapController? _mapController;
 
+  /// Stop uids of the current direction, in list order — lets a marker tap map
+  /// a stopUid to its row index for scroll-to.
+  List<String> _stopUidsInOrder = const [];
+  /// The stop briefly highlighted after its marker was tapped; cleared by
+  /// [_flashTimer] after a few seconds.
+  String? _flashStopUid;
+  Timer? _flashTimer;
+
   final ValueNotifier<_MapLayer> _mapLayer = ValueNotifier(
     (markers: <Marker>{}, polylines: <Polyline>{}),
   );
@@ -84,11 +115,29 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   List<List<LatLng>> _geomLines = const [];
   bool _fitted = false;
 
+  // Vehicle markers slide between live frames; stops/polylines stay static, so
+  // a glide tick only repaints the bus + bubble layer on top of them.
+  Set<Marker> _stopMarkers = <Marker>{};
+  Set<Polyline> _polylines = <Polyline>{};
+  final _glides = <String, _BusGlide>{};
+  late final AnimationController _busGlide;
+  late final CurvedAnimation _busGlideCurve;
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     _sheetController = SheetController();
+    // 800ms reads as a bus catching up to its reported spot; a UI-chrome-speed
+    // glide (~200ms) would look like a twitch every 30 s.
+    _busGlide = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    )..addListener(_paintVehicles);
+    _busGlideCurve = CurvedAnimation(
+      parent: _busGlide,
+      curve: AppMotion.easeInOut,
+    );
   }
 
   BusStopEtaViewModel? _etaFor(BusRouteState s, BusStopModel st) =>
@@ -100,6 +149,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     if (route == null) return;
     final stops = s.direction == 0 ? route.stopsGo : route.stopsReturn;
     if (stops.isEmpty) return;
+    _stopUidsInOrder = [for (final st in stops) st.stopUid];
 
     final vehicles = _vehiclePositionsFor(s);
     final sig =
@@ -143,10 +193,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         ),
     };
 
-    // A live frame usually moves one vehicle or one countdown; reuse the
-    // previous Marker for anything whose rendered inputs are unchanged so a
-    // frame costs O(changed) icon lookups instead of O(stops + vehicles).
-    final markers = <Marker>{};
+    // Stop markers are static between frames; reuse any whose rendered inputs
+    // are unchanged so a frame costs O(changed) icon lookups, not O(stops).
+    final stopMarkers = <Marker>{};
     for (final st in stops) {
       if (st.lat == 0 && st.lon == 0) continue;
       final eta = _etaFor(s, st);
@@ -154,55 +203,40 @@ class _BusRouteScreenState extends State<BusRouteScreen>
           '${_markerIsScheduled(eta)}:${_markerEta(eta)}:${st.lat},${st.lon}';
       final cached = _markerCache[st.stopUid];
       if (cached != null && cached.key == key) {
-        markers.add(cached.marker);
+        stopMarkers.add(cached.marker);
         continue;
       }
       final icon = _markerIsScheduled(eta)
           ? await MapMarkers.etaStopIcon(Icons.schedule_rounded, size: 32)
           : await MapMarkers.etaStop(_markerEta(eta), size: 32);
+      final stopUid = st.stopUid;
       final marker = Marker(
-        markerId: MarkerId(st.stopUid),
+        markerId: MarkerId(stopUid),
         position: LatLng(st.lat, st.lon),
         icon: icon,
         anchor: const Offset(0.5, 0.5),
         infoWindow: InfoWindow(title: st.stopName),
+        onTap: () => _flashStop(stopUid),
       );
       _markerCache[st.stopUid] = (key: key, marker: marker);
-      markers.add(marker);
+      stopMarkers.add(marker);
     }
 
+    // Resolve each vehicle's (heading-snapped) sprite + bubble bitmaps, then
+    // hand the new position to the glide controller. Every glide starts from
+    // where the marker sits *right now* — mid-glide included — so a fresh frame
+    // retargets smoothly instead of snapping back to the last reported point.
     final isLight = cs.brightness == Brightness.light;
+    final t = _busGlideCurve.value;
+    final nextGlides = <String, _BusGlide>{};
     for (final v in vehicles) {
-      final id = 'bus:${v.plate}';
-      final key = '${v.lat},${v.lon},${v.azimuth}';
-      final cached = _markerCache[id];
-      if (cached != null && cached.key == key) {
-        markers.add(cached.marker);
-      } else {
-        final icon = await MapMarkers.busMarker(
-          busSpriteAsset(v.azimuth.toDouble()),
-        );
-        final marker = Marker(
-          markerId: MarkerId(id),
-          position: LatLng(v.lat, v.lon),
-          icon: icon,
-          anchor: const Offset(0.5, 0.5),
-          zIndexInt: 1,
-        );
-        _markerCache[id] = (key: key, marker: marker);
-        markers.add(marker);
-      }
+      final icon = await MapMarkers.busMarker(
+        busSpriteAsset(v.azimuth.toDouble()),
+      );
 
       // Always-on info bubble above the sprite: plate + next stop + countdown,
       // replacing the tap-only default InfoWindow.
       final info = _bubbleInfoFor(s, stops, v.plate);
-      final bubbleId = 'bubble:${v.plate}';
-      final bubbleKey = '${v.lat},${v.lon}:${info.stopName}:${info.etaText}';
-      final cachedBubble = _markerCache[bubbleId];
-      if (cachedBubble != null && cachedBubble.key == bubbleKey) {
-        markers.add(cachedBubble.marker);
-        continue;
-      }
       final etaColor = switch (info.state) {
         TimelineStopState.arriving =>
           isLight ? AppTheme.statusArrivingText : AppTheme.statusArriving,
@@ -219,22 +253,74 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         etaText: info.etaText,
         etaColor: etaColor,
       );
-      final bubbleMarker = Marker(
-        markerId: MarkerId(bubbleId),
-        position: LatLng(v.lat, v.lon),
-        icon: bubbleIcon,
-        zIndexInt: 2,
+
+      final target = LatLng(v.lat, v.lon);
+      final prev = _glides[v.plate];
+      // A newly-seen bus starts at its target (no fly-in from nowhere);
+      // otherwise glide from wherever it sits right now.
+      final from = prev == null ? target : _lerpLatLng(prev.from, prev.to, t);
+      nextGlides[v.plate] = _BusGlide(
+        from: from,
+        to: target,
+        icon: icon,
+        bubbleIcon: bubbleIcon,
       );
-      _markerCache[bubbleId] = (key: bubbleKey, marker: bubbleMarker);
-      markers.add(bubbleMarker);
     }
 
     if (!mounted) return;
+    _stopMarkers = stopMarkers;
+    _polylines = polylines;
+    _glides
+      ..clear()
+      ..addAll(nextGlides);
     _routePts = stopPts;
-    // Repaints only the GoogleMap layer via its ValueListenableBuilder; the
-    // surrounding chrome/sheet is untouched.
-    _mapLayer.value = (markers: markers, polylines: polylines);
+
+    if (MediaQuery.of(context).disableAnimations) {
+      // Reduce-motion: snap to the reported position, no glide.
+      _busGlide.value = 1;
+      _paintVehicles();
+    } else {
+      // Glide from the current position to the new frame. A frame that didn't
+      // move a bus just animates target→target (static); a frame landing
+      // mid-glide retargets smoothly because `from` is the live position.
+      unawaited(_busGlide.forward(from: 0));
+    }
     _maybeFit();
+  }
+
+  // Composes the animated bus + bubble markers over the static stop layer and
+  // pushes them to the GoogleMap notifier. Runs per glide tick; the sprite and
+  // bubble bitmaps are memoized upstream, so a tick is cheap position churn.
+  void _paintVehicles() {
+    final t = _busGlideCurve.value;
+    final vehicleMarkers = <Marker>{};
+    _glides.forEach((plate, g) {
+      final pos = _lerpLatLng(g.from, g.to, t);
+      vehicleMarkers
+        ..add(
+          Marker(
+            markerId: MarkerId('bus:$plate'),
+            position: pos,
+            icon: g.icon,
+            anchor: const Offset(0.5, 0.5),
+            zIndexInt: 1,
+          ),
+        )
+        ..add(
+          Marker(
+            markerId: MarkerId('bubble:$plate'),
+            position: pos,
+            icon: g.bubbleIcon,
+            zIndexInt: 2,
+          ),
+        );
+    });
+    // ponytail: repaints the whole marker Set per tick — fine for a handful of
+    // buses; batch/diff the marker channel if a route ever shows dozens.
+    _mapLayer.value = (
+      markers: {..._stopMarkers, ...vehicleMarkers},
+      polylines: _polylines,
+    );
   }
 
   void _maybeFit() {
@@ -263,8 +349,40 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     }
   }
 
+  /// Scrolls the stop list to [stopUid] and highlights that row for a few
+  /// seconds. Row heights vary, so the target offset is estimated and clamped
+  /// to the scroll extent — it lands the stop near the top, not pixel-exact.
+  // ponytail: index × estimated row height; move to scrollable_positioned_list
+  // only if pixel-exact landing is ever needed.
+  void _flashStop(String stopUid) {
+    unawaited(HapticService.instance.lightTap());
+    final index = _stopUidsInOrder.indexOf(stopUid);
+    if (index >= 0 && _scrollController.hasClients) {
+      const estRowHeight = 64.0;
+      final target = (index * estRowHeight).clamp(
+        0.0,
+        _scrollController.position.maxScrollExtent,
+      );
+      unawaited(
+        _scrollController.animateTo(
+          target,
+          duration: const Duration(milliseconds: 320),
+          curve: AppMotion.easeInOut,
+        ),
+      );
+    }
+    _flashTimer?.cancel();
+    setState(() => _flashStopUid = stopUid);
+    _flashTimer = Timer(const Duration(milliseconds: 2500), () {
+      if (mounted) setState(() => _flashStopUid = null);
+    });
+  }
+
   @override
   void dispose() {
+    _flashTimer?.cancel();
+    _busGlideCurve.dispose();
+    _busGlide.dispose();
     _tabController.dispose();
     _sheetController.dispose();
     _scrollController.dispose();
@@ -383,6 +501,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                       tabController: _tabController,
                       sheetController: _sheetController,
                       scrollController: _scrollController,
+                      flashStopUid: _flashStopUid,
                       vehicles: const [],
                       direction: state.direction,
                       isLoading: state.loading,

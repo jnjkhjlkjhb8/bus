@@ -50,7 +50,7 @@ void main() {
     expect(thsr.timetableCalls, [('2026-07-10', '0990', '1070')]);
   });
 
-  test('today query drops departed THSR trains and sorts the rest', () async {
+  test('cutoff drops earlier THSR trains and sorts the rest', () async {
     const early = ThsrTimetableItem(
       trainNo: '801',
       departureTime: '14:15',
@@ -76,10 +76,7 @@ void main() {
       remark: '',
     );
     final thsr = _FakeThsrRepository(timetableResult: const [early, late, mid]);
-    final bloc = RailBloc(
-      thsrRepository: thsr,
-      now: () => DateTime(2026, 7, 12, 19),
-    );
+    final bloc = RailBloc(thsrRepository: thsr);
     addTearDown(bloc.close);
 
     bloc.add(
@@ -88,6 +85,8 @@ void main() {
         origin: RailStationSelection(name: '南港', id: '0990'),
         destination: RailStationSelection(name: '左營', id: '1070'),
         date: '2026-07-12',
+        // Depart from 19:00 → drop the 14:15 train, keep 19:10 and 20:30.
+        cutoffMinutes: 19 * 60,
       ),
     );
     final loaded =
@@ -97,7 +96,7 @@ void main() {
     expect(loaded.thsrItems, const [mid, late]);
   });
 
-  test('future query keeps all THSR trains sorted by departure', () async {
+  test('no cutoff keeps all THSR trains sorted by departure', () async {
     const early = ThsrTimetableItem(
       trainNo: '801',
       departureTime: '14:15',
@@ -123,10 +122,7 @@ void main() {
       remark: '',
     );
     final thsr = _FakeThsrRepository(timetableResult: const [early, late, mid]);
-    final bloc = RailBloc(
-      thsrRepository: thsr,
-      now: () => DateTime(2026, 7, 12, 19),
-    );
+    final bloc = RailBloc(thsrRepository: thsr);
     addTearDown(bloc.close);
 
     bloc.add(
@@ -135,6 +131,7 @@ void main() {
         origin: RailStationSelection(name: '南港', id: '0990'),
         destination: RailStationSelection(name: '左營', id: '1070'),
         date: '2026-07-13',
+        // No cutoff → the whole day stays, just sorted.
       ),
     );
     final loaded =
@@ -142,6 +139,57 @@ void main() {
             as RailTimetableLoaded;
 
     expect(loaded.thsrItems, const [early, mid, late]);
+  });
+
+  test('arrive-by cutoff keeps trains landing in time, by arrival', () async {
+    // Express (805) departs later but arrives earlier — proves the arrival sort
+    // and filter, not the departure one.
+    const slow = ThsrTimetableItem(
+      trainNo: '801',
+      departureTime: '06:00',
+      arrivalTime: '11:00',
+      travelMinutes: 300,
+      delayMinutes: 0,
+      remark: '',
+    );
+    const express = ThsrTimetableItem(
+      trainNo: '805',
+      departureTime: '07:00',
+      arrivalTime: '10:00',
+      travelMinutes: 180,
+      delayMinutes: 0,
+      remark: '',
+    );
+    const tooLate = ThsrTimetableItem(
+      trainNo: '803',
+      departureTime: '13:00',
+      arrivalTime: '15:30',
+      travelMinutes: 150,
+      delayMinutes: 0,
+      remark: '',
+    );
+    final thsr = _FakeThsrRepository(
+      timetableResult: const [slow, express, tooLate],
+    );
+    final bloc = RailBloc(thsrRepository: thsr);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: RailStationSelection(name: '南港', id: '0990'),
+        destination: RailStationSelection(name: '左營', id: '1070'),
+        date: '2026-07-13',
+        // Arrive by 12:00 → keep the two landing before it, drop the 15:30.
+        cutoffMinutes: 12 * 60,
+        isDeparture: false,
+      ),
+    );
+    final loaded =
+        await bloc.stream.firstWhere((state) => state is RailTimetableLoaded)
+            as RailTimetableLoaded;
+
+    expect(loaded.thsrItems, const [express, slow]);
   });
 
   test('known station IDs bypass repository lookup', () async {

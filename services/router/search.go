@@ -276,7 +276,10 @@ func handleSearch(db *pgxpool.Pool) gin.HandlerFunc {
 			return
 		}
 		results := mergeSearchResults(limit, trainResults, textResults)
-		if len(results) < limit && shouldUseVector(q) {
+		// ponytail: semantic fallback only when text search found nothing —
+		// the embedQuery call + vector scan are expensive; skip them whenever
+		// trigram/ILIKE already matched. Loosen this if typo-tolerance suffers.
+		if len(results) == 0 && shouldUseVector(q) {
 			vectorResults, err := vectorSearch(ctx, q, limit, db)
 			if err != nil {
 				log.Infof("[SEARCH] vector supplement skipped: %v", err)

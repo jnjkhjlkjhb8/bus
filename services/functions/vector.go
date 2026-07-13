@@ -141,16 +141,6 @@ var (
 	FROM mrt_station ms
 	WHERE ms.updated_at >= $1` + freshVectorSkipSQL("mrt_station", "ms.station_id",
 		"sv.name = ms.name AND ST_OrderingEquals(sv.geom, ms.stationposition)") + `;`
-	thsrStationsForVectorSQL = `
-	SELECT ts.station_id, ts.name, ts.city, ST_AsText(ts.geom)
-	FROM thsr_stations ts
-	WHERE ts.updated_at >= $1` + freshVectorSkipSQL("thsr_station", "ts.station_id",
-		"sv.name = ts.name AND ST_OrderingEquals(sv.geom, ts.geom)") + `;`
-	traStationsForVectorSQL = `
-	SELECT ts.station_id, ts.name, ts.city, ST_AsText(ts.geom)
-	FROM tra_stations ts
-	WHERE ts.updated_at >= $1` + freshVectorSkipSQL("tra_station", "ts.station_id",
-		"sv.name = ts.name AND ST_OrderingEquals(sv.geom, ts.geom)") + `;`
 )
 
 // freshVectorSkipSQL builds a NOT EXISTS clause that skips rows already embedded
@@ -372,82 +362,6 @@ func changetovector(ctx context.Context, rc *redis.Client, db *pgxpool.Pool) {
 					text := fmt.Sprintf("類型：捷運站 車站UID：%s 車站名稱：%s 捷運系統：%s 位置：%s", uid, name, cn, geom)
 					input = append(input, text)
 					inrow = append(inrow, resp{Type: "mrt_station", UID: uid, Name: name, City: cn, Geom: geom})
-					if len(input) >= size {
-						if !processBatch(table, input, inrow) {
-							failed = true
-							return
-						}
-						input = input[:0]
-						inrow = inrow[:0]
-					}
-				}
-				if err := rows.Err(); err != nil {
-					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				if !processBatch(table, input, inrow) {
-					failed = true
-					return
-				}
-			case "thsr_stations":
-				rows, err := db.Query(ctx, thsrStationsForVectorSQL, since)
-				if err != nil {
-					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				defer rows.Close()
-				input := make([]string, 0, size)
-				inrow := make([]resp, 0, size)
-				for rows.Next() {
-					var uid, name, city, geom string
-					if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
-						log.Infof("[vector] action=vector event=scan_error error=%v", err)
-						continue
-					}
-					cn := cityName(city)
-					text := fmt.Sprintf("類型：高鐵車站 車站UID：%s 車站名稱：%s 縣市：%s 位置：%s", uid, name, cn, geom)
-					input = append(input, text)
-					inrow = append(inrow, resp{Type: "thsr_station", UID: uid, Name: name, City: cn, Geom: geom})
-					if len(input) >= size {
-						if !processBatch(table, input, inrow) {
-							failed = true
-							return
-						}
-						input = input[:0]
-						inrow = inrow[:0]
-					}
-				}
-				if err := rows.Err(); err != nil {
-					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				if !processBatch(table, input, inrow) {
-					failed = true
-					return
-				}
-			case "tra_stations":
-				rows, err := db.Query(ctx, traStationsForVectorSQL, since)
-				if err != nil {
-					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				defer rows.Close()
-				input := make([]string, 0, size)
-				inrow := make([]resp, 0, size)
-				for rows.Next() {
-					var uid, name, city, geom string
-					if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
-						log.Infof("[vector] action=vector event=scan_error error=%v", err)
-						continue
-					}
-					cn := cityName(city)
-					text := fmt.Sprintf("類型：台鐵車站 車站UID：%s 車站名稱：%s 縣市：%s 位置：%s", uid, name, cn, geom)
-					input = append(input, text)
-					inrow = append(inrow, resp{Type: "tra_station", UID: uid, Name: name, City: cn, Geom: geom})
 					if len(input) >= size {
 						if !processBatch(table, input, inrow) {
 							failed = true

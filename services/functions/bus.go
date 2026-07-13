@@ -5,7 +5,6 @@ import (
 
 	"context"
 	"encoding/json"
-	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -324,7 +323,7 @@ func sanitizeOperatorPhone(s string) string {
 }
 
 // busDailyTimetableSkip lists cities whose daily-timetable feed TDX does not
-// serve; both the legacy fetch path (busDailyroute) and the loader path
+// serve; both the landing partitions and the loader path
 // (loadBusDailyTimetable partitions) skip them so landed and loaded partitions
 // agree.
 func busDailyTimetableSkip(city string) bool {
@@ -332,52 +331,12 @@ func busDailyTimetableSkip(city string) bool {
 		city == "KinmenCounty" || city == "LienchiangCounty"
 }
 
-// busDailyroute caches each subroute's daily timetable in Redis as a protobuf
-// under bus_daily_timetable:<subRouteUID>, TTL just under 24h so a missed daily
-// refresh expires the stale copy. A short skip list omits cities whose daily
-// timetable TDX does not serve. Runs both at boot and in the 03:00 static cron.
-// The fetch wrapper only owns the TDX call; the decoder-side assembly and Redis
-// writes are shared with the loader path via loadBusDailyTimetable.
-func busDailyroute(tdx *shared.TDXClient, rc *redis.Client) {
-	log.Infof("[bus] action=bus_dailyroute event=start")
-	for _, city := range cities {
-		if busDailyTimetableSkip(city) {
-			continue
-		}
-		var url string
-		if city == "InterCity" {
-			url = fmt.Sprintf("/v2/Bus/DailyTimeTable/InterCity")
-		} else {
-			url = fmt.Sprintf("/v2/Bus/DailyTimeTable/City/%s", city)
-		}
-		log.Infof("[bus] action=bus_dailyroute city=%s event=city_start", city)
-		dec, comp, flipopen, err := tdx.Get(url, "DailyTimeTable"+city)
-		if err != nil {
-			log.Infof("[bus] action=bus_dailyroute city=%s event=skip reason=api_error,error=%s", city, err)
-			continue
-		}
-		if !comp {
-			log.Infof("[bus] action=bus_dailyroute city=%s event=skip reason=already", city)
-			continue
-		}
-		func() {
-			defer flipopen()
-			if err := loadBusDailyTimetable(context.Background(), dec, nil, rc, city); err != nil {
-				log.Infof("[bus] action=bus_dailyroute city=%s event=error error=%v", city, err)
-			}
-		}()
-	}
-	log.Infof("[bus] action=bus_dailyroute event=complete")
-}
-
 // loadBusDailyTimetable assembles one city's daily timetables from an opened
 // decoder and writes each subroute's protobuf into Redis under
-// bus_daily_timetable:<subRouteUID> (TTL 23h30m), byte-identical to the legacy
-// busDailyroute transform. It consumes the decoder from the opening '[' onward,
-// so both the TDX fetch wrapper and the loader (which hands an unopened decoder
-// over reconstructed raw_tdx.bus_dailytimetable bytes) call it the same way. db
-// is unused (this dataset is Redis-only); the parameter keeps the loadSpec
-// signature.
+// bus_daily_timetable:<subRouteUID> (TTL 23h30m). It consumes the decoder from
+// the opening '[' onward; the loader hands it an unopened decoder over
+// reconstructed raw_tdx.bus_dailytimetable bytes. db is unused (this dataset is
+// Redis-only); the parameter keeps the loadSpec signature.
 func loadBusDailyTimetable(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool, rc *redis.Client, city string) error {
 	if _, err := dec.Token(); err != nil {
 		log.Infof("[bus] action=bus_dailyroute city=%s event=decode_error error=%v", city, err)

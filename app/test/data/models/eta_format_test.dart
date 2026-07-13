@@ -189,15 +189,15 @@ void main() {
       );
     });
 
-    test('status 1 with a predicted estimate shows the countdown; the clock '
-        'time is the zero-estimate fallback', () {
+    test('status 1 (scheduled) shows the NextBusTime clock, not the '
+        'derived countdown', () {
       expect(
         busStopDisplayLabel(
           estimateSeconds: 300,
           stopStatus: 1,
           nextBusTime: '08:15',
         ),
-        '5分',
+        '08:15',
       );
       expect(
         busStopDisplayLabel(

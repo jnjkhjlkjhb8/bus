@@ -20,6 +20,7 @@ class RailQueryRequest {
     this.destName,
     this.destId,
     this.autoSubmit = false,
+    this.isDeparture = true,
   });
 
   final RailSystem system;
@@ -27,8 +28,11 @@ class RailQueryRequest {
   final String? originId;
   final String? destName;
   final String? destId;
+  // [date] carries the selected time-of-day; with [isDeparture] it bounds the
+  // results (depart at/after vs arrive at/before) once the rail screen queries.
   final DateTime date;
   final bool autoSubmit;
+  final bool isDeparture;
 }
 
 class RailNavigationRequest {

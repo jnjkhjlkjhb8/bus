@@ -4,6 +4,7 @@ class _StopListTab extends StatelessWidget {
   const _StopListTab({
     required this.stops,
     required this.scrollController,
+    required this.flashStopUid,
     required this.reminders,
     required this.onReminderToggled,
     required this.trackedStopUid,
@@ -12,6 +13,7 @@ class _StopListTab extends StatelessWidget {
 
   final List<TimelineStop> stops;
   final ScrollController scrollController;
+  final String? flashStopUid;
   final Map<String, String> reminders;
   final void Function(String) onReminderToggled;
   final String? trackedStopUid;
@@ -34,6 +36,7 @@ class _StopListTab extends StatelessWidget {
             stop: stop,
             index: i,
             totalStops: stops.length,
+            isFlashed: stop.uid == flashStopUid,
             isReminderActive: reminders.containsKey(stop.uid),
             onReminderToggled: () => onReminderToggled(stop.uid),
             isTracking: trackedStopUid == stop.uid,
@@ -50,6 +53,7 @@ class _StopListItem extends StatelessWidget {
     required this.stop,
     required this.index,
     required this.totalStops,
+    required this.isFlashed,
     required this.isReminderActive,
     required this.onReminderToggled,
     required this.isTracking,
@@ -59,6 +63,8 @@ class _StopListItem extends StatelessWidget {
   final TimelineStop stop;
   final int index;
   final int totalStops;
+  /// True for the few seconds after this stop's map marker was tapped.
+  final bool isFlashed;
   final bool isReminderActive;
   final VoidCallback onReminderToggled;
   final bool isTracking;
@@ -67,7 +73,9 @@ class _StopListItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final isHighlighted = stop.active;
+    // A marker-tap flash reuses the live/approaching row treatment (bold +
+    // tint) so a tapped stop reads the same as the active one.
+    final isHighlighted = stop.active || isFlashed;
 
     final nameColor = cs.onSurface;
     Widget nameWidget = Text(

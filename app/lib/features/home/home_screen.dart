@@ -104,6 +104,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           icon: icon,
           anchor: const Offset(0.5, 0.5),
           infoWindow: InfoWindow(title: s.stationName),
+          onTap: () {
+            unawaited(HapticService.instance.lightTap());
+            _openStationDetail(s);
+          },
         );
       }),
     );

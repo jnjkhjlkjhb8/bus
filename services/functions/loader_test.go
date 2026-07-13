@@ -179,7 +179,6 @@ func TestLoaderExceptionalBindingsUseSemanticSink(t *testing.T) {
 // TestLoadBusDailyTimetableWritesRedis feeds a daily-timetable array to the
 // shared assembly function and asserts it lands the reconstructed protobuf under
 // bus_daily_timetable:<subRouteUID> with the expected TTL, exercising the loader
-// path that closes the legacy busDailyroute Redis gap. It needs a local Redis
 // (127.0.0.1:6379) and skips when one is not reachable, mirroring the DB-gated
 // tests' skip posture.
 func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {

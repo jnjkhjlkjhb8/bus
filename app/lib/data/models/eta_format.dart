@@ -72,8 +72,14 @@ String? busStopDisplayLabel({
   required int stopStatus,
   required String nextBusTime,
 }) {
-  // Any positive estimate — live or predicted — shows the countdown (see
-  // busStopDisplayStatus); 進站中 is reserved for a live bus at zero.
+  // A not-yet-departed stop (status 1) is a scheduled departure: show its
+  // NextBusTime clock (HH:mm) rather than the countdown derived from it.
+  if (stopStatus == 1) {
+    final clock = _clockLabel(nextBusTime);
+    if (clock != null) return clock;
+  }
+  // Any positive live estimate shows the countdown; 進站中 is reserved for a
+  // live bus at zero.
   if (estimateSeconds > 0) return '${etaCeilMinutes(estimateSeconds)}分';
   if (stopStatus == 0) return '進站中';
   return _clockLabel(nextBusTime) ??
