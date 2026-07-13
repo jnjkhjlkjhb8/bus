@@ -26,7 +26,7 @@ type etaKey struct {
 }
 
 type busArrivalNotifier interface {
-	Arrival(context.Context, string, string, string, string, int32)
+	Arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32, arrivingPlate string)
 }
 
 type busLiveJob struct {
@@ -285,9 +285,15 @@ func (j busLiveJob) runCity(ctx context.Context, city string) {
 			status = eta.StopStatus
 			stime = eta.SrcUpdateTime
 		}
+		// Resolved in the status==0 branch below (a live bus is only matched
+		// to the stop when one is en route); reused at the dispatch site so
+		// the arrival reminder can pin to this plate.
+		var plateNumb *string
 		if status == 0 {
 			ts := totalStops[uid]
-			plateNumb, busSpeed, busDist := nearestBus(b.Lat, b.Lon, busmap[uid])
+			var busSpeed *int16
+			var busDist *int
+			plateNumb, busSpeed, busDist = nearestBus(b.Lat, b.Lon, busmap[uid])
 			var srcTime *time.Time
 			if stime != "" {
 				if t, err := time.Parse(time.RFC3339, stime); err == nil {
@@ -408,7 +414,11 @@ func (j busLiveJob) runCity(ctx context.Context, city string) {
 			ArrivalUnix:   arrivalUnix,
 		})
 		if shouldDispatchBusArrival(ok, status, est) {
-			j.notifier.Arrival(ctx, "bus", uid, b.StopUID, strconv.Itoa(int(dir)), est)
+			plate := ""
+			if plateNumb != nil {
+				plate = *plateNumb
+			}
+			j.notifier.Arrival(ctx, "bus", uid, b.StopUID, strconv.Itoa(int(dir)), est, plate)
 		}
 		if _, ok = routes[uid]; !ok {
 			routes[uid] = &models.Bus_RouteArrival{

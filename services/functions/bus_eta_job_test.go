@@ -58,17 +58,18 @@ type busArrivalCall struct {
 	stopKey   string
 	direction string
 	seconds   int32
+	plate     string
 }
 
 type captureBusArrivalNotifier struct {
 	calls []busArrivalCall
 }
 
-func (n *captureBusArrivalNotifier) Arrival(_ context.Context, routeType, routeKey, stopKey, direction string, seconds int32) {
+func (n *captureBusArrivalNotifier) Arrival(_ context.Context, routeType, routeKey, stopKey, direction string, seconds int32, arrivingPlate string) {
 	if routeType != "bus" {
 		return
 	}
-	n.calls = append(n.calls, busArrivalCall{routeKey: routeKey, stopKey: stopKey, direction: direction, seconds: seconds})
+	n.calls = append(n.calls, busArrivalCall{routeKey: routeKey, stopKey: stopKey, direction: direction, seconds: seconds, plate: arrivingPlate})
 }
 
 func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
@@ -136,7 +137,7 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 	if len(store.historyRows) != 1 || store.historyRows[0][0] != "THB9023" || store.historyRows[0][2] != int16(0) {
 		t.Fatalf("canonical history rows = %+v", store.historyRows)
 	}
-	if len(notifier.calls) != 1 || notifier.calls[0] != (busArrivalCall{routeKey: "THB9023", stopKey: "STOP1", direction: "0", seconds: 120}) {
+	if len(notifier.calls) != 1 || notifier.calls[0] != (busArrivalCall{routeKey: "THB9023", stopKey: "STOP1", direction: "0", seconds: 120, plate: "KKA-1234"}) {
 		t.Fatalf("canonical notification calls = %+v", notifier.calls)
 	}
 }
