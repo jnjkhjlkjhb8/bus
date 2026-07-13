@@ -58,6 +58,9 @@ message CreateArrivalReminderRequest {
   string direction = 5;
   int32 lead_minutes = 6;
   int64 expires_at_unix = 7;
+  // Non-empty pins the reminder to one vehicle: it fires only when this plate
+  // is the bus arriving at stop_key. Empty keeps the legacy next-bus behaviour.
+  string plate = 8;
 }
 
 message ArrivalReminder {
@@ -69,6 +72,7 @@ message ArrivalReminder {
   string direction = 6;
   int32 lead_minutes = 7;
   int64 expires_at_unix = 8;
+  string plate = 9;
 }
 
 message CancelArrivalReminderRequest {
