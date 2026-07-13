@@ -222,16 +222,8 @@ class _BusStopScreenState extends State<BusStopScreen> {
                   onExit: () => context.pop(),
                   child: Sheet(
                     controller: _sheetController,
-                    initialOffset: const SheetOffset.proportionalToViewport(
-                      0.5,
-                    ),
-                    snapGrid: const SheetSnapGrid(
-                      snaps: [
-                        SheetOffset.proportionalToViewport(0.25),
-                        SheetOffset.proportionalToViewport(0.5),
-                        SheetOffset.proportionalToViewport(1),
-                      ],
-                    ),
+                    initialOffset: AppSheetSnap.half,
+                    snapGrid: AppSheetSnap.grid,
                     scrollConfiguration: const SheetScrollConfiguration(),
                     decoration: MaterialSheetDecoration(
                       size: SheetSize.stretch,

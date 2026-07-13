@@ -159,13 +159,11 @@ class _MetroScreenState extends State<MetroScreen> {
 
   Widget _buildBottomSheetWidget(BuildContext context, ColorScheme cs) {
     return Sheet(
-      initialOffset: const SheetOffset.proportionalToViewport(0.5),
+      initialOffset: AppSheetSnap.half,
+      // Capped at `tall`, not `full`: keeps the line map peeking above the
+      // sheet (metro is not a map-front page — the map is the content).
       snapGrid: const SheetSnapGrid(
-        snaps: [
-          SheetOffset.proportionalToViewport(0.25),
-          SheetOffset.proportionalToViewport(0.5),
-          SheetOffset.proportionalToViewport(0.85),
-        ],
+        snaps: [AppSheetSnap.peek, AppSheetSnap.half, AppSheetSnap.tall],
       ),
       scrollConfiguration: const SheetScrollConfiguration(),
       decoration: MaterialSheetDecoration(

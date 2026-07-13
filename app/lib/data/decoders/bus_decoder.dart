@@ -39,6 +39,9 @@ class BusDecoder {
                 lat: b.positionLat,
                 lon: b.positionLon,
                 azimuth: b.azimuth,
+                dutyStatus: b.dutyStatus,
+                busStatus: b.busStatus,
+                gpsTimeUnix: b.gpsTimeUnix.toInt(),
               ),
         ],
       );

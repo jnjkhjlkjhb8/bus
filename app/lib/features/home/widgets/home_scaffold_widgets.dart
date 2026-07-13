@@ -86,8 +86,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
                     builder: (context, state) {
                       final unread = state.unreadCount;
                       return Pressable(
-                        onTap: () =>
-                            unawaited(showNotificationSheet(context)),
+                        onTap: () => unawaited(showNotificationSheet(context)),
                         semanticLabel: unread > 0 ? '通知，$unread 則未讀' : '通知',
                         child: Stack(
                           clipBehavior: Clip.none,
@@ -168,64 +167,81 @@ extension _HomeScreenScaffold on _HomeScreenState {
             child: SafeArea(child: HomeAlertBanner()),
           ),
 
-          // Fixed floating controls: recenter above, route planner below.
-          // Anchored above the sheet's default extent; no longer tracks drags.
+          // Floating controls: recenter above, route planner below. They ride
+          // the sheet while it sits below the half detent, then park at half
+          // once it's taller — so they never climb into the sheet content.
           Positioned(
             right: 16,
-            bottom: MediaQuery.sizeOf(context).height * 0.30 + 16,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              spacing: 8,
-              children: [
-                Pressable(
-                  onTap: _recenter,
-                  semanticLabel: '定位目前位置',
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: AppTheme.floatingControl(
-                      cs,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Center(
-                      child: AnimatedSwitcher(
-                        duration: AppMotion.short,
-                        child: _locating
-                            ? const AppSpinner(
-                                key: ValueKey('locating'),
-                                size: 20,
-                              )
-                            : Icon(
-                                Icons.gps_fixed_rounded,
-                                key: const ValueKey('idle'),
-                                size: 20,
-                                color: cs.onSurface,
-                              ),
+            bottom: 0,
+            child: AnimatedBuilder(
+              animation: _sheetController,
+              builder: (context, child) {
+                final viewport =
+                    _sheetController.metrics?.viewportSize.height ??
+                    MediaQuery.sizeOf(context).height;
+                final offset =
+                    _sheetController.value ?? viewport * AppSheetSnap.peekFrac;
+                final lift =
+                    math.min(offset, viewport * AppSheetSnap.halfFrac) + 16;
+                return Padding(
+                  padding: EdgeInsets.only(bottom: lift),
+                  child: child,
+                );
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                spacing: 8,
+                children: [
+                  Pressable(
+                    onTap: _recenter,
+                    semanticLabel: '定位目前位置',
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: AppTheme.floatingControl(
+                        cs,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Center(
+                        child: AnimatedSwitcher(
+                          duration: AppMotion.short,
+                          child: _locating
+                              ? const AppSpinner(
+                                  key: ValueKey('locating'),
+                                  size: 20,
+                                )
+                              : Icon(
+                                  Icons.gps_fixed_rounded,
+                                  key: const ValueKey('idle'),
+                                  size: 20,
+                                  color: cs.onSurface,
+                                ),
+                        ),
                       ),
                     ),
                   ),
-                ),
-                Pressable(
-                  onTap: () {
-                    unawaited(HapticService.instance.lightTap());
-                    unawaited(context.push('/go'));
-                  },
-                  semanticLabel: '路線規劃',
-                  child: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: AppTheme.floatingControl(
-                      cs,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(
-                      Icons.directions_rounded,
-                      size: 20,
-                      color: cs.onSurface,
+                  Pressable(
+                    onTap: () {
+                      unawaited(HapticService.instance.lightTap());
+                      unawaited(context.push('/go'));
+                    },
+                    semanticLabel: '路線規劃',
+                    child: Container(
+                      width: 44,
+                      height: 44,
+                      decoration: AppTheme.floatingControl(
+                        cs,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        Icons.directions_rounded,
+                        size: 20,
+                        color: cs.onSurface,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
 
@@ -244,9 +260,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
             },
             child: SheetViewport(
               child: SheetExitGestureDetector(
-                onExit: () => _sheetController.animateTo(
-                  const SheetOffset.proportionalToViewport(0.30),
-                ),
+                onExit: () => _sheetController.animateTo(AppSheetSnap.peek),
                 child: PagedSheet(
                   controller: _sheetController,
                   physics: const ClampingSheetPhysics(),
@@ -262,18 +276,10 @@ extension _HomeScreenScaffold on _HomeScreenState {
                     key: _sheetNavigatorKey,
                     onGenerateInitialRoutes: (navigator, initialRoute) => [
                       PagedSheetRoute(
-                        initialOffset: const SheetOffset.proportionalToViewport(
-                          0.30,
-                        ),
-                        snapGrid: const SheetSnapGrid(
-                          snaps: [
-                            SheetOffset.proportionalToViewport(0.10),
-                            SheetOffset.proportionalToViewport(0.30),
-                            SheetOffset.proportionalToViewport(1),
-                          ],
-                        ),
+                        initialOffset: AppSheetSnap.peek,
+                        snapGrid: AppSheetSnap.grid,
                         scrollConfiguration: const SheetScrollConfiguration(),
-                        builder: (context) => _buildSheetRoot(context, cs),
+                        builder: _buildSheetRoot,
                       ),
                     ],
                   ),
@@ -286,7 +292,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
     );
   }
 
-  Widget _buildSheetRoot(BuildContext context, ColorScheme cs) {
+  Widget _buildSheetRoot(BuildContext context) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -310,7 +316,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
         RouteTabBar(
           controller: _tabController,
           tabs: const ['我的收藏', '附近車站'],
-          backgroundColor: cs.surfaceContainerLow,
+          raised: true,
         ),
         Expanded(
           child: TabBarView(

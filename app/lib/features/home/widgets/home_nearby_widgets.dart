@@ -114,11 +114,7 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
       // disposes its in-flight drag activity while it's still in use.
       scheduleMicrotask(() {
         if (mounted) {
-          unawaited(
-            widget.sheetController.animateTo(
-              const SheetOffset.proportionalToViewport(1),
-            ),
-          );
+          unawaited(widget.sheetController.animateTo(AppSheetSnap.full));
         }
       });
     }
@@ -141,11 +137,7 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
         ),
       );
     }
-    unawaited(
-      widget.sheetController.animateTo(
-        const SheetOffset.proportionalToViewport(0.30),
-      ),
-    );
+    unawaited(widget.sheetController.animateTo(AppSheetSnap.peek));
   }
 
   // Filtered rows cached per (stations identity, filter) so sheet-driven

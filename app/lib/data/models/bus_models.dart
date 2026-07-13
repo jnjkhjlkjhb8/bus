@@ -10,6 +10,9 @@ class BusVehiclePosition extends Equatable {
     required this.lat,
     required this.lon,
     required this.azimuth,
+    this.dutyStatus = 0,
+    this.busStatus = 0,
+    this.gpsTimeUnix = 0,
   });
 
   final String plate;
@@ -17,8 +20,24 @@ class BusVehiclePosition extends Equatable {
   final double lon;
   final int azimuth;
 
+  /// TDX 勤務狀態 [0 正常, 1 開始, 2 結束] and 行車狀況 [0 正常, 1 車禍, 2 故障,
+  /// 3 塞車, 4 緊急, 5 加油, 98 偏移, 99 非營運, 100 客滿, 101 包車, 其餘 不明].
+  final int dutyStatus;
+  final int busStatus;
+
+  /// GPS fix time in epoch seconds; 0 when the feed reported none.
+  final int gpsTimeUnix;
+
   @override
-  List<Object?> get props => [plate, lat, lon, azimuth];
+  List<Object?> get props => [
+    plate,
+    lat,
+    lon,
+    azimuth,
+    dutyStatus,
+    busStatus,
+    gpsTimeUnix,
+  ];
 }
 
 class BusStopEtaViewModel extends Equatable {

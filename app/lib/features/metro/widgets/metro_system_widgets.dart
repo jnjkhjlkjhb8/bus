@@ -21,6 +21,7 @@ class _MapModeChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    final duration = reduceMotion ? Duration.zero : AppMotion.medium;
     return Container(
       height: 44,
       padding: const EdgeInsets.all(4),
@@ -28,11 +29,37 @@ class _MapModeChip extends StatelessWidget {
         cs,
         borderRadius: const BorderRadius.all(Radius.circular(999)),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+      child: Stack(
         children: [
-          for (final entry in _labels.entries)
-            _segment(cs, reduceMotion, entry.key, entry.value),
+          // Thumb slides between the two options (both are 2 CJK chars, so the
+          // segments are equal-width and a half-width thumb lands on each). It
+          // sits behind the labels; the Row's GestureDetectors take the taps.
+          Positioned.fill(
+            child: AnimatedAlign(
+              duration: duration,
+              curve: AppMotion.easeOut,
+              alignment: mode == _MapMode.time
+                  ? Alignment.centerLeft
+                  : Alignment.centerRight,
+              child: FractionallySizedBox(
+                widthFactor: 0.5,
+                heightFactor: 1,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: cs.onSurface,
+                    borderRadius: const BorderRadius.all(Radius.circular(999)),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final entry in _labels.entries)
+                _segment(cs, duration, entry.key, entry.value),
+            ],
+          ),
         ],
       ),
     );
@@ -40,7 +67,7 @@ class _MapModeChip extends StatelessWidget {
 
   Widget _segment(
     ColorScheme cs,
-    bool reduceMotion,
+    Duration duration,
     _MapMode value,
     String label,
   ) {
@@ -51,18 +78,12 @@ class _MapModeChip extends StatelessWidget {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: () => onChanged(value),
-        child: AnimatedContainer(
-          duration: reduceMotion ? Duration.zero : AppMotion.medium,
-          curve: AppMotion.easeOut,
+        child: Container(
           height: 36,
           alignment: Alignment.center,
           padding: const EdgeInsets.symmetric(horizontal: 14),
-          decoration: BoxDecoration(
-            color: selected ? cs.onSurface : Colors.transparent,
-            borderRadius: const BorderRadius.all(Radius.circular(999)),
-          ),
           child: AnimatedDefaultTextStyle(
-            duration: reduceMotion ? Duration.zero : AppMotion.medium,
+            duration: duration,
             curve: AppMotion.easeOut,
             style: AppTextStyles.bodyRegular.copyWith(
               fontWeight: FontWeight.w600,

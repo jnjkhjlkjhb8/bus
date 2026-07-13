@@ -435,6 +435,7 @@ class _NextStrip extends StatelessWidget {
 class _NavSheet extends StatelessWidget {
   const _NavSheet({
     required this.controller,
+    required this.initialOffset,
     required this.route,
     required this.activeLeg,
     required this.onAdvance,
@@ -443,6 +444,7 @@ class _NavSheet extends StatelessWidget {
   });
 
   final SheetController controller;
+  final SheetOffset initialOffset;
   final PlanRoute route;
   final int activeLeg;
   final VoidCallback onAdvance;
@@ -469,14 +471,8 @@ class _NavSheet extends StatelessWidget {
         onExit: onEnd,
         child: Sheet(
           controller: controller,
-          initialOffset: const SheetOffset.proportionalToViewport(0.45),
-          snapGrid: const SheetSnapGrid(
-            snaps: [
-              SheetOffset.proportionalToViewport(0.28),
-              SheetOffset.proportionalToViewport(0.45),
-              SheetOffset.proportionalToViewport(1),
-            ],
-          ),
+          initialOffset: initialOffset,
+          snapGrid: AppSheetSnap.grid,
           scrollConfiguration: const SheetScrollConfiguration(),
           decoration: MaterialSheetDecoration(
             size: SheetSize.stretch,

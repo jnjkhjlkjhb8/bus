@@ -21,7 +21,7 @@ import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
 import 'package:wheres_the_car/features/go/model/plan_options.dart';
 import 'package:wheres_the_car/features/go/model/planned_place.dart';
 import 'package:wheres_the_car/features/go/navigation/navigation_coordinator.dart';
-import 'package:wheres_the_car/features/go/view/place_search_sheet.dart';
+import 'package:wheres_the_car/features/go/view/place_search_screen.dart';
 import 'package:wheres_the_car/features/go/widgets/route_option_card.dart';
 import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
@@ -32,11 +32,14 @@ import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_button.dart';
+import 'package:wheres_the_car/shared/widgets/app_date_picker.dart';
 import 'package:wheres_the_car/shared/widgets/app_progress_bar.dart';
 import 'package:wheres_the_car/shared/widgets/app_quantity_selector.dart';
 import 'package:wheres_the_car/shared/widgets/app_range_slider.dart';
+import 'package:wheres_the_car/shared/widgets/app_segmented_control.dart';
 import 'package:wheres_the_car/shared/widgets/app_slider.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_car/shared/widgets/app_time_picker.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/divider_line.dart';
 import 'package:wheres_the_car/shared/widgets/filter_chip_group.dart';
@@ -60,6 +63,12 @@ const _kNavZoom = 15.5;
 const _kNavTilt = 45.0;
 const _kNavBearing = 30.0;
 
+// The departure/arrival stance for a plan query. `leaveNow` always re-queries
+// with a fresh current time; `departAt`/`arriveBy` pin the chosen instant and
+// map to the wire `arriveBy` flag. Surfaced only after a query (the results
+// header time chip); plan entry is always `leaveNow`.
+enum _TimeMode { leaveNow, departAt, arriveBy }
+
 class GoScreen extends StatefulWidget {
   const GoScreen({super.key});
 
@@ -77,6 +86,10 @@ class _GoScreenState extends State<GoScreen> {
   PlannedPlace? _origin;
   PlannedPlace? _dest;
   PlanOptions _options = const PlanOptions();
+  // Departure/arrival time stance for the query. `_timeAt` is only consulted
+  // when `_timeMode` is not `leaveNow`.
+  _TimeMode _timeMode = _TimeMode.leaveNow;
+  DateTime _timeAt = DateTime.now();
   // Whether the autopilot currently has a live GPS fix flowing. Gates the
   // manual progression controls in the nav sheet: shown only when the
   // autopilot can't actually drive (no permission / location services off).
@@ -174,7 +187,7 @@ class _GoScreenState extends State<GoScreen> {
 
   Future<void> _editField({required bool origin}) async {
     unawaited(HapticService.instance.lightTap());
-    final picked = await showPlaceSearchSheet(
+    final picked = await showPlaceSearchPage(
       context,
       fieldLabel: origin ? '選擇出發地' : '選擇目的地',
     );
@@ -185,6 +198,28 @@ class _GoScreenState extends State<GoScreen> {
       } else {
         _dest = picked;
       }
+    });
+    _maybePlan();
+  }
+
+  // A destination picked from the plan-entry shortcut list. If the origin isn't
+  // resolved yet (GPS pending or denied), don't swallow the pick — send the
+  // user to choose an origin first, then plan with both set.
+  void _pickDestination(PlannedPlace place) {
+    if (_origin == null) {
+      unawaited(_resolveOriginThenPlan(place));
+      return;
+    }
+    setState(() => _dest = place);
+    _maybePlan();
+  }
+
+  Future<void> _resolveOriginThenPlan(PlannedPlace dest) async {
+    final picked = await showPlaceSearchPage(context, fieldLabel: '選擇出發地');
+    if (picked == null || !mounted) return;
+    setState(() {
+      _origin = picked;
+      _dest = dest;
     });
     _maybePlan();
   }
@@ -204,7 +239,9 @@ class _GoScreenState extends State<GoScreen> {
     final from = _origin;
     final to = _dest;
     if (from == null || to == null) return;
-    final now = DateTime.now();
+    // `leaveNow` always resolves a fresh timestamp; the other modes pin the
+    // user's chosen instant and set the wire `arriveBy` flag accordingly.
+    final when = _timeMode == _TimeMode.leaveNow ? DateTime.now() : _timeAt;
     String two(int v) => v.toString().padLeft(2, '0');
     context.read<PlanBloc>().add(
       PlanSearchRequested(
@@ -212,8 +249,9 @@ class _GoScreenState extends State<GoScreen> {
         fromLon: from.latLng.longitude,
         toLat: to.latLng.latitude,
         toLon: to.latLng.longitude,
-        date: '${now.year}-${two(now.month)}-${two(now.day)}',
-        time: '${two(now.hour)}:${two(now.minute)}',
+        date: '${when.year}-${two(when.month)}-${two(when.day)}',
+        time: '${two(when.hour)}:${two(when.minute)}',
+        arriveBy: _timeMode == _TimeMode.arriveBy,
         gc: _options.gc,
         transitModes: _options.transitModes,
         top: _options.top,
@@ -237,6 +275,26 @@ class _GoScreenState extends State<GoScreen> {
     final picked = await showOptionsSheet(context, current: _options);
     if (picked == null || !mounted || picked == _options) return;
     setState(() => _options = picked);
+    _maybePlan();
+  }
+
+  Future<void> _adjustTime() async {
+    unawaited(HapticService.instance.lightTap());
+    final picked = await _showTimeModeSheet(
+      context,
+      mode: _timeMode,
+      at: _timeAt,
+    );
+    if (picked == null || !mounted) return;
+    // No re-plan when nothing effectively changed (same mode, and — for the
+    // timed modes — the same instant).
+    final sameInstant =
+        picked.mode == _TimeMode.leaveNow || picked.at == _timeAt;
+    if (picked.mode == _timeMode && sameInstant) return;
+    setState(() {
+      _timeMode = picked.mode;
+      _timeAt = picked.at;
+    });
     _maybePlan();
   }
 
@@ -889,92 +947,147 @@ class _GoScreenState extends State<GoScreen> {
           },
           child: Scaffold(
             resizeToAvoidBottomInset: false,
-            body: Stack(
-              children: [
-                Positioned.fill(
-                  child: GoogleMap(
-                    style: mapStyleOf(context),
-                    initialCameraPosition: const CameraPosition(
-                      target: _kDefaultPos,
-                      zoom: 14,
+            // Plan entry is a map-less phase: while no destination is chosen
+            // the GoogleMap is not built at all, so the planner never opens on
+            // the map first. Choosing a destination crossfades to the map.
+            body: AnimatedSwitcher(
+              duration: MediaQuery.disableAnimationsOf(context)
+                  ? Duration.zero
+                  : AppMotion.medium,
+              switchInCurve: AppMotion.easeOut,
+              switchOutCurve: AppMotion.easeOut,
+              child: (!navigating && !previewing && _dest == null)
+                  ? _PlannerEntry(
+                      key: const ValueKey('entry'),
+                      origin: _origin,
+                      dest: _dest,
+                      savedRoutes: state.savedRoutes,
+                      onEditOrigin: () => _editField(origin: true),
+                      onEditDest: () => _editField(origin: false),
+                      onSwap: _swap,
+                      onPickDestination: _pickDestination,
+                      onOpenSaved: _openSaved,
+                      onToggleSave: _toggleSave,
+                      onBack: () => context.pop(),
+                    )
+                  : KeyedSubtree(
+                      key: const ValueKey('map'),
+                      child: _mapPhase(
+                        context,
+                        state,
+                        navigating: navigating,
+                        previewing: previewing,
+                        route: route,
+                        result: result,
+                        selectedIndex: selectedIndex,
+                      ),
                     ),
-                    onMapCreated: (c) {
-                      _map = c;
-                      if (result == null || navigating) return;
-                      if (previewing && route != null) {
-                        _fitTo(route);
-                      } else {
-                        _fitAll(result);
-                      }
-                    },
-                    // Fires for programmatic moves too, so ignore the app's own
-                    // animations (via the guard counter) and only treat a
-                    // real user gesture during navigation as a follow pause.
-                    onCameraMoveStarted: () {
-                      if (_programmaticMoves > 0 || !navigating) return;
-                      if (DateTime.now().difference(_lastProgrammaticMove) <
-                          _kProgrammaticMoveGrace) {
-                        return;
-                      }
-                      if (!_followPaused) {
-                        setState(() => _followPaused = true);
-                      }
-                    },
-                    // The default blue dot only in the planner; navigation
-                    // renders its own directional arrow puck instead.
-                    myLocationEnabled: !navigating,
-                    myLocationButtonEnabled: false,
-                    zoomControlsEnabled: false,
-                    compassEnabled: false,
-                    mapToolbarEnabled: false,
-                    polylines: route == null ? const {} : _overlayPolylines,
-                    markers: {
-                      if (route != null) ..._overlayMarkers,
-                      if (navigating)
-                        ?_navPuck(Theme.of(context).colorScheme),
-                    },
-                  ),
-                ),
-                Positioned(
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  child: SafeArea(
-                    bottom: false,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                      child: navigating && route != null
-                          ? _NavHeader(
-                              route: route,
-                              activeLeg: state.activeLegIndex!,
-                              walkStepIndex: state.activeWalkStepIndex,
-                            )
-                          : _PlannerHeader(
-                              origin: _origin,
-                              dest: _dest,
-                              onEditOrigin: () => _editField(origin: true),
-                              onEditDest: () => _editField(origin: false),
-                              onSwap: _swap,
-                            ),
-                    ),
-                  ),
-                ),
-                if (navigating && route != null)
-                  _NavSheet(
-                    controller: _sheet,
-                    route: route,
-                    activeLeg: state.activeLegIndex!,
-                    onAdvance: () => _advance(route, state.activeLegIndex!),
-                    onEnd: _endNav,
-                    showManualControls: !_autopilotDriving,
-                  )
-                else
-                  _sheetSwap(state, route, selectedIndex),
-              ],
             ),
           ),
         );
       },
+    );
+  }
+
+  // The map phase: the GoogleMap with the planner/nav header and the results /
+  // preview / nav sheet. Built only once a destination exists (never during
+  // plan entry), so the map is not instantiated on the planner's landing.
+  Widget _mapPhase(
+    BuildContext context,
+    PlanState state, {
+    required bool navigating,
+    required bool previewing,
+    required PlanRoute? route,
+    required PlanResult? result,
+    required int? selectedIndex,
+  }) {
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: GoogleMap(
+            style: mapStyleOf(context),
+            initialCameraPosition: const CameraPosition(
+              target: _kDefaultPos,
+              zoom: 14,
+            ),
+            onMapCreated: (c) {
+              _map = c;
+              if (result == null || navigating) return;
+              if (previewing && route != null) {
+                _fitTo(route);
+              } else {
+                _fitAll(result);
+              }
+            },
+            // Fires for programmatic moves too, so ignore the app's own
+            // animations (via the guard counter) and only treat a real user
+            // gesture during navigation as a follow pause.
+            onCameraMoveStarted: () {
+              if (_programmaticMoves > 0 || !navigating) return;
+              if (DateTime.now().difference(_lastProgrammaticMove) <
+                  _kProgrammaticMoveGrace) {
+                return;
+              }
+              if (!_followPaused) {
+                setState(() => _followPaused = true);
+              }
+            },
+            // The default blue dot only in the planner; navigation renders its
+            // own directional arrow puck instead.
+            myLocationEnabled: !navigating,
+            myLocationButtonEnabled: false,
+            zoomControlsEnabled: false,
+            compassEnabled: false,
+            mapToolbarEnabled: false,
+            polylines: route == null ? const {} : _overlayPolylines,
+            markers: {
+              if (route != null) ..._overlayMarkers,
+              if (navigating) ?_navPuck(Theme.of(context).colorScheme),
+            },
+          ),
+        ),
+        Positioned(
+          top: 0,
+          left: 0,
+          right: 0,
+          child: SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: navigating && route != null
+                  ? _NavHeader(
+                      route: route,
+                      activeLeg: state.activeLegIndex!,
+                      walkStepIndex: state.activeWalkStepIndex,
+                    )
+                  : _PlannerHeader(
+                      origin: _origin,
+                      dest: _dest,
+                      onEditOrigin: () => _editField(origin: true),
+                      onEditDest: () => _editField(origin: false),
+                      onSwap: _swap,
+                    ),
+            ),
+          ),
+        ),
+        if (navigating && route != null)
+          _NavSheet(
+            controller: _sheet,
+            initialOffset: carriedSheetOffset(
+              _sheet,
+              min: AppSheetSnap.peekFrac,
+              max: AppSheetSnap.fullFrac,
+              fallback: AppSheetSnap.halfFrac,
+            ),
+            route: route,
+            activeLeg: state.activeLegIndex!,
+            onAdvance: () => _advance(route, state.activeLegIndex!),
+            onEnd: _endNav,
+            showManualControls: !_autopilotDriving,
+          )
+        else
+          _sheetSwap(state, route, selectedIndex),
+      ],
     );
   }
 
@@ -990,6 +1103,13 @@ class _GoScreenState extends State<GoScreen> {
         ? _PreviewSheet(
             key: const ValueKey('preview'),
             controller: _previewSheet,
+            // Carry the planner sheet's height into the preview swap.
+            initialOffset: carriedSheetOffset(
+              _sheet,
+              min: AppSheetSnap.peekFrac,
+              max: AppSheetSnap.fullFrac,
+              fallback: AppSheetSnap.halfFrac,
+            ),
             route: route,
             isFastest: routeCount > 1 && (selectedIndex ?? 0) == 0,
             isSaved: state.savedKeys.contains(route.savedKey),
@@ -1003,14 +1123,22 @@ class _GoScreenState extends State<GoScreen> {
         : _PlannerSheet(
             key: const ValueKey('planner'),
             controller: _sheet,
+            // Carry the preview sheet's height back into the planner swap.
+            initialOffset: carriedSheetOffset(
+              _previewSheet,
+              min: AppSheetSnap.peekFrac,
+              max: AppSheetSnap.fullFrac,
+              fallback: AppSheetSnap.halfFrac,
+            ),
             state: state,
             hasDestination: _dest != null,
+            timeMode: _timeMode,
+            timeAt: _timeAt,
             onSelect: _previewRoute,
             onRetry: _retry,
-            onPickDestination: () => _editField(origin: false),
             onAdjustOptions: _adjustOptions,
+            onAdjustTime: _adjustTime,
             onToggleSave: _toggleSave,
-            onOpenSaved: _openSaved,
           );
     return AnimatedSwitcher(
       duration: reduce ? Duration.zero : AppMotion.medium,

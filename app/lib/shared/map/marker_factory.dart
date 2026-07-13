@@ -272,72 +272,54 @@ class MapMarkers {
     });
   }
 
-  /// Live-vehicle info bubble: plate on top, next stop + countdown below,
-  /// with a tail pointing down at the bus sprite. Rendered as its own marker
-  /// anchored (0.5, 1.0) at the vehicle position; [clearance] is transparent
-  /// space below the tail so the bubble floats above the sprite. When
-  /// [stopName]/[etaText] are absent the bubble degrades to a plate-only chip.
+  /// Live-vehicle info bubble: the vehicle's headline status on top (勤務／行車
+  /// 狀況, colored by [statusColor]), plate + GPS freshness below, with a tail
+  /// pointing down at the bus sprite. Rendered as its own marker anchored
+  /// (0.5, 1.0) at the vehicle position; [clearance] is transparent space below
+  /// the tail so the bubble floats above the sprite.
   static Future<BitmapDescriptor> busBubble({
     required String plate,
     required Color fill,
-    required Color ink,
     required Color inkSecondary,
-    String? stopName,
-    String? etaText,
-    Color? etaColor,
+    required String statusLabel,
+    required Color statusColor,
+    required String gpsText,
     double clearance = 26,
   }) {
     final key =
-        'bubble:$plate:$stopName:$etaText:${fill.toARGB32()}:'
-        '${ink.toARGB32()}:${(etaColor ?? ink).toARGB32()}';
+        'bubble:$plate:$statusLabel:$gpsText:${fill.toARGB32()}:'
+        '${inkSecondary.toARGB32()}:${statusColor.toARGB32()}';
     return _memo(key, () async {
-      final hasDetail = stopName != null && etaText != null;
-      final platePainter = TextPainter(
+      final statusPainter = TextPainter(
         text: TextSpan(
-          text: plate,
+          text: statusLabel,
           style: TextStyle(
-            color: hasDetail ? inkSecondary : ink,
-            fontSize: (hasDetail ? 10.5 : 12.0) * _dpr,
-            fontWeight: FontWeight.w600,
-            fontFamily: 'IBMPlexMono',
-            letterSpacing: 0.3 * _dpr,
+            color: statusColor,
+            fontSize: 13.5 * _dpr,
+            fontWeight: FontWeight.w700,
+            fontFamily: 'IBMPlexSans',
             height: 1.2,
           ),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
-      TextPainter? destPainter;
-      if (hasDetail) {
-        destPainter = TextPainter(
-          text: TextSpan(
-            children: [
-              TextSpan(
-                text: stopName,
-                style: TextStyle(
-                  color: ink,
-                  fontSize: 13.5 * _dpr,
-                  fontWeight: FontWeight.w600,
-                  fontFamily: 'IBMPlexSans',
-                  height: 1.2,
-                ),
-              ),
-              TextSpan(text: ' ', style: TextStyle(fontSize: 5.0 * _dpr)),
-              TextSpan(
-                text: etaText,
-                style: TextStyle(
-                  color: etaColor ?? ink,
-                  fontSize: 13.5 * _dpr,
-                  fontWeight: FontWeight.w700,
-                  fontFamily: 'IBMPlexMono',
-                  fontFeatures: const [ui.FontFeature.tabularFigures()],
-                  height: 1.2,
-                ),
-              ),
-            ],
+      final metaPainter = TextPainter(
+        text: TextSpan(
+          children: [
+            TextSpan(text: plate, style: TextStyle(letterSpacing: 0.3 * _dpr)),
+            TextSpan(text: ' · $gpsText'),
+          ],
+          style: TextStyle(
+            color: inkSecondary,
+            fontSize: 10.5 * _dpr,
+            fontWeight: FontWeight.w600,
+            fontFamily: 'IBMPlexMono',
+            fontFeatures: const [ui.FontFeature.tabularFigures()],
+            height: 1.2,
           ),
-          textDirection: TextDirection.ltr,
-        )..layout();
-      }
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
 
       final padH = 11.0 * _dpr;
       final padTop = 6.0 * _dpr;
@@ -348,14 +330,15 @@ class MapMarkers {
       final margin = 12.0 * _dpr;
 
       final contentW = [
-        platePainter.width,
-        destPainter?.width ?? 0.0,
+        statusPainter.width,
+        metaPainter.width,
       ].reduce((a, b) => a > b ? a : b);
       final bubbleW = contentW + padH * 2;
       final bubbleH =
           padTop +
-          platePainter.height +
-          (destPainter == null ? 0 : lineGap + destPainter.height) +
+          statusPainter.height +
+          lineGap +
+          metaPainter.height +
           padBottom;
       final w = (bubbleW + margin * 2).ceil();
       final h = (margin + bubbleH + tailH + clearance * _dpr).ceil();
@@ -380,15 +363,15 @@ class MapMarkers {
               ..maskFilter = MaskFilter.blur(BlurStyle.normal, 3 * _dpr),
           )
           ..drawPath(body, Paint()..color = fill);
-        platePainter.paint(
+        statusPainter.paint(
           canvas,
-          Offset(cx - platePainter.width / 2, margin + padTop),
+          Offset(cx - statusPainter.width / 2, margin + padTop),
         );
-        destPainter?.paint(
+        metaPainter.paint(
           canvas,
           Offset(
-            cx - destPainter.width / 2,
-            margin + padTop + platePainter.height + lineGap,
+            cx - metaPainter.width / 2,
+            margin + padTop + statusPainter.height + lineGap,
           ),
         );
       });

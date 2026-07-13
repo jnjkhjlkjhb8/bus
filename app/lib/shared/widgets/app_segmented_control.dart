@@ -8,7 +8,7 @@ class AppSegmentedControl<T> extends StatelessWidget {
     required this.value,
     required this.onChanged,
     super.key,
-  }) : assert(options.length == 2, 'Exactly two options are required.');
+  }) : assert(options.length >= 2, 'At least two options are required.');
 
   final Map<T, String> options;
   final T value;

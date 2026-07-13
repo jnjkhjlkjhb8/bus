@@ -84,10 +84,31 @@ func buildBusPositionMap(city string, posit []rawBusPosition) map[string][]*mode
 			PositionLat: b.BusPosition.PositionLat,
 			Speed:       int32(b.Speed),
 			Azimuth:     int32(b.Azimuth),
+			DutyStatus:  int32(b.DutyStatus),
+			BusStatus:   int32(b.BusStatus),
+			GpsTimeUnix: parseGPSTimeUnix(b.GPSTime),
 		}
 		busmap[uid] = append(busmap[uid], pb)
 	}
 	return busmap
+}
+
+// parseGPSTimeUnix converts a TDX GPSTime string to epoch seconds. TDX usually
+// sends RFC3339 with a +08:00 offset; some feeds drop the zone, which we read as
+// Taipei local. Unparseable or empty values yield 0 (the client shows "無定位").
+func parseGPSTimeUnix(s string) int64 {
+	if s == "" {
+		return 0
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.Unix()
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, taipei); err == nil {
+			return t.Unix()
+		}
+	}
+	return 0
 }
 
 // buildTotalStops counts the stops per canonical subroute from the static map,

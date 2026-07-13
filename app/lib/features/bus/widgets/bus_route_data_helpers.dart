@@ -3,41 +3,6 @@ part of '../view/bus_route_screen.dart';
 const List<FontFeature> _tnum = AppTextStyles.tabularFigures;
 
 typedef _BusVehicle = ({String afterStopUid, double progress, String plate});
-typedef _BusBubbleInfo = ({
-  String? stopName,
-  String? etaText,
-  TimelineStopState state,
-});
-
-/// Next stop + ETA for one live vehicle, for the map bubble. The next stop is
-/// the lowest-sequence stop whose ETA entry lists this plate; when no stop
-/// does (or its ETA has no usable label) the bubble degrades to plate-only.
-_BusBubbleInfo _bubbleInfoFor(
-  BusRouteState s,
-  List<BusStopModel> stops,
-  String plate,
-) {
-  for (final st in stops) {
-    final eta =
-        s.etaMap['seq:${s.direction}:${st.sequence}'] ??
-        s.etaMap['uid:${st.stopUid}'];
-    if (eta == null) continue;
-    if (!eta.vehiclePlates.contains(plate) &&
-        !eta.vehicles.any((v) => v.plate == plate)) {
-      continue;
-    }
-    final state = timelineStopState(eta);
-    final label = switch (state) {
-      TimelineStopState.arriving => '進站中',
-      TimelineStopState.approaching => '即將進站',
-      TimelineStopState.none =>
-        eta.estimateSeconds > 0 ? '${eta.estimateMinutes}分' : null,
-    };
-    if (label == null) break;
-    return (stopName: st.stopName, etaText: label, state: state);
-  }
-  return (stopName: null, etaText: null, state: TimelineStopState.none);
-}
 typedef _DepartureInfo = ({String time, bool isNext});
 typedef _TimetableInfo = ({String time, bool lowFloor, bool isNext});
 

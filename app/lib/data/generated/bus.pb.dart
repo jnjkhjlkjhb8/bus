@@ -1842,6 +1842,9 @@ class Bus_position extends $pb.GeneratedMessage {
     $core.double? positionLat,
     $core.int? speed,
     $core.int? azimuth,
+    $core.int? dutyStatus,
+    $core.int? busStatus,
+    $fixnum.Int64? gpsTimeUnix,
   }) {
     final result = create();
     if (plateNumb != null) result.plateNumb = plateNumb;
@@ -1849,6 +1852,9 @@ class Bus_position extends $pb.GeneratedMessage {
     if (positionLat != null) result.positionLat = positionLat;
     if (speed != null) result.speed = speed;
     if (azimuth != null) result.azimuth = azimuth;
+    if (dutyStatus != null) result.dutyStatus = dutyStatus;
+    if (busStatus != null) result.busStatus = busStatus;
+    if (gpsTimeUnix != null) result.gpsTimeUnix = gpsTimeUnix;
     return result;
   }
 
@@ -1869,6 +1875,9 @@ class Bus_position extends $pb.GeneratedMessage {
     ..aD(3, _omitFieldNames ? '' : 'positionLat')
     ..aI(4, _omitFieldNames ? '' : 'speed')
     ..aI(5, _omitFieldNames ? '' : 'azimuth')
+    ..aI(9, _omitFieldNames ? '' : 'dutyStatus')
+    ..aI(10, _omitFieldNames ? '' : 'busStatus')
+    ..aInt64(11, _omitFieldNames ? '' : 'gpsTimeUnix')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1934,6 +1943,32 @@ class Bus_position extends $pb.GeneratedMessage {
   $core.bool hasAzimuth() => $_has(4);
   @$pb.TagNumber(5)
   void clearAzimuth() => $_clearField(5);
+  @$pb.TagNumber(9)
+  $core.int get dutyStatus => $_getIZ(5);
+  @$pb.TagNumber(9)
+  set dutyStatus($core.int value) => $_setSignedInt32(5, value);
+  @$pb.TagNumber(9)
+  $core.bool hasDutyStatus() => $_has(5);
+  @$pb.TagNumber(9)
+  void clearDutyStatus() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $core.int get busStatus => $_getIZ(6);
+  @$pb.TagNumber(10)
+  set busStatus($core.int value) => $_setSignedInt32(6, value);
+  @$pb.TagNumber(10)
+  $core.bool hasBusStatus() => $_has(6);
+  @$pb.TagNumber(10)
+  void clearBusStatus() => $_clearField(10);
+
+  @$pb.TagNumber(11)
+  $fixnum.Int64 get gpsTimeUnix => $_getI64(7);
+  @$pb.TagNumber(11)
+  set gpsTimeUnix($fixnum.Int64 value) => $_setInt64(7, value);
+  @$pb.TagNumber(11)
+  $core.bool hasGpsTimeUnix() => $_has(7);
+  @$pb.TagNumber(11)
+  void clearGpsTimeUnix() => $_clearField(11);
 }
 
 class Bus_Schedule extends $pb.GeneratedMessage {

@@ -139,47 +139,41 @@ class _FieldRow extends StatelessWidget {
 class _PlannerSheet extends StatelessWidget {
   const _PlannerSheet({
     required this.controller,
+    required this.initialOffset,
     required this.state,
     required this.hasDestination,
+    required this.timeMode,
+    required this.timeAt,
     required this.onSelect,
     required this.onRetry,
-    required this.onPickDestination,
     required this.onAdjustOptions,
+    required this.onAdjustTime,
     required this.onToggleSave,
-    required this.onOpenSaved,
     super.key,
   });
 
   final SheetController controller;
+  final SheetOffset initialOffset;
   final PlanState state;
   final bool hasDestination;
+  final _TimeMode timeMode;
+  final DateTime timeAt;
   final void Function(PlanRoute) onSelect;
   final VoidCallback onRetry;
-  final VoidCallback onPickDestination;
   final VoidCallback onAdjustOptions;
+  final VoidCallback onAdjustTime;
   final void Function(PlanRoute) onToggleSave;
-  final void Function(PlanRoute) onOpenSaved;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final showingSaved =
-        !hasDestination &&
-        state.status == PlanStatus.initial &&
-        state.savedRoutes.isNotEmpty;
     return SheetViewport(
       child: SheetExitGestureDetector(
         onExit: () => context.pop(),
         child: Sheet(
           controller: controller,
-          initialOffset: const SheetOffset.proportionalToViewport(0.5),
-          snapGrid: const SheetSnapGrid(
-            snaps: [
-              SheetOffset.proportionalToViewport(0.28),
-              SheetOffset.proportionalToViewport(0.5),
-              SheetOffset.proportionalToViewport(1),
-            ],
-          ),
+          initialOffset: initialOffset,
+          snapGrid: AppSheetSnap.grid,
           scrollConfiguration: const SheetScrollConfiguration(),
           decoration: MaterialSheetDecoration(
             size: SheetSize.stretch,
@@ -197,12 +191,18 @@ class _PlannerSheet extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
                 child: Row(
                   children: [
-                    Expanded(
-                      child: _SheetTitle(
-                        state: state,
-                        showingSaved: showingSaved,
+                    Expanded(child: _SheetTitle(state: state)),
+                    // The depart/arrive time chip only makes sense once a
+                    // destination has been queried; the saved-routes box has no
+                    // time context.
+                    if (hasDestination) ...[
+                      _TimeChip(
+                        mode: timeMode,
+                        at: timeAt,
+                        onTap: onAdjustTime,
                       ),
-                    ),
+                      const SizedBox(width: 8),
+                    ],
                     _OptionsButton(onTap: onAdjustOptions),
                   ],
                 ),
@@ -211,13 +211,9 @@ class _PlannerSheet extends StatelessWidget {
               Expanded(
                 child: _PlannerBody(
                   state: state,
-                  hasDestination: hasDestination,
-                  showingSaved: showingSaved,
                   onSelect: onSelect,
                   onRetry: onRetry,
-                  onPickDestination: onPickDestination,
                   onToggleSave: onToggleSave,
-                  onOpenSaved: onOpenSaved,
                 ),
               ),
             ],
@@ -229,27 +225,24 @@ class _PlannerSheet extends StatelessWidget {
 }
 
 class _SheetTitle extends StatelessWidget {
-  const _SheetTitle({required this.state, this.showingSaved = false});
+  const _SheetTitle({required this.state});
 
   final PlanState state;
-  final bool showingSaved;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final count = state.result?.routes.length ?? 0;
-    final now = TimeOfDay.now();
-    String two(int v) => v.toString().padLeft(2, '0');
-    final sub = showingSaved
-        ? '${state.savedRoutes.length} 條路線'
-        : state.status == PlanStatus.success && count > 0
-        ? '$count 個建議 · 出發 ${two(now.hour)}:${two(now.minute)}'
-        : '出發：現在';
+    // The departure time now lives in the header time chip, so the subtitle
+    // just reports the result count.
+    final sub = state.status == PlanStatus.success && count > 0
+        ? '$count 個建議'
+        : '規劃中';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          showingSaved ? '路線箱' : '建議路線',
+          '建議路線',
           style: AppTextStyles.heading2.copyWith(color: cs.onSurface),
         ),
         const SizedBox(height: 3),
@@ -265,51 +258,20 @@ class _SheetTitle extends StatelessWidget {
 class _PlannerBody extends StatelessWidget {
   const _PlannerBody({
     required this.state,
-    required this.hasDestination,
-    required this.showingSaved,
     required this.onSelect,
     required this.onRetry,
-    required this.onPickDestination,
     required this.onToggleSave,
-    required this.onOpenSaved,
   });
 
   final PlanState state;
-  final bool hasDestination;
-  final bool showingSaved;
   final void Function(PlanRoute) onSelect;
   final VoidCallback onRetry;
-  final VoidCallback onPickDestination;
   final void Function(PlanRoute) onToggleSave;
-  final void Function(PlanRoute) onOpenSaved;
 
   @override
   Widget build(BuildContext context) {
-    if (!hasDestination && state.status == PlanStatus.initial) {
-      // Saved snapshots take over the empty state, mirroring favorites.
-      if (showingSaved) {
-        final saved = state.savedRoutes;
-        return ListView.separated(
-          padding: const EdgeInsets.all(16),
-          itemCount: saved.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 10),
-          itemBuilder: (context, i) => RouteOptionCard(
-            route: saved[i],
-            highlighted: false,
-            isSaved: true,
-            onTap: () => onOpenSaved(saved[i]),
-            onToggleSave: () => onToggleSave(saved[i]),
-          ),
-        );
-      }
-      return _GoMessage(
-        icon: Icons.flag_outlined,
-        title: '選擇目的地開始規劃',
-        hint: '搜尋地點或站名，為你找出最快路線',
-        actionLabel: '選擇目的地',
-        onAction: onPickDestination,
-      );
-    }
+    // The empty/saved-routes state now lives on the plan-entry page; this body
+    // is only built once a destination exists, so it starts at the query state.
     switch (state.status) {
       case PlanStatus.initial:
       case PlanStatus.loading:
@@ -760,6 +722,410 @@ class _GoMessage extends StatelessWidget {
                 ),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Plan-entry phase: the map-less landing surface. Origin/destination fields on
+/// top (each opens the search page), a shared shortcut list below (current
+/// location, saved places, recent searches) filling the screen. Picking a
+/// shortcut sets the destination and starts planning.
+class _PlannerEntry extends StatelessWidget {
+  const _PlannerEntry({
+    required this.origin,
+    required this.dest,
+    required this.savedRoutes,
+    required this.onEditOrigin,
+    required this.onEditDest,
+    required this.onSwap,
+    required this.onPickDestination,
+    required this.onOpenSaved,
+    required this.onToggleSave,
+    required this.onBack,
+    super.key,
+  });
+
+  final PlannedPlace? origin;
+  final PlannedPlace? dest;
+  final List<PlanRoute> savedRoutes;
+  final VoidCallback onEditOrigin;
+  final VoidCallback onEditDest;
+  final VoidCallback onSwap;
+  final ValueChanged<PlannedPlace> onPickDestination;
+  final void Function(PlanRoute) onOpenSaved;
+  final void Function(PlanRoute) onToggleSave;
+  final VoidCallback onBack;
+
+  // 路線箱: the saved-route cards, shown below the shortcut list when the user
+  // has any. Kept out of PlaceSearchView (which only knows places) by passing
+  // it in as the list footer.
+  Widget? _savedRoutesFooter(BuildContext context) {
+    if (savedRoutes.isEmpty) return null;
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(height: 8, color: cs.surfaceContainerHigh),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+          child: Text(
+            '路線箱',
+            style: AppTextStyles.bodySmall.copyWith(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: Column(
+            children: [
+              for (final route in savedRoutes)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: RouteOptionCard(
+                    route: route,
+                    highlighted: false,
+                    isSaved: true,
+                    onTap: () => onOpenSaved(route),
+                    onToggleSave: () => onToggleSave(route),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return ColoredBox(
+      color: cs.surface,
+      child: Column(
+        children: [
+          SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Pressable(
+                    onTap: onBack,
+                    semanticLabel: '返回',
+                    child: SizedBox(
+                      width: 40,
+                      height: 52,
+                      child: Icon(
+                        Icons.arrow_back_rounded,
+                        size: 22,
+                        color: cs.onSurface,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: _PlannerHeader(
+                      origin: origin,
+                      dest: dest,
+                      onEditOrigin: onEditOrigin,
+                      onEditDest: onEditDest,
+                      onSwap: onSwap,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: PlaceSearchView(
+              emptyHint: '搜尋地點，為你規劃最快路線',
+              footer: _savedRoutesFooter(context),
+              onPicked: onPickDestination,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Results-header chip that reads out the current departure/arrival stance and
+/// opens the time selector.
+class _TimeChip extends StatelessWidget {
+  const _TimeChip({required this.mode, required this.at, required this.onTap});
+
+  final _TimeMode mode;
+  final DateTime at;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    String two(int v) => v.toString().padLeft(2, '0');
+    final stamp =
+        '${two(at.month)}/${two(at.day)} '
+        '${two(at.hour)}:${two(at.minute)}';
+    final label = switch (mode) {
+      _TimeMode.leaveNow => '立即出發',
+      _TimeMode.departAt => '$stamp 出發',
+      _TimeMode.arriveBy => '$stamp 抵達',
+    };
+    return Pressable(
+      onTap: onTap,
+      semanticLabel: '選擇出發時間',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.schedule_rounded, size: 16, color: cs.onSurface),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: AppTextStyles.bodySmall.copyWith(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w600,
+                fontFeatures: AppTextStyles.tabularFigures,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+const _weekdayLabels = <int, String>{
+  DateTime.monday: '一',
+  DateTime.tuesday: '二',
+  DateTime.wednesday: '三',
+  DateTime.thursday: '四',
+  DateTime.friday: '五',
+  DateTime.saturday: '六',
+  DateTime.sunday: '日',
+};
+
+/// Departure/arrival time selector, mirroring the rail query's
+/// date + time + stance idiom. Returns the chosen `(mode, at)` on 套用, or null
+/// on dismiss.
+Future<({_TimeMode mode, DateTime at})?> _showTimeModeSheet(
+  BuildContext context, {
+  required _TimeMode mode,
+  required DateTime at,
+}) {
+  return showModalBottomSheet<({_TimeMode mode, DateTime at})>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (_) => _TimeModeSheet(mode: mode, at: at),
+  );
+}
+
+class _TimeModeSheet extends StatefulWidget {
+  const _TimeModeSheet({required this.mode, required this.at});
+
+  final _TimeMode mode;
+  final DateTime at;
+
+  @override
+  State<_TimeModeSheet> createState() => _TimeModeSheetState();
+}
+
+class _TimeModeSheetState extends State<_TimeModeSheet> {
+  late _TimeMode _mode = widget.mode;
+  late DateTime _at = widget.at;
+
+  Future<void> _pickDate() async {
+    unawaited(HapticService.instance.lightTap());
+    final cs = Theme.of(context).colorScheme;
+    final picked = await showModalBottomSheet<DateTime>(
+      context: context,
+      backgroundColor: cs.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppTheme.radiusBottomSheet),
+        ),
+      ),
+      builder: (context) => SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SheetDragHandle(),
+              const SizedBox(height: 8),
+              AppDatePicker(
+                selectedDay: _at,
+                onDaySelected: (date) => Navigator.pop(context, date),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (picked != null && mounted) {
+      // Preserve the chosen time-of-day when only the date changes.
+      setState(() {
+        _at = DateTime(
+          picked.year,
+          picked.month,
+          picked.day,
+          _at.hour,
+          _at.minute,
+        );
+      });
+    }
+  }
+
+  Future<void> _pickTime() async {
+    unawaited(HapticService.instance.lightTap());
+    final picked = await AppTimePicker.show(
+      context,
+      TimeOfDay(hour: _at.hour, minute: _at.minute),
+    );
+    if (picked != null && mounted) {
+      setState(() {
+        _at = DateTime(
+          _at.year,
+          _at.month,
+          _at.day,
+          picked.hour,
+          picked.minute,
+        );
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    String two(int v) => v.toString().padLeft(2, '0');
+    final timed = _mode != _TimeMode.leaveNow;
+    return Container(
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: const BorderRadius.vertical(
+          top: Radius.circular(AppTheme.radiusBottomSheet),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SheetDragHandle(),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+              child: Text(
+                '出發時間',
+                style: AppTextStyles.heading2.copyWith(color: cs.onSurface),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: AppSegmentedControl<_TimeMode>(
+                options: const {
+                  _TimeMode.leaveNow: '立即出發',
+                  _TimeMode.departAt: '出發時間',
+                  _TimeMode.arriveBy: '抵達時間',
+                },
+                value: _mode,
+                onChanged: (v) {
+                  unawaited(HapticService.instance.lightTap());
+                  setState(() => _mode = v);
+                },
+              ),
+            ),
+            if (timed) ...[
+              const SizedBox(height: 8),
+              _TimeRow(
+                icon: Icons.event_rounded,
+                label: '日期',
+                value:
+                    '${two(_at.month)}/${two(_at.day)}'
+                    '（${_weekdayLabels[_at.weekday]}）',
+                onTap: _pickDate,
+              ),
+              _TimeRow(
+                icon: Icons.schedule_rounded,
+                label: '時間',
+                value: '${two(_at.hour)}:${two(_at.minute)}',
+                onTap: _pickTime,
+              ),
+            ],
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: AppButton(
+                  label: '套用',
+                  onPressed: () =>
+                      Navigator.of(context).pop((mode: _mode, at: _at)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TimeRow extends StatelessWidget {
+  const _TimeRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Pressable(
+      onTap: onTap,
+      semanticLabel: '$label $value',
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: cs.onSurfaceVariant),
+            const SizedBox(width: 12),
+            Text(
+              label,
+              style: AppTextStyles.bodyLarge.copyWith(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const Spacer(),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: cs.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+              ),
+              child: Text(
+                value,
+                style: AppTextStyles.memo.copyWith(color: cs.onSurface),
+              ),
+            ),
           ],
         ),
       ),

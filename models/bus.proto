@@ -146,8 +146,6 @@ message Bus_StopEstimate{
   string src_update_time = 8;
   repeated Bus_position Buses = 9;
   int64 arrival_unix = 10;
-  // Terminal stop name for this subroute+direction (e.g. 桃園後站). Empty when
-  // the static data has none; clients fall back to a direction label.
   string destination = 11;
 }
 message Bus_position{
@@ -158,6 +156,9 @@ message Bus_position{
   double position_lat = 3;
   int32 speed = 4;
   int32 azimuth = 5;
+  int32 duty_status = 9;
+  int32 bus_status = 10;
+  int64 gps_time_unix = 11;
 }
 message Bus_Schedule {
   bool is_timetable = 1;

@@ -509,6 +509,9 @@ const Bus_position$json = {
     {'1': 'position_lat', '3': 3, '4': 1, '5': 1, '10': 'positionLat'},
     {'1': 'speed', '3': 4, '4': 1, '5': 5, '10': 'speed'},
     {'1': 'azimuth', '3': 5, '4': 1, '5': 5, '10': 'azimuth'},
+    {'1': 'duty_status', '3': 9, '4': 1, '5': 5, '10': 'dutyStatus'},
+    {'1': 'bus_status', '3': 10, '4': 1, '5': 5, '10': 'busStatus'},
+    {'1': 'gps_time_unix', '3': 11, '4': 1, '5': 3, '10': 'gpsTimeUnix'},
   ],
   '9': [
     {'1': 6, '2': 7},
@@ -522,8 +525,10 @@ const Bus_position$json = {
 final $typed_data.Uint8List bus_positionDescriptor = $convert.base64Decode(
     'CgxCdXNfcG9zaXRpb24SHQoKcGxhdGVfbnVtYhgBIAEoCVIJcGxhdGVOdW1iEiEKDHBvc2l0aW'
     '9uX2xvbhgCIAEoAVILcG9zaXRpb25Mb24SIQoMcG9zaXRpb25fbGF0GAMgASgBUgtwb3NpdGlv'
-    'bkxhdBIUCgVzcGVlZBgEIAEoBVIFc3BlZWQSGAoHYXppbXV0aBgFIAEoBVIHYXppbXV0aEoECA'
-    'YQB0oECAcQCEoECAgQCVIKRHV0eVN0YXR1c1IJQnVzU3RhdHVzUghncHNfdGltZQ==');
+    'bkxhdBIUCgVzcGVlZBgEIAEoBVIFc3BlZWQSGAoHYXppbXV0aBgFIAEoBVIHYXppbXV0aBIfCg'
+    'tkdXR5X3N0YXR1cxgJIAEoBVIKZHV0eVN0YXR1cxIdCgpidXNfc3RhdHVzGAogASgFUglidXNT'
+    'dGF0dXMSIgoNZ3BzX3RpbWVfdW5peBgLIAEoA1ILZ3BzVGltZVVuaXhKBAgGEAdKBAgHEAhKBA'
+    'gIEAlSCkR1dHlTdGF0dXNSCUJ1c1N0YXR1c1IIZ3BzX3RpbWU=');
 
 @$core.Deprecated('Use bus_ScheduleDescriptor instead')
 const Bus_Schedule$json = {

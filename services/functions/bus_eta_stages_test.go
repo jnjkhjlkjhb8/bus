@@ -142,6 +142,24 @@ func TestBuildBusPositionMap(t *testing.T) {
 	}
 }
 
+func TestParseGPSTimeUnix(t *testing.T) {
+	// +08:00 offset (the common TDX form) and a zone-less string read as Taipei
+	// both resolve to the same instant; junk and empty fall back to 0.
+	want := time.Date(2026, 7, 13, 8, 30, 0, 0, taipei).Unix()
+	cases := map[string]int64{
+		"2026-07-13T08:30:00+08:00": want,
+		"2026-07-13T08:30:00":       want,
+		"2026-07-13 08:30:00":       want,
+		"":                          0,
+		"not-a-time":                0,
+	}
+	for in, exp := range cases {
+		if got := parseGPSTimeUnix(in); got != exp {
+			t.Errorf("parseGPSTimeUnix(%q) = %d, want %d", in, got, exp)
+		}
+	}
+}
+
 func TestBuildTotalStops(t *testing.T) {
 	mp := []busStationmap{
 		{SubRouteUID: "R1", Direction: 0, StopUID: "S1"},

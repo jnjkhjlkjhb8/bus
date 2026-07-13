@@ -149,7 +149,7 @@ class _StopBody extends StatelessWidget {
       if (members.isNotEmpty && flatCount == 0)
         () => const _StopMessage(
           icon: Icons.directions_bus_outlined,
-          title: '目前沒有即時動態',
+          title: '目前沒有任何資料',
           hint: '稍後再試,或下拉重新整理',
         ),
     ];
@@ -333,7 +333,7 @@ class _StopMeta extends StatelessWidget {
     return BlocSelector<BusStopBloc, BusStopState, DateTime?>(
       selector: (state) => state.updatedAt,
       builder: (context, updatedAt) {
-        final label = updatedAt != null ? '更新於 ${_hhmm(updatedAt)}' : '即時動態';
+        final label = updatedAt != null ? '更新於 ${_hhmm(updatedAt)}' : '公車站牌';
         return Text(
           label,
           style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),

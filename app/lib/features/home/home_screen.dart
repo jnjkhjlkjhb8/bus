@@ -67,9 +67,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   Set<Marker> _markers = {};
   int _markerRevision = 0;
   Timer? _idleDebounce;
+
   /// Center of the last nearby query actually sent; used to suppress redundant
   /// re-queries when the camera settles only a few metres away.
   LatLng? _lastQueryCenter;
+
   /// When the last sonar ring was emitted; dedupes back-to-back pings.
   DateTime? _lastPingAt;
   bool _sheetAtTop = false;
@@ -86,6 +88,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   /// True while a manual "locate me" tap is acquiring the GPS fix — drives the
   /// recenter FAB's spinner so the button never reads as doing nothing.
   bool _locating = false;
+
   /// Fires a one-shot sonar ring at the user's on-screen position after a
   /// manual recenter. Null until the first ping.
   final ValueNotifier<_Ping?> _ping = ValueNotifier<_Ping?>(null);
@@ -127,14 +130,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           .push(
             PagedSheetRoute<void>(
               scrollConfiguration: const SheetScrollConfiguration(),
-              initialOffset: const SheetOffset.proportionalToViewport(0.55),
-              snapGrid: const SheetSnapGrid(
-                snaps: [
-                  SheetOffset.proportionalToViewport(0.30),
-                  SheetOffset.proportionalToViewport(0.55),
-                  SheetOffset.proportionalToViewport(1),
-                ],
+              // Open where the sheet already is, so drilling in from the
+              // nearby list doesn't jump the height.
+              initialOffset: carriedSheetOffset(
+                _sheetController,
+                min: AppSheetSnap.peekFrac,
+                max: AppSheetSnap.fullFrac,
+                fallback: AppSheetSnap.halfFrac,
               ),
+              snapGrid: AppSheetSnap.grid,
               builder: (_) => stationDetailPage(station),
             ),
           )
@@ -150,14 +154,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       navigator.push(
         PagedSheetRoute<void>(
           scrollConfiguration: const SheetScrollConfiguration(),
-          initialOffset: const SheetOffset.proportionalToViewport(0.85),
-          snapGrid: const SheetSnapGrid(
-            snaps: [
-              SheetOffset.proportionalToViewport(0.30),
-              SheetOffset.proportionalToViewport(0.85),
-              SheetOffset.proportionalToViewport(1),
-            ],
-          ),
+          initialOffset: AppSheetSnap.half,
+          snapGrid: AppSheetSnap.grid,
           builder: (_) => const HomeRailQuerySheet(),
         ),
       ),

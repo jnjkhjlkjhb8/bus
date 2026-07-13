@@ -20,6 +20,7 @@ import 'package:wheres_the_car/data/models/timeline_stop.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
+import 'package:wheres_the_car/features/bus/bus_vehicle_status.dart';
 import 'package:wheres_the_car/features/bus/widgets/bus_timeline_stops.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
@@ -94,6 +95,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   late final TabController _tabController;
   late final SheetController _sheetController;
   final _scrollController = ScrollController();
+  // The horizontal timeline (collapsed sheet) is a separate scrollable from the
+  // vertical stop list, so a marker tap must drive its own controller too.
+  final _timelineController = ScrollController();
   GoogleMapController? _mapController;
 
   /// Stop uids of the current direction, in list order — lets a marker tap map
@@ -152,13 +156,15 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     _stopUidsInOrder = [for (final st in stops) st.stopUid];
 
     final vehicles = _vehiclePositionsFor(s);
+    // gpsTimeUnix advances every live frame and drives the bubble's freshness
+    // reading, so including it here refreshes that label each frame.
     final sig =
         '${route.subRouteUid}:${s.direction}:${stops.length}:'
         '${stops.map((st) => _markerEta(_etaFor(s, st))).join(',')}:'
         '${vehicles.map(
           (v) =>
-              '${v.plate}@${v.lat},${v.lon},${v.azimuth},'
-              '${_bubbleInfoFor(s, stops, v.plate)}',
+              '${v.plate}@${v.lat},${v.lon},${v.azimuth},${v.dutyStatus},'
+              '${v.busStatus},${v.gpsTimeUnix}',
         ).join(';')}';
     if (sig == _mapSig) return;
     _mapSig = sig;
@@ -227,6 +233,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     // where the marker sits *right now* — mid-glide included — so a fresh frame
     // retargets smoothly instead of snapping back to the last reported point.
     final isLight = cs.brightness == Brightness.light;
+    final now = DateTime.now();
     final t = _busGlideCurve.value;
     final nextGlides = <String, _BusGlide>{};
     for (final v in vehicles) {
@@ -234,24 +241,24 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         busSpriteAsset(v.azimuth.toDouble()),
       );
 
-      // Always-on info bubble above the sprite: plate + next stop + countdown,
-      // replacing the tap-only default InfoWindow.
-      final info = _bubbleInfoFor(s, stops, v.plate);
-      final etaColor = switch (info.state) {
-        TimelineStopState.arriving =>
-          isLight ? AppTheme.statusArrivingText : AppTheme.statusArriving,
-        TimelineStopState.approaching =>
+      // Always-on bubble above the sprite: the vehicle's own 勤務／行車狀況 as
+      // the headline, plate + GPS freshness below — replacing the former
+      // next-stop + ETA content and the tap-only default InfoWindow.
+      final status = busVehicleStatus(v);
+      final statusColor = switch (status.tone) {
+        BusStatusTone.normal => cs.onSurface,
+        BusStatusTone.notice =>
           isLight ? AppTheme.etaApproaching : AppTheme.statusApproach,
-        TimelineStopState.none => cs.onSurface,
+        BusStatusTone.warning => cs.error,
+        BusStatusTone.muted => cs.onSurfaceVariant,
       };
       final bubbleIcon = await MapMarkers.busBubble(
         plate: v.plate,
         fill: isLight ? Colors.white : cs.surfaceContainerHigh,
-        ink: cs.onSurface,
         inkSecondary: cs.onSurfaceVariant,
-        stopName: info.stopName,
-        etaText: info.etaText,
-        etaColor: etaColor,
+        statusLabel: status.label,
+        statusColor: statusColor,
+        gpsText: busGpsAge(v.gpsTimeUnix, now).text,
       );
 
       final target = LatLng(v.lat, v.lon);
@@ -357,19 +364,37 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   void _flashStop(String stopUid) {
     unawaited(HapticService.instance.lightTap());
     final index = _stopUidsInOrder.indexOf(stopUid);
-    if (index >= 0 && _scrollController.hasClients) {
-      const estRowHeight = 64.0;
-      final target = (index * estRowHeight).clamp(
-        0.0,
-        _scrollController.position.maxScrollExtent,
-      );
-      unawaited(
-        _scrollController.animateTo(
-          target,
-          duration: const Duration(milliseconds: 320),
-          curve: AppMotion.easeInOut,
-        ),
-      );
+    if (index >= 0) {
+      // Vertical stop list: rows vary in height, so the offset is an estimate.
+      if (_scrollController.hasClients) {
+        const estRowHeight = 64.0;
+        final target = (index * estRowHeight).clamp(
+          0.0,
+          _scrollController.position.maxScrollExtent,
+        );
+        unawaited(
+          _scrollController.animateTo(
+            target,
+            duration: const Duration(milliseconds: 320),
+            curve: AppMotion.easeInOut,
+          ),
+        );
+      }
+      // Horizontal timeline: fixed 120px cells, so centre the stop exactly.
+      if (_timelineController.hasClients) {
+        const cellWidth = 120.0;
+        final pos = _timelineController.position;
+        final target = (index * cellWidth + cellWidth / 2 -
+                pos.viewportDimension / 2)
+            .clamp(0.0, pos.maxScrollExtent);
+        unawaited(
+          _timelineController.animateTo(
+            target,
+            duration: const Duration(milliseconds: 320),
+            curve: AppMotion.easeInOut,
+          ),
+        );
+      }
     }
     _flashTimer?.cancel();
     setState(() => _flashStopUid = stopUid);
@@ -386,6 +411,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     _tabController.dispose();
     _sheetController.dispose();
     _scrollController.dispose();
+    _timelineController.dispose();
     _mapLayer.dispose();
     super.dispose();
   }
@@ -501,6 +527,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                       tabController: _tabController,
                       sheetController: _sheetController,
                       scrollController: _scrollController,
+                      timelineController: _timelineController,
                       flashStopUid: _flashStopUid,
                       vehicles: const [],
                       direction: state.direction,

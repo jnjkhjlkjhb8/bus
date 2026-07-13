@@ -159,9 +159,7 @@ class _RailScreenState extends State<RailScreen> {
         setState(() => _hasSubmittedQuery = true);
         _dispatchSearch();
         unawaited(
-          _sheetController.animateTo(
-            const SheetOffset.proportionalToViewport(0.15),
-          ),
+          _sheetController.animateTo(AppSheetSnap.peek),
         );
       });
     }
@@ -238,9 +236,7 @@ class _RailScreenState extends State<RailScreen> {
         // here — the sheet is part of this screen's Stack, so popping unwinds
         // back to home.
         unawaited(
-          _sheetController.animateTo(
-            const SheetOffset.proportionalToViewport(0.15),
-          ),
+          _sheetController.animateTo(AppSheetSnap.peek),
         );
       case RailTrainQuerySubmission():
         unawaited(
@@ -489,16 +485,8 @@ class _RailScreenState extends State<RailScreen> {
                   onExit: () => context.pop(),
                   child: Sheet(
                     controller: _sheetController,
-                    initialOffset: const SheetOffset.proportionalToViewport(
-                      0.35,
-                    ),
-                    snapGrid: const SheetSnapGrid(
-                      snaps: [
-                        SheetOffset.proportionalToViewport(0.15),
-                        SheetOffset.proportionalToViewport(0.35),
-                        SheetOffset.proportionalToViewport(1),
-                      ],
-                    ),
+                    initialOffset: AppSheetSnap.half,
+                    snapGrid: AppSheetSnap.grid,
                     scrollConfiguration: const SheetScrollConfiguration(),
                     decoration: MaterialSheetDecoration(
                       size: SheetSize.stretch,

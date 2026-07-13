@@ -48,6 +48,7 @@ class _RouteSheet extends StatelessWidget {
     required this.tabController,
     required this.sheetController,
     required this.scrollController,
+    required this.timelineController,
     required this.flashStopUid,
     required this.vehicles,
     required this.direction,
@@ -64,6 +65,7 @@ class _RouteSheet extends StatelessWidget {
   final TabController tabController;
   final SheetController sheetController;
   final ScrollController scrollController;
+  final ScrollController timelineController;
   final String? flashStopUid;
   final List<_BusVehicle> vehicles;
   final int direction;
@@ -153,6 +155,8 @@ class _RouteSheet extends StatelessWidget {
             stops: stops,
             vehicles: vehicles,
             direction: direction,
+            controller: timelineController,
+            flashStopUid: flashStopUid,
           ),
         );
 
@@ -161,7 +165,7 @@ class _RouteSheet extends StatelessWidget {
         RouteTabBar(
           controller: tabController,
           tabs: const ['站牌列表', '詳細資訊'],
-          backgroundColor: cs.surfaceContainerLow,
+          raised: true,
         ),
         Expanded(
           child: TabBarView(
@@ -210,12 +214,11 @@ class _RouteSheet extends StatelessWidget {
       onExit: () => context.pop(),
       child: Sheet(
         controller: sheetController,
-        initialOffset: const SheetOffset.proportionalToViewport(0.30),
+        initialOffset: AppSheetSnap.peek,
+        // Two detents by design: a route list is either a glance or a full
+        // read, nothing between.
         snapGrid: const SheetSnapGrid(
-          snaps: [
-            SheetOffset.proportionalToViewport(0.30),
-            SheetOffset.proportionalToViewport(1),
-          ],
+          snaps: [AppSheetSnap.peek, AppSheetSnap.full],
         ),
         scrollConfiguration: const SheetScrollConfiguration(),
         decoration: MaterialSheetDecoration(

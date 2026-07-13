@@ -8,11 +8,16 @@ class _HorizontalRouteTimeline extends StatelessWidget {
     required this.stops,
     required this.vehicles,
     required this.direction,
+    required this.controller,
+    required this.flashStopUid,
   });
 
   final List<TimelineStop> stops;
   final List<_BusVehicle> vehicles;
   final int direction;
+  final ScrollController controller;
+  /// The stop briefly highlighted after its map marker was tapped.
+  final String? flashStopUid;
 
   _BusVehicle? _vehicleBetween(String currentUid, String? nextUid) {
     if (nextUid == null) return null;
@@ -28,11 +33,14 @@ class _HorizontalRouteTimeline extends StatelessWidget {
     return SizedBox(
       height: 148,
       child: ListView.builder(
+        controller: controller,
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 20),
         itemCount: stops.length,
         itemBuilder: (context, i) {
           final stop = stops[i];
+          // A marker-tap flash reads the same as the live/active stop.
+          final isEmphasised = stop.active || stop.uid == flashStopUid;
           final prevStop = i > 0 ? stops[i - 1] : null;
           final nextStop = i < stops.length - 1 ? stops[i + 1] : null;
           final isFirst = i == 0;
@@ -58,7 +66,7 @@ class _HorizontalRouteTimeline extends StatelessWidget {
             dotColor = AppTheme.statusArriving;
           } else if (stop.state == TimelineStopState.approaching) {
             dotColor = AppTheme.statusApproach;
-          } else if (stop.active) {
+          } else if (isEmphasised) {
             dotColor = cs.primary;
           }
 
