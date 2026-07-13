@@ -135,7 +135,7 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	stored := firebaseArrivalReminder{
 		ReminderID: reminderID, InstallID: request.InstallId, RouteType: request.RouteType, RouteKey: request.RouteKey,
 		StopKey: request.StopKey, Direction: request.Direction, LeadMinutes: request.LeadMinutes,
-		ExpiresAt: expiresAt, Status: reminderPending,
+		ExpiresAt: expiresAt, Status: reminderPending, Plate: request.GetPlate(),
 	}
 	// Rail arrival times are known at creation, so fire on a schedule (arrival
 	// minus lead). Bus has no known arrival time and fires off the live ETA, so

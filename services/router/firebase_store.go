@@ -28,6 +28,7 @@ type firebaseArrivalReminder struct {
 	ExpiresAt   time.Time
 	Status      string
 	Token       string
+	Plate       string
 }
 
 type firebaseDeviceToken struct {
@@ -115,10 +116,10 @@ func (s *firebaseStore) SetRouteSubscription(ctx context.Context, installID, rou
 func (s *firebaseStore) CreateArrivalReminder(ctx context.Context, reminder firebaseArrivalReminder) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO firebase_arrival_reminder
-			(reminder_id, install_id, route_type, route_key, stop_key, direction, lead_minutes, fire_at, expires_at, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			(reminder_id, install_id, route_type, route_key, stop_key, direction, lead_minutes, fire_at, expires_at, status, plate)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		reminder.ReminderID, reminder.InstallID, reminder.RouteType, reminder.RouteKey, reminder.StopKey,
-		reminder.Direction, reminder.LeadMinutes, reminder.FireAt, reminder.ExpiresAt, reminder.Status)
+		reminder.Direction, reminder.LeadMinutes, reminder.FireAt, reminder.ExpiresAt, reminder.Status, reminder.Plate)
 	return err
 }
 
