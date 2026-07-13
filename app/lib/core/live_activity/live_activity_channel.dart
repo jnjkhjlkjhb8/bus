@@ -50,6 +50,25 @@ class LiveActivityContent {
   };
 }
 
+/// One route row on the stop-board Live Activity.
+class StopBoardRow {
+  const StopBoardRow({
+    required this.routeNumber,
+    required this.destination,
+    required this.etaLabel,
+  });
+
+  final String routeNumber;
+  final String destination;
+  final String etaLabel;
+
+  Map<String, Object?> toArgs() => {
+    'route': routeNumber,
+    'destination': destination,
+    'eta': etaLabel,
+  };
+}
+
 /// Thin wrapper over the platform live-activity channel. All platform errors
 /// are swallowed: a broken lock-screen card must never break navigation.
 class LiveActivityChannel {
@@ -71,6 +90,36 @@ class LiveActivityChannel {
     if (!_active) return;
     try {
       await _channel.invokeMethod<void>('update', content.toArgs());
+    } on PlatformException {
+      // keep session alive; next update retries
+    } on MissingPluginException {
+      _active = false;
+    }
+  }
+
+  Future<void> startBoard(String stopName, List<StopBoardRow> rows) async {
+    try {
+      await _channel.invokeMethod<String>('start', {
+        'mode': 'board',
+        'stopName': stopName,
+        'routes': [for (final row in rows) row.toArgs()],
+      });
+      _active = true;
+    } on PlatformException {
+      _active = false;
+    } on MissingPluginException {
+      _active = false;
+    }
+  }
+
+  Future<void> updateBoard(String stopName, List<StopBoardRow> rows) async {
+    if (!_active) return;
+    try {
+      await _channel.invokeMethod<void>('update', {
+        'mode': 'board',
+        'stopName': stopName,
+        'routes': [for (final row in rows) row.toArgs()],
+      });
     } on PlatformException {
       // keep session alive; next update retries
     } on MissingPluginException {
