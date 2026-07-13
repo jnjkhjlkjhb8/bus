@@ -98,13 +98,23 @@ class LiveActivityPlugin(private val context: Context) {
         val etaMs = (data["etaMs"] as? Number)?.toLong()
             ?: (data["arrivalTimeMs"] as? Number)?.toLong()
         val walkMinutes = (data["walkMinutes"] as? Number)?.toInt() ?: 0
+        val plate = data["plate"] as? String
+        val routeNumber = data["routeNumber"] as? String
 
         val riding = mode == "riding"
+        val pinned = !plate.isNullOrEmpty()
 
         val chip: String
         val title: String
         val text: String
-        if (riding) {
+        if (pinned) {
+            // Pinned-vehicle 追蹤 card: distinct from the generic waiting/riding
+            // copy above, shows the tracked plate instead of route progress text.
+            chip = remainingStops?.let { "${it}站" } ?: etaChip(etaMs)
+            title = "${routeNumber ?: routeOrTrain}・$plate"
+            text = "往 ${alightStation ?: nextStation}" +
+                (remainingStops?.let { "・還剩 $it 站" } ?: "")
+        } else if (riding) {
             chip = if (remainingStops != null) "${remainingStops}站" else "行駛中"
             title = "$routeOrTrain・下一站 $nextStation"
             text = if (alightStation != null) {
@@ -121,8 +131,13 @@ class LiveActivityPlugin(private val context: Context) {
         }
 
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
-            buildPromoted(riding, title, text, chip, progressPct)
+            // Pinned tracking shows the same progress bar as riding on the
+            // promoted (Android 16+) surface.
+            buildPromoted(riding || pinned, title, text, chip, progressPct)
         } else {
+            // Legacy surface has no room for both a progress bar and the
+            // plate/route title, so the pinned card falls back to setSubText
+            // (same branch as the non-riding waiting card).
             buildLegacy(riding, title, text, chip, (progressPct * 100).toInt())
         }
     }
