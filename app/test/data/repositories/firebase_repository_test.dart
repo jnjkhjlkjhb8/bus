@@ -1,0 +1,60 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
+
+void main() {
+  // FirebaseGate.enabled is false in the test environment (APP_ENV
+  // defaults to 'dev'), so createArrivalReminder takes the disabled path
+  // and returns a receipt whose id is the local id string. That id is
+  // the reliable seam for asserting the plate reaches the request
+  // without standing up a fake gRPC client.
+  group('createArrivalReminder plate pinning', () {
+    test('local id includes the plate when one is passed', () async {
+      final repo = FirebaseRepository();
+      final receipt = await repo.createArrivalReminder(
+        routeType: 'bus',
+        routeKey: 'R1',
+        stopKey: 'S1',
+        direction: '0',
+        leadMinutes: 1,
+        expiresAt: DateTime(2026),
+        plate: 'KKA-1288',
+      );
+      expect(receipt.reminderId, 'local:bus:R1:S1:1:KKA-1288');
+    });
+
+    test('local id omits the plate when none is passed', () async {
+      final repo = FirebaseRepository();
+      final receipt = await repo.createArrivalReminder(
+        routeType: 'bus',
+        routeKey: 'R1',
+        stopKey: 'S1',
+        direction: '0',
+        leadMinutes: 1,
+        expiresAt: DateTime(2026),
+      );
+      expect(receipt.reminderId, 'local:bus:R1:S1:1:');
+    });
+
+    test('pinned and unpinned local ids differ', () async {
+      final repo = FirebaseRepository();
+      final pinned = await repo.createArrivalReminder(
+        routeType: 'bus',
+        routeKey: 'R1',
+        stopKey: 'S1',
+        direction: '0',
+        leadMinutes: 1,
+        expiresAt: DateTime(2026),
+        plate: 'KKA-1288',
+      );
+      final unpinned = await repo.createArrivalReminder(
+        routeType: 'bus',
+        routeKey: 'R1',
+        stopKey: 'S1',
+        direction: '0',
+        leadMinutes: 1,
+        expiresAt: DateTime(2026),
+      );
+      expect(pinned.reminderId, isNot(unpinned.reminderId));
+    });
+  });
+}

@@ -20,6 +20,7 @@ class _FakeFirebaseRepository extends FirebaseRepository {
     required String direction,
     required int leadMinutes,
     required DateTime expiresAt,
+    String plate = '',
   }) async {
     if (failCreate) throw Exception('grpc down');
     return const ArrivalReminderReceipt(reminderId: 'srv-1');

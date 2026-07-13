@@ -270,6 +270,7 @@ class _FakeFirebase implements FirebaseRepository {
     required String direction,
     required int leadMinutes,
     required DateTime expiresAt,
+    String plate = '',
   }) async {
     created.add(stopKey);
     return ArrivalReminderReceipt(reminderId: 'rid-$stopKey');
