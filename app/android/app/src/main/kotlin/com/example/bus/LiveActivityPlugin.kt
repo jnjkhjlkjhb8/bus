@@ -88,6 +88,9 @@ class LiveActivityPlugin(private val context: Context) {
 
     private fun buildNotification(data: Map<String, Any?>): Notification {
         val mode = data["mode"] as? String ?: "waiting"
+        if (mode == "board") {
+            return buildBoard(data)
+        }
         val routeOrTrain = data["routeOrTrain"] as? String ?: ""
         val fromStation = data["fromStation"] as? String ?: ""
         val nextStation = data["nextStation"] as? String ?: ""
@@ -139,6 +142,54 @@ class LiveActivityPlugin(private val context: Context) {
             // plate/route title, so the pinned card falls back to setSubText
             // (same branch as the non-riding waiting card).
             buildLegacy(riding, title, text, chip, (progressPct * 100).toInt())
+        }
+    }
+
+    // 站點 ETA board: a stop and its routes, not a single tracked journey.
+    // No progress bar — the board has no single destination to progress
+    // toward, so both surfaces render a plain multi-line route list.
+    private fun buildBoard(data: Map<String, Any?>): Notification {
+        val stopName = data["stopName"] as? String ?: ""
+        @Suppress("UNCHECKED_CAST")
+        val routes = (data["routes"] as? List<Map<String, Any?>>) ?: emptyList()
+        val lines = routes.map { r -> "${r["route"]}・${r["destination"]}・${r["eta"]}" }
+        val firstRoute = routes.firstOrNull()
+        val chip = (firstRoute?.get("eta") as? String)
+            ?: (firstRoute?.get("route") as? String)
+            ?: ""
+        val text = lines.firstOrNull() ?: stopName
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            Notification.Builder(context, NOTIF_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_transit)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentTitle(stopName)
+                .setContentText(text)
+                .setShortCriticalText(chip)
+                .setContentIntent(launchIntent())
+                .setFlag(Notification.FLAG_PROMOTED_ONGOING, true)
+                .setStyle(
+                    Notification.InboxStyle().also { style ->
+                        lines.forEach { style.addLine(it) }
+                    },
+                )
+                .build()
+        } else {
+            NotificationCompat.Builder(context, NOTIF_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_transit)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentTitle(stopName)
+                .setContentText(text)
+                .setSubText(chip)
+                .setContentIntent(launchIntent())
+                .setStyle(
+                    NotificationCompat.InboxStyle().also { style ->
+                        lines.forEach { style.addLine(it) }
+                    },
+                )
+                .build()
         }
     }
 
