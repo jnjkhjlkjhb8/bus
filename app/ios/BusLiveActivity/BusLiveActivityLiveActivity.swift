@@ -29,7 +29,9 @@ struct BusLiveActivityLiveActivity: Widget {
         ActivityConfiguration(for: BusLiveActivityAttributes.self) { context in
             // Lock-screen / banner presentation.
             Group {
-                if isPinned(context.state) {
+                if context.state.mode == "board" {
+                    BoardCard(context: context)
+                } else if isPinned(context.state) {
                     PinnedCard(context: context)
                 } else if context.state.mode == "waiting" {
                     WaitingCard(context: context)
@@ -40,37 +42,57 @@ struct BusLiveActivityLiveActivity: Widget {
             // Keep the system default background for lock-screen cards.
             .activityBackgroundTint(nil)
         } dynamicIsland: { context in
+            let board = context.state.mode == "board"
             let waiting = context.state.mode == "waiting"
             let pinned = isPinned(context.state)
             let glyph = typeGlyph(context.attributes.type)
+            let boardRows = context.state.routes ?? []
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    HStack(spacing: 8) {
-                        Image(systemName: glyph)
-                            .font(.system(size: 24))
-                            .foregroundColor(.white)
+                    if board {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(pinned
-                                 ? (context.state.routeNumber ?? context.attributes.routeOrTrain)
-                                 : (waiting ? "下一班" : context.attributes.routeOrTrain))
+                            Text("站牌")
                                 .font(.system(size: 12))
                                 .foregroundColor(Color(.systemGray))
-                                .lineLimit(1)
-                            Text(pinned
-                                 ? (context.state.plate ?? "")
-                                 : (waiting
-                                    ? context.attributes.routeOrTrain
-                                    : "下一站 \(context.state.nextStation)"))
+                            Text(context.state.stopName ?? "")
                                 .font(.system(size: 15, weight: .semibold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
                         }
+                        .padding(.leading, 4)
+                    } else {
+                        HStack(spacing: 8) {
+                            Image(systemName: glyph)
+                                .font(.system(size: 24))
+                                .foregroundColor(.white)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(pinned
+                                     ? (context.state.routeNumber ?? context.attributes.routeOrTrain)
+                                     : (waiting ? "下一班" : context.attributes.routeOrTrain))
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Color(.systemGray))
+                                    .lineLimit(1)
+                                Text(pinned
+                                     ? (context.state.plate ?? "")
+                                     : (waiting
+                                        ? context.attributes.routeOrTrain
+                                        : "下一站 \(context.state.nextStation)"))
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(.leading, 4)
                     }
-                    .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     VStack(alignment: .trailing, spacing: 2) {
-                        if pinned {
+                        if board {
+                            // Board rows render in the bottom region; the
+                            // trailing region stays empty (no single ETA to
+                            // headline when the board lists several routes).
+                            EmptyView()
+                        } else if pinned {
                             if let eta = context.state.etaDate, eta > Date() {
                                 Text(timerInterval: Date()...eta, countsDown: true)
                                     .font(.system(size: 26, weight: .semibold))
@@ -117,7 +139,23 @@ struct BusLiveActivityLiveActivity: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    if pinned {
+                    if board {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(Array(boardRows.prefix(3).enumerated()), id: \.offset) { _, row in
+                                HStack(spacing: 8) {
+                                    Text("\(row.route) · \(row.destination)")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(.white)
+                                        .lineLimit(1)
+                                    Spacer()
+                                    Text(row.eta)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .monospacedDigit()
+                                        .foregroundColor(Color(.systemGray))
+                                }
+                            }
+                        }
+                    } else if pinned {
                         HStack(spacing: 9) {
                             Text(context.attributes.fromStation)
                                 .font(.system(size: 11))
@@ -160,7 +198,12 @@ struct BusLiveActivityLiveActivity: Widget {
                     }
                 }
             } compactLeading: {
-                if pinned {
+                if board {
+                    Text(boardRows.first?.route ?? "")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                } else if pinned {
                     Text(context.state.routeNumber ?? context.attributes.routeOrTrain)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.white)
@@ -171,7 +214,14 @@ struct BusLiveActivityLiveActivity: Widget {
                         .foregroundColor(.white)
                 }
             } compactTrailing: {
-                if pinned {
+                if board {
+                    Text(boardRows.first?.eta ?? "")
+                        .font(.system(size: 14, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundColor(.white)
+                        .frame(maxWidth: 48)
+                        .lineLimit(1)
+                } else if pinned {
                     if let eta = context.state.etaDate, eta > Date() {
                         Text(timerInterval: Date()...eta, countsDown: true)
                             .font(.system(size: 14, weight: .semibold))
@@ -204,7 +254,11 @@ struct BusLiveActivityLiveActivity: Widget {
                         .lineLimit(1)
                 }
             } minimal: {
-                if pinned {
+                if board {
+                    Image(systemName: "list.bullet")
+                        .font(.system(size: 15))
+                        .foregroundColor(.white)
+                } else if pinned {
                     _CircularProgress(value: context.state.progressPercent)
                 } else if waiting {
                     if let eta = context.state.etaDate, eta > Date() {
@@ -229,6 +283,42 @@ struct BusLiveActivityLiveActivity: Widget {
 /// MaaS waiting/riding presentation regardless of `mode`.
 private func isPinned(_ state: BusLiveActivityAttributes.ContentState) -> Bool {
     !(state.plate ?? "").isEmpty
+}
+
+/// Lock-screen card for `mode == "board"`: a stop header plus its route
+/// rows, soonest first. No 車況 and no progress bar — a board lists many
+/// routes, so there is no single destination to draw progress toward.
+@available(iOS 16.1, *)
+private struct BoardCard: View {
+    let context: ActivityViewContext<BusLiveActivityAttributes>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "signpost.right.fill")
+                    .font(.system(size: 18))
+                    .foregroundColor(.primary)
+                Text(context.state.stopName ?? "")
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array((context.state.routes ?? []).enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 8) {
+                        Text("\(row.route) · \(row.destination)")
+                            .font(.system(size: 14))
+                            .lineLimit(1)
+                        Spacer()
+                        Text(row.eta)
+                            .font(.system(size: 14, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(16)
+    }
 }
 
 @available(iOS 16.1, *)

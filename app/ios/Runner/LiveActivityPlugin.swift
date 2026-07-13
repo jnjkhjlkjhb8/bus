@@ -82,7 +82,23 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
             etaDate: ms > 0 ? Date(timeIntervalSince1970: Double(ms) / 1000) : nil,
             walkMinutes: args["walkMinutes"] as? Int ?? 0,
             plate: args["plate"] as? String,
-            routeNumber: args["routeNumber"] as? String
+            routeNumber: args["routeNumber"] as? String,
+            stopName: args["stopName"] as? String,
+            routes: boardRows(from: args["routes"])
         )
+    }
+
+    /// Decodes the `routes` arg (an array of `{route, destination, eta}`
+    /// dictionaries sent by the board-mode Dart channel) into `BoardRow`s.
+    /// Returns nil when absent so non-board content states are unaffected.
+    private func boardRows(from raw: Any?) -> [BusLiveActivityAttributes.BoardRow]? {
+        guard let rows = raw as? [[String: Any]] else { return nil }
+        return rows.map {
+            BusLiveActivityAttributes.BoardRow(
+                route: $0["route"] as? String ?? "",
+                destination: $0["destination"] as? String ?? "",
+                eta: $0["eta"] as? String ?? ""
+            )
+        }
     }
 }

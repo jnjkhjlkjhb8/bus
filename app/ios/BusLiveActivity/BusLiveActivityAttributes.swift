@@ -2,8 +2,16 @@ import ActivityKit
 import Foundation
 
 struct BusLiveActivityAttributes: ActivityAttributes {
+    /// One row of a station ETA board: route/train number, its destination,
+    /// and the formatted ETA label (already sorted soonest-first by Dart).
+    struct BoardRow: Codable, Hashable {
+        let route: String
+        let destination: String
+        let eta: String
+    }
+
     struct ContentState: Codable, Hashable {
-        /// "waiting" | "riding"
+        /// "waiting" | "riding" | "board"
         var mode: String
         var nextStation: String
         var previousStation: String?
@@ -17,6 +25,9 @@ struct BusLiveActivityAttributes: ActivityAttributes {
         /// empty, the MaaS waiting/riding views render as before.
         var plate: String?
         var routeNumber: String?
+        /// board mode only: the stop this board is for, and its rows.
+        var stopName: String?
+        var routes: [BoardRow]?
     }
 
     let routeOrTrain: String
