@@ -122,6 +122,15 @@ func TestArrivalPinnedFiresOnlyForMatchingPlate(t *testing.T) {
 	}
 }
 
+func TestArrivalPinnedDoesNotFireWhenArrivingPlateEmpty(t *testing.T) {
+	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "t", routeType: "bus", routeKey: "R", stopKey: "S", direction: "0", leadMinutes: 5, plate: "KKA-1288"}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
+	sender := &fakeFCM{}
+	NewDispatcher(store, sender).Arrival(context.Background(), "bus", "R", "S", "0", 60, "")
+	if len(sender.messages) != 0 {
+		t.Fatalf("pinned reminder fired on empty arriving plate: sent=%d", len(sender.messages))
+	}
+}
+
 func TestArrivalUnpinnedIgnoresArrivingPlate(t *testing.T) {
 	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "t", routeType: "bus", routeKey: "R", stopKey: "S", direction: "0", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
 	sender := &fakeFCM{}

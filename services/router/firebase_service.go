@@ -150,6 +150,7 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	return &pb.ArrivalReminder{
 		ReminderId: reminderID, InstallId: request.InstallId, RouteType: request.RouteType, RouteKey: request.RouteKey,
 		StopKey: request.StopKey, Direction: request.Direction, LeadMinutes: request.LeadMinutes, ExpiresAtUnix: request.ExpiresAtUnix,
+		Plate: request.GetPlate(),
 	}, nil
 }
 
