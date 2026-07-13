@@ -12,6 +12,7 @@ class JourneySessionState extends Equatable {
     this.nextStopIndex = 0,
     this.suggestBoarding = false,
     this.trackOnly = false,
+    this.plate,
   });
 
   final JourneyPhase phase;
@@ -23,6 +24,10 @@ class JourneySessionState extends Equatable {
 
   /// Standalone arrival-countdown session; see [JourneyStarted.trackOnly].
   final bool trackOnly;
+
+  /// The pinned vehicle's plate; display/reminder metadata only — the ETA
+  /// stream is never filtered by plate.
+  final String? plate;
 
   JourneyLeg? get currentLeg =>
       legIndex < legs.length ? legs[legIndex] : null;
@@ -38,6 +43,7 @@ class JourneySessionState extends Equatable {
     int? nextStopIndex,
     bool? suggestBoarding,
     bool? trackOnly,
+    String? plate,
   }) {
     return JourneySessionState(
       phase: phase ?? this.phase,
@@ -47,10 +53,19 @@ class JourneySessionState extends Equatable {
       nextStopIndex: nextStopIndex ?? this.nextStopIndex,
       suggestBoarding: suggestBoarding ?? this.suggestBoarding,
       trackOnly: trackOnly ?? this.trackOnly,
+      plate: plate ?? this.plate,
     );
   }
 
   @override
-  List<Object?> get props =>
-      [phase, legs, legIndex, eta, nextStopIndex, suggestBoarding, trackOnly];
+  List<Object?> get props => [
+    phase,
+    legs,
+    legIndex,
+    eta,
+    nextStopIndex,
+    suggestBoarding,
+    trackOnly,
+    plate,
+  ];
 }

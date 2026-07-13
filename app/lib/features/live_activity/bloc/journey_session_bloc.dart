@@ -59,6 +59,7 @@ class JourneySessionBloc
         phase: JourneyPhase.waiting,
         legs: event.legs,
         trackOnly: event.trackOnly,
+        plate: event.plate,
       ),
     );
     _subscribeEta(event.legs.first);
