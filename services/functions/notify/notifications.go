@@ -87,11 +87,13 @@ func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body s
 // live TDX ETA (busEta), metro from the Redis metro ETA cache, and TRA/THSR from
 // timetable data (see arrival_sources.go); each source computes etaSeconds and
 // calls this method the same way. No-op for a nil dispatcher or a negative ETA.
-// Each reminder is claimed before sending to avoid duplicate pushes across
-// concurrent ETA runs; on success it is marked fired, and an unregistered-token
-// send invalidates the token. etaSeconds is rounded up to whole minutes in the
-// message body.
-func (d *Dispatcher) Arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32) {
+// arrivingPlate identifies which vehicle this ETA belongs to; a reminder pinned
+// to a plate only fires when it matches, so other buses on the same route/stop
+// don't trigger it. Each reminder is claimed before sending to avoid duplicate
+// pushes across concurrent ETA runs; on success it is marked fired, and an
+// unregistered-token send invalidates the token. etaSeconds is rounded up to
+// whole minutes in the message body.
+func (d *Dispatcher) Arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32, arrivingPlate string) {
 	if d == nil || etaSeconds < 0 {
 		return
 	}
@@ -102,6 +104,10 @@ func (d *Dispatcher) Arrival(ctx context.Context, routeType, routeKey, stopKey, 
 		return
 	}
 	for _, r := range reminders {
+		// Pinned reminder: fire only when its own vehicle is the one arriving.
+		if r.plate != "" && r.plate != arrivingPlate {
+			continue
+		}
 		if etaSeconds > int32(r.leadMinutes*60) {
 			continue
 		}

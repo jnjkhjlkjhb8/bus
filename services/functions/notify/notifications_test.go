@@ -90,18 +90,44 @@ func TestArrivalThresholdClaimAndNoDuplicate(t *testing.T) {
 	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "t", routeType: "bus", routeKey: "R", stopKey: "S", direction: "0", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
 	sender := &fakeFCM{}
 	d := NewDispatcher(store, sender)
-	d.Arrival(context.Background(), "bus", "R", "S", "0", 301)
+	d.Arrival(context.Background(), "bus", "R", "S", "0", 301, "")
 	if len(sender.messages) != 0 {
 		t.Fatal("sent above threshold")
 	}
-	d.Arrival(context.Background(), "bus", "R", "S", "0", 300)
-	d.Arrival(context.Background(), "bus", "R", "S", "0", 100)
+	d.Arrival(context.Background(), "bus", "R", "S", "0", 300, "")
+	d.Arrival(context.Background(), "bus", "R", "S", "0", 100, "")
 	if len(sender.messages) != 1 || len(store.firedIDs) != 1 {
 		t.Fatalf("sent=%d fired=%v", len(sender.messages), store.firedIDs)
 	}
 	m := sender.messages[0]
 	if m.Data["kind"] != "arrival_reminder" || m.Notification.Title != "即將到站" || m.Android == nil || m.APNS == nil {
 		t.Fatalf("message=%+v", m)
+	}
+}
+
+func TestArrivalPinnedFiresOnlyForMatchingPlate(t *testing.T) {
+	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "t", routeType: "bus", routeKey: "R", stopKey: "S", direction: "0", leadMinutes: 5, plate: "KKA-1288"}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
+	sender := &fakeFCM{}
+	d := NewDispatcher(store, sender)
+
+	// Within lead, but a different bus is arriving: no push.
+	d.Arrival(context.Background(), "bus", "R", "S", "0", 60, "OTHER-9999")
+	if len(sender.messages) != 0 {
+		t.Fatalf("fired for wrong plate: sent=%d", len(sender.messages))
+	}
+	// The pinned plate arrives: push.
+	d.Arrival(context.Background(), "bus", "R", "S", "0", 60, "KKA-1288")
+	if len(sender.messages) != 1 || len(store.firedIDs) != 1 {
+		t.Fatalf("pinned plate did not fire: sent=%d fired=%v", len(sender.messages), store.firedIDs)
+	}
+}
+
+func TestArrivalUnpinnedIgnoresArrivingPlate(t *testing.T) {
+	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "t", routeType: "bus", routeKey: "R", stopKey: "S", direction: "0", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
+	sender := &fakeFCM{}
+	NewDispatcher(store, sender).Arrival(context.Background(), "bus", "R", "S", "0", 60, "ANY-0000")
+	if len(sender.messages) != 1 {
+		t.Fatalf("legacy reminder must fire regardless of plate: sent=%d", len(sender.messages))
 	}
 }
 
@@ -151,7 +177,7 @@ func TestArrivalFiresForNonBusTypes(t *testing.T) {
 			}
 			sender := &fakeFCM{}
 			d := NewDispatcher(store, sender)
-			d.Arrival(context.Background(), routeType, "R", "S", "0", 60)
+			d.Arrival(context.Background(), routeType, "R", "S", "0", 60, "")
 			if len(sender.messages) != 1 || len(store.firedIDs) != 1 {
 				t.Fatalf("sent=%d fired=%v", len(sender.messages), store.firedIDs)
 			}
@@ -231,7 +257,7 @@ func TestRouteAlertDedupeDoesNotCollideAcrossRoutes(t *testing.T) {
 func TestArrivalCancelledBeforeClaimDoesNotSend(t *testing.T) {
 	store := &fakeNotificationStore{claimed: map[string]bool{"r1": true}, reminders: []arrivalReminder{{id: "r1", token: "t", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
 	sender := &fakeFCM{}
-	NewDispatcher(store, sender).Arrival(context.Background(), "bus", "R", "S", "0", 1)
+	NewDispatcher(store, sender).Arrival(context.Background(), "bus", "R", "S", "0", 1, "")
 	if len(sender.messages) != 0 {
 		t.Fatal("sent cancelled reminder")
 	}
@@ -244,7 +270,7 @@ func TestInvalidTokenCleanupAndAtMostOnce(t *testing.T) {
 	t.Cleanup(func() { isInvalidFCMToken = old })
 	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "bad", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
 	sender := &fakeFCM{err: sendErr}
-	NewDispatcher(store, sender).Arrival(context.Background(), "bus", "R", "S", "0", 1)
+	NewDispatcher(store, sender).Arrival(context.Background(), "bus", "R", "S", "0", 1, "")
 	if len(store.invalidated) != 1 || len(store.firedIDs) != 0 || !store.claimed["r1"] {
 		t.Fatalf("invalidated=%v fired=%v claimed=%v", store.invalidated, store.firedIDs, store.claimed)
 	}

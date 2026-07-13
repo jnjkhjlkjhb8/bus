@@ -27,6 +27,7 @@ type deviceToken struct{ token string }
 type arrivalReminder struct {
 	id, token, routeType, routeKey, stopKey, direction string
 	leadMinutes                                        int
+	plate                                              string
 }
 
 // subscribedTokens returns the push-enabled device tokens subscribed to a
@@ -52,7 +53,7 @@ func (s Store) subscribedTokens(ctx context.Context, routeType, routeKey string)
 // route/stop/direction, joined to a push-enabled device token. now filters out
 // reminders whose expires_at has passed.
 func (s Store) activeReminders(ctx context.Context, routeType, routeKey, stopKey, direction string, now time.Time) ([]arrivalReminder, error) {
-	rows, err := s.db.Query(ctx, `SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes FROM firebase_arrival_reminder r JOIN firebase_device d ON d.install_id=r.install_id WHERE r.route_type=$1 AND r.route_key=$2 AND r.stop_key=$3 AND r.direction=$4 AND r.status='pending' AND r.expires_at>$5 AND d.push_enabled AND d.fcm_token<>''`, routeType, routeKey, stopKey, direction, now)
+	rows, err := s.db.Query(ctx, `SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes,r.plate FROM firebase_arrival_reminder r JOIN firebase_device d ON d.install_id=r.install_id WHERE r.route_type=$1 AND r.route_key=$2 AND r.stop_key=$3 AND r.direction=$4 AND r.status='pending' AND r.expires_at>$5 AND d.push_enabled AND d.fcm_token<>''`, routeType, routeKey, stopKey, direction, now)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +61,7 @@ func (s Store) activeReminders(ctx context.Context, routeType, routeKey, stopKey
 	var out []arrivalReminder
 	for rows.Next() {
 		var v arrivalReminder
-		if err := rows.Scan(&v.id, &v.token, &v.routeType, &v.routeKey, &v.stopKey, &v.direction, &v.leadMinutes); err != nil {
+		if err := rows.Scan(&v.id, &v.token, &v.routeType, &v.routeKey, &v.stopKey, &v.direction, &v.leadMinutes, &v.plate); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
