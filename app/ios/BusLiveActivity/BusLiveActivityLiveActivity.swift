@@ -29,7 +29,9 @@ struct BusLiveActivityLiveActivity: Widget {
         ActivityConfiguration(for: BusLiveActivityAttributes.self) { context in
             // Lock-screen / banner presentation.
             Group {
-                if context.state.mode == "waiting" {
+                if isPinned(context.state) {
+                    PinnedCard(context: context)
+                } else if context.state.mode == "waiting" {
                     WaitingCard(context: context)
                 } else {
                     RidingCard(context: context)
@@ -39,6 +41,7 @@ struct BusLiveActivityLiveActivity: Widget {
             .activityBackgroundTint(nil)
         } dynamicIsland: { context in
             let waiting = context.state.mode == "waiting"
+            let pinned = isPinned(context.state)
             let glyph = typeGlyph(context.attributes.type)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -47,13 +50,17 @@ struct BusLiveActivityLiveActivity: Widget {
                             .font(.system(size: 24))
                             .foregroundColor(.white)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(waiting ? "下一班" : context.attributes.routeOrTrain)
+                            Text(pinned
+                                 ? (context.state.routeNumber ?? context.attributes.routeOrTrain)
+                                 : (waiting ? "下一班" : context.attributes.routeOrTrain))
                                 .font(.system(size: 12))
                                 .foregroundColor(Color(.systemGray))
                                 .lineLimit(1)
-                            Text(waiting
-                                 ? context.attributes.routeOrTrain
-                                 : "下一站 \(context.state.nextStation)")
+                            Text(pinned
+                                 ? (context.state.plate ?? "")
+                                 : (waiting
+                                    ? context.attributes.routeOrTrain
+                                    : "下一站 \(context.state.nextStation)"))
                                 .font(.system(size: 15, weight: .semibold))
                                 .foregroundColor(.white)
                                 .lineLimit(1)
@@ -63,7 +70,23 @@ struct BusLiveActivityLiveActivity: Widget {
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     VStack(alignment: .trailing, spacing: 2) {
-                        if waiting {
+                        if pinned {
+                            if let eta = context.state.etaDate, eta > Date() {
+                                Text(timerInterval: Date()...eta, countsDown: true)
+                                    .font(.system(size: 26, weight: .semibold))
+                                    .monospacedDigit()
+                                    .multilineTextAlignment(.trailing)
+                                    .foregroundColor(.white)
+                                    .frame(width: 78)
+                                Text("後進站")
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Color(.systemGray))
+                            } else {
+                                Text("進站中")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(.white)
+                            }
+                        } else if waiting {
                             if let eta = context.state.etaDate, eta > Date() {
                                 // Self-ticking timer: avoids a per-second push
                                 // to refresh the countdown.
@@ -94,7 +117,23 @@ struct BusLiveActivityLiveActivity: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    if waiting {
+                    if pinned {
+                        HStack(spacing: 9) {
+                            Text(context.attributes.fromStation)
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(.systemGray))
+                                .lineLimit(1)
+                            ProgressView(value: context.state.progressPercent)
+                                .tint(.white)
+                                .background(Color(white: 0.25))
+                                .clipShape(Capsule())
+                            Text("往 \(context.state.alightStation ?? context.state.nextStation)"
+                                 + (context.state.remainingStops.map { "・還剩 \($0) 站" } ?? ""))
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(.systemGray))
+                                .lineLimit(1)
+                        }
+                    } else if waiting {
                         Text("於 \(context.attributes.fromStation) 上車"
                              + (context.state.walkMinutes > 0
                                 ? "・步行 \(context.state.walkMinutes) 分"
@@ -121,11 +160,31 @@ struct BusLiveActivityLiveActivity: Widget {
                     }
                 }
             } compactLeading: {
-                Image(systemName: glyph)
-                    .font(.system(size: 15))
-                    .foregroundColor(.white)
+                if pinned {
+                    Text(context.state.routeNumber ?? context.attributes.routeOrTrain)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                } else {
+                    Image(systemName: glyph)
+                        .font(.system(size: 15))
+                        .foregroundColor(.white)
+                }
             } compactTrailing: {
-                if waiting {
+                if pinned {
+                    if let eta = context.state.etaDate, eta > Date() {
+                        Text(timerInterval: Date()...eta, countsDown: true)
+                            .font(.system(size: 14, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundColor(.white)
+                            .frame(maxWidth: 48)
+                    } else {
+                        Text("進站中")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                    }
+                } else if waiting {
                     if let eta = context.state.etaDate, eta > Date() {
                         Text(timerInterval: Date()...eta, countsDown: true)
                             .font(.system(size: 14, weight: .semibold))
@@ -145,7 +204,9 @@ struct BusLiveActivityLiveActivity: Widget {
                         .lineLimit(1)
                 }
             } minimal: {
-                if waiting {
+                if pinned {
+                    _CircularProgress(value: context.state.progressPercent)
+                } else if waiting {
                     if let eta = context.state.etaDate, eta > Date() {
                         Text("\(minutesUntil(eta))分")
                             .font(.system(size: 11, weight: .bold))
@@ -162,6 +223,12 @@ struct BusLiveActivityLiveActivity: Widget {
             }
         }
     }
+}
+
+/// True when the state carries a pinned vehicle (追蹤), overriding the
+/// MaaS waiting/riding presentation regardless of `mode`.
+private func isPinned(_ state: BusLiveActivityAttributes.ContentState) -> Bool {
+    !(state.plate ?? "").isEmpty
 }
 
 @available(iOS 16.1, *)
@@ -223,6 +290,42 @@ private struct WaitingCard: View {
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
                 }
+            }
+            Spacer()
+            if let eta = context.state.etaDate, eta > Date() {
+                // Self-ticking: no channel update needed per second.
+                Text(timerInterval: Date()...eta, countsDown: true)
+                    .font(.system(size: 24, weight: .semibold))
+                    .monospacedDigit()
+                    .frame(width: 76)
+            } else {
+                Text("進站中")
+                    .font(.system(size: 18, weight: .semibold))
+            }
+        }
+        .padding(16)
+    }
+}
+
+@available(iOS 16.1, *)
+private struct PinnedCard: View {
+    let context: ActivityViewContext<BusLiveActivityAttributes>
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: typeGlyph(context.attributes.type))
+                .font(.system(size: 36))
+                .foregroundColor(.primary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(context.state.routeNumber ?? context.attributes.routeOrTrain)・\(context.state.plate ?? "")")
+                    .font(.system(size: 16, weight: .semibold))
+                Text("往 \(context.state.alightStation ?? context.state.nextStation)"
+                     + (context.state.remainingStops.map { "・還剩 \($0) 站" } ?? ""))
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                ProgressView(value: context.state.progressPercent)
+                    .tint(.primary)
             }
             Spacer()
             if let eta = context.state.etaDate, eta > Date() {

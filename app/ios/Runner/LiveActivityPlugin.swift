@@ -80,7 +80,9 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
             remainingStops: args["remainingStops"] as? Int,
             progressPercent: args["progressPercent"] as? Double ?? 0.0,
             etaDate: ms > 0 ? Date(timeIntervalSince1970: Double(ms) / 1000) : nil,
-            walkMinutes: args["walkMinutes"] as? Int ?? 0
+            walkMinutes: args["walkMinutes"] as? Int ?? 0,
+            plate: args["plate"] as? String,
+            routeNumber: args["routeNumber"] as? String
         )
     }
 }

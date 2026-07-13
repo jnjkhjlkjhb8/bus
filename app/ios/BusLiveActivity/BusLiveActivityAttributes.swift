@@ -13,6 +13,10 @@ struct BusLiveActivityAttributes: ActivityAttributes {
         /// waiting: expected departure; riding: expected arrival
         var etaDate: Date?
         var walkMinutes: Int
+        /// Non-empty only when a specific vehicle is pinned (追蹤); when
+        /// empty, the MaaS waiting/riding views render as before.
+        var plate: String?
+        var routeNumber: String?
     }
 
     let routeOrTrain: String
