@@ -1,7 +1,16 @@
+import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/repositories/bus_repository.dart';
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 
 typedef LegEtaStream = Stream<Duration?> Function(JourneyLeg leg);
+
+typedef RouteEtaStream =
+    Stream<List<BusStopEtaViewModel>> Function(String routeKey);
+
+/// Live per-stop ETA/vehicle stream for a route, used to track a pinned
+/// vehicle's stop-by-stop progress toward the alight stop.
+Stream<List<BusStopEtaViewModel>> defaultRouteEtaStream(String routeKey) =>
+    BusRepository.instance.routeEta(routeKey);
 
 /// Live ETA for bus legs whose notification identity resolved; every other
 /// leg counts down from its scheduled departure. Non-bus legs will gain live

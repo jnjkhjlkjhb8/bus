@@ -1,11 +1,28 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
+import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+
+/// Captures the last content pushed through the platform channel so tests
+/// can assert on `_content()`'s output without the method channel firing.
+class _CapturingChannel extends LiveActivityChannel {
+  LiveActivityContent? last;
+
+  @override
+  Future<void> start(LiveActivityContent content) async => last = content;
+
+  @override
+  Future<void> update(LiveActivityContent content) async => last = content;
+
+  @override
+  Future<void> stop() async {}
+}
 
 JourneyLeg _leg() => const JourneyLeg(
   kind: JourneyLegKind.bus,
@@ -30,14 +47,22 @@ JourneyLeg _leg() => const JourneyLeg(
 
 void main() {
   late StreamController<Duration?> etaCtrl;
-  JourneySessionBloc bloc({Duration linger = const Duration(minutes: 2)}) =>
-      JourneySessionBloc(
-        etaStream: (_) => etaCtrl.stream,
-        trackOnlyLinger: linger,
-      );
+  late StreamController<List<BusStopEtaViewModel>> routeEtaCtrl;
+  JourneySessionBloc bloc({
+    Duration linger = const Duration(minutes: 2),
+    LiveActivityChannel? channel,
+  }) => JourneySessionBloc(
+    etaStream: (_) => etaCtrl.stream,
+    routeEtaStream: (_) => routeEtaCtrl.stream,
+    trackOnlyLinger: linger,
+    channel: channel,
+  );
 
-  setUp(() => etaCtrl = StreamController<Duration?>.broadcast());
-  tearDown(() => etaCtrl.close());
+  setUp(() {
+    etaCtrl = StreamController<Duration?>.broadcast();
+    routeEtaCtrl = StreamController<List<BusStopEtaViewModel>>.broadcast();
+  });
+  tearDown(() => Future.wait([etaCtrl.close(), routeEtaCtrl.close()]));
 
   test('trackOnly session waits without suggesting boarding at zero', () async {
     final b = bloc()..add(JourneyStarted(legs: [_leg()], trackOnly: true));
@@ -113,6 +138,72 @@ void main() {
       (s) => s.phase == JourneyPhase.waiting,
     );
     expect(s.plate, isNull);
+    await b.close();
+  });
+
+  test(
+    'pinned session computes live stops-remaining from the route-ETA stream',
+    () async {
+      final channel = _CapturingChannel();
+      final b = bloc(channel: channel)
+        ..add(
+          JourneyStarted(legs: [_leg()], trackOnly: true, plate: 'KKA-1288'),
+        );
+      await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+      expect(routeEtaCtrl.hasListener, isTrue);
+
+      routeEtaCtrl.add(const [
+        // Target: the leg's alight stop (departureStopKey 'stop-1'), 10
+        // stops down the route.
+        BusStopEtaViewModel(
+          stopUid: 'stop-1',
+          direction: 0,
+          sequence: 10,
+          estimateSeconds: 0,
+          nextBusTime: '',
+          stopStatus: 0,
+          vehiclePlates: [],
+        ),
+        // The pinned plate currently sits 3 stops before the target.
+        BusStopEtaViewModel(
+          stopUid: 'stop-0',
+          direction: 0,
+          sequence: 7,
+          estimateSeconds: 0,
+          nextBusTime: '',
+          stopStatus: 0,
+          vehiclePlates: ['KKA-1288'],
+          vehicles: [
+            BusVehiclePosition(
+              plate: 'KKA-1288',
+              lat: 25,
+              lon: 121.5,
+              azimuth: 0,
+            ),
+          ],
+        ),
+      ]);
+      final s = await b.stream.firstWhere(
+        (s) => s.pinnedStopsRemaining != null,
+      );
+      expect(s.pinnedStopsRemaining, 3);
+      expect(channel.last?.remainingStops, 3);
+      expect(channel.last?.plate, 'KKA-1288');
+      expect(channel.last?.routeNumber, '307');
+      await b.close();
+    },
+  );
+
+  test('unpinned waiting session never subscribes to route ETA', () async {
+    final channel = _CapturingChannel();
+    final b = bloc(channel: channel)..add(JourneyStarted(legs: [_leg()]));
+    await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+    await Future<void>.delayed(Duration.zero);
+    expect(routeEtaCtrl.hasListener, isFalse);
+    expect(b.state.pinnedStopsRemaining, isNull);
+    expect(channel.last?.remainingStops, isNull);
+    expect(channel.last?.plate, isNull);
+    expect(channel.last?.routeNumber, '307');
     await b.close();
   });
 }

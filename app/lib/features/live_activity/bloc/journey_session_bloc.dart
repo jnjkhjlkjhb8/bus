@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
+import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
 import 'package:wheres_the_car/features/live_activity/data/leg_eta_source.dart';
@@ -12,11 +13,13 @@ class JourneySessionBloc
     extends Bloc<JourneySessionEvent, JourneySessionState> {
   JourneySessionBloc({
     LegEtaStream etaStream = defaultLegEtaStream,
+    RouteEtaStream routeEtaStream = defaultRouteEtaStream,
     LiveActivityChannel? channel,
     Stream<Position> Function()? positions,
     this.sessionTimeout = const Duration(hours: 8),
     this.trackOnlyLinger = const Duration(minutes: 2),
   }) : _etaStream = etaStream,
+       _routeEtaStream = routeEtaStream,
        _channel = channel,
        _positions = positions,
        super(const JourneySessionState()) {
@@ -26,9 +29,11 @@ class JourneySessionBloc
     on<JourneyCancelled>(_onCancelled);
     on<EtaTicked>(_onEta);
     on<ProgressTicked>(_onProgress);
+    on<PinnedStopsUpdated>(_onPinnedStopsUpdated);
   }
 
   final LegEtaStream _etaStream;
+  final RouteEtaStream _routeEtaStream;
   final LiveActivityChannel? _channel;
   final Stream<Position> Function()? _positions;
 
@@ -40,6 +45,7 @@ class JourneySessionBloc
   final Duration trackOnlyLinger;
 
   StreamSubscription<Duration?>? _etaSub;
+  StreamSubscription<List<BusStopEtaViewModel>>? _routeEtaSub;
   StreamSubscription<Position>? _posSub;
   Timer? _timeout;
   Timer? _linger;
@@ -63,6 +69,7 @@ class JourneySessionBloc
       ),
     );
     _subscribeEta(event.legs.first);
+    _subscribeRouteEta(event.legs.first, event.trackOnly, event.plate);
     await _channel?.start(_content(state));
   }
 
@@ -139,8 +146,23 @@ class JourneySessionBloc
     unawaited(_channel?.update(_content(state)));
   }
 
+  void _onPinnedStopsUpdated(
+    PinnedStopsUpdated event,
+    Emitter<JourneySessionState> emit,
+  ) {
+    if (state.phase != JourneyPhase.waiting) return;
+    emit(
+      state.copyWith(
+        pinnedStopsRemaining: event.stopsRemaining,
+        clearPinnedStopsRemaining: event.stopsRemaining == null,
+      ),
+    );
+    unawaited(_channel?.update(_content(state)));
+  }
+
   void _end(Emitter<JourneySessionState> emit) {
     unawaited(_etaSub?.cancel());
+    unawaited(_routeEtaSub?.cancel());
     unawaited(_posSub?.cancel());
     _timeout?.cancel();
     _linger?.cancel();
@@ -160,6 +182,53 @@ class JourneySessionBloc
             .listen((eta) => add(EtaTicked(eta)));
       },
     );
+  }
+
+  /// A pinned (plate-tracked) trackOnly session additionally tracks the
+  /// pinned vehicle's live stop-distance from the alight stop. Unpinned and
+  /// MaaS (non-trackOnly) sessions never subscribe here.
+  void _subscribeRouteEta(JourneyLeg leg, bool trackOnly, String? plate) {
+    unawaited(_routeEtaSub?.cancel());
+    _routeEtaSub = null;
+    if (!trackOnly || plate == null) return;
+    final routeKey = leg.identity.routeKey;
+    if (routeKey.isEmpty) return;
+    // Stream error (gRPC drop) → stopsRemaining simply stops updating; the
+    // card keeps its last-known value rather than going blank.
+    _routeEtaSub = _routeEtaStream(routeKey).listen(
+      (etas) =>
+          add(PinnedStopsUpdated(_pinnedStopsRemaining(etas, leg, plate))),
+      onError: (Object _) {},
+    );
+  }
+
+  /// Stops between the pinned vehicle's current position and the leg's
+  /// alight stop, both located in [etas] by stop uid / vehicle plate. Null
+  /// when either side hasn't resolved yet (target stop or the plate itself
+  /// missing from the current frame).
+  int? _pinnedStopsRemaining(
+    List<BusStopEtaViewModel> etas,
+    JourneyLeg leg,
+    String plate,
+  ) {
+    final direction = leg.identity.direction;
+    final inDirection = direction.isEmpty
+        ? etas
+        : etas.where((e) => '${e.direction}' == direction);
+
+    BusStopEtaViewModel? target;
+    BusStopEtaViewModel? plateStop;
+    for (final e in inDirection) {
+      if (e.stopUid == leg.identity.departureStopKey) target = e;
+      if (e.vehicles.any((v) => v.plate == plate)) {
+        if (plateStop == null || e.sequence < plateStop.sequence) {
+          plateStop = e;
+        }
+      }
+    }
+    if (target == null || plateStop == null) return null;
+    final diff = target.sequence - plateStop.sequence;
+    return diff < 0 ? 0 : diff;
   }
 
   void _subscribePositions() {
@@ -205,8 +274,9 @@ class JourneySessionBloc
       fromStation: leg.boardStop,
       nextStation: nextName,
       alightStation: leg.alightStop,
-      remainingStops:
-          s.phase == JourneyPhase.riding ? total - s.nextStopIndex : null,
+      remainingStops: s.plate != null
+          ? s.pinnedStopsRemaining
+          : (s.phase == JourneyPhase.riding ? total - s.nextStopIndex : null),
       progressPercent:
           s.phase == JourneyPhase.riding && total > 0
               ? s.nextStopIndex / total
@@ -217,12 +287,15 @@ class JourneySessionBloc
       walkMinutes: s.phase == JourneyPhase.waiting
           ? leg.leadingWalkMinutes
           : 0,
+      plate: s.plate,
+      routeNumber: leg.routeLabel.split(' 往').first.trim(),
     );
   }
 
   @override
   Future<void> close() {
     unawaited(_etaSub?.cancel());
+    unawaited(_routeEtaSub?.cancel());
     unawaited(_posSub?.cancel());
     _timeout?.cancel();
     _linger?.cancel();

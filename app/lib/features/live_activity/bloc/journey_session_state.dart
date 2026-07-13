@@ -13,6 +13,7 @@ class JourneySessionState extends Equatable {
     this.suggestBoarding = false,
     this.trackOnly = false,
     this.plate,
+    this.pinnedStopsRemaining,
   });
 
   final JourneyPhase phase;
@@ -29,6 +30,11 @@ class JourneySessionState extends Equatable {
   /// stream is never filtered by plate.
   final String? plate;
 
+  /// Live stop count between the pinned vehicle's current stop and the
+  /// leg's alight stop, for a pinned (`plate != null`) trackOnly session.
+  /// Null until the route-ETA stream has resolved both stops at least once.
+  final int? pinnedStopsRemaining;
+
   JourneyLeg? get currentLeg =>
       legIndex < legs.length ? legs[legIndex] : null;
 
@@ -44,6 +50,8 @@ class JourneySessionState extends Equatable {
     bool? suggestBoarding,
     bool? trackOnly,
     String? plate,
+    int? pinnedStopsRemaining,
+    bool clearPinnedStopsRemaining = false,
   }) {
     return JourneySessionState(
       phase: phase ?? this.phase,
@@ -54,6 +62,9 @@ class JourneySessionState extends Equatable {
       suggestBoarding: suggestBoarding ?? this.suggestBoarding,
       trackOnly: trackOnly ?? this.trackOnly,
       plate: plate ?? this.plate,
+      pinnedStopsRemaining: clearPinnedStopsRemaining
+          ? null
+          : pinnedStopsRemaining ?? this.pinnedStopsRemaining,
     );
   }
 
@@ -67,5 +78,6 @@ class JourneySessionState extends Equatable {
     suggestBoarding,
     trackOnly,
     plate,
+    pinnedStopsRemaining,
   ];
 }

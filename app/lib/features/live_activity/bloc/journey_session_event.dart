@@ -45,3 +45,10 @@ class ProgressTicked extends JourneySessionEvent {
   const ProgressTicked(this.nextStopIndex);
   final int nextStopIndex;
 }
+
+/// Internal: the pinned vehicle's live stop-distance from the alight stop,
+/// recomputed from a fresh route-ETA frame (null = not yet resolvable).
+class PinnedStopsUpdated extends JourneySessionEvent {
+  const PinnedStopsUpdated(this.stopsRemaining);
+  final int? stopsRemaining;
+}
