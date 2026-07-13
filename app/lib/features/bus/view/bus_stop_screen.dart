@@ -10,10 +10,13 @@ import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/location/location_service.dart';
+import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 import 'package:wheres_the_car/features/alerts/view/alert_banner.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
 import 'package:wheres_the_car/features/bus/view/bus_stop_detail_view.dart';
+import 'package:wheres_the_car/features/bus/widgets/stop_board_toggle.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_cubit.dart';
 import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
@@ -93,6 +96,21 @@ class _BusStopScreenState extends State<BusStopScreen> {
     unawaited(_moveToCurrentLocation());
   }
 
+  /// Toggles the 站牌看板 Live Activity for this stop. [isActive] reflects
+  /// whether the shared [StopBoardCubit] is currently broadcasting *this*
+  /// stop (matched by name — the cubit is a single app-wide instance shared
+  /// with the journey/track card, so any other active board reads as off
+  /// here and a tap takes over as this stop's board).
+  void _toggleBoard(bool isActive) {
+    unawaited(HapticService.instance.lightTap());
+    final cubit = context.read<StopBoardCubit>();
+    if (isActive) {
+      cubit.stop();
+    } else {
+      cubit.start(widget.city ?? '', widget.stopId ?? '', widget.stopName);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -168,6 +186,30 @@ class _BusStopScreenState extends State<BusStopScreen> {
                             color: cs.onSurface,
                           ),
                         ),
+                        const Spacer(),
+                        if (SettingsRepository.instance.liveActivityEnabled &&
+                            (widget.stopId?.isNotEmpty ?? false))
+                          BlocBuilder<StopBoardCubit, StopBoardState>(
+                            builder: (context, state) {
+                              final isActive = isStopBoardActive(
+                                state,
+                                widget.stopName,
+                              );
+                              return AppBarCircleButton(
+                                onTap: () => _toggleBoard(isActive),
+                                semanticLabel: isActive
+                                    ? '關閉站牌即時動態'
+                                    : '開啟站牌即時動態',
+                                child: Icon(
+                                  isActive
+                                      ? Icons.wifi_tethering_rounded
+                                      : Icons.wifi_tethering_off_rounded,
+                                  size: 18,
+                                  color: cs.onSurface,
+                                ),
+                              );
+                            },
+                          ),
                       ],
                     ),
                   ),
