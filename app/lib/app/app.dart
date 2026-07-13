@@ -16,6 +16,7 @@ import 'package:wheres_the_car/features/alerts/view/notification_toast.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_cubit.dart';
 import 'package:wheres_the_car/features/live_activity/view/journey_pip_card.dart';
 
 class App extends StatefulWidget {
@@ -31,6 +32,9 @@ class App extends StatefulWidget {
 class _AppState extends State<App> {
   @override
   Widget build(BuildContext context) {
+    // Shared across JourneySessionBloc and StopBoardCubit: only one Live
+    // Activity can exist, so both drivers must target the same channel.
+    final liveActivityChannel = LiveActivityChannel();
     return MultiBlocProvider(
       providers: [
         BlocProvider(create: (_) => AlertBloc()),
@@ -40,8 +44,14 @@ class _AppState extends State<App> {
             // iOS drives the Live Activity / Dynamic Island; Android drives
             // the promoted Live Update notification + status-bar chip
             // (supersedes spec 決策 3, which kept Android on PiP only).
-            channel: LiveActivityChannel(),
+            channel: liveActivityChannel,
             positions: LocationService.instance.navigationStream,
+          ),
+        ),
+        BlocProvider(
+          create: (context) => StopBoardCubit(
+            channel: liveActivityChannel,
+            session: context.read<JourneySessionBloc>(),
           ),
         ),
         BlocProvider(
