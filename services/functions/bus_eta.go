@@ -56,6 +56,9 @@ func readBusFeedCache[T any](sink liveSink, key string) ([]T, error) {
 	if err := json.Unmarshal([]byte(raw), &values); err != nil {
 		return nil, fmt.Errorf("decode %s: %w", key, err)
 	}
+	if values == nil {
+		return nil, fmt.Errorf("%w: %s contains JSON null", errBusFeedCacheMiss, key)
+	}
 	return values, nil
 }
 

@@ -677,6 +677,28 @@ func TestBusAcknowledgesBothFeedsAfterPublish(t *testing.T) {
 	}
 }
 
+func TestReadBusFeedCacheRejectsNullButAcceptsEmptyArray(t *testing.T) {
+	const key = "bus:raw:test"
+
+	nullSink := &captureLiveSink{strings: map[string]string{key: `null`}}
+	values, err := readBusFeedCache[rawBusEsimated](nullSink, key)
+	if !errors.Is(err, errBusFeedCacheMiss) {
+		t.Fatalf("null cache error = %v, want %v", err, errBusFeedCacheMiss)
+	}
+	if values != nil {
+		t.Fatalf("null cache values = %#v, want nil", values)
+	}
+
+	emptySink := &captureLiveSink{strings: map[string]string{key: `[]`}}
+	values, err = readBusFeedCache[rawBusEsimated](emptySink, key)
+	if err != nil {
+		t.Fatalf("empty array cache error = %v", err)
+	}
+	if values == nil || len(values) != 0 {
+		t.Fatalf("empty array cache values = %#v, want non-nil empty slice", values)
+	}
+}
+
 func TestBusOneModifiedFeedUsesCachedCounterpartAndAdvances(t *testing.T) {
 	tests := []struct {
 		name       string
