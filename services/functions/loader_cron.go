@@ -24,6 +24,9 @@ import (
 // silently targeting the sink database. The returned cleanup owns only a
 // dedicated raw pool; the caller owns db.
 func rawSourcePool(ctx context.Context, db *pgxpool.Pool) (*pgxpool.Pool, func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	dsn := os.Getenv("RAW_DATABASE_URL")
 	if dsn == "" {
 		return db, func() {}, nil
@@ -35,7 +38,7 @@ func rawSourcePool(ctx context.Context, db *pgxpool.Pool) (*pgxpool.Pool, func()
 	cfg.MaxConns = shared.EnvInt32("RAW_DB_MAX_CONNS", 4)
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect configured RAW_DATABASE_URL: %w", err)
 	}

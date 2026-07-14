@@ -77,6 +77,37 @@ func TestInsertRawChunksRejectsNonArray(t *testing.T) {
 	}
 }
 
+func TestInsertRawChunksRejectsIncompleteOrTrailingPayload(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing closing delimiter", body: `[{"RouteUID":"R1"}`},
+		{name: "trailing comma without closing delimiter", body: `[{"RouteUID":"R1"},`},
+		{name: "second JSON document", body: `[{"RouteUID":"R1"}] {}`},
+		{name: "non-JSON trailing data", body: `[{"RouteUID":"R1"}] nope`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var chunks [][]json.RawMessage
+			if _, err := insertRawChunks(context.Background(), chunkRecorder(t, &chunks), "bus_route", "{}", strings.NewReader(tt.body)); err == nil {
+				t.Fatalf("insertRawChunks(%q) returned nil error", tt.body)
+			}
+		})
+	}
+}
+
+func TestInsertRawChunksAllowsTrailingWhitespace(t *testing.T) {
+	var chunks [][]json.RawMessage
+	rows, err := insertRawChunks(context.Background(), chunkRecorder(t, &chunks), "bus_route", "{}", strings.NewReader("[] \n\t\r"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || len(chunks) != 1 {
+		t.Fatalf("trailing whitespace: rows=%d chunks=%v, want one empty insert", rows, chunks)
+	}
+}
+
 func TestInsertRawChunksConsumesReader(t *testing.T) {
 	var chunks [][]json.RawMessage
 	body := readerOnly{Reader: bytes.NewBufferString(`[{"RouteUID":"R1"}]`)}

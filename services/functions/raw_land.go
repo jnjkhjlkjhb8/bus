@@ -379,6 +379,22 @@ func insertRawChunks(ctx context.Context, exec func(context.Context, string, ...
 			flushed = true
 		}
 	}
+	closing, err := dec.Token()
+	if err != nil {
+		return rows, fmt.Errorf("decode array closing delimiter: %w", err)
+	}
+	if closing != json.Delim(']') {
+		return rows, fmt.Errorf("payload has invalid array closing token %v", closing)
+	}
+	var trailing json.RawMessage
+	switch err := dec.Decode(&trailing); {
+	case errors.Is(err, io.EOF):
+		// Only JSON whitespace may follow the closing array delimiter.
+	case err != nil:
+		return rows, fmt.Errorf("decode data after JSON array: %w", err)
+	default:
+		return rows, errors.New("payload contains data after JSON array")
+	}
 	if len(chunk) > 1 || !flushed {
 		if err := flush(); err != nil {
 			return rows, err

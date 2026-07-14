@@ -177,9 +177,8 @@ func runDailyWithRetry(parent context.Context, d, backoff time.Duration, job fun
 }
 
 // runDaily runs a daily job under a d timeout, retrying up to 3 times with a
-// one-minute backoff (obs.Retry). A context deadline that fires without job
-// returning an error is wrapped as transient so it counts as a retryable
-// failure. Exhausted retries are logged, not fatal — the next daily tick retries.
+// one-minute backoff (obs.Retry). Exhausted retries are logged, not fatal — the
+// next daily tick retries.
 func runDaily(name string, d time.Duration, job func(context.Context) error) {
 	err := runDailyWithRetry(context.Background(), d, time.Minute, job)
 	if err != nil {

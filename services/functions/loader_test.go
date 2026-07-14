@@ -96,6 +96,35 @@ func TestConfiguredUnreachableRawDatabaseURLFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRawSourcePoolHonorsCanceledContext(t *testing.T) {
+	t.Setenv("RAW_DATABASE_URL", "postgres://test:test@127.0.0.1:1/test?connect_timeout=30")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	started := time.Now()
+	pool, cleanup, err := rawSourcePool(ctx, nil)
+	if cleanup != nil {
+		cleanup()
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("rawSourcePool returned pool %v and error %v, want context.Canceled", pool, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("rawSourcePool took %v with an already-canceled context", elapsed)
+	}
+}
+
+func TestRawSourcePoolNormalizesNilContext(t *testing.T) {
+	t.Setenv("RAW_DATABASE_URL", "postgres://test:test@127.0.0.1:1/test?connect_timeout=1")
+	pool, cleanup, err := rawSourcePool(nil, nil)
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatalf("rawSourcePool returned pool %v and nil error for unreachable configured database", pool)
+	}
+}
+
 func TestStalenessCheckSkips(t *testing.T) {
 	// A partition older than the 27h threshold must be skipped, not loaded.
 	if !isStale(time.Now().Add(-28 * time.Hour)) {
