@@ -37,11 +37,11 @@ func TestMrtTravelGraph(t *testing.T) {
 	for i, s := range stations {
 		pos[s] = i
 	}
-	sec := func(a, b string) int { return dist[pos[a]][pos[b]] }
+	sec := func(a, b string) int64 { return dist[pos[a]][pos[b]] }
 
 	cases := []struct {
 		from, to         string
-		wantSec, wantMin int
+		wantSec, wantMin int64
 	}{
 		{"BL01", "BL03", 235, 4}, // 110 + 125
 		{"BL01", "R02", 390, 7},  // 110 + 180 (transfer) + 100

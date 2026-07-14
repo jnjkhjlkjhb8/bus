@@ -138,6 +138,21 @@ func TestLoadMrtJourneyMatrixRejectsInvalidIdentityOrTravelTime(t *testing.T) {
 			want: "TravelTime",
 		},
 		{
+			name: "precision unsafe travel time",
+			body: `[{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":9007199254740993,"Fares":[{"TicketType":1,"Price":20}]}]`,
+			want: "TravelTime",
+		},
+		{
+			name: "PostgreSQL integer overflow",
+			body: `[{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":2147483648,"Fares":[{"TicketType":1,"Price":20}]}]`,
+			want: "TravelTime",
+		},
+		{
+			name: "tiny positive exponent",
+			body: `[{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":1e-1000,"Fares":[{"TicketType":1,"Price":20}]}]`,
+			want: "TravelTime",
+		},
+		{
 			name: "missing adult fare",
 			body: `[{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":5,"Fares":[{"TicketType":2,"Price":10}]}]`,
 			want: "TicketType 1",
@@ -219,6 +234,24 @@ func TestLoadMrtTravelTimeRejectsFractionalDuration(t *testing.T) {
 			transfer: `[{"FromStationID":"BL01","ToStationID":"R01","TransferTime":0}]`,
 			want:     "TransferTime",
 		},
+		{
+			name:     "precision unsafe run time",
+			s2s:      `[{"TravelTimes":[{"FromStationID":"BL01","ToStationID":"BL02","RunTime":9007199254740993,"StopTime":20}]}]`,
+			transfer: `[]`,
+			want:     "RunTime",
+		},
+		{
+			name:     "tiny positive stop time",
+			s2s:      `[{"TravelTimes":[{"FromStationID":"BL01","ToStationID":"BL02","RunTime":90,"StopTime":1e-1000}]}]`,
+			transfer: `[]`,
+			want:     "StopTime",
+		},
+		{
+			name:     "transfer duration exceeds safe bound",
+			s2s:      `[]`,
+			transfer: `[{"FromStationID":"BL01","ToStationID":"R01","TransferTime":2147483648}]`,
+			want:     "TransferTime",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -234,6 +267,34 @@ func TestLoadMrtTravelTimeRejectsFractionalDuration(t *testing.T) {
 				t.Fatalf("loadMrtTrtcTravelTime error = %v, want whole-unit %s validation error", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadMrtJourneyMatrixAcceptsExactWholeExponent(t *testing.T) {
+	sink := &fakeLoadSink{}
+	body := `[{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":1e3,"Fares":[{"TicketType":1,"Price":20}]}]`
+	if err := loadMrtJourneyMatrix(context.Background(), decodeInto(body), sink, "TRTC"); err != nil {
+		t.Fatalf("loadMrtJourneyMatrix: %v", err)
+	}
+	if len(sink.calls) != 1 || len(sink.calls[0].rows) != 1 || sink.calls[0].rows[0][4] != 1000 {
+		t.Fatalf("exact exponent rows = %+v, want TravelTime 1000", sink.calls)
+	}
+}
+
+func TestLoadMrtTravelTimeRejectsComputedPostgresIntegerOverflow(t *testing.T) {
+	src := &fakeLoadSource{
+		json: map[string][]byte{
+			"metro_s2straveltime|TRTC": []byte(`[{"TravelTimes":[{"FromStationID":"C","ToStationID":"D","RunTime":60,"StopTime":0}]}]`),
+			"metro_linetransfer|TRTC": []byte(`[
+				{"FromStationID":"A","ToStationID":"B","TransferTime":2147483647},
+				{"FromStationID":"B","ToStationID":"C","TransferTime":2147483647}
+			]`),
+		},
+		fetched: time.Now(),
+	}
+	err := loadMrtTrtcTravelTime(context.Background(), src, &fakeLoadSink{}, "TRTC")
+	if err == nil || !strings.Contains(err.Error(), "PostgreSQL integer") {
+		t.Fatalf("loadMrtTrtcTravelTime error = %v, want computed target overflow rejection", err)
 	}
 }
 
@@ -282,4 +343,15 @@ func TestLoadMrtDuplicatePolicies(t *testing.T) {
 			t.Fatalf("divergent adult fare error = %v", err)
 		}
 	})
+}
+
+func TestLoadMrtStationsConflictRefreshesBikeAllowance(t *testing.T) {
+	sink := &fakeLoadSink{}
+	body := `[{"StationID":"BL12","StationPosition":{"PositionLon":121.6,"PositionLat":25.05},"BikeAllowOnHoliday":true}]`
+	if err := loadMrtStations(context.Background(), decodeInto(body), sink, "TRTC"); err != nil {
+		t.Fatalf("loadMrtStations: %v", err)
+	}
+	if len(sink.calls) != 1 || !strings.Contains(sink.calls[0].spec.insertSQL, "bikeallowonholiday = EXCLUDED.bikeallowonholiday") {
+		t.Fatalf("MRT station conflict SQL does not refresh bikeallowonholiday:\n%s", sink.calls[0].spec.insertSQL)
+	}
 }

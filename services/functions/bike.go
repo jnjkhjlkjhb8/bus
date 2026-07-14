@@ -121,7 +121,7 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, sink loadSink, cit
                            updated_at
 					)
 					SELECT uid, id, name, cap, type, city,st_geomfromtext(geom, 4326) AS temp, addr AS address,NOW() FROM temp_bike
-					ON CONFLICT (station_uid) DO UPDATE SET name = EXCLUDED.name,capacity = EXCLUDED.capacity,service_type = EXCLUDED.service_type,city = excluded.city,geom = EXCLUDED.geom,address = EXCLUDED.address,updated_at = NOW();`,
+					ON CONFLICT (station_uid) DO UPDATE SET station_id = EXCLUDED.station_id,name = EXCLUDED.name,capacity = EXCLUDED.capacity,service_type = EXCLUDED.service_type,city = excluded.city,geom = EXCLUDED.geom,address = EXCLUDED.address,updated_at = NOW();`,
 	}, row)
 }
 

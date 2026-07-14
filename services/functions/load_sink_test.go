@@ -101,7 +101,7 @@ func TestLoadTraTimetableThroughSink(t *testing.T) {
 	// WheelchairFlag (bit 0) + DiningFlag (bit 2) + the train-wide
 	// SuspendedFlag (bit 7) set => railMask = 1|4|128 = 133. A suspended train
 	// marks every staged stop suspended even when the stop-level flag is zero.
-	body := `[{"DailyTrainInfo":{"TrainNo":"123","Direction":0,"StartingStationID":"1000","EndingStationID":"1001","WheelchairFlag":1,"DiningFlag":1,"SuspendedFlag":1},"StopTimes":[{"StopSequence":1,"StationID":"1000","StationName":{"Zh_tw":"台北"},"ArrivalTime":"08:00","DepartureTime":"08:01"}]}]`
+	body := `[{"DailyTrainInfo":{"TrainNo":"123","Direction":0,"StartingStationID":"1000","EndingStationID":"1001","WheelchairFlag":1,"PackageServiceFlag":0,"DiningFlag":1,"BikeFlag":0,"BreastFeedingFlag":0,"DailyFlag":0,"ServiceAddedFlag":0,"SuspendedFlag":1},"StopTimes":[{"StopSequence":1,"StationID":"1000","StationName":{"Zh_tw":"台北"},"ArrivalTime":"08:00","DepartureTime":"08:01","SuspendedFlag":0}]}]`
 	sink := &fakeLoadSink{}
 	if err := loadTraTimetable(context.Background(), decodeInto(body), sink, "2026-07-04"); err != nil {
 		t.Fatalf("loadTraTimetable: %v", err)

@@ -344,7 +344,7 @@ func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
 		t.Skipf("local Redis not reachable; skipping: %v", err)
 	}
 
-	const uid = "ZZ_DTT_SUB1"
+	const uid = "KHH_DTT_SUB1"
 	key := "bus_daily_timetable:" + uid
 	_ = rc.Del(key).Err()
 	defer func() { _ = rc.Del(key).Err() }()

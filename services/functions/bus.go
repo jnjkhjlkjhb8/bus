@@ -178,12 +178,12 @@ type rawStopofroute struct {
 // stop-by-stop scheduled times for one service day, cached for realtime use.
 type rawBusDailytimetable struct {
 	SubRouteUID string `json:"SubRouteUID"`
-	Direction   uint8  `json:"Direction"`
+	Direction   *uint8 `json:"Direction"`
 	Timetables  []struct {
 		TripID     string `json:"TripID"`
 		IsLowFloor bool   `json:"IsLowFloor"`
 		StopTimes  []struct {
-			StopSequence  int    `json:"StopSequence"`
+			StopSequence  int64  `json:"StopSequence"`
 			StopUID       string `json:"StopUID"`
 			ArrivalTime   string `json:"ArrivalTime"`
 			DepartureTime string `json:"DepartureTime"`
@@ -363,7 +363,10 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 	mp := make(map[string]map[int32]*models.Bus_DirectionTimetable, 300)
 	seenTrips := make(map[string]*models.Bus_DailyTimetable)
 	for _, temp := range entries {
-		uid, dir := shared.CanonicalSubroute(city, temp.SubRouteUID, temp.Direction)
+		uid, dir, err := canonicalBusDailyIdentity(city, temp.SubRouteUID, *temp.Direction)
+		if err != nil {
+			return err
+		}
 		if _, exists := mp[uid]; !exists {
 			mp[uid] = make(map[int32]*models.Bus_DirectionTimetable, 4)
 		}
@@ -373,14 +376,23 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 			}
 		}
 		for _, t := range temp.Timetables {
-			stop := make([]*models.Bus_StopTime, len(t.StopTimes))
-			for i, st := range t.StopTimes {
-				stop[i] = &models.Bus_StopTime{
+			stop := make([]*models.Bus_StopTime, 0, len(t.StopTimes))
+			seenStops := make(map[int64]*models.Bus_StopTime, len(t.StopTimes))
+			for _, st := range t.StopTimes {
+				candidate := &models.Bus_StopTime{
 					StopSequence:  int32(st.StopSequence),
 					ArrivalTime:   st.ArrivalTime,
 					DepartureTime: st.DepartureTime,
 					StopUID:       st.StopUID,
 				}
+				if prior, exists := seenStops[st.StopSequence]; exists {
+					if proto.Equal(prior, candidate) {
+						continue
+					}
+					return fmt.Errorf("bus daily timetable %s: divergent duplicate StopSequence %d in TripID %q", city, st.StopSequence, t.TripID)
+				}
+				seenStops[st.StopSequence] = candidate
+				stop = append(stop, candidate)
 			}
 			timetable := &models.Bus_DailyTimetable{
 				TripID:     t.TripID,
@@ -428,7 +440,7 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 	if rc == nil {
 		return fmt.Errorf("bus daily timetable %s Redis transaction: nil client", city)
 	}
-	pipe := rc.TxPipeline()
+	pipe := rc.WithContext(ctx).TxPipeline()
 	defer func() { _ = pipe.Close() }()
 	for _, write := range writes {
 		pipe.Set(write.key, write.value, 26*time.Hour)
@@ -437,8 +449,12 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 		_ = pipe.Discard()
 		return fmt.Errorf("bus daily timetable %s context before Redis transaction: %w", city, err)
 	}
-	if _, err := pipe.Exec(); err != nil {
-		return fmt.Errorf("bus daily timetable %s Redis transaction: %w", city, err)
+	_, execErr := pipe.Exec()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("bus daily timetable %s context during Redis transaction: %w", city, errors.Join(ctxErr, execErr))
+	}
+	if execErr != nil {
+		return fmt.Errorf("bus daily timetable %s Redis transaction: %w", city, execErr)
 	}
 	log.Infof("[BUS] action=bus_dailyroute event=complete city=%s", city)
 	return nil
@@ -448,8 +464,11 @@ func validateBusDailyTimetable(timetable rawBusDailytimetable) error {
 	if strings.TrimSpace(timetable.SubRouteUID) == "" {
 		return errors.New("SubRouteUID is required")
 	}
-	if timetable.Direction > 1 {
-		return fmt.Errorf("Direction must be 0 or 1, got %d", timetable.Direction)
+	if timetable.Direction == nil {
+		return errors.New("Direction is required")
+	}
+	if *timetable.Direction > 1 {
+		return fmt.Errorf("Direction must be 0 or 1, got %d", *timetable.Direction)
 	}
 	if len(timetable.Timetables) == 0 {
 		return errors.New("Timetables must not be empty")
@@ -463,8 +482,8 @@ func validateBusDailyTimetable(timetable rawBusDailytimetable) error {
 		}
 		for stopIndex, stop := range trip.StopTimes {
 			prefix := fmt.Sprintf("Timetables element %d StopTimes element %d", timetableIndex, stopIndex)
-			if stop.StopSequence <= 0 {
-				return fmt.Errorf("%s StopSequence must be positive", prefix)
+			if stop.StopSequence <= 0 || stop.StopSequence > 1<<31-1 {
+				return fmt.Errorf("%s StopSequence must be between 1 and %d", prefix, int64(1<<31-1))
 			}
 			if strings.TrimSpace(stop.StopUID) == "" {
 				return fmt.Errorf("%s StopUID is required", prefix)
@@ -478,6 +497,24 @@ func validateBusDailyTimetable(timetable rawBusDailytimetable) error {
 		}
 	}
 	return nil
+}
+
+func canonicalBusDailyIdentity(city, subRouteUID string, direction uint8) (string, uint8, error) {
+	prefix, ok := citymap[city]
+	if !ok || prefix == "" {
+		return "", 0, fmt.Errorf("bus daily timetable %s: authority is unknown", city)
+	}
+	uid, dir := shared.CanonicalSubroute(city, subRouteUID, direction)
+	if strings.TrimSpace(uid) == "" {
+		return "", 0, fmt.Errorf("bus daily timetable %s: canonical SubRouteUID is empty for %q", city, subRouteUID)
+	}
+	if dir > 1 {
+		return "", 0, fmt.Errorf("bus daily timetable %s: canonical Direction must be 0 or 1, got %d", city, dir)
+	}
+	if !uidBelongsToPrefix(uid, prefix) {
+		return "", 0, fmt.Errorf("bus daily timetable %s: canonical SubRouteUID %q does not belong to authority %s", city, uid, prefix)
+	}
+	return uid, dir, nil
 }
 
 // jsonOrNil returns nil for empty or literal-null JSON so the value is stored as

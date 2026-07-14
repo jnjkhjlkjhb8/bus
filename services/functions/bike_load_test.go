@@ -79,3 +79,14 @@ func TestLoadBikeStationsDuplicatePolicy(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadBikeStationsConflictRefreshesStationID(t *testing.T) {
+	sink := &fakeLoadSink{}
+	body := `[{"StationUID":"TPE001","StationID":"NEW-ID","StationPosition":{"PositionLon":121.5,"PositionLat":25.0},"ServiceType":2}]`
+	if err := loadBikeStations(context.Background(), decodeInto(body), sink, "Taipei"); err != nil {
+		t.Fatalf("loadBikeStations: %v", err)
+	}
+	if len(sink.calls) != 1 || !strings.Contains(sink.calls[0].spec.insertSQL, "station_id = EXCLUDED.station_id") {
+		t.Fatalf("bike conflict SQL does not refresh station_id:\n%s", sink.calls[0].spec.insertSQL)
+	}
+}

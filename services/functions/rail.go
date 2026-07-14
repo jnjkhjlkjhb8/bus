@@ -70,7 +70,7 @@ type raw_tra_timetable struct {
 	TrainDate      string `json:"TrainDate"`
 	DailyTrainInfo struct {
 		TrainNo             string `json:"TrainNo"`
-		Direction           uint8  `json:"Direction"`
+		Direction           *uint8 `json:"Direction"`
 		StartingStationID   string `json:"StartingStationID"`
 		StartingStationName struct {
 			ZhTw string `json:"Zh_tw"`
@@ -84,15 +84,15 @@ type raw_tra_timetable struct {
 		TrainTypeName struct {
 			ZhTw string `json:"Zh_tw"`
 		} `json:"TrainTypeName"`
-		TripLine           uint8 `json:"TripLine"`
-		WheelchairFlag     uint8 `json:"WheelchairFlag"`
-		PackageServiceFlag uint8 `json:"PackageServiceFlag"`
-		DiningFlag         uint8 `json:"DiningFlag"`
-		BikeFlag           uint8 `json:"BikeFlag"`
-		BreastFeedingFlag  uint8 `json:"BreastFeedingFlag"`
-		DailyFlag          uint8 `json:"DailyFlag"`
-		ServiceAddedFlag   uint8 `json:"ServiceAddedFlag"`
-		SuspendedFlag      uint8 `json:"SuspendedFlag"`
+		TripLine           uint8  `json:"TripLine"`
+		WheelchairFlag     *uint8 `json:"WheelchairFlag"`
+		PackageServiceFlag *uint8 `json:"PackageServiceFlag"`
+		DiningFlag         *uint8 `json:"DiningFlag"`
+		BikeFlag           *uint8 `json:"BikeFlag"`
+		BreastFeedingFlag  *uint8 `json:"BreastFeedingFlag"`
+		DailyFlag          *uint8 `json:"DailyFlag"`
+		ServiceAddedFlag   *uint8 `json:"ServiceAddedFlag"`
+		SuspendedFlag      *uint8 `json:"SuspendedFlag"`
 		Note               struct {
 			ZhTw string `json:"Zh_tw"`
 		} `json:"Note"`
@@ -105,7 +105,7 @@ type raw_tra_timetable struct {
 		} `json:"StationName"`
 		ArrivalTime   string `json:"ArrivalTime"`
 		DepartureTime string `json:"DepartureTime"`
-		SuspendedFlag uint8  `json:"SuspendedFlag"`
+		SuspendedFlag *uint8 `json:"SuspendedFlag"`
 	} `json:"StopTimes"`
 }
 
@@ -116,7 +116,7 @@ type raw_thsr_timetable struct {
 	TrainDate      string `json:"TrainDate"`
 	DailyTrainInfo struct {
 		TrainNo             string `json:"TrainNo"`
-		Direction           uint8  `json:"Direction"`
+		Direction           *uint8 `json:"Direction"`
 		StartingStationID   string `json:"StartingStationID"`
 		StartingStationName struct {
 			ZhTw string `json:"Zh_tw"`
@@ -128,7 +128,7 @@ type raw_thsr_timetable struct {
 		Note struct {
 			ZhTw string `json:"Zh_tw"`
 		} `json:"Note"`
-		Overnight bool `json:"Overnight"`
+		Overnight *bool `json:"Overnight"`
 	} `json:"DailyTrainInfo"`
 	StopTimes []struct {
 		StopSequence uint8  `json:"StopSequence"`
@@ -174,6 +174,16 @@ func validateBinaryFlag(field string, value uint8) error {
 	return nil
 }
 
+func requiredBinaryFlag(field string, value *uint8) (uint8, error) {
+	if value == nil {
+		return 0, fmt.Errorf("%s is required", field)
+	}
+	if err := validateBinaryFlag(field, *value); err != nil {
+		return 0, err
+	}
+	return *value, nil
+}
+
 func validateTraTimetable(timetable raw_tra_timetable, partitionDate string) error {
 	trainDate := timetable.TrainDate
 	if trainDate == "" {
@@ -195,12 +205,15 @@ func validateTraTimetable(timetable raw_tra_timetable, partitionDate string) err
 	if strings.TrimSpace(info.EndingStationID) == "" {
 		return errors.New("EndingStationID is required")
 	}
-	if info.Direction > 1 {
-		return fmt.Errorf("Direction must be 0 or 1, got %d", info.Direction)
+	if info.Direction == nil {
+		return errors.New("Direction is required")
+	}
+	if *info.Direction > 1 {
+		return fmt.Errorf("Direction must be 0 or 1, got %d", *info.Direction)
 	}
 	for _, flag := range []struct {
 		name  string
-		value uint8
+		value *uint8
 	}{
 		{"WheelchairFlag", info.WheelchairFlag},
 		{"PackageServiceFlag", info.PackageServiceFlag},
@@ -211,7 +224,7 @@ func validateTraTimetable(timetable raw_tra_timetable, partitionDate string) err
 		{"ServiceAddedFlag", info.ServiceAddedFlag},
 		{"SuspendedFlag", info.SuspendedFlag},
 	} {
-		if err := validateBinaryFlag(flag.name, flag.value); err != nil {
+		if _, err := requiredBinaryFlag(flag.name, flag.value); err != nil {
 			return err
 		}
 	}
@@ -231,7 +244,7 @@ func validateTraTimetable(timetable raw_tra_timetable, partitionDate string) err
 		if !validClock(stop.DepartureTime) {
 			return fmt.Errorf("StopTimes element %d DepartureTime is invalid: %q", index, stop.DepartureTime)
 		}
-		if err := validateBinaryFlag("SuspendedFlag", stop.SuspendedFlag); err != nil {
+		if _, err := requiredBinaryFlag("SuspendedFlag", stop.SuspendedFlag); err != nil {
 			return fmt.Errorf("StopTimes element %d: %w", index, err)
 		}
 	}
@@ -255,8 +268,14 @@ func validateThsrTimetable(timetable raw_thsr_timetable, partitionDate string) e
 	if strings.TrimSpace(info.EndingStationID) == "" {
 		return errors.New("EndingStationID is required")
 	}
-	if info.Direction > 1 {
-		return fmt.Errorf("Direction must be 0 or 1, got %d", info.Direction)
+	if info.Direction == nil {
+		return errors.New("Direction is required")
+	}
+	if *info.Direction > 1 {
+		return fmt.Errorf("Direction must be 0 or 1, got %d", *info.Direction)
+	}
+	if info.Overnight == nil {
+		return errors.New("Overnight is required")
 	}
 	if len(timetable.StopTimes) == 0 {
 		return errors.New("StopTimes must not be empty")
@@ -311,7 +330,7 @@ func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, dat
 			candidate := []any{
 				temp.TrainDate,
 				temp.DailyTrainInfo.TrainNo,
-				temp.DailyTrainInfo.Direction,
+				*temp.DailyTrainInfo.Direction,
 				temp.DailyTrainInfo.StartingStationID,
 				temp.DailyTrainInfo.StartingStationName.ZhTw,
 				temp.DailyTrainInfo.EndingStationID,
@@ -326,14 +345,14 @@ func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, dat
 				at,
 				dt,
 				railMask(railTrainFlags{
-					wheel:     temp.DailyTrainInfo.WheelchairFlag,
-					pack:      temp.DailyTrainInfo.PackageServiceFlag,
-					dining:    temp.DailyTrainInfo.DiningFlag,
-					bike:      temp.DailyTrainInfo.BikeFlag,
-					breast:    temp.DailyTrainInfo.BreastFeedingFlag,
-					daily:     temp.DailyTrainInfo.DailyFlag,
-					service:   temp.DailyTrainInfo.ServiceAddedFlag,
-					suspended: temp.DailyTrainInfo.SuspendedFlag | stop.SuspendedFlag,
+					wheel:     *temp.DailyTrainInfo.WheelchairFlag,
+					pack:      *temp.DailyTrainInfo.PackageServiceFlag,
+					dining:    *temp.DailyTrainInfo.DiningFlag,
+					bike:      *temp.DailyTrainInfo.BikeFlag,
+					breast:    *temp.DailyTrainInfo.BreastFeedingFlag,
+					daily:     *temp.DailyTrainInfo.DailyFlag,
+					service:   *temp.DailyTrainInfo.ServiceAddedFlag,
+					suspended: *temp.DailyTrainInfo.SuspendedFlag | *stop.SuspendedFlag,
 				}),
 				temp.DailyTrainInfo.Note.ZhTw,
 			}
@@ -423,7 +442,7 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, da
 			candidate := []any{
 				temp.TrainDate,
 				temp.DailyTrainInfo.TrainNo,
-				temp.DailyTrainInfo.Direction,
+				*temp.DailyTrainInfo.Direction,
 				temp.DailyTrainInfo.StartingStationID,
 				temp.DailyTrainInfo.StartingStationName.ZhTw,
 				temp.DailyTrainInfo.EndingStationID,
@@ -434,7 +453,7 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, da
 				at,
 				dt,
 				temp.DailyTrainInfo.Note.ZhTw,
-				temp.DailyTrainInfo.Overnight,
+				*temp.DailyTrainInfo.Overnight,
 			}
 			key := temp.TrainDate + "\x00" + temp.DailyTrainInfo.TrainNo + "\x00" + stop.StationID
 			if err := appendUniqueLoadRow(&row, seen, key, "timetable", candidate); err != nil {

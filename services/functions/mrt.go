@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -134,7 +134,7 @@ func loadMrtStations(ctx context.Context, dec *json.Decoder, sink loadSink, syst
 					updated_at
 				)
 				SELECT st_geomfromtext(geom, 4326), system, name, city,id, bike,NOW() FROM temp_mrt
-				ON CONFLICT (station_id,system) DO UPDATE SET name = EXCLUDED.name,city = excluded.city,stationposition = EXCLUDED.stationposition,updated_at = NOW();`,
+				ON CONFLICT (station_id,system) DO UPDATE SET name = EXCLUDED.name,city = excluded.city,stationposition = EXCLUDED.stationposition,bikeallowonholiday = EXCLUDED.bikeallowonholiday,updated_at = NOW();`,
 	}, row)
 }
 
@@ -438,7 +438,7 @@ type mrtODFare struct {
 // travelTimeMin parses an mrtODFare's optional whole-minute TravelTime. Missing
 // values return zero; malformed, fractional, or negative values are errors.
 func (f mrtODFare) travelTimeMin() (int, error) {
-	value, err := nonNegativeJSONNumber(f.TravelTime, "TravelTime", true)
+	value, err := nonNegativeJSONInteger(f.TravelTime, "TravelTime", true, maxPostgresInteger)
 	if err != nil {
 		return 0, err
 	}
@@ -533,21 +533,27 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, sink copyUpser
 	}, rows)
 }
 
-func nonNegativeJSONNumber(number json.Number, field string, optional bool) (float64, error) {
+const maxPostgresInteger int64 = 1<<31 - 1
+
+func nonNegativeJSONInteger(number json.Number, field string, optional bool, maximum int64) (int64, error) {
 	if number == "" {
 		if optional {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("%s is required", field)
 	}
-	value, err := number.Float64()
-	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
-		return 0, fmt.Errorf("%s must be a finite non-negative number, got %q", field, number)
+	value, ok := new(big.Rat).SetString(number.String())
+	if !ok || value.Sign() < 0 {
+		return 0, fmt.Errorf("%s must be an exact non-negative number, got %q", field, number)
 	}
-	if math.Trunc(value) != value {
+	if !value.IsInt() {
 		return 0, fmt.Errorf("%s must use whole units, got %q", field, number)
 	}
-	return value, nil
+	integer := value.Num()
+	if !integer.IsInt64() || integer.Int64() > maximum {
+		return 0, fmt.Errorf("%s must be between 0 and %d, got %q", field, maximum, number)
+	}
+	return integer.Int64(), nil
 }
 
 // mrtS2SRow decodes one TDX Rail/Metro/S2STravelTime element: a line and its
@@ -574,12 +580,12 @@ type mrtLineTransfer struct {
 
 // jsonNumInt parses a required whole-unit duration without silently converting
 // malformed values to zero.
-func jsonNumInt(n json.Number, field string) (int, error) {
-	value, err := nonNegativeJSONNumber(n, field, false)
+func jsonNumInt(n json.Number, field string) (int64, error) {
+	value, err := nonNegativeJSONInteger(n, field, false, maxPostgresInteger)
 	if err != nil {
 		return 0, err
 	}
-	return int(value), nil
+	return value, nil
 }
 
 // loadMrtTrtcTravelTime computes TRTC OD travel times from the segment + transfer
@@ -608,14 +614,14 @@ func loadMrtTrtcTravelTime(ctx context.Context, src loadSource, sink copyUpsertS
 			if strings.TrimSpace(segment.ToStationID) == "" {
 				return fmt.Errorf("TravelTimes element %d ToStationID is required", i)
 			}
-			runTime, err := nonNegativeJSONNumber(segment.RunTime, "RunTime", false)
+			runTime, err := nonNegativeJSONInteger(segment.RunTime, "RunTime", false, maxPostgresInteger)
 			if err != nil {
 				return fmt.Errorf("TravelTimes element %d: %w", i, err)
 			}
 			if runTime == 0 {
 				return fmt.Errorf("TravelTimes element %d: RunTime must be positive", i)
 			}
-			if _, err := nonNegativeJSONNumber(segment.StopTime, "StopTime", false); err != nil {
+			if _, err := nonNegativeJSONInteger(segment.StopTime, "StopTime", false, maxPostgresInteger); err != nil {
 				return fmt.Errorf("TravelTimes element %d: %w", i, err)
 			}
 		}
@@ -635,7 +641,7 @@ func loadMrtTrtcTravelTime(ctx context.Context, src loadSource, sink copyUpsertS
 		if strings.TrimSpace(transfer.ToStationID) == "" {
 			return errors.New("ToStationID is required")
 		}
-		transferTime, err := nonNegativeJSONNumber(transfer.TransferTime, "TransferTime", false)
+		transferTime, err := nonNegativeJSONInteger(transfer.TransferTime, "TransferTime", false, maxPostgresInteger)
 		if err != nil {
 			return err
 		}
@@ -670,6 +676,9 @@ func loadMrtTrtcTravelTime(ctx context.Context, src loadSource, sink copyUpsertS
 				continue
 			}
 			mins := max((d+30)/60, 1) // round to nearest minute, floor 1
+			if mins > maxPostgresInteger {
+				return fmt.Errorf("mrt travel time %s %s to %s exceeds PostgreSQL integer maximum", system, from, to)
+			}
 			rows = append(rows, []any{mins, from, to, system})
 		}
 	}
@@ -692,14 +701,14 @@ func loadMrtTrtcTravelTime(ctx context.Context, src loadSource, sink copyUpsertS
 	}, rows)
 }
 
-const mrtGraphInf = 1 << 30
+const mrtGraphInf int64 = 1 << 62
 
 // mrtTravelGraph builds the undirected shortest-path distance matrix (seconds)
 // over every station appearing in a segment or transfer. Returns the station-id
 // slice (index i ↔ dist row i), the all-pairs distance matrix, and the segment /
 // transfer edge counts for logging. Split out from loadMrtTrtcTravelTime so the
 // graph math is unit-testable without a database.
-func mrtTravelGraph(lines []mrtS2SRow, transfers []mrtLineTransfer) ([]string, [][]int, int, int, error) {
+func mrtTravelGraph(lines []mrtS2SRow, transfers []mrtLineTransfer) ([]string, [][]int64, int, int, error) {
 	stations := []string{}
 	idx := map[string]int{}
 	id := func(s string) int {
@@ -711,7 +720,10 @@ func mrtTravelGraph(lines []mrtS2SRow, transfers []mrtLineTransfer) ([]string, [
 		stations = append(stations, s)
 		return i
 	}
-	type edge struct{ a, b, w int }
+	type edge struct {
+		a, b int
+		w    int64
+	}
 	var edges []edge
 	segCount, transferCount := 0, 0
 	for _, ln := range lines {
@@ -743,9 +755,9 @@ func mrtTravelGraph(lines []mrtS2SRow, transfers []mrtLineTransfer) ([]string, [
 		transferCount++
 	}
 	n := len(stations)
-	dist := make([][]int, n)
+	dist := make([][]int64, n)
 	for i := range dist {
-		dist[i] = make([]int, n)
+		dist[i] = make([]int64, n)
 		for j := range dist[i] {
 			if i != j {
 				dist[i][j] = mrtGraphInf
@@ -764,6 +776,9 @@ func mrtTravelGraph(lines []mrtS2SRow, transfers []mrtLineTransfer) ([]string, [
 				continue
 			}
 			for j := range n {
+				if dist[k][j] >= mrtGraphInf || dist[i][k] > mrtGraphInf-dist[k][j] {
+					continue
+				}
 				if d := dist[i][k] + dist[k][j]; d < dist[i][j] {
 					dist[i][j] = d
 				}
