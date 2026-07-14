@@ -1823,8 +1823,6 @@ class Bus_StopEstimate extends $pb.GeneratedMessage {
   @$pb.TagNumber(10)
   void clearArrivalUnix() => $_clearField(10);
 
-  /// Terminal stop name for this subroute+direction (e.g. 桃園後站). Empty when
-  /// the static data has none; clients fall back to a direction label.
   @$pb.TagNumber(11)
   $core.String get destination => $_getSZ(10);
   @$pb.TagNumber(11)
@@ -1943,6 +1941,7 @@ class Bus_position extends $pb.GeneratedMessage {
   $core.bool hasAzimuth() => $_has(4);
   @$pb.TagNumber(5)
   void clearAzimuth() => $_clearField(5);
+
   @$pb.TagNumber(9)
   $core.int get dutyStatus => $_getIZ(5);
   @$pb.TagNumber(9)

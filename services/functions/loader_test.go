@@ -134,6 +134,38 @@ func TestRunLoadSkipsStalePartition(t *testing.T) {
 	}
 }
 
+func TestRunLoadStaleOKLoadsOldButSkipsEmpty(t *testing.T) {
+	run := func(name string, fetched time.Time, hasRows bool) bool {
+		body := map[string][]byte{}
+		if hasRows {
+			body["probe|A"] = []byte(`[{"x":1}]`)
+		}
+		src := &fakeLoadSource{json: body, fetched: fetched}
+		loaded := false
+		spec := loadSpec{
+			key: "probe", table: "probe", partCol: "system", staleOK: true,
+			partitions: func() []string { return []string{"A"} },
+			load: func(_ context.Context, _ *json.Decoder, _ loadSink, _ string) error {
+				loaded = true
+				return nil
+			},
+		}
+		if err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec}); err != nil {
+			t.Fatalf("%s: runLoadSpecs: %v", name, err)
+		}
+		return loaded
+	}
+	// staleOK: a landing far past staleAfter must still load (304-served static data).
+	if !run("old", time.Now().Add(-200*time.Hour), true) {
+		t.Fatal("staleOK partition with old-but-present landing must load")
+	}
+	// staleOK still honors the empty guard: a zero fetched_at (empty partition,
+	// i.e. a failed landing) must not DELETE-and-reinsert nothing.
+	if run("empty", time.Time{}, false) {
+		t.Fatal("staleOK partition with empty landing must be skipped")
+	}
+}
+
 func TestLoaderRegistryKeysUnique(t *testing.T) {
 	seen := map[string]bool{}
 	for _, s := range loaderRegistry(nil) {

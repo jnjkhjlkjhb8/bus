@@ -60,6 +60,14 @@ class _RouteSheet extends StatelessWidget {
     required this.routeState,
     required this.reminders,
     required this.onReminderToggled,
+    required this.pickingStop,
+    required this.pinnedNextStopIndex,
+    required this.targetStopUid,
+    required this.leadStops,
+    required this.onPickStop,
+    required this.onLeadChanged,
+    required this.onConfirmPick,
+    required this.onSkipPick,
   });
 
   final TabController tabController;
@@ -77,6 +85,19 @@ class _RouteSheet extends StatelessWidget {
   final BusRouteState routeState;
   final Map<String, String> reminders;
   final void Function(String) onReminderToggled;
+
+  /// Pick-mode: a bus is pinned and the rider is choosing an alight stop.
+  final bool pickingStop;
+  /// Index of the pinned bus's next stop; stops before it are dimmed as passed.
+  final int? pinnedNextStopIndex;
+  /// The chosen alight stop, or null before one is tapped.
+  final String? targetStopUid;
+  /// 提前站數 lead (min 1).
+  final int leadStops;
+  final void Function(String uid) onPickStop;
+  final ValueChanged<int> onLeadChanged;
+  final VoidCallback onConfirmPick;
+  final VoidCallback onSkipPick;
 
   /// The stop this route is live-tracking (追蹤), or null. Only a trackOnly
   /// waiting session on this very subroute counts — navigation sessions and
@@ -157,6 +178,10 @@ class _RouteSheet extends StatelessWidget {
             direction: direction,
             controller: timelineController,
             flashStopUid: flashStopUid,
+            picking: pickingStop,
+            pinnedNextStopIndex: pinnedNextStopIndex,
+            targetUid: targetStopUid,
+            onPickStop: onPickStop,
           ),
         );
 
@@ -217,8 +242,13 @@ class _RouteSheet extends StatelessWidget {
         initialOffset: AppSheetSnap.peek,
         // Two detents by design: a route list is either a glance or a full
         // read, nothing between.
-        snapGrid: const SheetSnapGrid(
-          snaps: [AppSheetSnap.peek, AppSheetSnap.full],
+        // While picking an alight stop, a taller detent holds the pick bar
+        // above the timeline (peek is too short and would clip it); peek stays
+        // in the grid so the rider can still drag back down.
+        snapGrid: SheetSnapGrid(
+          snaps: pickingStop
+              ? const [AppSheetSnap.peek, _kPickSheetOffset, AppSheetSnap.full]
+              : const [AppSheetSnap.peek, AppSheetSnap.full],
         ),
         scrollConfiguration: const SheetScrollConfiguration(),
         decoration: MaterialSheetDecoration(
@@ -253,6 +283,17 @@ class _RouteSheet extends StatelessWidget {
                     ),
             ),
             const SizedBox(height: 12),
+            if (pickingStop)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: _PickBar(
+                  hasTarget: targetStopUid != null,
+                  leadStops: leadStops,
+                  onLeadChanged: onLeadChanged,
+                  onConfirm: onConfirmPick,
+                  onSkip: onSkipPick,
+                ),
+              ),
             Expanded(
               child: AnimatedBuilder(
                 animation: sheetAnimation,
@@ -300,6 +341,191 @@ class _RouteSheet extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Transient bar shown above the timeline while a bus is pinned. Prompts for an
+/// alight stop and, once one is picked, reveals the 提前站數 stepper and 完成.
+/// The 略過 control is always present to track the bus with no reminder.
+class _PickBar extends StatelessWidget {
+  const _PickBar({
+    required this.hasTarget,
+    required this.leadStops,
+    required this.onLeadChanged,
+    required this.onConfirm,
+    required this.onSkip,
+  });
+
+  final bool hasTarget;
+  final int leadStops;
+  final ValueChanged<int> onLeadChanged;
+  final VoidCallback onConfirm;
+  final VoidCallback onSkip;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final isLight = cs.brightness == Brightness.light;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: isLight ? cs.surface : cs.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: AppShadows.floating,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.touch_app_rounded,
+                size: 16,
+                color: cs.onSurfaceVariant,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  hasTarget ? '設定提前提醒' : '選你要下車的站',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: cs.onSurface,
+                  ),
+                ),
+              ),
+              Pressable(
+                onTap: onSkip,
+                semanticLabel: '略過',
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 2,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.close_rounded,
+                        size: 15,
+                        color: cs.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 3),
+                      Text(
+                        '略過',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (hasTarget) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Text(
+                  '提前',
+                  style: TextStyle(fontSize: 13, color: cs.onSurfaceVariant),
+                ),
+                const SizedBox(width: 6),
+                _StepButton(
+                  icon: Icons.remove_rounded,
+                  enabled: leadStops > 1,
+                  onTap: () => onLeadChanged(leadStops - 1),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Text(
+                    '$leadStops 站',
+                    style: AppTextStyles.memo.copyWith(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: cs.onSurface,
+                      fontFeatures: _tnum,
+                    ),
+                  ),
+                ),
+                _StepButton(
+                  icon: Icons.add_rounded,
+                  enabled: true,
+                  onTap: () => onLeadChanged(leadStops + 1),
+                ),
+                const Spacer(),
+                Pressable(
+                  onTap: onConfirm,
+                  semanticLabel: '完成',
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: cs.onSurface,
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Text(
+                      '完成',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: cs.surface,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// A square − / + control for the 提前站數 stepper; dims when disabled.
+class _StepButton extends StatelessWidget {
+  const _StepButton({
+    required this.icon,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Pressable(
+      enabled: enabled,
+      onTap: () {
+        unawaited(HapticService.instance.lightTap());
+        onTap();
+      },
+      semanticLabel: icon == Icons.add_rounded ? '增加' : '減少',
+      child: Container(
+        width: 30,
+        height: 30,
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(
+          icon,
+          size: 17,
+          color: enabled
+              ? cs.onSurface
+              : cs.onSurfaceVariant.withValues(alpha: 0.4),
         ),
       ),
     );

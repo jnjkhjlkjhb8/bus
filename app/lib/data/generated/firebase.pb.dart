@@ -555,6 +555,7 @@ class CreateArrivalReminderRequest extends $pb.GeneratedMessage {
     $core.String? direction,
     $core.int? leadMinutes,
     $fixnum.Int64? expiresAtUnix,
+    $core.String? plate,
   }) {
     final result = create();
     if (installId != null) result.installId = installId;
@@ -564,6 +565,7 @@ class CreateArrivalReminderRequest extends $pb.GeneratedMessage {
     if (direction != null) result.direction = direction;
     if (leadMinutes != null) result.leadMinutes = leadMinutes;
     if (expiresAtUnix != null) result.expiresAtUnix = expiresAtUnix;
+    if (plate != null) result.plate = plate;
     return result;
   }
 
@@ -586,6 +588,7 @@ class CreateArrivalReminderRequest extends $pb.GeneratedMessage {
     ..aOS(5, _omitFieldNames ? '' : 'direction')
     ..aI(6, _omitFieldNames ? '' : 'leadMinutes')
     ..aInt64(7, _omitFieldNames ? '' : 'expiresAtUnix')
+    ..aOS(8, _omitFieldNames ? '' : 'plate')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -672,6 +675,17 @@ class CreateArrivalReminderRequest extends $pb.GeneratedMessage {
   $core.bool hasExpiresAtUnix() => $_has(6);
   @$pb.TagNumber(7)
   void clearExpiresAtUnix() => $_clearField(7);
+
+  /// Non-empty pins the reminder to one vehicle: it fires only when this plate
+  /// is the bus arriving at stop_key. Empty keeps the legacy next-bus behaviour.
+  @$pb.TagNumber(8)
+  $core.String get plate => $_getSZ(7);
+  @$pb.TagNumber(8)
+  set plate($core.String value) => $_setString(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasPlate() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearPlate() => $_clearField(8);
 }
 
 class ArrivalReminder extends $pb.GeneratedMessage {
@@ -684,6 +698,7 @@ class ArrivalReminder extends $pb.GeneratedMessage {
     $core.String? direction,
     $core.int? leadMinutes,
     $fixnum.Int64? expiresAtUnix,
+    $core.String? plate,
   }) {
     final result = create();
     if (reminderId != null) result.reminderId = reminderId;
@@ -694,6 +709,7 @@ class ArrivalReminder extends $pb.GeneratedMessage {
     if (direction != null) result.direction = direction;
     if (leadMinutes != null) result.leadMinutes = leadMinutes;
     if (expiresAtUnix != null) result.expiresAtUnix = expiresAtUnix;
+    if (plate != null) result.plate = plate;
     return result;
   }
 
@@ -717,6 +733,7 @@ class ArrivalReminder extends $pb.GeneratedMessage {
     ..aOS(6, _omitFieldNames ? '' : 'direction')
     ..aI(7, _omitFieldNames ? '' : 'leadMinutes')
     ..aInt64(8, _omitFieldNames ? '' : 'expiresAtUnix')
+    ..aOS(9, _omitFieldNames ? '' : 'plate')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -809,6 +826,15 @@ class ArrivalReminder extends $pb.GeneratedMessage {
   $core.bool hasExpiresAtUnix() => $_has(7);
   @$pb.TagNumber(8)
   void clearExpiresAtUnix() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $core.String get plate => $_getSZ(8);
+  @$pb.TagNumber(9)
+  set plate($core.String value) => $_setString(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasPlate() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearPlate() => $_clearField(9);
 }
 
 class CancelArrivalReminderRequest extends $pb.GeneratedMessage {

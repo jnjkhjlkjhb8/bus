@@ -22,6 +22,8 @@ import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
 import 'package:wheres_the_car/features/bus/bus_vehicle_status.dart';
 import 'package:wheres_the_car/features/bus/widgets/bus_timeline_stops.dart';
+import 'package:wheres_the_car/features/bus/widgets/pinned_bus.dart';
+import 'package:wheres_the_car/features/bus/widgets/track_trigger_stop.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
@@ -54,6 +56,11 @@ const _kDefaultCamera = CameraPosition(
   target: LatLng(25.0416, 121.5501),
   zoom: 14,
 );
+
+// peek (0.25) only clears the handle + direction slider + timeline; the pick
+// bar inserts above the timeline and would clip it, so the sheet lifts to this
+// slightly taller detent while picking and drops back to peek afterwards.
+const _kPickSheetOffset = SheetOffset.proportionalToViewport(0.35);
 
 // Map overlays repaint on live ETA/vehicle churn; holding them in a notifier
 // keeps that repaint scoped to the GoogleMap layer instead of the whole screen.
@@ -92,6 +99,10 @@ class BusRouteScreen extends StatefulWidget {
 
 class _BusRouteScreenState extends State<BusRouteScreen>
     with TickerProviderStateMixin {
+  // Owned here (not created inside build's BlocProvider) so State methods can
+  // reach it directly. A BlocProvider in build() sits below this State element,
+  // so a context.read from here would fail the ancestor lookup.
+  late final BusRouteBloc _bloc;
   late final TabController _tabController;
   late final SheetController _sheetController;
   final _scrollController = ScrollController();
@@ -107,6 +118,18 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   /// [_flashTimer] after a few seconds.
   String? _flashStopUid;
   Timer? _flashTimer;
+
+  // "Pin a bus, pick your alight stop" state. [_pinnedPlate] is the selected
+  // vehicle (null = none); [_pickingStop] is true from selection until a stop
+  // is chosen (完成) or skipped (略過); [_pinnedNextStopIndex] snapshots the
+  // bus's next-stop index at pin time so the passed/downstream split stays
+  // stable while picking; [_targetStopUid] is the chosen alight stop;
+  // [_leadStops] is 提前站數 (default 2, min 1).
+  String? _pinnedPlate;
+  bool _pickingStop = false;
+  int? _pinnedNextStopIndex;
+  String? _targetStopUid;
+  int _leadStops = 2;
 
   final ValueNotifier<_MapLayer> _mapLayer = ValueNotifier(
     (markers: <Marker>{}, polylines: <Polyline>{}),
@@ -130,6 +153,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   @override
   void initState() {
     super.initState();
+    _bloc = BusRouteBloc(subRouteUid: widget.subRouteUid);
     _tabController = TabController(length: 2, vsync: this);
     _sheetController = SheetController();
     // 800ms reads as a bus catching up to its reported spot; a UI-chrome-speed
@@ -259,6 +283,10 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         statusLabel: status.label,
         statusColor: statusColor,
         gpsText: busGpsAge(v.gpsTimeUnix, now).text,
+        // ＋ while choosing the alight stop, ✓ once tracking is armed.
+        trackGlyph: _pinnedPlate == v.plate
+            ? (_pickingStop ? '＋' : '✓')
+            : null,
       );
 
       final target = LatLng(v.lat, v.lon);
@@ -303,6 +331,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     final vehicleMarkers = <Marker>{};
     _glides.forEach((plate, g) {
       final pos = _lerpLatLng(g.from, g.to, t);
+      // Once a bus is pinned, the others recede so the pinned one leads.
+      final dimmed = _pinnedPlate != null && plate != _pinnedPlate;
+      final alpha = dimmed ? 0.35 : 1.0;
       vehicleMarkers
         ..add(
           Marker(
@@ -310,7 +341,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
             position: pos,
             icon: g.icon,
             anchor: const Offset(0.5, 0.5),
+            alpha: alpha,
             zIndexInt: 1,
+            onTap: () => _togglePin(plate),
           ),
         )
         ..add(
@@ -318,6 +351,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
             markerId: MarkerId('bubble:$plate'),
             position: pos,
             icon: g.bubbleIcon,
+            alpha: alpha,
             zIndexInt: 2,
           ),
         );
@@ -403,6 +437,167 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     });
   }
 
+  /// Selects/deselects the bus marker [plate]. Selecting enters pick-mode
+  /// (＋, "selected, not yet tracking"); tapping the pinned bus again unpins and
+  /// cancels any armed tracking session.
+  void _togglePin(String plate) {
+    final session = context.read<JourneySessionBloc>();
+    if (_pinnedPlate == plate) {
+      session.add(const JourneyCancelled());
+      setState(() {
+        _pinnedPlate = null;
+        _pickingStop = false;
+        _pinnedNextStopIndex = null;
+        _targetStopUid = null;
+      });
+      _repaintPins();
+      _liftSheet(false);
+      return;
+    }
+    final s = _bloc.state;
+    unawaited(HapticService.instance.mediumTap());
+    setState(() {
+      _pinnedPlate = plate;
+      _pickingStop = true;
+      // Snapshot the bus's position so the passed/downstream split holds still
+      // while the rider picks, instead of shifting under each live frame.
+      _pinnedNextStopIndex = pinnedBusNextStopIndex(
+        etas: s.etaMap.values,
+        stopUidsInOrder: _stopUidsInOrder,
+        direction: s.direction,
+        plate: plate,
+      );
+      _targetStopUid = null;
+      _leadStops = 2;
+    });
+    _repaintPins();
+    _liftSheet(true);
+  }
+
+  /// Raises the sheet to [_kPickSheetOffset] while picking so the pick bar has
+  /// room above the timeline, and drops it back to peek when picking ends.
+  void _liftSheet(bool picking) => unawaited(
+    _sheetController.animateTo(picking ? _kPickSheetOffset : AppSheetSnap.peek),
+  );
+
+  // Pin state lives in [State], not the map signature, so a select/confirm
+  // repaints the bus bubbles (glyph + dim) by forcing [_syncMap] to rebuild.
+  void _repaintPins() {
+    _mapSig = '';
+    unawaited(_syncMap(_bloc.state));
+  }
+
+  void _onPickStop(String uid) {
+    unawaited(HapticService.instance.lightTap());
+    setState(() => _targetStopUid = uid);
+  }
+
+  /// The current direction's stops, or empty when the route isn't loaded.
+  List<BusStopModel> _currentStops(BusRouteState s) {
+    final route = s.route;
+    if (route == null) return const [];
+    return s.direction == 0 ? route.stopsGo : route.stopsReturn;
+  }
+
+  JourneyLeg _trackLeg({
+    required BusRouteViewModel route,
+    required List<BusStopModel> stops,
+    required int idx,
+    required int direction,
+  }) {
+    final routeName = route.routeName;
+    final headsign = direction == 0 ? route.headsignGo : route.headsignReturn;
+    return JourneyLeg(
+      kind: JourneyLegKind.bus,
+      routeLabel: headsign.isEmpty ? routeName : '$routeName 往$headsign',
+      boardStop: stops[idx].stopName,
+      alightStop: stops.last.stopName,
+      stopNames: const [],
+      identity: PlanIdentity(
+        routeType: 'bus',
+        routeKey: route.subRouteUid,
+        direction: '$direction',
+        departureStopKey: stops[idx].stopUid,
+        arrivalStopKey: '',
+        supported: false,
+      ),
+      leadingWalkMinutes: 0,
+      scheduledDeparture: null,
+      scheduledArrival: null,
+      boardLocation: PlanPoint(lat: stops[idx].lat, lng: stops[idx].lon),
+      stopLocations: const [],
+    );
+  }
+
+  /// 完成: start plate-tracked waiting on the picked alight stop and arm a
+  /// pinned reminder on the trigger stop (提前站數 before it).
+  void _confirmPick() {
+    final plate = _pinnedPlate;
+    final target = _targetStopUid;
+    if (plate == null || target == null) return;
+    final s = _bloc.state;
+    final route = s.route;
+    if (route == null) return;
+    final stops = _currentStops(s);
+    final idx = stops.indexWhere((st) => st.stopUid == target);
+    if (idx < 0) return;
+    context.read<JourneySessionBloc>().add(
+      JourneyStarted(
+        trackOnly: true,
+        plate: plate,
+        legs: [
+          _trackLeg(
+            route: route,
+            stops: stops,
+            idx: idx,
+            direction: s.direction,
+          ),
+        ],
+      ),
+    );
+    final trigger = resolveTriggerStopUid(_stopUidsInOrder, target, _leadStops);
+    _bloc.add(
+      BusRoutePinnedReminderArmed(stopUid: trigger, plate: plate),
+    );
+    unawaited(HapticService.instance.mediumTap());
+    setState(() => _pickingStop = false);
+    _repaintPins();
+    _liftSheet(false);
+  }
+
+  /// 略過: track the pinned bus toward its next stop with no reminder.
+  void _skipPick() {
+    final plate = _pinnedPlate;
+    if (plate == null) return;
+    final s = _bloc.state;
+    final route = s.route;
+    if (route == null) return;
+    final stops = _currentStops(s);
+    final nextIdx = firstAlightIndex(_pinnedNextStopIndex);
+    if (nextIdx >= stops.length) return;
+    context.read<JourneySessionBloc>().add(
+      JourneyStarted(
+        trackOnly: true,
+        plate: plate,
+        legs: [
+          _trackLeg(
+            route: route,
+            stops: stops,
+            idx: nextIdx,
+            direction: s.direction,
+          ),
+        ],
+      ),
+    );
+    unawaited(HapticService.instance.mediumTap());
+    setState(() {
+      _pickingStop = false;
+      _targetStopUid = null;
+    });
+    _repaintPins();
+    _liftSheet(false);
+  }
+
   @override
   void dispose() {
     _flashTimer?.cancel();
@@ -413,6 +608,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     _scrollController.dispose();
     _timelineController.dispose();
     _mapLayer.dispose();
+    unawaited(_bloc.close());
     super.dispose();
   }
 
@@ -425,8 +621,8 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       initialValue: 0,
     );
 
-    return BlocProvider(
-      create: (_) => BusRouteBloc(subRouteUid: widget.subRouteUid),
+    return BlocProvider<BusRouteBloc>.value(
+      value: _bloc,
       child: BlocConsumer<BusRouteBloc, BusRouteState>(
         // etaMap is deliberately excluded: live ETA frames must not rebuild the
         // static chrome (map, app bar, FAB, sheet skeleton). ETA-consuming
@@ -550,6 +746,15 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                       onReminderToggled: (uid) => context
                           .read<BusRouteBloc>()
                           .add(BusRouteReminderToggled(uid)),
+                      pickingStop: _pickingStop,
+                      pinnedNextStopIndex: _pinnedNextStopIndex,
+                      targetStopUid: _targetStopUid,
+                      leadStops: _leadStops,
+                      onPickStop: _onPickStop,
+                      onLeadChanged: (v) =>
+                          setState(() => _leadStops = clampLeadStops(v)),
+                      onConfirmPick: _confirmPick,
+                      onSkipPick: _skipPick,
                     ),
                   ),
                 ),

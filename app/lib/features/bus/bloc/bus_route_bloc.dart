@@ -32,6 +32,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     on<BusRouteEtaUpdated>(_onEtaUpdated);
     on<BusRouteDetailsUpdated>(_onDetailsUpdated);
     on<BusRouteReminderToggled>(_onReminderToggled);
+    on<BusRoutePinnedReminderArmed>(_onPinnedReminderArmed);
     on<BusRouteStreamFailed>(_onStreamFailed);
     on<BusRouteStreamRecovered>(_onStreamRecovered);
     if (autoStart) add(const BusRouteStarted());
@@ -193,6 +194,67 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
     direction: '${state.direction}',
     armAt: DateTime.now().add(_reminderTtl),
   );
+
+  // A pinned reminder fires one stop before the alight target, so it leads by
+  // the shortest usable window rather than the bell path's 3-minute head start.
+  static const _pinnedLeadMinutes = 1;
+
+  // Mirrors the arm half of [ReminderToggle] but carries the pinned plate and a
+  // shorter lead — params the shared toggle's create closure can't pass without
+  // a wire change that would ripple into rail. Persistence and state stay in
+  // lockstep with the bell path (same reminders map, same RemindersRepository).
+  Future<void> _onPinnedReminderArmed(
+    BusRoutePinnedReminderArmed event,
+    Emitter<BusRouteState> emit,
+  ) async {
+    // Already armed on this stop (bell or a prior pin): leave it be.
+    if (state.reminders.containsKey(event.stopUid)) return;
+    final expiresAt = DateTime.now().add(_reminderTtl);
+    emit(
+      state.copyWith(
+        reminders: {...state.reminders, event.stopUid: 'pending'},
+      ),
+    );
+    try {
+      final receipt = await _firebase.createArrivalReminder(
+        routeType: 'bus',
+        routeKey: subRouteUid,
+        stopKey: event.stopUid,
+        direction: '${state.direction}',
+        leadMinutes: _pinnedLeadMinutes,
+        expiresAt: expiresAt,
+        plate: event.plate,
+      );
+      if (emit.isDone) return;
+      emit(
+        state.copyWith(
+          reminders: {...state.reminders, event.stopUid: receipt.reminderId},
+        ),
+      );
+      await _reminders.put(
+        subRouteUid,
+        event.stopUid,
+        receipt.reminderId,
+        expiresAt,
+      );
+      unawaited(
+        FirebaseTelemetry.instance.arrivalReminderChanged(
+          routeType: 'bus',
+          routeKey: subRouteUid,
+          enabled: true,
+          leadMinutes: _pinnedLeadMinutes,
+        ),
+      );
+    } on Object catch (e, s) {
+      CrashReporter.record(e, s);
+      if (emit.isDone) return;
+      emit(
+        state.copyWith(
+          reminders: Map.of(state.reminders)..remove(event.stopUid),
+        ),
+      );
+    }
+  }
 
   void _onStreamFailed(
     BusRouteStreamFailed event,

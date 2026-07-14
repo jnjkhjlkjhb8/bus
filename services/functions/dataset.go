@@ -49,6 +49,7 @@ type datasetSpec struct {
 	loadKey    string
 	foldedInto string
 	landOnly   bool
+	staleOK bool
 }
 
 // fetched reports whether the ingestor issues requests for this dataset.
@@ -171,7 +172,7 @@ func datasetRegistry() []datasetSpec {
 			name: func(p string) string { return "metro_station_" + p }, loadKey: "mrt_station"},
 		{rawTable: "metro_schedule", partCol: "system", partitions: func() []string { return ingestMetroFirstLast },
 			family: familyMetroSystem, apiSeg: "FirstLastTimetable",
-			name: func(p string) string { return "metro_fl_" + p }, loadKey: "mrt_firstlast"},
+			name: func(p string) string { return "metro_fl_" + p }, loadKey: "mrt_firstlast", staleOK: true},
 		{rawTable: "metro_odfare", partCol: "system", partitions: func() []string { return ingestMetroODFare },
 			family: familyMetroSystem, apiSeg: "ODFare",
 			name: func(p string) string { return "metro_od_" + p }, loadKey: "mrt_odfare"},

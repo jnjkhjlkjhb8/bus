@@ -284,11 +284,13 @@ class MapMarkers {
     required String statusLabel,
     required Color statusColor,
     required String gpsText,
+    String? trackGlyph,
     double clearance = 26,
   }) {
     final key =
         'bubble:$plate:$statusLabel:$gpsText:${fill.toARGB32()}:'
-        '${inkSecondary.toARGB32()}:${statusColor.toARGB32()}';
+        '${inkSecondary.toARGB32()}:${statusColor.toARGB32()}:'
+        '${trackGlyph ?? ''}';
     return _memo(key, () async {
       final statusPainter = TextPainter(
         text: TextSpan(
@@ -308,6 +310,16 @@ class MapMarkers {
           children: [
             TextSpan(text: plate, style: TextStyle(letterSpacing: 0.3 * _dpr)),
             TextSpan(text: ' · $gpsText'),
+            // Pin state (＋ selecting / ✓ tracking) sits to the right of the
+            // plate line as a bare ink glyph — no chip, matching the mock.
+            if (trackGlyph != null)
+              TextSpan(
+                text: '  $trackGlyph',
+                style: TextStyle(
+                  fontSize: 13 * _dpr,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
           ],
           style: TextStyle(
             color: inkSecondary,

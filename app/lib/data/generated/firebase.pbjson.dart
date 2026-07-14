@@ -163,6 +163,7 @@ const CreateArrivalReminderRequest$json = {
     {'1': 'direction', '3': 5, '4': 1, '5': 9, '10': 'direction'},
     {'1': 'lead_minutes', '3': 6, '4': 1, '5': 5, '10': 'leadMinutes'},
     {'1': 'expires_at_unix', '3': 7, '4': 1, '5': 3, '10': 'expiresAtUnix'},
+    {'1': 'plate', '3': 8, '4': 1, '5': 9, '10': 'plate'},
   ],
 };
 
@@ -172,7 +173,7 @@ final $typed_data.Uint8List createArrivalReminderRequestDescriptor = $convert.ba
     'RhbGxJZBIdCgpyb3V0ZV90eXBlGAIgASgJUglyb3V0ZVR5cGUSGwoJcm91dGVfa2V5GAMgASgJ'
     'Ughyb3V0ZUtleRIZCghzdG9wX2tleRgEIAEoCVIHc3RvcEtleRIcCglkaXJlY3Rpb24YBSABKA'
     'lSCWRpcmVjdGlvbhIhCgxsZWFkX21pbnV0ZXMYBiABKAVSC2xlYWRNaW51dGVzEiYKD2V4cGly'
-    'ZXNfYXRfdW5peBgHIAEoA1INZXhwaXJlc0F0VW5peA==');
+    'ZXNfYXRfdW5peBgHIAEoA1INZXhwaXJlc0F0VW5peBIUCgVwbGF0ZRgIIAEoCVIFcGxhdGU=');
 
 @$core.Deprecated('Use arrivalReminderDescriptor instead')
 const ArrivalReminder$json = {
@@ -186,6 +187,7 @@ const ArrivalReminder$json = {
     {'1': 'direction', '3': 6, '4': 1, '5': 9, '10': 'direction'},
     {'1': 'lead_minutes', '3': 7, '4': 1, '5': 5, '10': 'leadMinutes'},
     {'1': 'expires_at_unix', '3': 8, '4': 1, '5': 3, '10': 'expiresAtUnix'},
+    {'1': 'plate', '3': 9, '4': 1, '5': 9, '10': 'plate'},
   ],
 };
 
@@ -195,7 +197,8 @@ final $typed_data.Uint8List arrivalReminderDescriptor = $convert.base64Decode(
     '5zdGFsbF9pZBgCIAEoCVIJaW5zdGFsbElkEh0KCnJvdXRlX3R5cGUYAyABKAlSCXJvdXRlVHlw'
     'ZRIbCglyb3V0ZV9rZXkYBCABKAlSCHJvdXRlS2V5EhkKCHN0b3Bfa2V5GAUgASgJUgdzdG9wS2'
     'V5EhwKCWRpcmVjdGlvbhgGIAEoCVIJZGlyZWN0aW9uEiEKDGxlYWRfbWludXRlcxgHIAEoBVIL'
-    'bGVhZE1pbnV0ZXMSJgoPZXhwaXJlc19hdF91bml4GAggASgDUg1leHBpcmVzQXRVbml4');
+    'bGVhZE1pbnV0ZXMSJgoPZXhwaXJlc19hdF91bml4GAggASgDUg1leHBpcmVzQXRVbml4EhQKBX'
+    'BsYXRlGAkgASgJUgVwbGF0ZQ==');
 
 @$core.Deprecated('Use cancelArrivalReminderRequestDescriptor instead')
 const CancelArrivalReminderRequest$json = {

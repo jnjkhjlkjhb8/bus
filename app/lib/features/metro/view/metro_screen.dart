@@ -150,11 +150,20 @@ class _MetroScreenState extends State<MetroScreen> {
     return {
       for (final s in all)
         if (s.id != _selected!.id)
-          if (matrix[s.id] case final info?)
+          if (_journeyFor(matrix, s.id) case final info?)
             s.id: _mode == _MapMode.time
                 ? (info.travelTimeMin > 0 ? '${info.travelTimeMin}' : '—')
-                : '\$${info.fareNt}',
+                : '${info.fareNt}',
     };
+  }
+
+  /// Interchange ids combine both line codes (e.g. `'BL15_BR10'`); the matrix
+  /// is keyed by single TDX codes, so match on whichever component is present.
+  JourneyInfo? _journeyFor(Map<String, JourneyInfo> matrix, String id) {
+    for (final code in id.split('_')) {
+      if (matrix[code] case final info?) return info;
+    }
+    return null;
   }
 
   Widget _buildBottomSheetWidget(BuildContext context, ColorScheme cs) {

@@ -40,11 +40,18 @@ class MrtRepository {
   }
 
   /// Fare + travel-time matrix from [stationId], keyed by destination id.
+  ///
+  /// Interchange stations carry a combined map id (e.g. `'BL12_R10'`), but the
+  /// matrix is keyed by single TDX codes, so the origin is expanded to every
+  /// component code — both represent the same physical station, so their fares
+  /// coincide and later rows harmlessly overwrite earlier ones.
   Future<Map<String, JourneyInfo>> journeyMatrix(String stationId) async {
+    final ids = stationId.split('_');
+    final placeholders = List.filled(ids.length, '?').join(',');
     final rows = await _db.getAll(
       'SELECT to_station_id, fare_nt, travel_time_min '
-      'FROM mrt_journey_matrix WHERE from_station_id = ?',
-      [stationId],
+      'FROM mrt_journey_matrix WHERE from_station_id IN ($placeholders)',
+      ids,
     );
     return {
       for (final row in rows)

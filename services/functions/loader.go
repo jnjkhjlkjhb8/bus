@@ -35,6 +35,7 @@ type loadSpec struct {
 	partitions func() []string
 	load       func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error
 	report     []qualityTarget
+	staleOK bool
 }
 
 // qualityTarget describes one env-schema table's post-load quality probe: the
@@ -97,7 +98,7 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 				log.Infof("[LOAD] action=read event=error dataset=%s partition=%s error=%v", spec.key, part, err)
 				continue
 			}
-			if isStale(fetchedAt) {
+			if fetchedAt.IsZero() || (!spec.staleOK && isStale(fetchedAt)) {
 				log.Infof("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s reason=%v", spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale)
 				continue
 			}
@@ -329,6 +330,7 @@ func loaderRegistry(src loadSource) []loadSpec {
 			partitions: d.loadPartitions,
 			load:       b.load,
 			report:     b.report,
+			staleOK:    d.staleOK,
 		})
 	}
 	return specs

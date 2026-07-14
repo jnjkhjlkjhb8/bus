@@ -10,6 +10,10 @@ class _HorizontalRouteTimeline extends StatelessWidget {
     required this.direction,
     required this.controller,
     required this.flashStopUid,
+    this.picking = false,
+    this.pinnedNextStopIndex,
+    this.targetUid,
+    this.onPickStop,
   });
 
   final List<TimelineStop> stops;
@@ -18,6 +22,13 @@ class _HorizontalRouteTimeline extends StatelessWidget {
   final ScrollController controller;
   /// The stop briefly highlighted after its map marker was tapped.
   final String? flashStopUid;
+
+  /// Pick-mode: stops the pinned bus hasn't reached are tappable alight
+  /// targets; passed stops dim and ignore taps.
+  final bool picking;
+  final int? pinnedNextStopIndex;
+  final String? targetUid;
+  final void Function(String uid)? onPickStop;
 
   _BusVehicle? _vehicleBetween(String currentUid, String? nextUid) {
     if (nextUid == null) return null;
@@ -41,6 +52,11 @@ class _HorizontalRouteTimeline extends StatelessWidget {
           final stop = stops[i];
           // A marker-tap flash reads the same as the live/active stop.
           final isEmphasised = stop.active || stop.uid == flashStopUid;
+
+          // Pick-mode: the pinned bus's next stop onward are tappable alight
+          // targets; the chosen one carries an ink ring, and passed stops dim.
+          final isTarget = picking && stop.uid == targetUid;
+          final isPassed = picking && !isAlightTarget(i, pinnedNextStopIndex);
           final prevStop = i > 0 ? stops[i - 1] : null;
           final nextStop = i < stops.length - 1 ? stops[i + 1] : null;
           final isFirst = i == 0;
@@ -69,8 +85,9 @@ class _HorizontalRouteTimeline extends StatelessWidget {
           } else if (isEmphasised) {
             dotColor = cs.primary;
           }
+          if (isTarget) dotColor = cs.onSurface;
 
-          return SizedBox(
+          final cell = SizedBox(
             width: 120,
             child: Stack(
               children: [
@@ -98,6 +115,7 @@ class _HorizontalRouteTimeline extends StatelessWidget {
                           stop.active && (nextStop != null && nextStop.active),
                       stopState: stop.state,
                       isActiveStop: stop.active,
+                      isTarget: isTarget,
                     ),
                   ),
                 ),
@@ -201,6 +219,19 @@ class _HorizontalRouteTimeline extends StatelessWidget {
               ],
             ),
           );
+
+          if (!picking) return cell;
+          if (isPassed) {
+            return Opacity(
+              opacity: 0.35,
+              child: IgnorePointer(child: cell),
+            );
+          }
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => onPickStop?.call(stop.uid),
+            child: cell,
+          );
         },
       ),
     );
@@ -280,6 +311,7 @@ class _HorizontalTimelinePainter extends CustomPainter {
     required this.isRightActive,
     required this.stopState,
     required this.isActiveStop,
+    this.isTarget = false,
   });
 
   final bool isFirst;
@@ -300,6 +332,10 @@ class _HorizontalTimelinePainter extends CustomPainter {
   final bool isRightActive;
   final TimelineStopState stopState;
   final bool isActiveStop;
+
+  /// Whether this stop is the chosen alight target in pick-mode; draws an ink
+  /// ring around the dot.
+  final bool isTarget;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -361,6 +397,18 @@ class _HorizontalTimelinePainter extends CustomPainter {
         borderPaint..color = dotColor,
       );
 
+    // Pick-mode: an ink ring marks the chosen alight target.
+    if (isTarget) {
+      canvas.drawCircle(
+        Offset(cx, cy),
+        12,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.5
+          ..color = dotColor,
+      );
+    }
+
     if (vehicleProgress != null && !isLast) {
       final vx = cx + (size.width - cx) * vehicleProgress!;
       // Vehicle body is drawn as a sprite widget in the Stack above;
@@ -404,7 +452,8 @@ class _HorizontalTimelinePainter extends CustomPainter {
       old.isLeftActive != isLeftActive ||
       old.isRightActive != isRightActive ||
       old.stopState != stopState ||
-      old.isActiveStop != isActiveStop;
+      old.isActiveStop != isActiveStop ||
+      old.isTarget != isTarget;
 }
 
 /// The 即將進站 radar cue: a stroked ring expands out from the stop dot and

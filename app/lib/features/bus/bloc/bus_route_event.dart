@@ -42,6 +42,21 @@ class BusRouteReminderToggled extends BusRouteEvent {
   List<Object?> get props => [stopUid];
 }
 
+/// Arms a pinned arrival reminder on [stopUid] (the trigger stop resolved from
+/// the picked alight stop + 提前站數) carrying the pinned vehicle's [plate].
+/// Distinct from [BusRouteReminderToggled] because it always arms (never
+/// toggles off), fires one stop-ahead, and matches a single vehicle.
+class BusRoutePinnedReminderArmed extends BusRouteEvent {
+  const BusRoutePinnedReminderArmed({
+    required this.stopUid,
+    required this.plate,
+  });
+  final String stopUid;
+  final String plate;
+  @override
+  List<Object?> get props => [stopUid, plate];
+}
+
 class BusRouteStreamFailed extends BusRouteEvent {
   const BusRouteStreamFailed(this.error);
 
