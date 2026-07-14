@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -19,17 +21,79 @@ import (
 // It is the loadSource seam's in-memory adapter for unit tests.
 type fakeLoadSource struct {
 	json    map[string][]byte // key: table + "|" + partVal
+	errs    map[string]error
 	fetched time.Time
 	calls   []string
 }
 
 func (f *fakeLoadSource) datasetJSON(_ context.Context, table, _, partVal string) ([]byte, time.Time, error) {
 	f.calls = append(f.calls, table+"|"+partVal)
+	if err := f.errs[table+"|"+partVal]; err != nil {
+		return nil, time.Time{}, err
+	}
 	b, ok := f.json[table+"|"+partVal]
 	if !ok {
 		return []byte("[]"), f.fetched, nil
 	}
 	return b, f.fetched, nil
+}
+
+func TestRunLoadSpecsReturnsJoinedPartitionErrorsAndContinues(t *testing.T) {
+	readErr := errors.New("partition read failed")
+	transformErr := errors.New("partition transform failed")
+	src := &fakeLoadSource{
+		json: map[string][]byte{
+			"probe|B": []byte(`[{"x":2}]`),
+			"probe|C": []byte(`[{"x":3}]`),
+		},
+		errs:    map[string]error{"probe|A": readErr},
+		fetched: time.Now(),
+	}
+	var loaded []string
+	spec := loadSpec{
+		key: "probe", table: "probe", partCol: "city",
+		partitions: func() []string { return []string{"A", "B", "C"} },
+		load: func(_ context.Context, _ *json.Decoder, _ loadSink, part string) error {
+			loaded = append(loaded, part)
+			if part == "B" {
+				return transformErr
+			}
+			return nil
+		},
+	}
+
+	err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec})
+	if !errors.Is(err, readErr) || !errors.Is(err, transformErr) {
+		t.Fatalf("runLoadSpecs error = %v, want joined read and transform errors", err)
+	}
+	if got, want := src.calls, []string{"probe|A", "probe|B", "probe|C"}; !slices.Equal(got, want) {
+		t.Fatalf("dataset calls = %v, want %v", got, want)
+	}
+	if got, want := loaded, []string{"B", "C"}; !slices.Equal(got, want) {
+		t.Fatalf("loaded partitions = %v, want %v", got, want)
+	}
+}
+
+func TestConfiguredInvalidRawDatabaseURLFailsClosed(t *testing.T) {
+	t.Setenv("RAW_DATABASE_URL", "://invalid")
+	pool, cleanup, err := rawSourcePool(context.Background(), nil)
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatalf("rawSourcePool returned pool %v and nil error for configured invalid URL", pool)
+	}
+}
+
+func TestConfiguredUnreachableRawDatabaseURLFailsClosed(t *testing.T) {
+	t.Setenv("RAW_DATABASE_URL", "postgres://test:test@127.0.0.1:1/test?connect_timeout=1")
+	pool, cleanup, err := rawSourcePool(context.Background(), nil)
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatalf("rawSourcePool returned pool %v and nil error for unreachable configured database", pool)
+	}
 }
 
 func TestStalenessCheckSkips(t *testing.T) {
@@ -126,8 +190,8 @@ func TestRunLoadSkipsStalePartition(t *testing.T) {
 			return nil
 		},
 	}
-	if err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec}); err != nil {
-		t.Fatalf("runLoadSpecs: %v", err)
+	if err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec}); !errors.Is(err, errLoadStale) {
+		t.Fatalf("runLoadSpecs error = %v, want errLoadStale", err)
 	}
 	if loaded {
 		t.Fatal("stale partition must be skipped, load ran anyway")
@@ -150,8 +214,12 @@ func TestRunLoadStaleOKLoadsOldButSkipsEmpty(t *testing.T) {
 				return nil
 			},
 		}
-		if err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec}); err != nil {
+		err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec})
+		if hasRows && err != nil {
 			t.Fatalf("%s: runLoadSpecs: %v", name, err)
+		}
+		if !hasRows && !errors.Is(err, errLoadStale) {
+			t.Fatalf("%s: runLoadSpecs error = %v, want errLoadStale", name, err)
 		}
 		return loaded
 	}

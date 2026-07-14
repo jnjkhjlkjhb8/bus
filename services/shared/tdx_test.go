@@ -5,8 +5,10 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +24,69 @@ type memTDXStore struct {
 	dels   [][]string
 	setErr error
 	getErr map[string]error
+}
+
+func TestGetIntoStreamsWithoutFullBodyBuffer(t *testing.T) {
+	const payload = `[{"id":1},{"id":2}]`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Last-Modified", "MARKER-NEW")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer srv.Close()
+
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+	var got string
+	var spoolName string
+	modified, err := c.GetInto(context.Background(), "/x", "thing", func(body io.ReadSeeker) error {
+		spool, ok := body.(*os.File)
+		if !ok {
+			t.Fatalf("commit body type = %T, want disk-backed *os.File", body)
+		}
+		spoolName = spool.Name()
+		b, err := io.ReadAll(body)
+		if err != nil {
+			return err
+		}
+		got = string(b)
+		_, err = body.Seek(0, io.SeekStart)
+		return err
+	})
+	if err != nil || !modified {
+		t.Fatalf("GetInto modified=%v err=%v", modified, err)
+	}
+	if got != payload {
+		t.Fatalf("spooled payload = %q, want %q", got, payload)
+	}
+	if _, err := os.Stat(spoolName); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary spool still exists at %q: %v", spoolName, err)
+	}
+}
+
+func TestGetIntoHonorsCanceledContext(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Last-Modified", "MARKER-NEW")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+	defer srv.Close()
+
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	modified, err := c.GetInto(ctx, "/x", "thing", func(io.ReadSeeker) error {
+		return errors.New("commit unexpectedly called")
+	})
+	if modified || !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetInto canceled result = modified %v, error %v", modified, err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("canceled GetInto reached upstream %d times", hits.Load())
+	}
 }
 
 func newMemTDXStore() *memTDXStore { return &memTDXStore{data: map[string]string{}} }
@@ -443,7 +508,7 @@ func TestMarkerReadErrorPreventsRequest(t *testing.T) {
 			return err
 		}},
 		{name: "GetInto", call: func(c *TDXClient) error {
-			_, err := c.GetInto("/x", "thing", func([]byte) error { return nil })
+			_, err := c.GetInto(context.Background(), "/x", "thing", func(io.ReadSeeker) error { return nil })
 			return err
 		}},
 	} {
@@ -486,7 +551,7 @@ func TestSuccessWithoutLastModifiedFailsClosed(t *testing.T) {
 		}},
 		{name: "GetInto", call: func(c *TDXClient) error {
 			committed := false
-			_, err := c.GetInto("/x", "thing", func([]byte) error {
+			_, err := c.GetInto(context.Background(), "/x", "thing", func(io.ReadSeeker) error {
 				committed = true
 				return nil
 			})
@@ -747,7 +812,7 @@ func TestGetIntoCommitsBeforeMarker(t *testing.T) {
 	failStore := newMemTDXStore()
 	failStore.data[TDXTokenKey] = "tok"
 	fc := NewTDXClient(TDXConfig{Store: failStore, IMSKey: legacyIMSKey, BaseURL: srv.URL})
-	modified, err := fc.GetInto("/x", "thing", func([]byte) error { return commitErr })
+	modified, err := fc.GetInto(context.Background(), "/x", "thing", func(io.ReadSeeker) error { return commitErr })
 	if !errors.Is(err, commitErr) {
 		t.Fatalf("GetInto returned err %v, want commitErr", err)
 	}
@@ -763,7 +828,11 @@ func TestGetIntoCommitsBeforeMarker(t *testing.T) {
 	okStore.data[TDXTokenKey] = "tok"
 	oc := NewTDXClient(TDXConfig{Store: okStore, IMSKey: legacyIMSKey, BaseURL: srv.URL})
 	var seen string
-	modified, err = oc.GetInto("/x", "thing", func(b []byte) error { seen = string(b); return nil })
+	modified, err = oc.GetInto(context.Background(), "/x", "thing", func(body io.ReadSeeker) error {
+		b, readErr := io.ReadAll(body)
+		seen = string(b)
+		return readErr
+	})
 	if err != nil || !modified {
 		t.Fatalf("GetInto ok path: modified=%v err=%v", modified, err)
 	}

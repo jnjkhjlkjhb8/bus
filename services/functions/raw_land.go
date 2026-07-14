@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -247,16 +248,30 @@ SELECT r.* FROM jsonb_array_elements($2::jsonb) elem,
 // the caller must NOT advance the Last-Modified / If-Modified-Since cache unless
 // the dump succeeds, otherwise a later 304 would leave raw_tdx permanently stale.
 func dumpRawTDX(ctx context.Context, table, partCol, partVal string, body []byte) error {
+	if len(body) == 0 {
+		body = []byte("[]")
+	}
+	return dumpRawTDXReader(ctx, table, partCol, partVal, bytes.NewReader(body))
+}
+
+// dumpRawTDXReader is the streaming landing entrypoint used by the ingestor.
+// body must be seekable because each transient transaction retry consumes it;
+// the reader is rewound before every attempt instead of retaining a second full
+// copy of the payload in memory.
+func dumpRawTDXReader(ctx context.Context, table, partCol, partVal string, body io.ReadSeeker) error {
 	if ingestDB == nil {
 		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
 	}
 	if err := validateRawTarget(table, partCol); err != nil {
 		return err
 	}
-	if len(body) == 0 {
-		body = []byte("[]")
+	if body == nil {
+		return fmt.Errorf("%w: response body is nil", errRawDump)
 	}
 	return obs.Retry(ctx, 3, 2*time.Second, func() error {
+		if _, err := body.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("%w: rewind response: %w", errRawDump, err)
+		}
 		return obs.Transient(landRawTDX(ctx, table, partCol, partVal, body))
 	})
 }
@@ -266,7 +281,7 @@ func dumpRawTDX(ctx context.Context, table, partCol, partVal string, body []byte
 // server statement_timeout, and TCP keepalive is too slow to notice). On timeout
 // pgx cancels the query; dumpRawTDX retries, and if all attempts fail the caller
 // leaves the IMS cache un-advanced so this partition refetches next run.
-func landRawTDX(ctx context.Context, table, partCol, partVal string, body []byte) error {
+func landRawTDX(ctx context.Context, table, partCol, partVal string, body io.Reader) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
@@ -330,8 +345,8 @@ const rawChunkBytes = 4 << 20
 // its own single-element chunk. An empty array issues one 0-row insert,
 // matching the previous single-statement behavior; a non-array payload is an
 // error, as it was under jsonb_array_elements.
-func insertRawChunks(ctx context.Context, exec func(context.Context, string, ...any) (int64, error), table, inject string, body []byte) (int64, error) {
-	dec := json.NewDecoder(bytes.NewReader(body))
+func insertRawChunks(ctx context.Context, exec func(context.Context, string, ...any) (int64, error), table, inject string, body io.Reader) (int64, error) {
+	dec := json.NewDecoder(body)
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
 		return 0, fmt.Errorf("payload is not a JSON array (token %v): %v", tok, err)
 	}

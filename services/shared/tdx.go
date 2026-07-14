@@ -486,19 +486,22 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 	}, nil
 }
 
-// GetInto is the buffered conditional GET for callers that must durably handle
-// the whole body before the If-Modified-Since marker advances (the raw_tdx
-// landing). On fresh data it reads the entire body, calls commit, and caches the
-// new Last-Modified only if commit succeeds — so a failed commit refetches next
-// run instead of being masked by a later 304. modified reports whether fresh data
-// was present; a commit error is returned verbatim (its own error identity is
-// preserved for the caller's errors.Is checks) and leaves the marker unadvanced.
-func (c *TDXClient) GetInto(url, name string, commit func(body []byte) error) (modified bool, err error) {
+// GetInto is the disk-spooled conditional GET for callers that must durably
+// handle the whole body before the If-Modified-Since marker advances (the
+// raw_tdx landing). Fresh response bytes are streamed into a temporary file so
+// large static datasets do not require an equally large heap allocation. The
+// file is rewound before commit and remains owned by GetInto; commit may seek it
+// for transaction retries but must not close it. The marker advances only after
+// commit succeeds, so a failed durable write refetches on the next run.
+func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(body io.ReadSeeker) error) (modified bool, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	marker, err := c.since(name)
 	if err != nil {
 		return false, err
 	}
-	resp, err := c.get(context.Background(), url, marker)
+	resp, err := c.get(ctx, url, marker)
 	if err != nil {
 		return false, err
 	}
@@ -524,15 +527,41 @@ func (c *TDXClient) GetInto(url, name string, commit func(body []byte) error) (m
 	if err != nil {
 		return false, err
 	}
-	body, rerr := io.ReadAll(responseBody)
-	if cerr := responseBody.Close(); rerr != nil || cerr != nil {
-		return false, errors.Join(rerr, cerr)
+	spool, err := os.CreateTemp("", "tdx-response-*.json")
+	if err != nil {
+		return false, errors.Join(fmt.Errorf("create TDX response spool: %w", err), responseBody.Close())
+	}
+	spoolName := spool.Name()
+	spoolOpen := true
+	spoolPresent := true
+	defer func() {
+		if spoolOpen {
+			err = errors.Join(err, spool.Close())
+		}
+		if spoolPresent {
+			err = errors.Join(err, os.Remove(spoolName))
+		}
+	}()
+	_, copyErr := io.Copy(spool, responseBody)
+	if closeErr := responseBody.Close(); copyErr != nil || closeErr != nil {
+		return false, errors.Join(copyErr, closeErr)
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return false, fmt.Errorf("rewind TDX response spool: %w", err)
 	}
 	if commit != nil {
-		if cerr := commit(body); cerr != nil {
+		if cerr := commit(spool); cerr != nil {
 			return true, cerr
 		}
 	}
+	if closeErr := spool.Close(); closeErr != nil {
+		return true, fmt.Errorf("close TDX response spool: %w", closeErr)
+	}
+	spoolOpen = false
+	if removeErr := os.Remove(spoolName); removeErr != nil {
+		return true, fmt.Errorf("remove TDX response spool: %w", removeErr)
+	}
+	spoolPresent = false
 	return true, c.cacheIMS(name, responseMarker)
 }
 

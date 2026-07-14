@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 )
+
+type readerOnly struct{ io.Reader }
 
 // chunkRecorder captures every chunk passed to insertRawChunks' exec and
 // reports each element count as the statement's affected rows.
@@ -29,7 +33,7 @@ func TestInsertRawChunksSplitsLargePayload(t *testing.T) {
 	body := "[" + strings.Repeat(elem+",", n-1) + elem + "]"
 
 	var chunks [][]json.RawMessage
-	rows, err := insertRawChunks(context.Background(), chunkRecorder(t, &chunks), "bus_route", "{}", []byte(body))
+	rows, err := insertRawChunks(context.Background(), chunkRecorder(t, &chunks), "bus_route", "{}", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +62,7 @@ func TestInsertRawChunksSplitsLargePayload(t *testing.T) {
 
 func TestInsertRawChunksEmptyArray(t *testing.T) {
 	var chunks [][]json.RawMessage
-	rows, err := insertRawChunks(context.Background(), chunkRecorder(t, &chunks), "bus_route", "{}", []byte("[]"))
+	rows, err := insertRawChunks(context.Background(), chunkRecorder(t, &chunks), "bus_route", "{}", strings.NewReader("[]"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +72,19 @@ func TestInsertRawChunksEmptyArray(t *testing.T) {
 }
 
 func TestInsertRawChunksRejectsNonArray(t *testing.T) {
-	if _, err := insertRawChunks(context.Background(), chunkRecorder(t, new([][]json.RawMessage)), "bus_route", "{}", []byte(`{"a":1}`)); err == nil {
+	if _, err := insertRawChunks(context.Background(), chunkRecorder(t, new([][]json.RawMessage)), "bus_route", "{}", strings.NewReader(`{"a":1}`)); err == nil {
 		t.Fatal("non-array payload must error")
+	}
+}
+
+func TestInsertRawChunksConsumesReader(t *testing.T) {
+	var chunks [][]json.RawMessage
+	body := readerOnly{Reader: bytes.NewBufferString(`[{"RouteUID":"R1"}]`)}
+	rows, err := insertRawChunks(context.Background(), chunkRecorder(t, &chunks), "bus_route", "{}", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || len(chunks) != 1 || len(chunks[0]) != 1 {
+		t.Fatalf("rows=%d chunks=%v, want one streamed row", rows, chunks)
 	}
 }

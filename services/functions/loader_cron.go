@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"time"
 
@@ -18,33 +19,34 @@ import (
 // pinned on this pool: rawTDXSource reads raw_tdx.<table> schema-qualified, so a
 // search_path would have no effect on it and pinning the sink schema here would
 // be misleading. When RAW_DATABASE_URL is unset it returns db unchanged, so the
-// single-cluster deployment keeps reading and writing through one pool (zero
-// behavior change). The returned pool is process-lifetime, like db.
-func rawSourcePool(db *pgxpool.Pool) *pgxpool.Pool {
+// single-cluster deployment keeps reading and writing through one pool. A
+// configured URL is strict: parse/connect/ping failures are returned instead of
+// silently targeting the sink database. The returned cleanup owns only a
+// dedicated raw pool; the caller owns db.
+func rawSourcePool(ctx context.Context, db *pgxpool.Pool) (*pgxpool.Pool, func(), error) {
 	dsn := os.Getenv("RAW_DATABASE_URL")
 	if dsn == "" {
-		return db
+		return db, func() {}, nil
 	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		log.Infof("[LOAD] action=raw_pool event=parse_failed fallback=sink_pool error=%v", err)
-		return db
+		return nil, nil, fmt.Errorf("parse configured RAW_DATABASE_URL: %w", err)
 	}
 	cfg.MaxConns = shared.EnvInt32("RAW_DB_MAX_CONNS", 4)
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
-		log.Infof("[LOAD] action=raw_pool event=connect_failed fallback=sink_pool error=%v", err)
-		return db
+		return nil, nil, fmt.Errorf("connect configured RAW_DATABASE_URL: %w", err)
 	}
-	if err := pool.Ping(context.Background()); err != nil {
-		log.Infof("[LOAD] action=raw_pool event=ping_failed fallback=sink_pool error=%v", err)
+	pingCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
-		return db
+		return nil, nil, fmt.Errorf("ping configured RAW_DATABASE_URL: %w", err)
 	}
 	log.Infoln("[LOAD] action=raw_pool event=connected source=RAW_DATABASE_URL")
-	return pool
+	return pool, pool.Close, nil
 }
 
 // loadTimeout bounds one full load run. The Azure B1ms database serves reads
@@ -60,24 +62,24 @@ const loadTimeout = 60 * time.Minute
 // its schema without waiting for the next tick. The raw_tdx reader's pool comes
 // from RAW_DATABASE_URL when set, else the process sink pool db (see
 // rawSourcePool); the transforms always sink to db.
-func registerLoaderCrons(r *cron.Cron, db *pgxpool.Pool, rc *redis.Client) {
-	rawPool := rawSourcePool(db)
+func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Client) {
 	src := rawTDXSource{pool: rawPool}
-	_, _ = r.AddFunc("0 30 3 * * *", func() {
-		// runDaily's 3× retry never fires for the loader: runLoad returns nil
-		// unconditionally (per-partition failures are isolated and logged inside
-		// runLoadSpecs, by design), so there is no error to retry on. The wrapper
-		// is kept only for the shared timeout/observability plumbing.
+	runner := newStaticPipelineRunner(rawPool, loadTimeout)
+	_, _ = addStaticCron(r, "0 30 3 * * *", func() {
 		runDaily("load", loadTimeout, func(ctx context.Context) error {
-			return runLoad(ctx, src, db, rc, nil)
+			return runner.Run(ctx, func(ctx context.Context) error {
+				return runLoad(ctx, src, db, rc, nil)
+			})
 		})
 	})
 	if os.Getenv("LOAD_ON_BOOT") == "true" {
 		log.Infoln("[LOAD] action=boot event=enabled")
 		go func() {
-			withTimeout(loadTimeout, func(ctx context.Context) {
-				_ = runLoad(ctx, src, db, rc, nil)
-			})
+			if err := runner.Run(context.Background(), func(ctx context.Context) error {
+				return runLoad(ctx, src, db, rc, nil)
+			}); err != nil {
+				log.Infof("[LOAD] action=boot event=failed error=%v", err)
+			}
 		}()
 	} else {
 		log.Infoln("[LOAD] action=boot event=skipped")

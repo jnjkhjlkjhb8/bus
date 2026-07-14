@@ -35,7 +35,7 @@ type loadSpec struct {
 	partitions func() []string
 	load       func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error
 	report     []qualityTarget
-	staleOK bool
+	staleOK    bool
 }
 
 // qualityTarget describes one env-schema table's post-load quality probe: the
@@ -87,31 +87,37 @@ func runLoad(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 // runLoadSpecs is the registry-parameterized core: per spec, per partition, it
 // reads the reconstructed JSON, staleness-checks fetched_at, wraps the bytes in
 // a *json.Decoder, and calls the transform. Per-partition failures are logged
-// and do not abort the run (mirrors ingestRaw's per-endpoint isolation).
+// and do not abort the run; every failure is returned through errors.Join so
+// the daily wrapper retries without hiding failures in otherwise independent
+// partitions.
 func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, specs []loadSpec) error {
 	sink := pgLoadSink{db: db, rc: rc}
+	var failures []error
 	for _, spec := range specs {
 		parts := spec.partitions()
 		for _, part := range parts {
 			body, fetchedAt, err := src.datasetJSON(ctx, spec.table, spec.partCol, part)
 			if err != nil {
 				log.Infof("[LOAD] action=read event=error dataset=%s partition=%s error=%v", spec.key, part, err)
+				failures = append(failures, fmt.Errorf("load dataset %s partition %s: read: %w", spec.key, part, err))
 				continue
 			}
 			if fetchedAt.IsZero() || (!spec.staleOK && isStale(fetchedAt)) {
 				log.Infof("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s reason=%v", spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale)
+				failures = append(failures, fmt.Errorf("load dataset %s partition %s: %w", spec.key, part, errLoadStale))
 				continue
 			}
 			dec := json.NewDecoder(bytes.NewReader(body))
 			if err := spec.load(ctx, dec, sink, part); err != nil {
 				log.Infof("[LOAD] action=transform event=error dataset=%s partition=%s error=%v", spec.key, part, err)
+				failures = append(failures, fmt.Errorf("load dataset %s partition %s: transform: %w", spec.key, part, err))
 				continue
 			}
 			log.Infof("[LOAD] action=transform event=success dataset=%s partition=%s", spec.key, part)
 		}
 		reportQuality(ctx, db, spec)
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // reportQuality logs one data-quality line per target table after a dataset

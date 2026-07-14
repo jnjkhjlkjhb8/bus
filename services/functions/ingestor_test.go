@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +15,14 @@ import (
 
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 )
+
+type fakeRawFetcher struct {
+	getInto func(context.Context, string, string, func(io.ReadSeeker) error) (bool, error)
+}
+
+func (f fakeRawFetcher) GetInto(ctx context.Context, url, name string, commit func(io.ReadSeeker) error) (bool, error) {
+	return f.getInto(ctx, url, name, commit)
+}
 
 // fakeTDXStore is an in-memory shared.TDXStore for the ingestor fan-out tests: it
 // returns a cached token so the client never does a real client_credentials
@@ -206,11 +217,15 @@ func TestRawLandingHTTPFixtureCommitsBeforeMarker(t *testing.T) {
 		BaseURL: srv.URL,
 	})
 	committed := false
-	modified, err := tdx.GetInto("/raw", "fixture", func(body []byte) error {
+	modified, err := tdx.GetInto(context.Background(), "/raw", "fixture", func(body io.ReadSeeker) error {
 		if marker != "" {
 			t.Fatalf("marker advanced before durable callback: %q", marker)
 		}
-		if got := string(body); got != `[1,2,3]` {
+		b, readErr := io.ReadAll(body)
+		if readErr != nil {
+			return readErr
+		}
+		if got := string(b); got != `[1,2,3]` {
 			t.Fatalf("landing callback body = %q, want [1,2,3]", got)
 		}
 		committed = true
@@ -255,5 +270,58 @@ func TestIngestRaw_NoOpWithoutCredentials(t *testing.T) {
 				t.Fatalf("ingestRaw made %d requests without credentials, want 0", got)
 			}
 		})
+	}
+}
+
+func TestIngestRawAggregatesAllFetchFailures(t *testing.T) {
+	t.Setenv("TDX_CLIENT_ID", "test-id")
+	t.Setenv("TDX_CLIENT_SECRET", "test-secret")
+	want := []error{
+		errors.New("first fetch failed"),
+		errors.New("second fetch failed"),
+		errors.New("third fetch failed"),
+	}
+	var calls atomic.Int64
+	fetcher := fakeRawFetcher{getInto: func(_ context.Context, _, _ string, _ func(io.ReadSeeker) error) (bool, error) {
+		i := calls.Add(1) - 1
+		return false, want[int(i)%len(want)]
+	}}
+	err := ingestRaw(context.Background(), fetcher)
+	for _, target := range want {
+		if !errors.Is(err, target) {
+			t.Errorf("ingestRaw error = %v, want joined %v", err, target)
+		}
+	}
+	if calls.Load() < int64(len(want)) {
+		t.Fatalf("fetch calls = %d, want at least %d", calls.Load(), len(want))
+	}
+}
+
+func TestIngestRawKeepsThreeRequestConcurrencyLimit(t *testing.T) {
+	t.Setenv("TDX_CLIENT_ID", "test-id")
+	t.Setenv("TDX_CLIENT_SECRET", "test-secret")
+	var active atomic.Int64
+	var maximum atomic.Int64
+	fetcher := fakeRawFetcher{getInto: func(ctx context.Context, _, _ string, _ func(io.ReadSeeker) error) (bool, error) {
+		n := active.Add(1)
+		defer active.Add(-1)
+		for {
+			old := maximum.Load()
+			if n <= old || maximum.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		select {
+		case <-time.After(2 * time.Millisecond):
+			return true, nil
+		case <-ctx.Done():
+			return false, fmt.Errorf("fetch canceled: %w", ctx.Err())
+		}
+	}}
+	if err := ingestRaw(context.Background(), fetcher); err != nil {
+		t.Fatalf("ingestRaw: %v", err)
+	}
+	if got := maximum.Load(); got != 3 {
+		t.Fatalf("maximum concurrent requests = %d, want 3", got)
 	}
 }

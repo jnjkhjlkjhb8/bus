@@ -10,13 +10,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/go-redis/redis"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
@@ -62,6 +65,18 @@ func main() {
 		}
 	}(rc)
 	defer db.Close()
+	// Loader and vector coordination must lock the database that owns raw_tdx,
+	// which can differ from the environment's transform/vector target. The
+	// ingestor always lands into its process DB and therefore locks db directly.
+	rawPool := db
+	closeRawPool := func() {}
+	if mode != modeIngestor {
+		rawPool, closeRawPool, err = rawSourcePool(context.Background(), db)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	defer closeRawPool()
 	// One-shot manual trigger: `functions run <job>` runs the job once and exits,
 	// bypassing cron so an operator can refresh embeddings on demand. Needs the
 	// same env (DATABASE_URL, REDIS_ADDR, EMBED_URL) as the scheduled run.
@@ -69,7 +84,8 @@ func main() {
 		switch os.Args[2] {
 		case "changetovector":
 			job := vectorRefreshJob(rc, db, configuredEmbeddingClient())
-			if err := job(context.Background()); err != nil {
+			runner := newStaticPipelineRunner(rawPool, 10*time.Minute)
+			if err := runner.Run(context.Background(), job); err != nil {
 				log.Fatalf("changetovector failed: %v", err)
 			}
 		default:
@@ -85,17 +101,17 @@ func main() {
 
 	switch mode {
 	case modeIngestor:
-		registerIngestorCrons(r, tdx)
+		registerIngestorCrons(r, tdx, db)
 		r.Start()
 		defer r.Stop()
 		waitForShutdown()
 	case modeLoader:
-		registerLoaderCrons(r, db, rc)
+		registerLoaderCrons(r, rawPool, db, rc)
 		r.Start()
 		defer r.Stop()
 		waitForShutdown()
 	case modeLegacyProd:
-		runLegacyProd(r, tdx, rc, db)
+		runLegacyProd(r, tdx, rc, rawPool, db)
 	}
 }
 
@@ -133,9 +149,31 @@ func resolveRole(role string) (appMode, error) {
 // withTimeout runs fn with a context that is canceled after d. It exists so cron
 // jobs cannot run unbounded; fn is expected to honor ctx cancellation itself.
 func withTimeout(d time.Duration, fn func(context.Context)) {
-	ctx, cancel := context.WithTimeout(context.Background(), d)
+	_ = runWithTimeout(context.Background(), d, func(ctx context.Context) error {
+		fn(ctx)
+		return nil
+	})
+}
+
+// runWithTimeout bounds one cooperative job attempt. A job that returns nil
+// only after its deadline is still reported as a deadline failure.
+func runWithTimeout(parent context.Context, d time.Duration, job func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(parent, d)
 	defer cancel()
-	fn(ctx)
+	err := job(ctx)
+	if err == nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+// runDailyWithRetry is the testable retry core. Every failed daily attempt is
+// transient by definition: the same bounded operation is safe to repeat and a
+// later attempt must not be suppressed by a partition-level failure.
+func runDailyWithRetry(parent context.Context, d, backoff time.Duration, job func(context.Context) error) error {
+	return obs.Retry(parent, 3, backoff, func() error {
+		return obs.Transient(runWithTimeout(parent, d, job))
+	})
 }
 
 // runDaily runs a daily job under a d timeout, retrying up to 3 times with a
@@ -143,19 +181,204 @@ func withTimeout(d time.Duration, fn func(context.Context)) {
 // returning an error is wrapped as transient so it counts as a retryable
 // failure. Exhausted retries are logged, not fatal — the next daily tick retries.
 func runDaily(name string, d time.Duration, job func(context.Context) error) {
-	err := obs.Retry(context.Background(), 3, time.Minute, func() error {
-		var jobErr error
-		withTimeout(d, func(ctx context.Context) {
-			jobErr = job(ctx)
-			if jobErr == nil && ctx.Err() != nil {
-				jobErr = obs.Transient(ctx.Err())
-			}
-		})
-		return jobErr
-	})
+	err := runDailyWithRetry(context.Background(), d, time.Minute, job)
 	if err != nil {
 		log.Infof("[crontab] action=%s event=failed error=%v", name, err)
 	}
+}
+
+const (
+	// Stable, repo-specific signed 64-bit key shared by every functions role.
+	staticPipelineAdvisoryKey    int64 = 0x6275737374617469
+	staticPipelineReleaseTimeout       = 5 * time.Second
+)
+
+// staticPipelineLocker holds a cross-process lock until its release callback.
+// The PostgreSQL implementation below uses a transaction-scoped advisory lock;
+// this narrow seam keeps concurrency tests independent of a live database.
+type staticPipelineLocker interface {
+	Acquire(context.Context) (release func() error, err error)
+}
+
+type staticPipelineTxBeginner interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
+type staticPipelineConnector interface {
+	Connect(context.Context) (staticPipelineTxBeginner, func() error, error)
+}
+
+type staticPipelineDedicatedConn interface {
+	staticPipelineTxBeginner
+	Close(context.Context) error
+}
+
+// pgStaticPipelineConnector opens a dedicated connection from a copy of the
+// raw pool's connection config. The production ingest/load pools intentionally
+// allow MaxConns=1; holding the advisory-lock transaction inside that pool would
+// consume its only slot and deadlock the job's own SQL.
+type pgStaticPipelineConnector struct {
+	pool    *pgxpool.Pool
+	connect func(context.Context, *pgx.ConnConfig) (staticPipelineDedicatedConn, error)
+}
+
+func (c pgStaticPipelineConnector) Connect(ctx context.Context) (staticPipelineTxBeginner, func() error, error) {
+	if c.pool == nil {
+		return nil, nil, errors.New("static pipeline raw lock pool is nil")
+	}
+	connect := c.connect
+	if connect == nil {
+		connect = func(ctx context.Context, cfg *pgx.ConnConfig) (staticPipelineDedicatedConn, error) {
+			return pgx.ConnectConfig(ctx, cfg)
+		}
+	}
+	conn, err := connect(ctx, c.pool.Config().ConnConfig.Copy())
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect static pipeline advisory database: %w", err)
+	}
+	if conn == nil {
+		return nil, nil, errors.New("connect static pipeline advisory database returned nil connection")
+	}
+	var once sync.Once
+	var closeErr error
+	closeConnection := func() error {
+		once.Do(func() {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), staticPipelineReleaseTimeout)
+			defer cancel()
+			if err := conn.Close(releaseCtx); err != nil {
+				closeErr = fmt.Errorf("close static pipeline advisory connection: %w", err)
+			}
+		})
+		return closeErr
+	}
+	return conn, closeConnection, nil
+}
+
+type pgStaticPipelineLocker struct{ connector staticPipelineConnector }
+
+func (l pgStaticPipelineLocker) Acquire(ctx context.Context) (func() error, error) {
+	if l.connector == nil {
+		return nil, errors.New("static pipeline raw lock connector is nil")
+	}
+	conn, closeConnection, err := l.connector.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if conn == nil || closeConnection == nil {
+		if closeConnection != nil {
+			_ = closeConnection()
+		}
+		return nil, errors.New("static pipeline connector returned incomplete connection")
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("begin static pipeline advisory transaction: %w", err),
+			closeConnection(),
+		)
+	}
+	rollback := func() error {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), staticPipelineReleaseTimeout)
+		defer cancel()
+		err := tx.Rollback(releaseCtx)
+		if errors.Is(err, pgx.ErrTxClosed) {
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", staticPipelineAdvisoryKey); err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("acquire static pipeline advisory lock: %w", err),
+			rollback(),
+			closeConnection(),
+		)
+	}
+	var once sync.Once
+	var releaseErr error
+	return func() error {
+		once.Do(func() {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), staticPipelineReleaseTimeout)
+			defer cancel()
+			if err := tx.Commit(releaseCtx); err != nil {
+				releaseErr = errors.Join(
+					fmt.Errorf("release static pipeline advisory lock: %w", err),
+					rollback(),
+				)
+			}
+			releaseErr = errors.Join(releaseErr, closeConnection())
+		})
+		return releaseErr
+	}, nil
+}
+
+// One process-wide gate serializes boot, cron, and manual static work. Separate
+// containers have separate gates and are serialized by pgStaticPipelineLocker.
+var staticPipelineProcessGate = make(chan struct{}, 1)
+
+type staticPipelineRunner struct {
+	gate    chan struct{}
+	locker  staticPipelineLocker
+	timeout time.Duration
+}
+
+func newStaticPipelineRunner(rawLockPool *pgxpool.Pool, timeout time.Duration) staticPipelineRunner {
+	return staticPipelineRunner{
+		gate: staticPipelineProcessGate,
+		locker: pgStaticPipelineLocker{connector: pgStaticPipelineConnector{
+			pool: rawLockPool,
+		}},
+		timeout: timeout,
+	}
+}
+
+// Run waits for the local gate and PostgreSQL advisory lock within one timeout,
+// runs job, and always releases both. The independent release context ensures a
+// canceled job cannot strand the transaction-scoped lock. A panic is rethrown
+// only after release; if release also fails, both failures remain visible.
+func (r staticPipelineRunner) Run(parent context.Context, job func(context.Context) error) (err error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, r.timeout)
+	defer cancel()
+	if r.gate == nil {
+		return errors.New("static pipeline process gate is nil")
+	}
+	select {
+	case r.gate <- struct{}{}:
+		defer func() { <-r.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if r.locker == nil {
+		return errors.New("static pipeline advisory locker is nil")
+	}
+	release, err := r.locker.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	if release == nil {
+		return errors.New("static pipeline advisory locker returned nil release")
+	}
+	defer func() {
+		releaseErr := release()
+		if recovered := recover(); recovered != nil {
+			if releaseErr != nil {
+				panic(errors.Join(fmt.Errorf("static pipeline job panic: %v", recovered), releaseErr))
+			}
+			panic(recovered)
+		}
+		err = errors.Join(err, releaseErr)
+	}()
+	return job(ctx)
+}
+
+// addStaticCron applies cron's own non-overlap guard in addition to the runner's
+// boot/manual gate. The runner remains authoritative because boot is not a cron
+// entry and different static job names can otherwise overlap.
+func addStaticCron(r *cron.Cron, spec string, job func()) (cron.EntryID, error) {
+	guarded := cron.NewChain(cron.SkipIfStillRunning(cron.DefaultLogger)).Then(cron.FuncJob(job))
+	return r.AddJob(spec, guarded)
 }
 
 func vectorRefreshJob(rc vectorRedis, db vectorDB, embedder embeddingClient) func(context.Context) error {
@@ -167,13 +390,13 @@ func vectorRefreshJob(rc vectorRedis, db vectorDB, embedder embeddingClient) fun
 // runLegacyProd is the current prod path: Firebase, notification dispatcher, all
 // transform/realtime crons, and MQTT. Only ROLE="" reaches here — the ingestor
 // never initializes any of it.
-func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool) {
+func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPool, db *pgxpool.Pool) {
 	sender, err := notify.NewFirebaseSender(context.Background())
 	if err != nil {
 		log.Fatal(err)
 	}
 	dispatcher := notify.NewDispatcher(notify.NewStore(db), sender)
-	if err := runLoad(context.Background(), rawTDXSource{pool: db}, db, rc, []string{"bus_dailytimetable"}); err != nil {
+	if err := runLoad(context.Background(), rawTDXSource{pool: rawPool}, db, rc, []string{"bus_dailytimetable"}); err != nil {
 		log.Infof("[bus] action=bus_dailyroute event=error error=%v", err)
 	}
 	loadHolidays()
@@ -188,8 +411,11 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pg
 	// 03:30. changetovector reads the tables the loader fills, so it runs at 03:45 —
 	// cross-service coordination by clock, the same way loader trails ingestor.
 	refreshVectors := vectorRefreshJob(rc, db, configuredEmbeddingClient())
-	_, _ = r.AddFunc("0 45 3 * * *", func() {
-		runDaily("changetovector", 10*time.Minute, refreshVectors)
+	vectorRunner := newStaticPipelineRunner(rawPool, 10*time.Minute)
+	_, _ = addStaticCron(r, "0 45 3 * * *", func() {
+		runDaily("changetovector", 10*time.Minute, func(ctx context.Context) error {
+			return vectorRunner.Run(ctx, refreshVectors)
+		})
 	})
 	registerLiveCrons(r, tdx, rc, db, dispatcher)
 	_, _ = r.AddFunc("@every 10m", func() {

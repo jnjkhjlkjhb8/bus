@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVectorRefreshJobPropagatesError(t *testing.T) {
@@ -16,6 +17,24 @@ func TestVectorRefreshJobPropagatesError(t *testing.T) {
 	)
 	if err := job(context.Background()); !errors.Is(err, wantErr) {
 		t.Fatalf("vectorRefreshJob() error = %v, want wrapped %v", err, wantErr)
+	}
+}
+
+func TestRunDailyRetriesLoadPartitionFailure(t *testing.T) {
+	partitionErr := errors.New("load partition failed")
+	attempts := 0
+	err := runDailyWithRetry(context.Background(), 100*time.Millisecond, 0, func(context.Context) error {
+		attempts++
+		if attempts == 1 {
+			return partitionErr
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("runDailyWithRetry returned %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
 	}
 }
 
