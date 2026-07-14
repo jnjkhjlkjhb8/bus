@@ -184,6 +184,19 @@ func TestBootRunUsesTimeoutAndSameOverlapGuard(t *testing.T) {
 		}
 	})
 
+	t.Run("deadline is reported when job returns nil late", func(t *testing.T) {
+		runner := staticPipelineRunner{
+			gate: make(chan struct{}, 1), locker: noOpStaticLocker(), timeout: 15 * time.Millisecond,
+		}
+		err := runner.Run(context.Background(), func(context.Context) error {
+			time.Sleep(30 * time.Millisecond)
+			return nil
+		})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("late nil job error = %v, want DeadlineExceeded", err)
+		}
+	})
+
 	t.Run("shared overlap guard", func(t *testing.T) {
 		runner := staticPipelineRunner{
 			gate: make(chan struct{}, 1), locker: noOpStaticLocker(), timeout: time.Second,

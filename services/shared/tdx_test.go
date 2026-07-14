@@ -39,7 +39,8 @@ func TestGetIntoStreamsWithoutFullBodyBuffer(t *testing.T) {
 	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
 	var got string
 	var spoolName string
-	modified, err := c.GetInto(context.Background(), "/x", "thing", func(body io.ReadSeeker) error {
+	result, err := c.GetInto(context.Background(), "/x", "thing", func(commit TDXIntoCommit) error {
+		body := commit.Body
 		spool, ok := body.(*os.File)
 		if !ok {
 			t.Fatalf("commit body type = %T, want disk-backed *os.File", body)
@@ -53,8 +54,8 @@ func TestGetIntoStreamsWithoutFullBodyBuffer(t *testing.T) {
 		_, err = body.Seek(0, io.SeekStart)
 		return err
 	})
-	if err != nil || !modified {
-		t.Fatalf("GetInto modified=%v err=%v", modified, err)
+	if err != nil || !result.Modified {
+		t.Fatalf("GetInto result=%+v err=%v", result, err)
 	}
 	if got != payload {
 		t.Fatalf("spooled payload = %q, want %q", got, payload)
@@ -78,11 +79,11 @@ func TestGetIntoHonorsCanceledContext(t *testing.T) {
 	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	modified, err := c.GetInto(ctx, "/x", "thing", func(io.ReadSeeker) error {
+	result, err := c.GetInto(ctx, "/x", "thing", func(TDXIntoCommit) error {
 		return errors.New("commit unexpectedly called")
 	})
-	if modified || !errors.Is(err, context.Canceled) {
-		t.Fatalf("GetInto canceled result = modified %v, error %v", modified, err)
+	if result.Modified || !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetInto canceled result = %+v, error %v", result, err)
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("canceled GetInto reached upstream %d times", hits.Load())
@@ -508,7 +509,7 @@ func TestMarkerReadErrorPreventsRequest(t *testing.T) {
 			return err
 		}},
 		{name: "GetInto", call: func(c *TDXClient) error {
-			_, err := c.GetInto(context.Background(), "/x", "thing", func(io.ReadSeeker) error { return nil })
+			_, err := c.GetInto(context.Background(), "/x", "thing", func(TDXIntoCommit) error { return nil })
 			return err
 		}},
 	} {
@@ -551,7 +552,7 @@ func TestSuccessWithoutLastModifiedFailsClosed(t *testing.T) {
 		}},
 		{name: "GetInto", call: func(c *TDXClient) error {
 			committed := false
-			_, err := c.GetInto(context.Background(), "/x", "thing", func(io.ReadSeeker) error {
+			_, err := c.GetInto(context.Background(), "/x", "thing", func(TDXIntoCommit) error {
 				committed = true
 				return nil
 			})
@@ -812,11 +813,11 @@ func TestGetIntoCommitsBeforeMarker(t *testing.T) {
 	failStore := newMemTDXStore()
 	failStore.data[TDXTokenKey] = "tok"
 	fc := NewTDXClient(TDXConfig{Store: failStore, IMSKey: legacyIMSKey, BaseURL: srv.URL})
-	modified, err := fc.GetInto(context.Background(), "/x", "thing", func(io.ReadSeeker) error { return commitErr })
+	result, err := fc.GetInto(context.Background(), "/x", "thing", func(TDXIntoCommit) error { return commitErr })
 	if !errors.Is(err, commitErr) {
 		t.Fatalf("GetInto returned err %v, want commitErr", err)
 	}
-	if !modified {
+	if !result.Modified {
 		t.Fatal("GetInto with fresh data must report modified=true even on commit failure")
 	}
 	if failStore.get(TDXLegacyIMSKey("thing")) != "" {
@@ -828,13 +829,13 @@ func TestGetIntoCommitsBeforeMarker(t *testing.T) {
 	okStore.data[TDXTokenKey] = "tok"
 	oc := NewTDXClient(TDXConfig{Store: okStore, IMSKey: legacyIMSKey, BaseURL: srv.URL})
 	var seen string
-	modified, err = oc.GetInto(context.Background(), "/x", "thing", func(body io.ReadSeeker) error {
-		b, readErr := io.ReadAll(body)
+	result, err = oc.GetInto(context.Background(), "/x", "thing", func(commit TDXIntoCommit) error {
+		b, readErr := io.ReadAll(commit.Body)
 		seen = string(b)
 		return readErr
 	})
-	if err != nil || !modified {
-		t.Fatalf("GetInto ok path: modified=%v err=%v", modified, err)
+	if err != nil || !result.Modified {
+		t.Fatalf("GetInto ok path: result=%+v err=%v", result, err)
 	}
 	if seen != "[1,2,3]" {
 		t.Fatalf("commit body = %q, want [1,2,3]", seen)
@@ -842,4 +843,64 @@ func TestGetIntoCommitsBeforeMarker(t *testing.T) {
 	if okStore.get(TDXLegacyIMSKey("thing")) != "MARKER-NEW" {
 		t.Fatalf("successful commit did not advance IMS marker: %q", okStore.get(TDXLegacyIMSKey("thing")))
 	}
+}
+
+func TestGetIntoReturnsTypedMarkerAndInvalidator(t *testing.T) {
+	t.Run("modified response exposes response marker to commit", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Last-Modified", "MARKER-NEW")
+			_, _ = io.WriteString(w, `[]`)
+		}))
+		defer srv.Close()
+
+		store := newMemTDXStore()
+		store.data[TDXTokenKey] = "tok"
+		client := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+		var commitMarker string
+		result, err := client.GetInto(context.Background(), "/x", "thing", func(commit TDXIntoCommit) error {
+			commitMarker = commit.Marker
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("GetInto: %v", err)
+		}
+		if !result.Modified || result.Marker != "MARKER-NEW" || commitMarker != "MARKER-NEW" {
+			t.Fatalf("result=%+v commit marker=%q", result, commitMarker)
+		}
+		if result.Invalidate == nil {
+			t.Fatal("modified result has nil invalidator")
+		}
+	})
+
+	t.Run("not modified response exposes conditional marker and invalidator", func(t *testing.T) {
+		var requestMarker string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestMarker = r.Header.Get("If-Modified-Since")
+			w.WriteHeader(http.StatusNotModified)
+		}))
+		defer srv.Close()
+
+		store := newMemTDXStore()
+		store.data[TDXTokenKey] = "tok"
+		store.data[TDXLegacyIMSKey("thing")] = "MARKER-OLD"
+		client := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+		result, err := client.GetInto(context.Background(), "/x", "thing", func(TDXIntoCommit) error {
+			return errors.New("commit unexpectedly called")
+		})
+		if err != nil {
+			t.Fatalf("GetInto: %v", err)
+		}
+		if result.Modified || result.Marker != "MARKER-OLD" || requestMarker != "MARKER-OLD" {
+			t.Fatalf("result=%+v request marker=%q", result, requestMarker)
+		}
+		if result.Invalidate == nil {
+			t.Fatal("304 result has nil invalidator")
+		}
+		if err := result.Invalidate(); err != nil {
+			t.Fatalf("invalidate: %v", err)
+		}
+		if got := store.get(TDXLegacyIMSKey("thing")); got != "" {
+			t.Fatalf("marker after invalidate = %q, want empty", got)
+		}
+	})
 }

@@ -17,10 +17,10 @@ import (
 )
 
 type fakeRawFetcher struct {
-	getInto func(context.Context, string, string, func(io.ReadSeeker) error) (bool, error)
+	getInto func(context.Context, string, string, func(shared.TDXIntoCommit) error) (shared.TDXIntoResult, error)
 }
 
-func (f fakeRawFetcher) GetInto(ctx context.Context, url, name string, commit func(io.ReadSeeker) error) (bool, error) {
+func (f fakeRawFetcher) GetInto(ctx context.Context, url, name string, commit func(shared.TDXIntoCommit) error) (shared.TDXIntoResult, error) {
 	return f.getInto(ctx, url, name, commit)
 }
 
@@ -217,7 +217,8 @@ func TestRawLandingHTTPFixtureCommitsBeforeMarker(t *testing.T) {
 		BaseURL: srv.URL,
 	})
 	committed := false
-	modified, err := tdx.GetInto(context.Background(), "/raw", "fixture", func(body io.ReadSeeker) error {
+	result, err := tdx.GetInto(context.Background(), "/raw", "fixture", func(commit shared.TDXIntoCommit) error {
+		body := commit.Body
 		if marker != "" {
 			t.Fatalf("marker advanced before durable callback: %q", marker)
 		}
@@ -231,8 +232,8 @@ func TestRawLandingHTTPFixtureCommitsBeforeMarker(t *testing.T) {
 		committed = true
 		return nil
 	})
-	if err != nil || !modified {
-		t.Fatalf("GetInto modified=%v err=%v, want true/nil", modified, err)
+	if err != nil || !result.Modified {
+		t.Fatalf("GetInto result=%+v err=%v, want modified/nil", result, err)
 	}
 	if !committed {
 		t.Fatal("durable landing callback was not invoked")
@@ -282,9 +283,9 @@ func TestIngestRawAggregatesAllFetchFailures(t *testing.T) {
 		errors.New("third fetch failed"),
 	}
 	var calls atomic.Int64
-	fetcher := fakeRawFetcher{getInto: func(_ context.Context, _, _ string, _ func(io.ReadSeeker) error) (bool, error) {
+	fetcher := fakeRawFetcher{getInto: func(_ context.Context, _, _ string, _ func(shared.TDXIntoCommit) error) (shared.TDXIntoResult, error) {
 		i := calls.Add(1) - 1
-		return false, want[int(i)%len(want)]
+		return shared.TDXIntoResult{}, want[int(i)%len(want)]
 	}}
 	err := ingestRaw(context.Background(), fetcher)
 	for _, target := range want {
@@ -302,7 +303,7 @@ func TestIngestRawKeepsThreeRequestConcurrencyLimit(t *testing.T) {
 	t.Setenv("TDX_CLIENT_SECRET", "test-secret")
 	var active atomic.Int64
 	var maximum atomic.Int64
-	fetcher := fakeRawFetcher{getInto: func(ctx context.Context, _, _ string, _ func(io.ReadSeeker) error) (bool, error) {
+	fetcher := fakeRawFetcher{getInto: func(ctx context.Context, _, _ string, _ func(shared.TDXIntoCommit) error) (shared.TDXIntoResult, error) {
 		n := active.Add(1)
 		defer active.Add(-1)
 		for {
@@ -313,9 +314,9 @@ func TestIngestRawKeepsThreeRequestConcurrencyLimit(t *testing.T) {
 		}
 		select {
 		case <-time.After(2 * time.Millisecond):
-			return true, nil
+			return shared.TDXIntoResult{Modified: true}, nil
 		case <-ctx.Done():
-			return false, fmt.Errorf("fetch canceled: %w", ctx.Err())
+			return shared.TDXIntoResult{}, fmt.Errorf("fetch canceled: %w", ctx.Err())
 		}
 	}}
 	if err := ingestRaw(context.Background(), fetcher); err != nil {
@@ -324,4 +325,114 @@ func TestIngestRawKeepsThreeRequestConcurrencyLimit(t *testing.T) {
 	if got := maximum.Load(); got != 3 {
 		t.Fatalf("maximum concurrent requests = %d, want 3", got)
 	}
+}
+
+func TestFetchRawForcesOneEndpointRefetchOnLandingStateMismatch(t *testing.T) {
+	var calls, invalidations atomic.Int64
+	fetcher := fakeRawFetcher{getInto: func(
+		_ context.Context, _, _ string, _ func(shared.TDXIntoCommit) error,
+	) (shared.TDXIntoResult, error) {
+		if calls.Add(1) == 1 {
+			return shared.TDXIntoResult{
+				Marker: "MARKER-OLD",
+				Invalidate: func() error {
+					invalidations.Add(1)
+					return nil
+				},
+			}, nil
+		}
+		return shared.TDXIntoResult{Modified: true, Marker: "MARKER-NEW"}, nil
+	}}
+	verify := func(context.Context, string, string, string, string) error {
+		return &rawLandingStateMismatchError{Reason: "missing_state"}
+	}
+
+	err := fetchRawWithVerifier(
+		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", verify,
+	)
+	if err != nil {
+		t.Fatalf("fetchRawWithVerifier: %v", err)
+	}
+	if calls.Load() != 2 || invalidations.Load() != 1 {
+		t.Fatalf("calls=%d invalidations=%d, want 2/1", calls.Load(), invalidations.Load())
+	}
+}
+
+func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
+	mismatch := &rawLandingStateMismatchError{Reason: "row_presence"}
+	t.Run("second 304 mismatch stops after two requests", func(t *testing.T) {
+		var calls, invalidations atomic.Int64
+		fetcher := fakeRawFetcher{getInto: func(
+			_ context.Context, _, _ string, _ func(shared.TDXIntoCommit) error,
+		) (shared.TDXIntoResult, error) {
+			calls.Add(1)
+			return shared.TDXIntoResult{
+				Marker: "MARKER",
+				Invalidate: func() error {
+					invalidations.Add(1)
+					return nil
+				},
+			}, nil
+		}}
+		err := fetchRawWithVerifier(
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei",
+			func(context.Context, string, string, string, string) error { return mismatch },
+		)
+		if !errors.Is(err, errRawLandingStateMismatch) {
+			t.Fatalf("error = %v, want state mismatch", err)
+		}
+		if calls.Load() != 2 || invalidations.Load() != 1 {
+			t.Fatalf("calls=%d invalidations=%d, want bounded 2/1", calls.Load(), invalidations.Load())
+		}
+	})
+
+	t.Run("invalidation failure prevents refetch", func(t *testing.T) {
+		invalidateErr := errors.New("redis delete failed")
+		var calls atomic.Int64
+		fetcher := fakeRawFetcher{getInto: func(
+			_ context.Context, _, _ string, _ func(shared.TDXIntoCommit) error,
+		) (shared.TDXIntoResult, error) {
+			calls.Add(1)
+			return shared.TDXIntoResult{
+				Marker:     "MARKER",
+				Invalidate: func() error { return invalidateErr },
+			}, nil
+		}}
+		err := fetchRawWithVerifier(
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei",
+			func(context.Context, string, string, string, string) error { return mismatch },
+		)
+		if !errors.Is(err, invalidateErr) || !errors.Is(err, errRawLandingStateMismatch) {
+			t.Fatalf("error = %v, want invalidation and mismatch", err)
+		}
+		if calls.Load() != 1 {
+			t.Fatalf("fetch calls = %d, want 1", calls.Load())
+		}
+	})
+
+	t.Run("database verifier error is not invalidated", func(t *testing.T) {
+		dbErr := errors.New("database unavailable")
+		var invalidations atomic.Int64
+		fetcher := fakeRawFetcher{getInto: func(
+			_ context.Context, _, _ string, _ func(shared.TDXIntoCommit) error,
+		) (shared.TDXIntoResult, error) {
+			return shared.TDXIntoResult{
+				Marker: "MARKER",
+				Invalidate: func() error {
+					invalidations.Add(1)
+					return nil
+				},
+			}, nil
+		}}
+		err := fetchRawWithVerifier(
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei",
+			func(context.Context, string, string, string, string) error { return dbErr },
+		)
+		if !errors.Is(err, dbErr) {
+			t.Fatalf("error = %v, want %v", err, dbErr)
+		}
+		if invalidations.Load() != 0 {
+			t.Fatalf("invalidations = %d, want 0", invalidations.Load())
+		}
+	})
 }

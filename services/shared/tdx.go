@@ -486,6 +486,25 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 	}, nil
 }
 
+// TDXIntoCommit is the durable callback input for GetInto. Marker is the fresh
+// response's Last-Modified value and must be committed with Body when the
+// caller's durable store uses the marker to validate later 304 responses. Body
+// remains owned by GetInto; the callback may seek it but must not close it.
+type TDXIntoCommit struct {
+	Body   io.ReadSeeker
+	Marker string
+}
+
+// TDXIntoResult describes a completed conditional request. Marker is the fresh
+// Last-Modified value for a 200 response and the If-Modified-Since value that
+// produced a 304 response. Invalidate deletes that conditional marker, allowing
+// a caller whose durable state disagrees with a 304 to force one full refetch.
+type TDXIntoResult struct {
+	Modified   bool
+	Marker     string
+	Invalidate func() error
+}
+
 // GetInto is the disk-spooled conditional GET for callers that must durably
 // handle the whole body before the If-Modified-Since marker advances (the
 // raw_tdx landing). Fresh response bytes are streamed into a temporary file so
@@ -493,43 +512,50 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 // file is rewound before commit and remains owned by GetInto; commit may seek it
 // for transaction retries but must not close it. The marker advances only after
 // commit succeeds, so a failed durable write refetches on the next run.
-func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(body io.ReadSeeker) error) (modified bool, err error) {
+func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(TDXIntoCommit) error) (result TDXIntoResult, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	marker, err := c.since(name)
 	if err != nil {
-		return false, err
+		return result, err
+	}
+	invalidate := func() error {
+		if err := c.store.Del(c.imsKey(name)); err != nil {
+			return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
+		}
+		return nil
 	}
 	resp, err := c.get(ctx, url, marker)
 	if err != nil {
-		return false, err
+		return result, err
 	}
 	if resp.StatusCode() == http.StatusNotModified {
 		if cerr := drainAndCloseResponse(resp); cerr != nil {
-			return false, cerr
+			return result, cerr
 		}
 		obs.Logf("[TDX] action=fetch event=not_modified name=%s", name)
-		return false, nil
+		return TDXIntoResult{Marker: marker, Invalidate: invalidate}, nil
 	}
 	if resp.StatusCode() >= http.StatusBadRequest {
 		statusErr := &TDXStatusError{Name: name, Status: resp.StatusCode()}
-		return false, errors.Join(statusErr, drainAndCloseResponse(resp))
+		return result, errors.Join(statusErr, drainAndCloseResponse(resp))
 	}
 	responseMarker := strings.TrimSpace(resp.Header().Get("Last-Modified"))
 	if responseMarker == "" {
-		return false, errors.Join(
+		return result, errors.Join(
 			fmt.Errorf("tdx %s: successful response missing Last-Modified", name),
 			drainAndCloseResponse(resp),
 		)
 	}
+	result = TDXIntoResult{Modified: true, Marker: responseMarker, Invalidate: invalidate}
 	responseBody, err := decodedTDXBody(resp)
 	if err != nil {
-		return false, err
+		return result, err
 	}
 	spool, err := os.CreateTemp("", "tdx-response-*.json")
 	if err != nil {
-		return false, errors.Join(fmt.Errorf("create TDX response spool: %w", err), responseBody.Close())
+		return result, errors.Join(fmt.Errorf("create TDX response spool: %w", err), responseBody.Close())
 	}
 	spoolName := spool.Name()
 	spoolOpen := true
@@ -544,25 +570,25 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(b
 	}()
 	_, copyErr := io.Copy(spool, responseBody)
 	if closeErr := responseBody.Close(); copyErr != nil || closeErr != nil {
-		return false, errors.Join(copyErr, closeErr)
+		return result, errors.Join(copyErr, closeErr)
 	}
 	if _, err := spool.Seek(0, io.SeekStart); err != nil {
-		return false, fmt.Errorf("rewind TDX response spool: %w", err)
+		return result, fmt.Errorf("rewind TDX response spool: %w", err)
 	}
 	if commit != nil {
-		if cerr := commit(spool); cerr != nil {
-			return true, cerr
+		if cerr := commit(TDXIntoCommit{Body: spool, Marker: responseMarker}); cerr != nil {
+			return result, cerr
 		}
 	}
 	if closeErr := spool.Close(); closeErr != nil {
-		return true, fmt.Errorf("close TDX response spool: %w", closeErr)
+		return result, fmt.Errorf("close TDX response spool: %w", closeErr)
 	}
 	spoolOpen = false
 	if removeErr := os.Remove(spoolName); removeErr != nil {
-		return true, fmt.Errorf("remove TDX response spool: %w", removeErr)
+		return result, fmt.Errorf("remove TDX response spool: %w", removeErr)
 	}
 	spoolPresent = false
-	return true, c.cacheIMS(name, responseMarker)
+	return result, c.cacheIMS(name, responseMarker)
 }
 
 // cacheIMS stores the response's Last-Modified header under name's IMS key so the

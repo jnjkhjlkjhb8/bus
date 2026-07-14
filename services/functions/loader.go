@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -48,9 +49,9 @@ type qualityTarget struct {
 	geoCols  []string
 }
 
-// errLoadStale marks a partition whose newest fetched_at is older than the
-// freshness window; the loader skips it rather than overwriting good data with
-// a landing that never happened.
+// errLoadStale marks a partition whose durable landing-state fetched_at is
+// older than the freshness window; the loader skips it rather than overwriting
+// good data with a landing that never happened.
 var errLoadStale = errors.New("raw_tdx_partition_stale")
 
 // staleAfter is the freshness window. Landing runs at 03:00, loads at 03:30; a
@@ -167,20 +168,26 @@ func reportQuality(ctx context.Context, db *pgxpool.Pool, spec loadSpec) {
 // rawTDXSource reconstructs lowercased-JSON arrays from the shared raw_tdx
 // schema. It reads raw_tdx.<table> (schema-qualified, so PG_SCHEMA search_path
 // on the sink pool does not affect it) minus the partition and fetched_at
-// columns, and returns the newest fetched_at in the partition as the staleness
-// signal.
+// columns. Freshness comes from raw_tdx.landing_state, including for a verified
+// empty landing; raw row fetched_at is write-time bookkeeping and is never mass
+// updated on a 304.
+type rawReadTxBeginner interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+}
+
 type rawTDXSource struct {
-	pool *pgxpool.Pool
+	pool rawReadTxBeginner
 }
 
 // datasetJSON returns a JSON array of every row in the partition (with the
 // partition column and fetched_at stripped, since those are loader bookkeeping,
-// not TDX fields) plus the newest fetched_at. Rows are serialized one at a time
+// not TDX fields) plus the landing-state fetched_at. Rows are serialized one at a time
 // on the server and concatenated here: a single jsonb_agg over a partition with
 // large jsonb columns (bus_routefare odfares) expands to a multi-GB in-memory
 // tree and can OOM the 2 GB database server, so the per-statement working set
-// must stay one row. An empty partition yields "[]" and a zero time, which
-// isStale treats as stale (skipped).
+// must stay one row. A state-backed empty partition yields "[]" and its verified
+// freshness; a partition without state yields "[]" and a zero time, forcing the
+// ingestor bootstrap/refetch before any transform can consume legacy raw rows.
 //
 // thsr_dailytimetable.traindate is timestamptz on the landing table, but the
 // original TDX payload's TrainDate is a YYYY-MM-DD string and the transform's
@@ -191,6 +198,32 @@ type rawTDXSource struct {
 func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal string) ([]byte, time.Time, error) {
 	if err := validateRawTarget(table, partCol); err != nil {
 		return nil, time.Time{}, err
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: begin: %w", table, partVal, err)
+	}
+	defer func() {
+		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rbCtx)
+	}()
+
+	var fetchedAt time.Time
+	var expectedRows int64
+	err = tx.QueryRow(ctx, `
+		SELECT fetched_at, row_count
+		FROM raw_tdx.landing_state
+		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`,
+		table, partCol, partVal).Scan(&fetchedAt, &expectedRows)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return []byte("[]"), time.Time{}, nil
+	}
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: landing state: %w", table, partVal, err)
 	}
 	// Build the per-row jsonb: to_jsonb minus bookkeeping columns (fetched_at and,
 	// when partitioned, the partition column), with the thsr_dailytimetable
@@ -214,34 +247,41 @@ func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal s
 		args = append(args, partVal)
 	}
 	q := fmt.Sprintf(
-		`SELECT %s::text, t.fetched_at FROM raw_tdx.%s t %s`,
+		`SELECT %s::text FROM raw_tdx.%s t %s`,
 		elem, table, where)
-	rows, err := r.pool.Query(ctx, q, args...)
+	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: query rows: %w", table, partVal, err)
 	}
 	defer rows.Close()
 	var buf bytes.Buffer
 	buf.WriteByte('[')
-	var fetchedAt time.Time
+	var actualRows int64
 	for rows.Next() {
 		var rowJSON []byte
-		var ft time.Time
-		if err := rows.Scan(&rowJSON, &ft); err != nil {
-			return nil, time.Time{}, err
+		if err := rows.Scan(&rowJSON); err != nil {
+			return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: scan row: %w", table, partVal, err)
 		}
 		if buf.Len() > 1 {
 			buf.WriteByte(',')
 		}
 		buf.Write(rowJSON)
-		if ft.After(fetchedAt) {
-			fetchedAt = ft
-		}
+		actualRows++
 	}
 	if err := rows.Err(); err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: rows: %w", table, partVal, err)
+	}
+	if actualRows != expectedRows {
+		return nil, time.Time{}, &rawLandingStateMismatchError{
+			Table: table, PartCol: partCol, PartVal: partVal,
+			Reason: "loader_row_count", Expected: fmt.Sprint(expectedRows), Observed: fmt.Sprint(actualRows),
+		}
 	}
 	buf.WriteByte(']')
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: commit: %w", table, partVal, err)
+	}
 	return buf.Bytes(), fetchedAt, nil
 }
 

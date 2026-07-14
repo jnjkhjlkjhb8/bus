@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -154,6 +155,32 @@ func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
 // and, crucially, avoid caching a Last-Modified that would mask the failure.
 var errRawDump = errors.New("raw dump failed")
 
+// errRawLandingStateMismatch marks a 304 whose durable landing metadata does
+// not agree with raw_tdx. It is intentionally distinct from database failures:
+// callers may invalidate the endpoint marker and perform one full refetch only
+// for this recoverable state drift, while every database error fails closed.
+var errRawLandingStateMismatch = errors.New("raw landing state mismatch")
+
+type rawLandingStateMismatchError struct {
+	Table    string
+	PartCol  string
+	PartVal  string
+	Reason   string
+	Expected string
+	Observed string
+}
+
+func (e *rawLandingStateMismatchError) Error() string {
+	return fmt.Sprintf("%v: table=%s partition=%s:%s reason=%s expected=%s observed=%s",
+		errRawLandingStateMismatch, e.Table, e.PartCol, e.PartVal, e.Reason, e.Expected, e.Observed)
+}
+
+func (e *rawLandingStateMismatchError) Unwrap() error { return errRawLandingStateMismatch }
+
+type rawLandingBeginner interface {
+	Begin(context.Context) (pgx.Tx, error)
+}
+
 // rawTDXTables is the whitelist of raw_tdx landing tables, derived from the
 // datasetRegistry so it can never drift from the datasets themselves. Table and
 // partition names are interpolated into SQL, so they must come only from this
@@ -198,26 +225,105 @@ func rawPartitionWhere(table, partCol string) string {
 	return fmt.Sprintf("WHERE %s = $1", partCol)
 }
 
-// touchRawTDX bumps fetched_at on an already-landed raw_tdx partition after a
-// TDX 304 Not-Modified: the fetch landed nothing, but it verified the landed
-// rows are still current, and the loader's isStale window reads fetched_at as
-// "last verified". Without the bump, a partition whose upstream data stops
-// changing ages past staleAfter and is skipped by every load forever.
-func touchRawTDX(ctx context.Context, table, partCol, partVal string) error {
+// verifyAndTouchRawLanding validates a 304 against the durable state committed
+// with the last complete landing. It locks that state row, requires an exact
+// Last-Modified match, and verifies empty/non-empty parity against the raw
+// partition before bumping only landing_state.fetched_at. It deliberately does
+// not UPDATE every raw row: doing so daily for the largest fare tables would
+// create substantial WAL and table bloat. Exact row_count remains recorded for
+// audit, while the bounded 304 check detects missing/emptied partitions without
+// counting millions of rows; partial-row loss requires a full integrity audit.
+func verifyAndTouchRawLanding(ctx context.Context, table, partCol, partVal, marker string) error {
 	if ingestDB == nil {
 		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
 	}
+	return verifyAndTouchRawLandingWithDB(ctx, ingestDB, table, partCol, partVal, marker)
+}
+
+func verifyAndTouchRawLandingWithDB(
+	ctx context.Context,
+	db rawLandingBeginner,
+	table, partCol, partVal, marker string,
+) error {
 	if err := validateRawTarget(table, partCol); err != nil {
 		return err
 	}
-	q := fmt.Sprintf("UPDATE raw_tdx.%s SET fetched_at = now()", table)
+	if marker == "" {
+		return &rawLandingStateMismatchError{
+			Table: table, PartCol: partCol, PartVal: partVal,
+			Reason: "empty_marker", Expected: "non-empty", Observed: "empty",
+		}
+	}
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("verify raw landing state: begin: %w", err)
+	}
+	defer func() {
+		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rbCtx)
+	}()
+	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '20s'"); err != nil {
+		return fmt.Errorf("verify raw landing state: set lock_timeout: %w", err)
+	}
+
+	var stateMarker string
+	var rowCount int64
+	err = tx.QueryRow(ctx, `
+		SELECT last_modified, row_count
+		FROM raw_tdx.landing_state
+		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3
+		FOR UPDATE`, table, partCol, partVal).Scan(&stateMarker, &rowCount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &rawLandingStateMismatchError{
+			Table: table, PartCol: partCol, PartVal: partVal,
+			Reason: "missing_state", Expected: marker, Observed: "missing",
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("verify raw landing state: read state: %w", err)
+	}
+	if stateMarker != marker {
+		return &rawLandingStateMismatchError{
+			Table: table, PartCol: partCol, PartVal: partVal,
+			Reason: "marker", Expected: stateMarker, Observed: marker,
+		}
+	}
+
+	existsSQL := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM raw_tdx.%s", table)
 	args := []any{}
 	if partCol != "" {
-		q += " " + rawPartitionWhere(table, partCol)
+		existsSQL += " " + rawPartitionWhere(table, partCol)
 		args = append(args, partVal)
 	}
-	_, err := ingestDB.Exec(ctx, q, args...)
-	return err
+	existsSQL += " LIMIT 1)"
+	var hasRows bool
+	if err := tx.QueryRow(ctx, existsSQL, args...).Scan(&hasRows); err != nil {
+		return fmt.Errorf("verify raw landing state: inspect partition: %w", err)
+	}
+	expectedRows := rowCount > 0
+	if hasRows != expectedRows {
+		return &rawLandingStateMismatchError{
+			Table: table, PartCol: partCol, PartVal: partVal,
+			Reason: "row_presence", Expected: fmt.Sprint(expectedRows), Observed: fmt.Sprint(hasRows),
+		}
+	}
+	ct, err := tx.Exec(ctx, `
+		UPDATE raw_tdx.landing_state SET fetched_at=now()
+		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`, table, partCol, partVal)
+	if err != nil {
+		return fmt.Errorf("verify raw landing state: touch state: %w", err)
+	}
+	if ct.RowsAffected() != 1 {
+		return &rawLandingStateMismatchError{
+			Table: table, PartCol: partCol, PartVal: partVal,
+			Reason: "state_update", Expected: "1", Observed: fmt.Sprint(ct.RowsAffected()),
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("verify raw landing state: commit: %w", err)
+	}
+	return nil
 }
 
 // rawDeleteSQL builds the per-partition DELETE for a raw_tdx landing. table and
@@ -247,18 +353,18 @@ SELECT r.* FROM jsonb_array_elements($2::jsonb) elem,
 // TRUNCATE'd. A dump failure is an ingestion failure and is returned as an error:
 // the caller must NOT advance the Last-Modified / If-Modified-Since cache unless
 // the dump succeeds, otherwise a later 304 would leave raw_tdx permanently stale.
-func dumpRawTDX(ctx context.Context, table, partCol, partVal string, body []byte) error {
+func dumpRawTDX(ctx context.Context, table, partCol, partVal, marker string, body []byte) error {
 	if len(body) == 0 {
 		body = []byte("[]")
 	}
-	return dumpRawTDXReader(ctx, table, partCol, partVal, bytes.NewReader(body))
+	return dumpRawTDXReader(ctx, table, partCol, partVal, marker, bytes.NewReader(body))
 }
 
 // dumpRawTDXReader is the streaming landing entrypoint used by the ingestor.
 // body must be seekable because each transient transaction retry consumes it;
 // the reader is rewound before every attempt instead of retaining a second full
 // copy of the payload in memory.
-func dumpRawTDXReader(ctx context.Context, table, partCol, partVal string, body io.ReadSeeker) error {
+func dumpRawTDXReader(ctx context.Context, table, partCol, partVal, marker string, body io.ReadSeeker) error {
 	if ingestDB == nil {
 		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
 	}
@@ -268,11 +374,14 @@ func dumpRawTDXReader(ctx context.Context, table, partCol, partVal string, body 
 	if body == nil {
 		return fmt.Errorf("%w: response body is nil", errRawDump)
 	}
+	if strings.TrimSpace(marker) == "" {
+		return fmt.Errorf("%w: last-modified marker is empty", errRawDump)
+	}
 	return obs.Retry(ctx, 3, 2*time.Second, func() error {
 		if _, err := body.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("%w: rewind response: %w", errRawDump, err)
 		}
-		return obs.Transient(landRawTDX(ctx, table, partCol, partVal, body))
+		return obs.Transient(landRawTDX(ctx, table, partCol, partVal, marker, body))
 	})
 }
 
@@ -281,11 +390,29 @@ func dumpRawTDXReader(ctx context.Context, table, partCol, partVal string, body 
 // server statement_timeout, and TCP keepalive is too slow to notice). On timeout
 // pgx cancels the query; dumpRawTDX retries, and if all attempts fail the caller
 // leaves the IMS cache un-advanced so this partition refetches next run.
-func landRawTDX(ctx context.Context, table, partCol, partVal string, body io.Reader) error {
+func landRawTDX(ctx context.Context, table, partCol, partVal, marker string, body io.Reader) error {
+	if ingestDB == nil {
+		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
+	}
+	return landRawTDXWithDB(ctx, ingestDB, table, partCol, partVal, marker, body)
+}
+
+func landRawTDXWithDB(
+	ctx context.Context,
+	db rawLandingBeginner,
+	table, partCol, partVal, marker string,
+	body io.Reader,
+) error {
+	if err := validateRawTarget(table, partCol); err != nil {
+		return err
+	}
+	if strings.TrimSpace(marker) == "" {
+		return fmt.Errorf("%w: last-modified marker is empty", errRawDump)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
-	tx, err := ingestDB.Begin(ctx)
+	tx, err := db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: begin: %w", errRawDump, err)
 	}
@@ -323,6 +450,17 @@ func landRawTDX(ctx context.Context, table, partCol, partVal string, body io.Rea
 	}, table, inject, body)
 	if err != nil {
 		return fmt.Errorf("%w: insert: %w", errRawDump, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO raw_tdx.landing_state
+			(table_name, partition_column, partition_value, last_modified, row_count, fetched_at)
+		VALUES ($1, $2, $3, $4, $5, now())
+		ON CONFLICT (table_name, partition_column, partition_value) DO UPDATE SET
+			last_modified=EXCLUDED.last_modified,
+			row_count=EXCLUDED.row_count,
+			fetched_at=EXCLUDED.fetched_at`,
+		table, partCol, partVal, marker, rows); err != nil {
+		return fmt.Errorf("%w: upsert landing state: %w", errRawDump, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("%w: commit: %w", errRawDump, err)

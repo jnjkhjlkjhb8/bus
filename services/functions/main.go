@@ -369,7 +369,11 @@ func (r staticPipelineRunner) Run(parent context.Context, job func(context.Conte
 		}
 		err = errors.Join(err, releaseErr)
 	}()
-	return job(ctx)
+	jobErr := job(ctx)
+	// A job may fail to cooperate with cancellation and return nil after the
+	// deadline. Never report that run as successful; preserve both a real job
+	// failure and the deadline/cancellation signal when both are present.
+	return errors.Join(jobErr, ctx.Err())
 }
 
 // addStaticCron applies cron's own non-overlap guard in addition to the runner's

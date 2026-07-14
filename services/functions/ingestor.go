@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"sync"
 	"time"
@@ -18,7 +17,7 @@ import (
 // by the static ingestor. *shared.TDXClient is the production implementation;
 // tests use a bounded fake to verify fan-out and error aggregation.
 type rawFetcher interface {
-	GetInto(context.Context, string, string, func(io.ReadSeeker) error) (bool, error)
+	GetInto(context.Context, string, string, func(shared.TDXIntoCommit) error) (shared.TDXIntoResult, error)
 }
 
 // ROLE=ingestor fetches static TDX endpoints and lands the raw payloads into
@@ -144,31 +143,60 @@ func ingestRaw(ctx context.Context, tdx rawFetcher) error {
 // by a later 304. Endpoints with no raw_tdx mapping still advance their marker
 // after the spool completes (commit is a no-op).
 func fetchRaw(ctx context.Context, tdx rawFetcher, url, name string) error {
-	modified, err := tdx.GetInto(ctx, url, name, func(body io.ReadSeeker) error {
-		table, partCol, partVal, ok := rawDumpTarget(url)
-		if !ok {
+	return fetchRawWithVerifier(ctx, tdx, url, name, verifyAndTouchRawLanding)
+}
+
+type rawLandingVerifier func(context.Context, string, string, string, string) error
+
+func fetchRawWithVerifier(
+	ctx context.Context,
+	tdx rawFetcher,
+	url, name string,
+	verify rawLandingVerifier,
+) error {
+	table, partCol, partVal, mapped := rawDumpTarget(url)
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err := tdx.GetInto(ctx, url, name, func(commit shared.TDXIntoCommit) error {
+			if !mapped {
+				return nil
+			}
+			return dumpRawTDXReader(ctx, table, partCol, partVal, commit.Marker, commit.Body)
+		})
+		if err != nil {
+			if errors.Is(err, errRawDump) {
+				log.Infof("[INGEST] url=%s event=raw_dump_error error=%v", url, err)
+			} else {
+				log.Infof("[INGEST] url=%s event=fetch_error error=%v", url, err)
+			}
+			return fmt.Errorf("fetch raw %s: %w", url, err)
+		}
+		if result.Modified {
 			return nil
 		}
-		return dumpRawTDXReader(ctx, table, partCol, partVal, body)
-	})
-	if err != nil {
-		if errors.Is(err, errRawDump) {
-			log.Infof("[INGEST] url=%s event=raw_dump_error error=%v", url, err)
-		} else {
-			log.Infof("[INGEST] url=%s event=fetch_error error=%v", url, err)
+		if !mapped {
+			log.Infof("[INGEST] url=%s event=skip reason=not_modified", url)
+			return nil
 		}
-		return fmt.Errorf("fetch raw %s: %w", url, err)
-	}
-	if !modified {
-		// 304: nothing landed, but the landed partition is verified current — bump
-		// fetched_at so the loader's staleness window doesn't skip it forever.
-		if table, partCol, partVal, ok := rawDumpTarget(url); ok {
-			if err := touchRawTDX(ctx, table, partCol, partVal); err != nil {
-				log.Infof("[INGEST] url=%s event=touch_error error=%v", url, err)
-				return fmt.Errorf("touch raw %s: %w", url, err)
-			}
+
+		err = verify(ctx, table, partCol, partVal, result.Marker)
+		if err == nil {
+			log.Infof("[INGEST] url=%s event=skip reason=not_modified", url)
+			return nil
 		}
-		log.Infof("[INGEST] url=%s event=skip reason=not_modified", url)
+		if !errors.Is(err, errRawLandingStateMismatch) {
+			log.Infof("[INGEST] url=%s event=state_verify_error error=%v", url, err)
+			return fmt.Errorf("verify raw %s: %w", url, err)
+		}
+		if attempt == 1 {
+			return fmt.Errorf("verify raw %s after forced refetch: %w", url, err)
+		}
+		if result.Invalidate == nil {
+			return fmt.Errorf("verify raw %s: %w: nil marker invalidator", url, err)
+		}
+		if invalidateErr := result.Invalidate(); invalidateErr != nil {
+			return fmt.Errorf("verify raw %s: %w", url, errors.Join(err, invalidateErr))
+		}
+		log.Infof("[INGEST] url=%s event=refetch reason=landing_state_mismatch", url)
 	}
 	return nil
 }

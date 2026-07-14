@@ -27,21 +27,22 @@ func loaderTestPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("connect: %v", err)
 	}
 	var provisioned bool
-	if err := pool.QueryRow(context.Background(),
-		"SELECT to_regclass('raw_tdx.bus_route') IS NOT NULL").Scan(&provisioned); err != nil {
+	if err := pool.QueryRow(context.Background(), `
+		SELECT to_regclass('raw_tdx.bus_route') IS NOT NULL
+		   AND to_regclass('raw_tdx.landing_state') IS NOT NULL`).Scan(&provisioned); err != nil {
 		pool.Close()
 		t.Fatalf("probe raw_tdx schema: %v", err)
 	}
 	if !provisioned {
 		pool.Close()
-		t.Skip("raw_tdx schema not provisioned; skipping loader integration test")
+		t.Skip("raw_tdx schema or landing_state migration not provisioned; skipping loader integration test")
 	}
 	return pool
 }
 
 // TestRawTDXSourceStripsBookkeeping lands a partitioned row and asserts the
 // reconstructed element carries the TDX fields but neither the partition column
-// (city) nor fetched_at, and that MAX(fetched_at) comes back fresh.
+// (city) nor fetched_at, and that landing_state freshness comes back fresh.
 func TestRawTDXSourceStripsBookkeeping(t *testing.T) {
 	pool := loaderTestPool(t)
 	defer pool.Close()
@@ -52,12 +53,15 @@ func TestRawTDXSourceStripsBookkeeping(t *testing.T) {
 	defer func() { ingestDB = prev }()
 
 	const city = "ZZ_LOAD_CITY"
-	cleanup := func() { _, _ = pool.Exec(ctx, "DELETE FROM raw_tdx.bus_route WHERE city=$1", city) }
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM raw_tdx.bus_route WHERE city=$1", city)
+		deleteRawLandingState(ctx, pool, "bus_route", "city", city)
+	}
 	cleanup()
 	defer cleanup()
 
 	body := []byte(`[{"RouteUID":"ZZR1","RouteName":{"Zh_tw":"測"},"VersionID":7}]`)
-	if err := dumpRawTDX(ctx, "bus_route", "city", city, body); err != nil {
+	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-ROUTE", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 
@@ -127,12 +131,13 @@ func TestRawTDXSourceTHSRTraindateNormalized(t *testing.T) {
 	const date = "2026-07-04"
 	cleanup := func() {
 		_, _ = pool.Exec(ctx, "DELETE FROM raw_tdx.thsr_dailytimetable WHERE traindate = $1", date)
+		deleteRawLandingState(ctx, pool, "thsr_dailytimetable", "traindate", date)
 	}
 	cleanup()
 	defer cleanup()
 
 	body := []byte(`[{"TrainDate":"2026-07-04","DailyTrainInfo":{"TrainNo":"0101"},"StopTimes":[],"VersionID":1}]`)
-	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, body); err != nil {
+	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-THSR", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 
@@ -187,10 +192,13 @@ func TestRunLoadThroughRawTDXSource(t *testing.T) {
 	defer sinkCleanup()
 
 	body := []byte(`[{"StationID":"ZZ_LOAD_STATION","StationName":{"Zh_tw":"測站"},"LocationCityCode":"TPE","StationPosition":{"PositionLon":121.5,"PositionLat":25.0},"StationCode":"Z1"}]`)
-	if err := dumpRawTDX(ctx, "tra_station", "", "", body); err != nil {
+	if err := dumpRawTDX(ctx, "tra_station", "", "", "TEST-TRA", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
-	defer func() { _, _ = pool.Exec(ctx, "TRUNCATE raw_tdx.tra_station") }()
+	defer func() {
+		_, _ = pool.Exec(ctx, "TRUNCATE raw_tdx.tra_station")
+		deleteRawLandingState(ctx, pool, "tra_station", "", "")
+	}()
 
 	src := rawTDXSource{pool: pool}
 	if err := runLoad(ctx, src, pool, nil, []string{"tra_station"}); err != nil {
@@ -292,6 +300,7 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	cleanup := func() {
 		for _, tbl := range []string{"bus_route", "bus_stopofroute", "bus_shape", "bus_schedule", "bus_station", "bus_stationgroup", "bus_operator", "bus_routefare"} {
 			_, _ = pool.Exec(ctx, "DELETE FROM raw_tdx."+tbl+" WHERE city=$1", city)
+			deleteRawLandingState(ctx, pool, tbl, "city", city)
 		}
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_subroutes WHERE sub_route_uid=$1", subUID)
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_static WHERE sub_route_uid=$1", subUID)
@@ -304,7 +313,7 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	// registry entry, and a matching subroute fare. Empty arrays for the bus
 	// datasets loadBus reads but this fixture does not exercise.
 	land := func(table, body string) {
-		if err := dumpRawTDX(ctx, table, "city", city, []byte(body)); err != nil {
+		if err := dumpRawTDX(ctx, table, "city", city, "TEST-BUS", []byte(body)); err != nil {
 			t.Fatalf("land %s: %v", table, err)
 		}
 	}
@@ -374,12 +383,10 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	}
 }
 
-// TestTouchRawTDXRefreshesFetchedAt guards the 304 staleness seam: a TDX
-// Not-Modified response lands nothing, so fetched_at kept its original landing
-// time and isStale eventually skipped the partition forever even though the raw
-// data was verified current. touchRawTDX must bump fetched_at so the loader
-// keeps loading unchanged-at-TDX partitions.
-func TestTouchRawTDXRefreshesFetchedAt(t *testing.T) {
+// TestVerifyAndTouchRawLandingRefreshesState guards the 304 staleness seam: a
+// TDX Not-Modified response lands nothing, so landing-state freshness must move
+// forward without mass-updating the raw rows.
+func TestVerifyAndTouchRawLandingRefreshesState(t *testing.T) {
 	pool := loaderTestPool(t)
 	defer pool.Close()
 	ctx := context.Background()
@@ -391,18 +398,20 @@ func TestTouchRawTDXRefreshesFetchedAt(t *testing.T) {
 	const date = "2020-01-02" // fake partition far outside any real landing window
 	cleanup := func() {
 		_, _ = pool.Exec(ctx, "DELETE FROM raw_tdx.thsr_dailytimetable WHERE traindate = $1", date)
+		deleteRawLandingState(ctx, pool, "thsr_dailytimetable", "traindate", date)
 	}
 	cleanup()
 	defer cleanup()
 
 	body := []byte(`[{"TrainDate":"2020-01-02","DailyTrainInfo":{"TrainNo":"0101"},"StopTimes":[],"VersionID":1}]`)
-	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, body); err != nil {
+	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-304", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 	// Backdate the landing past the 27h freshness window, as if every ingest run
 	// since then answered 304.
-	if _, err := pool.Exec(ctx,
-		"UPDATE raw_tdx.thsr_dailytimetable SET fetched_at = now() - interval '48 hours' WHERE traindate = $1", date); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE raw_tdx.landing_state
+		SET fetched_at = now() - interval '48 hours'
+		WHERE table_name='thsr_dailytimetable' AND partition_column='traindate' AND partition_value=$1`, date); err != nil {
 		t.Fatalf("backdate: %v", err)
 	}
 
@@ -413,8 +422,8 @@ func TestTouchRawTDXRefreshesFetchedAt(t *testing.T) {
 		t.Fatalf("backdated partition not stale (fetched_at=%s); test premise broken", fetchedAt)
 	}
 
-	if err := touchRawTDX(ctx, "thsr_dailytimetable", "traindate", date); err != nil {
-		t.Fatalf("touchRawTDX: %v", err)
+	if err := verifyAndTouchRawLanding(ctx, "thsr_dailytimetable", "traindate", date, "TEST-304"); err != nil {
+		t.Fatalf("verifyAndTouchRawLanding: %v", err)
 	}
 
 	if _, fetchedAt, err := src.datasetJSON(ctx, "thsr_dailytimetable", "traindate", date); err != nil {
@@ -422,4 +431,9 @@ func TestTouchRawTDXRefreshesFetchedAt(t *testing.T) {
 	} else if isStale(fetchedAt) {
 		t.Fatalf("touched partition still stale (fetched_at=%s)", fetchedAt)
 	}
+}
+
+func deleteRawLandingState(ctx context.Context, pool *pgxpool.Pool, table, partCol, partVal string) {
+	_, _ = pool.Exec(ctx, `DELETE FROM raw_tdx.landing_state
+		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`, table, partCol, partVal)
 }
