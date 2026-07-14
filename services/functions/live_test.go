@@ -1141,26 +1141,39 @@ func TestRedisOwnedTTLIntegration(t *testing.T) {
 }
 
 type revalidationLiveSource struct {
-	invalidated   bool
-	invalidateErr error
+	target               string
+	body                 []byte
+	markerPresent        bool
+	invalidationAttempts int
+	invalidateErr        error
 }
 
-func (s *revalidationLiveSource) fetch(_ context.Context, _, _ string) (*shared.TDXFetch, error) {
-	if s.invalidated {
+func (s *revalidationLiveSource) fetch(_ context.Context, _, name string) (*shared.TDXFetch, error) {
+	if name != s.target {
+		return &shared.TDXFetch{Modified: false, Invalidate: func() error { return nil }}, nil
+	}
+	if !s.markerPresent {
 		return &shared.TDXFetch{
 			Modified: true,
-			Decoder:  json.NewDecoder(strings.NewReader(`[]`)),
+			Decoder:  json.NewDecoder(bytes.NewReader(s.body)),
 			Close:    func() error { return nil },
-			Ack:      func() error { return nil },
+			Ack: func() error {
+				s.markerPresent = true
+				return nil
+			},
 		}, nil
 	}
 	return &shared.TDXFetch{Modified: false, Invalidate: func() error {
-		s.invalidated = true
-		return s.invalidateErr
+		s.invalidationAttempts++
+		if s.invalidateErr != nil {
+			return s.invalidateErr
+		}
+		s.markerPresent = false
+		return nil
 	}}, nil
 }
 
-func TestRedisMissingOwnedMemberInvalidates304Marker(t *testing.T) {
+func TestRedisMissingOwnedMemberRetriesInvalidationThenReplacesOwner(t *testing.T) {
 	addr := os.Getenv("REDIS_TEST_ADDR")
 	if addr == "" {
 		t.Skip("REDIS_TEST_ADDR not set")
@@ -1180,25 +1193,63 @@ func TestRedisMissingOwnedMemberInvalidates304Marker(t *testing.T) {
 		t.Fatalf("expire owner: %v", err)
 	}
 	invalidateErr := errors.New("invalidate marker failed")
-	src := &revalidationLiveSource{invalidateErr: invalidateErr}
-	spec := liveSpec{ownedKey: func(string) string { return owner }, ownedTTL: bikeLiveTTL}
+	src := &revalidationLiveSource{
+		target:        "bike_availabilityTaipei",
+		body:          readFixture(t, "tdx_bike_availability.json"),
+		markerPresent: true,
+		invalidateErr: invalidateErr,
+	}
+	spec := specByKey(t, "bike")
 	fetch := bindFetch(src, redisLiveSink{rc: rc}, spec)
 
-	if _, err := fetch(context.Background(), "/bike", "bike_availabilityTaipei"); !errors.Is(err, invalidateErr) {
-		t.Fatalf("stale ownership error = %v, want joined invalidation error", err)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if _, err := fetch(context.Background(), "/bike", src.target); !errors.Is(err, invalidateErr) {
+			t.Fatalf("attempt %d stale ownership error = %v, want joined invalidation error", attempt, err)
+		}
+		if !src.markerPresent {
+			t.Fatalf("attempt %d cleared marker despite failed invalidation", attempt)
+		}
+		if exists, err := rc.Exists(owner).Result(); err != nil || exists != 1 {
+			t.Fatalf("attempt %d stale owner exists=%d err=%v, want retained for retry", attempt, exists, err)
+		}
 	}
-	if !src.invalidated {
-		t.Fatal("stale ownership did not invalidate 304 marker")
+	if src.invalidationAttempts != 2 {
+		t.Fatalf("invalidation attempts = %d, want 2", src.invalidationAttempts)
 	}
-	if exists, err := rc.Exists(owner).Result(); err != nil || exists != 0 {
-		t.Fatalf("stale owner exists=%d err=%v, want removed", exists, err)
+	ownerTTL, err := rc.PTTL(owner).Result()
+	if err != nil || ownerTTL <= 0 || ownerTTL >= 10*time.Minute {
+		t.Fatalf("stale owner TTL = %v err=%v, want retained without 24h renewal", ownerTTL, err)
 	}
-	second, err := fetch(context.Background(), "/bike", "bike_availabilityTaipei")
+
+	src.invalidateErr = nil
+	if _, err := fetch(context.Background(), "/bike", src.target); err == nil {
+		t.Fatal("successful marker invalidation hid stale ownership error")
+	}
+	if src.markerPresent {
+		t.Fatal("successful invalidation left marker present")
+	}
+	if exists, err := rc.Exists(owner).Result(); err != nil || exists != 1 {
+		t.Fatalf("stale owner after successful invalidation exists=%d err=%v, want retained until full write", exists, err)
+	}
+
+	if err := spec.run(context.Background(), bindFetch(src, redisLiveSink{rc: rc}, spec), redisLiveSink{rc: rc}); err != nil {
+		t.Fatalf("full bike refresh after invalidation: %v", err)
+	}
+	wantMembers := map[string]bool{
+		shared.BikeAvailabilityKey("TPE500101001"): true,
+		shared.BikeAvailabilityKey("TPE500101002"): true,
+	}
+	members, err := rc.SMembers(owner).Result()
 	if err != nil {
-		t.Fatalf("unconditional next fetch: %v", err)
+		t.Fatalf("read replacement owner: %v", err)
 	}
-	if !second.Modified {
-		t.Fatal("next fetch remained conditional after marker invalidation")
+	if len(members) != len(wantMembers) {
+		t.Fatalf("replacement owner members = %v, want %v", members, wantMembers)
+	}
+	for _, member := range members {
+		if !wantMembers[member] {
+			t.Fatalf("replacement owner retained stale member %q", member)
+		}
 	}
 }
 
@@ -1221,15 +1272,33 @@ func TestRedisCanceledTHSRExecDoesNotAcknowledge(t *testing.T) {
 	spec := specByKey(t, "thsr_seats")
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
+	started := time.Now()
 	err := spec.run(ctx, bindFetch(src, redisLiveSink{rc: rc}, spec), redisLiveSink{rc: rc})
+	elapsed := time.Since(started)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("THSR Exec error = %v, want context deadline exceeded", err)
+	}
+	if elapsed < 150*time.Millisecond {
+		t.Fatalf("canceled THSR returned after %v while paused transaction was still pending", elapsed)
 	}
 	if len(src.closed) != 1 {
 		t.Fatalf("THSR response closes = %d, want decode reached before cancellation", len(src.closed))
 	}
 	if len(src.acked) != 0 {
 		t.Fatalf("canceled Redis Exec acknowledged marker: %v", src.acked)
+	}
+	key := shared.ThsrSeatsKey(time.Now().In(taipei).Format(time.DateOnly), "0801")
+	const newer = "newer same-runner snapshot"
+	if err := rc.Set(key, newer, time.Minute).Err(); err != nil {
+		t.Fatalf("write newer snapshot after canceled call returned: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	got, err := rc.Get(key).Result()
+	if err != nil {
+		t.Fatalf("read final snapshot: %v", err)
+	}
+	if got != newer {
+		t.Fatalf("final snapshot = %q, want newer write; canceled transaction landed late", got)
 	}
 }
 

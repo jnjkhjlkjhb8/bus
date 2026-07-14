@@ -338,11 +338,10 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 		}
 	}
 	if len(missing) > 0 {
-		staleErr := fmt.Errorf("ownership set %s contains missing live keys %v", key, missing)
-		if _, err := rc.Del(key).Result(); err != nil {
-			return errors.Join(staleErr, fmt.Errorf("remove stale ownership set %s: %w", key, err))
-		}
-		return staleErr
+		// Keep the stale membership until marker invalidation succeeds and the
+		// resulting full fetch atomically replaces it. Deleting it here would make
+		// a failed invalidation invisible to the next 304, preventing a retry.
+		return fmt.Errorf("ownership set %s contains missing live keys %v", key, missing)
 	}
 	renewed, err := rc.Expire(key, ownedKeysTTL).Result()
 	if err != nil {
@@ -399,24 +398,12 @@ func (p *redisLivePipe) Exec() error {
 		return errors.New("live Redis pipeline requires finite Redis read timeout and connection timeouts")
 	}
 	// go-redis v6 stores Context on the client but does not apply it to pipeline
-	// socket deadlines. Execute asynchronously so a live job can stop waiting and
-	// withhold its TDX Ack when its deadline expires. The underlying operation can
-	// therefore finish after Exec returns; the finite dial/read/write/pool timeout
-	// guard above bounds that worker, and the buffered channel lets it exit.
-	result := make(chan error, 1)
-	go func() {
-		_, err := p.pipe.Exec()
-		result <- err
-	}()
-	select {
-	case err := <-result:
-		if contextErr := p.ctx.Err(); contextErr != nil {
-			return contextErr
-		}
-		return err
-	case <-p.ctx.Done():
-		return p.ctx.Err()
-	}
+	// socket deadlines. Execute synchronously under the finite client timeouts so
+	// no transaction can land after this call returns and overwrite a newer run.
+	// A context that expires during the wait is joined with the Redis result so
+	// callers never acknowledge its TDX marker, even if EXEC itself succeeded.
+	_, execErr := p.pipe.Exec()
+	return errors.Join(execErr, p.ctx.Err())
 }
 
 // TTL windows re-armed on a 304, per the CONTEXT.md operating rule. They match
