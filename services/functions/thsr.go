@@ -72,7 +72,7 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 		// reaches it — no pattern semantics. It seeds new clients by SCANning the
 		// per-train keys, so the SET keys carry the actual snapshots.
 		channel := shared.ThsrSeatsPattern(date)
-		pipe := sink.pipeline()
+		pipe := sink.pipelineContext(ctx)
 		count := 0
 		for trainNo, seats := range row {
 			pb, err := proto.Marshal(seats)

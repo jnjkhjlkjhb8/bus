@@ -49,7 +49,6 @@ type livePipe interface {
 // the TTL on every key matching the given patterns (SCAN + EXPIRE), the
 // operation the 304 path needs.
 type liveSink interface {
-	pipeline() livePipe
 	pipelineContext(ctx context.Context) livePipe
 	refreshTTL(ctx context.Context, patterns []ttlPattern) error
 	refreshOwnedTTL(ctx context.Context, key string, ttl time.Duration) error
@@ -98,7 +97,14 @@ func bindFetch(src liveSource, sink liveSink, spec liveSpec) boundFetch {
 		fetch, err := src.fetch(ctx, url, name)
 		if err == nil && fetch != nil && !fetch.Modified && spec.ownedKey != nil {
 			if refreshErr := sink.refreshOwnedTTL(ctx, spec.ownedKey(name), spec.ownedTTL); refreshErr != nil {
-				return nil, fmt.Errorf("refresh %s owned live keys: %w", name, refreshErr)
+				invalidateErr := invalidateTDXFetch(fetch)
+				if invalidateErr != nil {
+					invalidateErr = fmt.Errorf("invalidate %s marker after owned-key refresh failure: %w", name, invalidateErr)
+				}
+				return nil, errors.Join(
+					fmt.Errorf("refresh %s owned live keys: %w", name, refreshErr),
+					invalidateErr,
+				)
 			}
 		} else if err == nil && fetch != nil && !fetch.Modified && spec.ttlPatterns != nil {
 			// 304 Not-Modified: the cached live data is still valid, so re-arm its
@@ -240,12 +246,14 @@ type redisLiveSink struct {
 	rc *redis.Client
 }
 
-func (s redisLiveSink) pipeline() livePipe {
-	return &redisLivePipe{pipe: s.rc.Pipeline()}
-}
-
 func (s redisLiveSink) pipelineContext(ctx context.Context) livePipe {
-	return &redisLivePipe{pipe: s.rc.WithContext(ctx).TxPipeline()}
+	options := s.rc.Options()
+	return &redisLivePipe{
+		pipe: s.rc.WithContext(ctx).TxPipeline(),
+		ctx:  ctx,
+		finiteWait: options.DialTimeout > 0 && options.ReadTimeout > 0 &&
+			options.WriteTimeout > 0 && options.PoolTimeout > 0,
+	}
 }
 
 // getString reads a single string value, delegating to the underlying client so
@@ -312,12 +320,36 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 		return nil
 	}
 	pipe := rc.Pipeline()
+	expires := make([]*redis.BoolCmd, 0, len(members))
 	for _, member := range members {
-		pipe.Expire(member, ttl)
+		expires = append(expires, pipe.Expire(member, ttl))
 	}
-	pipe.Expire(key, ownedKeysTTL)
 	if _, err := pipe.Exec(); err != nil {
 		return fmt.Errorf("refresh ownership set %s: %w", key, err)
+	}
+	missing := make([]string, 0)
+	for i, command := range expires {
+		exists, err := command.Result()
+		if err != nil {
+			return fmt.Errorf("inspect owned key %s: %w", members[i], err)
+		}
+		if !exists {
+			missing = append(missing, members[i])
+		}
+	}
+	if len(missing) > 0 {
+		staleErr := fmt.Errorf("ownership set %s contains missing live keys %v", key, missing)
+		if _, err := rc.Del(key).Result(); err != nil {
+			return errors.Join(staleErr, fmt.Errorf("remove stale ownership set %s: %w", key, err))
+		}
+		return staleErr
+	}
+	renewed, err := rc.Expire(key, ownedKeysTTL).Result()
+	if err != nil {
+		return fmt.Errorf("refresh ownership metadata %s: %w", key, err)
+	}
+	if !renewed {
+		return fmt.Errorf("refresh ownership metadata %s: key disappeared", key)
 	}
 	return nil
 }
@@ -325,7 +357,9 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 // redisLivePipe adapts a go-redis Pipeliner to the livePipe interface, dropping
 // the per-command result handles the live jobs never inspect (they only Exec).
 type redisLivePipe struct {
-	pipe redis.Pipeliner
+	pipe       redis.Pipeliner
+	ctx        context.Context
+	finiteWait bool
 }
 
 func (p *redisLivePipe) Set(key string, value any, ttl time.Duration) {
@@ -358,8 +392,31 @@ func (p *redisLivePipe) ReplaceOwnedKeys(key string, members []string, ttl time.
 }
 
 func (p *redisLivePipe) Exec() error {
-	_, err := p.pipe.Exec()
-	return err
+	if err := p.ctx.Err(); err != nil {
+		return err
+	}
+	if !p.finiteWait {
+		return errors.New("live Redis pipeline requires finite Redis read timeout and connection timeouts")
+	}
+	// go-redis v6 stores Context on the client but does not apply it to pipeline
+	// socket deadlines. Execute asynchronously so a live job can stop waiting and
+	// withhold its TDX Ack when its deadline expires. The underlying operation can
+	// therefore finish after Exec returns; the finite dial/read/write/pool timeout
+	// guard above bounds that worker, and the buffered channel lets it exit.
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.pipe.Exec()
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if contextErr := p.ctx.Err(); contextErr != nil {
+			return contextErr
+		}
+		return err
+	case <-p.ctx.Done():
+		return p.ctx.Err()
+	}
 }
 
 // TTL windows re-armed on a 304, per the CONTEXT.md operating rule. They match

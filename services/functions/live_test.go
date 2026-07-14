@@ -25,14 +25,15 @@ import (
 // that loops over many partitions (cities/systems) while asserting on only the
 // seeded one, and exercise the 304→TTL path for the rest.
 type fakeLiveSource struct {
-	fixtures    map[string][]byte // key: fetch name → raw TDX JSON array
-	calls       []string
-	acked       []string
-	closed      []string
-	invalidated []string
-	ackErr      error
-	ackErrors   map[string]error
-	closeErr    error
+	fixtures      map[string][]byte // key: fetch name → raw TDX JSON array
+	calls         []string
+	acked         []string
+	closed        []string
+	invalidated   []string
+	ackErr        error
+	ackErrors     map[string]error
+	closeErr      error
+	invalidateErr error
 }
 
 func (s *fakeLiveSource) fetch(_ context.Context, _, name string) (*shared.TDXFetch, error) {
@@ -43,7 +44,7 @@ func (s *fakeLiveSource) fetch(_ context.Context, _, name string) (*shared.TDXFe
 			Modified: false,
 			Invalidate: func() error {
 				s.invalidated = append(s.invalidated, name)
-				return nil
+				return s.invalidateErr
 			},
 		}, nil
 	}
@@ -63,7 +64,7 @@ func (s *fakeLiveSource) fetch(_ context.Context, _, name string) (*shared.TDXFe
 		},
 		Invalidate: func() error {
 			s.invalidated = append(s.invalidated, name)
-			return nil
+			return s.invalidateErr
 		},
 	}, nil
 }
@@ -109,11 +110,10 @@ type captureLiveSink struct {
 	hashes     map[string]map[string]string
 	owned      map[string][]string
 	execErr    error
+	execHook   func() error
 	refreshErr error
 	contexts   []context.Context
 }
-
-func (s *captureLiveSink) pipeline() livePipe { return &capturePipe{sink: s} }
 
 func (s *captureLiveSink) pipelineContext(ctx context.Context) livePipe {
 	s.contexts = append(s.contexts, ctx)
@@ -199,6 +199,11 @@ func (p *capturePipe) ReplaceOwnedKeys(key string, members []string, _ time.Dura
 }
 
 func (p *capturePipe) Exec() error {
+	if p.sink.execHook != nil {
+		if err := p.sink.execHook(); err != nil {
+			return err
+		}
+	}
 	if p.sink.execErr != nil {
 		return p.sink.execErr
 	}
@@ -611,6 +616,71 @@ func TestRealtimePipelineReceivesJobContext(t *testing.T) {
 	}
 	if len(sink.contexts) == 0 || sink.contexts[0] != ctx {
 		t.Fatalf("pipeline contexts = %v, want job context", sink.contexts)
+	}
+}
+
+func TestAllRealtimeWritersCancelDuringExecWithoutAck(t *testing.T) {
+	tests := []struct {
+		name     string
+		fixtures map[string][]byte
+		run      func(context.Context, *fakeLiveSource, *captureLiveSink) error
+	}{
+		{name: "bike", fixtures: map[string][]byte{"bike_availabilityTaipei": readFixture(t, "tdx_bike_availability.json")}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
+			spec := specByKey(t, "bike")
+			return spec.run(ctx, bindFetch(src, sink, spec), sink)
+		}},
+		{name: "mrt", fixtures: map[string][]byte{"mrt_LiveBoardTRTC": readFixture(t, "tdx_mrt_liveboard_trtc.json")}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
+			spec := specByKey(t, "mrt")
+			return spec.run(ctx, bindFetch(src, sink, spec), sink)
+		}},
+		{name: "tra", fixtures: map[string][]byte{"tra_delay": readFixture(t, "tdx_tra_delay.json")}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
+			spec := specByKey(t, "tra")
+			return spec.run(ctx, bindFetch(src, sink, spec), sink)
+		}},
+		{name: "thsr", fixtures: map[string][]byte{"thsr_availableseats": readFixture(t, "tdx_thsr_availableseats.json")}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
+			spec := specByKey(t, "thsr_seats")
+			return spec.run(ctx, bindFetch(src, sink, spec), sink)
+		}},
+		{name: "bus", fixtures: map[string][]byte{
+			"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
+			"bus_RealTimeByFrequencyTaipei":    []byte(`[]`),
+		}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
+			prefix := citymap["Taipei"]
+			busStaticMapCache.Delete(prefix)
+			t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+			job := busLiveJob{
+				fetch: bindFetch(src, sink, specByKey(t, "bus")), sink: sink,
+				store:    &fakeBusEtaStore{stops: []busStationmap{{StationUID: "S", SubRouteUID: "TPE1", StopUID: "STOP", StopSequence: 1}}},
+				notifier: &captureBusArrivalNotifier{}, now: time.Now,
+			}
+			return job.runCity(ctx, "Taipei")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			src := &fakeLiveSource{fixtures: test.fixtures}
+			execStarted := false
+			sink := &captureLiveSink{execHook: func() error {
+				execStarted = true
+				cancel()
+				<-ctx.Done()
+				return ctx.Err()
+			}}
+			err := test.run(ctx, src, sink)
+			if !execStarted {
+				t.Fatal("test did not cancel during Exec")
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("writer error = %v, want context canceled", err)
+			}
+			if len(src.acked) != 0 {
+				t.Fatalf("canceled Exec acknowledged TDX marker: %v", src.acked)
+			}
+			if len(sink.contexts) == 0 || sink.contexts[0] != ctx {
+				t.Fatalf("pipeline contexts = %v, want job context", sink.contexts)
+			}
+		})
 	}
 }
 
@@ -1067,6 +1137,112 @@ func TestRedisOwnedTTLIntegration(t *testing.T) {
 	unownedTTL, err := rc.PTTL(unowned).Result()
 	if err != nil || unownedTTL <= 0 || unownedTTL >= 30*time.Second {
 		t.Fatalf("unowned TTL = %v, err=%v, want original short TTL", unownedTTL, err)
+	}
+}
+
+type revalidationLiveSource struct {
+	invalidated   bool
+	invalidateErr error
+}
+
+func (s *revalidationLiveSource) fetch(_ context.Context, _, _ string) (*shared.TDXFetch, error) {
+	if s.invalidated {
+		return &shared.TDXFetch{
+			Modified: true,
+			Decoder:  json.NewDecoder(strings.NewReader(`[]`)),
+			Close:    func() error { return nil },
+			Ack:      func() error { return nil },
+		}, nil
+	}
+	return &shared.TDXFetch{Modified: false, Invalidate: func() error {
+		s.invalidated = true
+		return s.invalidateErr
+	}}, nil
+}
+
+func TestRedisMissingOwnedMemberInvalidates304Marker(t *testing.T) {
+	addr := os.Getenv("REDIS_TEST_ADDR")
+	if addr == "" {
+		t.Skip("REDIS_TEST_ADDR not set")
+	}
+	rc := redis.NewClient(&redis.Options{Addr: addr})
+	defer rc.Close()
+	if err := rc.FlushDB().Err(); err != nil {
+		t.Fatalf("flush Redis: %v", err)
+	}
+	t.Cleanup(func() { _ = rc.FlushDB().Err() })
+	owner := shared.LiveOwnedKeysKey("bike", "Taipei")
+	missing := shared.BikeAvailabilityKey("EXPIRED")
+	if err := rc.SAdd(owner, missing).Err(); err != nil {
+		t.Fatalf("seed stale owner: %v", err)
+	}
+	if err := rc.Expire(owner, 5*time.Minute).Err(); err != nil {
+		t.Fatalf("expire owner: %v", err)
+	}
+	invalidateErr := errors.New("invalidate marker failed")
+	src := &revalidationLiveSource{invalidateErr: invalidateErr}
+	spec := liveSpec{ownedKey: func(string) string { return owner }, ownedTTL: bikeLiveTTL}
+	fetch := bindFetch(src, redisLiveSink{rc: rc}, spec)
+
+	if _, err := fetch(context.Background(), "/bike", "bike_availabilityTaipei"); !errors.Is(err, invalidateErr) {
+		t.Fatalf("stale ownership error = %v, want joined invalidation error", err)
+	}
+	if !src.invalidated {
+		t.Fatal("stale ownership did not invalidate 304 marker")
+	}
+	if exists, err := rc.Exists(owner).Result(); err != nil || exists != 0 {
+		t.Fatalf("stale owner exists=%d err=%v, want removed", exists, err)
+	}
+	second, err := fetch(context.Background(), "/bike", "bike_availabilityTaipei")
+	if err != nil {
+		t.Fatalf("unconditional next fetch: %v", err)
+	}
+	if !second.Modified {
+		t.Fatal("next fetch remained conditional after marker invalidation")
+	}
+}
+
+func TestRedisCanceledTHSRExecDoesNotAcknowledge(t *testing.T) {
+	addr := os.Getenv("REDIS_TEST_ADDR")
+	if addr == "" {
+		t.Skip("REDIS_TEST_ADDR not set")
+	}
+	rc := redis.NewClient(&redis.Options{Addr: addr})
+	defer rc.Close()
+	if err := rc.FlushDB().Err(); err != nil {
+		t.Fatalf("flush Redis: %v", err)
+	}
+	if err := rc.Do("CLIENT", "PAUSE", 250, "WRITE").Err(); err != nil {
+		t.Fatalf("pause Redis writes: %v", err)
+	}
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"thsr_availableseats": readFixture(t, "tdx_thsr_availableseats.json"),
+	}}
+	spec := specByKey(t, "thsr_seats")
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	err := spec.run(ctx, bindFetch(src, redisLiveSink{rc: rc}, spec), redisLiveSink{rc: rc})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("THSR Exec error = %v, want context deadline exceeded", err)
+	}
+	if len(src.closed) != 1 {
+		t.Fatalf("THSR response closes = %d, want decode reached before cancellation", len(src.closed))
+	}
+	if len(src.acked) != 0 {
+		t.Fatalf("canceled Redis Exec acknowledged marker: %v", src.acked)
+	}
+}
+
+func TestRedisLivePipelineRejectsUnboundedSocketWait(t *testing.T) {
+	rc := redis.NewClient(&redis.Options{
+		Addr:        "127.0.0.1:1",
+		ReadTimeout: -1,
+	})
+	defer rc.Close()
+	pipe := redisLiveSink{rc: rc}.pipelineContext(context.Background())
+	pipe.Set("unreachable", "value", time.Minute)
+	if err := pipe.Exec(); err == nil || !strings.Contains(err.Error(), "finite Redis read timeout") {
+		t.Fatalf("Exec error = %v, want finite-timeout guard", err)
 	}
 }
 
