@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -49,24 +50,52 @@ func (s Store) subscribedTokens(ctx context.Context, routeType, routeKey string)
 	return out, rows.Err()
 }
 
-// activeReminders returns pending, unexpired arrival reminders for a specific
-// route/stop/direction, joined to a push-enabled device token. now filters out
-// reminders whose expires_at has passed.
-func (s Store) activeReminders(ctx context.Context, routeType, routeKey, stopKey, direction string, now time.Time) ([]arrivalReminder, error) {
-	rows, err := s.db.Query(ctx, `SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes,r.plate FROM firebase_arrival_reminder r JOIN firebase_device d ON d.install_id=r.install_id WHERE r.route_type=$1 AND r.route_key=$2 AND r.stop_key=$3 AND r.direction=$4 AND r.status='pending' AND r.expires_at>$5 AND d.push_enabled AND d.fcm_token<>''`, routeType, routeKey, stopKey, direction, now)
+// activeRemindersForArrivals joins all live arrivals to their pending reminders
+// in one query. The four identity fields are joined independently so values
+// that happen to share a route, stop, or direction cannot be cross-matched.
+func (s Store) activeRemindersForArrivals(ctx context.Context, events []ArrivalEvent, now time.Time) ([]arrivalMatch, error) {
+	if len(events) == 0 {
+		return nil, nil
+	}
+	payload, err := json.Marshal(events)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, `WITH arrivals AS (
+		SELECT * FROM jsonb_to_recordset($1::jsonb) AS a(
+			route_type text, route_key text, stop_key text, direction text,
+			eta_seconds integer, arriving_plate text
+		)
+	)
+	SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes,r.plate,
+		a.route_type,a.route_key,a.stop_key,a.direction,a.eta_seconds,a.arriving_plate
+	FROM arrivals a
+	JOIN firebase_arrival_reminder r
+		ON r.route_type=a.route_type AND r.route_key=a.route_key
+		AND r.stop_key=a.stop_key AND r.direction=a.direction
+	JOIN firebase_device d ON d.install_id=r.install_id
+	WHERE a.eta_seconds>=0 AND a.eta_seconds<=r.lead_minutes*60
+		AND (r.plate='' OR r.plate=a.arriving_plate)
+		AND r.status='pending' AND r.expires_at>$2
+		AND d.push_enabled AND d.fcm_token<>''`, string(payload), now)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []arrivalReminder
+	var matches []arrivalMatch
 	for rows.Next() {
-		var v arrivalReminder
-		if err := rows.Scan(&v.id, &v.token, &v.routeType, &v.routeKey, &v.stopKey, &v.direction, &v.leadMinutes, &v.plate); err != nil {
+		var match arrivalMatch
+		if err := rows.Scan(
+			&match.reminder.id, &match.reminder.token, &match.reminder.routeType, &match.reminder.routeKey,
+			&match.reminder.stopKey, &match.reminder.direction, &match.reminder.leadMinutes, &match.reminder.plate,
+			&match.arrival.RouteType, &match.arrival.RouteKey, &match.arrival.StopKey, &match.arrival.Direction,
+			&match.arrival.ETASeconds, &match.arrival.ArrivingPlate,
+		); err != nil {
 			return nil, err
 		}
-		out = append(out, v)
+		matches = append(matches, match)
 	}
-	return out, rows.Err()
+	return matches, rows.Err()
 }
 
 // dueScheduledReminders returns pending reminders whose scheduled fire_at has

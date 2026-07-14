@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -9,11 +10,26 @@ import (
 	"firebase.google.com/go/v4/messaging"
 )
 
+// ArrivalEvent is one live vehicle arrival considered for reminder dispatch.
+type ArrivalEvent struct {
+	RouteType     string `json:"route_type"`
+	RouteKey      string `json:"route_key"`
+	StopKey       string `json:"stop_key"`
+	Direction     string `json:"direction"`
+	ETASeconds    int32  `json:"eta_seconds"`
+	ArrivingPlate string `json:"arriving_plate"`
+}
+
+type arrivalMatch struct {
+	reminder arrivalReminder
+	arrival  ArrivalEvent
+}
+
 // notificationStorage is the persistence surface the dispatcher depends on,
 // implemented by Store and stubbed in tests.
 type notificationStorage interface {
 	subscribedTokens(context.Context, string, string) ([]deviceToken, error)
-	activeReminders(context.Context, string, string, string, string, time.Time) ([]arrivalReminder, error)
+	activeRemindersForArrivals(context.Context, []ArrivalEvent, time.Time) ([]arrivalMatch, error)
 	dueScheduledReminders(context.Context, time.Time) ([]arrivalReminder, error)
 	claim(context.Context, string, time.Time) (bool, error)
 	release(context.Context, string) (bool, error)
@@ -82,51 +98,75 @@ func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body s
 	}
 }
 
-// arrival fires arrival reminders for a stop when the live ETA falls within a
-// reminder's lead time. It is transport-agnostic: bus arrivals come from the
-// live TDX ETA (busEta), metro from the Redis metro ETA cache, and TRA/THSR from
-// timetable data (see arrival_sources.go); each source computes etaSeconds and
-// calls this method the same way. No-op for a nil dispatcher or a negative ETA.
-// arrivingPlate identifies which vehicle this ETA belongs to; a reminder pinned
-// to a plate only fires when it matches, so other buses on the same route/stop
-// don't trigger it. Each reminder is claimed before sending to avoid duplicate
-// pushes across concurrent ETA runs; on success it is marked fired, and an
-// unregistered-token send invalidates the token. etaSeconds is rounded up to
-// whole minutes in the message body.
-func (d *Dispatcher) Arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32, arrivingPlate string) {
-	if d == nil || etaSeconds < 0 {
-		return
+func sameArrivalIdentity(left, right ArrivalEvent) bool {
+	return left.RouteType == right.RouteType && left.RouteKey == right.RouteKey &&
+		left.StopKey == right.StopKey && left.Direction == right.Direction
+}
+
+// Arrivals dispatches one collection of live arrival observations with one
+// reminder lookup. Claim, send, and final state errors are joined so no failed
+// transition is hidden from the cron runner.
+func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error {
+	if d == nil || len(events) == 0 {
+		return nil
+	}
+	eligible := make([]ArrivalEvent, 0, len(events))
+	for _, event := range events {
+		if event.ETASeconds >= 0 {
+			eligible = append(eligible, event)
+		}
+	}
+	if len(eligible) == 0 {
+		return nil
 	}
 	now := d.now()
-	reminders, err := d.store.activeReminders(ctx, routeType, routeKey, stopKey, direction, now)
+	matches, err := d.store.activeRemindersForArrivals(ctx, eligible, now)
 	if err != nil {
-		log.Infof("[FCM] arrival reminders: %v", err)
-		return
+		return fmt.Errorf("load arrival reminders: %w", err)
 	}
-	for _, r := range reminders {
-		// Pinned reminder: fire only when its own vehicle is the one arriving.
-		if r.plate != "" && r.plate != arrivingPlate {
+	var dispatchErr error
+	for _, match := range matches {
+		r, event := match.reminder, match.arrival
+		if !sameArrivalIdentity(event, ArrivalEvent{
+			RouteType: r.routeType, RouteKey: r.routeKey, StopKey: r.stopKey, Direction: r.direction,
+		}) || event.ETASeconds < 0 || event.ETASeconds > int32(r.leadMinutes*60) ||
+			(r.plate != "" && r.plate != event.ArrivingPlate) {
 			continue
 		}
-		if etaSeconds > int32(r.leadMinutes*60) {
+		claimed, claimErr := d.store.claim(ctx, r.id, now)
+		if claimErr != nil {
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("claim arrival reminder %s: %w", r.id, claimErr))
 			continue
 		}
-		claimed, err := d.store.claim(ctx, r.id, now)
-		if err != nil || !claimed {
+		if !claimed {
 			continue
 		}
-		msg := notificationMessage(r.token, "即將到站", fmt.Sprintf("預計 %d 分鐘後到站", (etaSeconds+59)/60), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
-		err = d.sender.Send(ctx, msg)
-		if err != nil {
-			if isInvalidFCMToken(err) {
-				_ = d.store.invalidate(ctx, r.token)
+		msg := notificationMessage(r.token, "即將到站", fmt.Sprintf("預計 %d 分鐘後到站", (event.ETASeconds+59)/60), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
+		sendErr := d.sender.Send(ctx, msg)
+		if sendErr != nil {
+			if isInvalidFCMToken(sendErr) {
+				if invalidateErr := d.store.invalidate(ctx, r.token); invalidateErr != nil {
+					dispatchErr = errors.Join(dispatchErr, fmt.Errorf("invalidate arrival reminder token: %w", invalidateErr))
+				}
+			} else {
+				released, releaseErr := d.store.release(ctx, r.id)
+				if releaseErr != nil {
+					dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release arrival reminder %s: %w", r.id, releaseErr))
+				} else if !released {
+					dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release arrival reminder %s changed no rows", r.id))
+				}
+				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("send arrival reminder %s: %w", r.id, sendErr))
 			}
 			continue
 		}
-		if _, err = d.store.fired(ctx, r.id, now); err != nil {
-			log.Infof("[FCM] mark reminder fired: %v", err)
+		fired, firedErr := d.store.fired(ctx, r.id, now)
+		if firedErr != nil {
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark arrival reminder %s fired: %w", r.id, firedErr))
+		} else if !fired {
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark arrival reminder %s fired changed no rows", r.id))
 		}
 	}
+	return dispatchErr
 }
 
 // fireScheduled sends arrival reminders whose scheduled fire time has arrived —

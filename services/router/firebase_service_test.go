@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,6 +128,50 @@ func TestFirebaseServiceDeviceSubscriptionAndReminder(t *testing.T) {
 	if railReminder.GetReminderId() == "" || store.reminder.RouteType != "tra" ||
 		store.reminder.FireAt == nil || !store.reminder.FireAt.Equal(wantFireAt) {
 		t.Fatalf("stored rail reminder = %#v", store.reminder)
+	}
+}
+
+func TestFirebaseServiceNormalizesArrivalReminderPlate(t *testing.T) {
+	store := &fakeFirebasePersistence{
+		device: &pb.DeviceState{Identity: &pb.DeviceIdentity{InstallId: "install-1"}},
+	}
+	wantHash := sha256.Sum256([]byte(testInstallSecret))
+	store.secretHash = wantHash[:]
+	now := time.Unix(1_800_000_000, 0)
+	server := &FirebaseServer{store: store, now: func() time.Time { return now }}
+
+	reminder, err := server.CreateArrivalReminder(
+		installationContext("install-1", testInstallSecret),
+		&pb.CreateArrivalReminderRequest{
+			InstallId: "install-1", RouteType: "bus", RouteKey: "route-1", StopKey: "stop-1",
+			Direction: "0", LeadMinutes: 5, ExpiresAtUnix: now.Add(time.Hour).Unix(), Plate: "  kka-1288  ",
+		},
+	)
+	if err != nil {
+		t.Fatalf("CreateArrivalReminder() error = %v", err)
+	}
+	if store.reminder.Plate != "KKA-1288" || reminder.GetPlate() != "KKA-1288" {
+		t.Fatalf("stored plate = %q, response plate = %q, want normalized KKA-1288", store.reminder.Plate, reminder.GetPlate())
+	}
+}
+
+func TestFirebaseServiceRejectsInvalidArrivalReminderPlate(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	for _, plate := range []string{"KKA/1288", "-KKA1288", "KKA--1288", strings.Repeat("A", 33)} {
+		t.Run(plate, func(t *testing.T) {
+			store := &fakeFirebasePersistence{}
+			server := &FirebaseServer{store: store, now: func() time.Time { return now }}
+			_, err := server.CreateArrivalReminder(context.Background(), &pb.CreateArrivalReminderRequest{
+				InstallId: "install-1", RouteType: "bus", RouteKey: "route-1", StopKey: "stop-1",
+				Direction: "0", LeadMinutes: 5, ExpiresAtUnix: now.Add(time.Hour).Unix(), Plate: plate,
+			})
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("plate %q code = %v, want %v", plate, status.Code(err), codes.InvalidArgument)
+			}
+			if store.reminder.ReminderID != "" {
+				t.Fatalf("invalid plate %q reached persistence: %#v", plate, store.reminder)
+			}
+		})
 	}
 }
 

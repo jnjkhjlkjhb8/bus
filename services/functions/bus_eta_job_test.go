@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
@@ -62,14 +63,41 @@ type busArrivalCall struct {
 }
 
 type captureBusArrivalNotifier struct {
-	calls []busArrivalCall
+	calls   []busArrivalCall
+	batches int
 }
 
-func (n *captureBusArrivalNotifier) Arrival(_ context.Context, routeType, routeKey, stopKey, direction string, seconds int32, arrivingPlate string) {
-	if routeType != "bus" {
-		return
+func (n *captureBusArrivalNotifier) Arrivals(_ context.Context, events []notify.ArrivalEvent) error {
+	n.batches++
+	for _, event := range events {
+		n.calls = append(n.calls, busArrivalCall{
+			routeKey: event.RouteKey, stopKey: event.StopKey, direction: event.Direction,
+			seconds: event.ETASeconds, plate: event.ArrivingPlate,
+		})
 	}
-	n.calls = append(n.calls, busArrivalCall{routeKey: routeKey, stopKey: stopKey, direction: direction, seconds: seconds, plate: arrivingPlate})
+	return nil
+}
+
+func TestBusArrivalBatchFlushesOncePerTick(t *testing.T) {
+	target := &captureBusArrivalNotifier{}
+	batch := busArrivalBatch{target: target}
+	first := notify.ArrivalEvent{RouteType: "bus", RouteKey: "R1", StopKey: "S1", Direction: "0", ETASeconds: 60}
+	second := notify.ArrivalEvent{RouteType: "bus", RouteKey: "R2", StopKey: "S2", Direction: "1", ETASeconds: 120}
+	if err := batch.Arrivals(context.Background(), []notify.ArrivalEvent{first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := batch.Arrivals(context.Background(), []notify.ArrivalEvent{second}); err != nil {
+		t.Fatal(err)
+	}
+	if target.batches != 0 {
+		t.Fatalf("target called before tick flush: batches = %d", target.batches)
+	}
+	if err := batch.flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if target.batches != 1 || len(target.calls) != 2 {
+		t.Fatalf("target batches/calls = %d/%+v, want one batch with two arrivals", target.batches, target.calls)
+	}
 }
 
 func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
@@ -137,8 +165,8 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 	if len(store.historyRows) != 1 || store.historyRows[0][0] != "THB9023" || store.historyRows[0][2] != int16(0) {
 		t.Fatalf("canonical history rows = %+v", store.historyRows)
 	}
-	if len(notifier.calls) != 1 || notifier.calls[0] != (busArrivalCall{routeKey: "THB9023", stopKey: "STOP1", direction: "0", seconds: 120, plate: "KKA-1234"}) {
-		t.Fatalf("canonical notification calls = %+v", notifier.calls)
+	if notifier.batches != 1 || len(notifier.calls) != 1 || notifier.calls[0] != (busArrivalCall{routeKey: "THB9023", stopKey: "STOP1", direction: "0", seconds: 120, plate: "KKA-1234"}) {
+		t.Fatalf("canonical notification batches/calls = %d/%+v", notifier.batches, notifier.calls)
 	}
 }
 

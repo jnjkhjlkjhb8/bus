@@ -117,6 +117,10 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	if request.LeadMinutes < 1 || request.LeadMinutes > 120 {
 		return nil, status.Error(codes.InvalidArgument, "lead_minutes must be between 1 and 120")
 	}
+	plate := strings.ToUpper(strings.TrimSpace(request.GetPlate()))
+	if !validNormalizedPlate(plate) {
+		return nil, status.Error(codes.InvalidArgument, "plate must contain only letters, digits, and single hyphen separators")
+	}
 	now := s.now
 	if now == nil {
 		now = time.Now
@@ -135,7 +139,7 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	stored := firebaseArrivalReminder{
 		ReminderID: reminderID, InstallID: request.InstallId, RouteType: request.RouteType, RouteKey: request.RouteKey,
 		StopKey: request.StopKey, Direction: request.Direction, LeadMinutes: request.LeadMinutes,
-		ExpiresAt: expiresAt, Status: reminderPending, Plate: request.GetPlate(),
+		ExpiresAt: expiresAt, Status: reminderPending, Plate: plate,
 	}
 	// Rail arrival times are known at creation, so fire on a schedule (arrival
 	// minus lead). Bus has no known arrival time and fires off the live ETA, so
@@ -150,7 +154,7 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	return &pb.ArrivalReminder{
 		ReminderId: reminderID, InstallId: request.InstallId, RouteType: request.RouteType, RouteKey: request.RouteKey,
 		StopKey: request.StopKey, Direction: request.Direction, LeadMinutes: request.LeadMinutes, ExpiresAtUnix: request.ExpiresAtUnix,
-		Plate: request.GetPlate(),
+		Plate: plate,
 	}, nil
 }
 
@@ -222,6 +226,27 @@ func installationSecretHash(ctx context.Context, installID string) ([]byte, erro
 
 func validText(value string, max int) bool {
 	return value != "" && len(value) <= max && strings.TrimSpace(value) == value
+}
+
+func validNormalizedPlate(plate string) bool {
+	if plate == "" {
+		return true
+	}
+	if len(plate) > 32 || plate[0] == '-' || plate[len(plate)-1] == '-' {
+		return false
+	}
+	previousHyphen := false
+	for _, char := range plate {
+		switch {
+		case char >= 'A' && char <= 'Z', char >= '0' && char <= '9':
+			previousHyphen = false
+		case char == '-' && !previousHyphen:
+			previousHyphen = true
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validRoute(routeType string) bool {

@@ -52,7 +52,31 @@ func buildDirectionAwareBusPositionMap(city string, positions []rawBusPosition) 
 }
 
 type busArrivalNotifier interface {
-	Arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32, arrivingPlate string)
+	Arrivals(context.Context, []notify.ArrivalEvent) error
+}
+
+type busArrivalBatch struct {
+	mu     sync.Mutex
+	target busArrivalNotifier
+	events []notify.ArrivalEvent
+}
+
+func (b *busArrivalBatch) Arrivals(_ context.Context, events []notify.ArrivalEvent) error {
+	b.mu.Lock()
+	b.events = append(b.events, events...)
+	b.mu.Unlock()
+	return nil
+}
+
+func (b *busArrivalBatch) flush(ctx context.Context) error {
+	if b.target == nil {
+		return nil
+	}
+	b.mu.Lock()
+	events := append([]notify.ArrivalEvent(nil), b.events...)
+	b.events = nil
+	b.mu.Unlock()
+	return b.target.Arrivals(ctx, events)
 }
 
 type busLiveJob struct {
@@ -151,11 +175,12 @@ func busEta(
 	dispatcher *notify.Dispatcher,
 ) error {
 	log.Infof("[BUS_ETA] action=Bus_eta event=start")
+	arrivalBatch := &busArrivalBatch{target: dispatcher}
 	job := busLiveJob{
 		fetch:    fetch,
 		sink:     sink,
 		store:    pgBusEtaStore{db: db},
-		notifier: dispatcher,
+		notifier: arrivalBatch,
 		now:      time.Now,
 	}
 	sem := make(chan struct{}, 4)
@@ -180,6 +205,9 @@ func busEta(
 	var jobErr error
 	for err := range errCh {
 		jobErr = errors.Join(jobErr, err)
+	}
+	if err := arrivalBatch.flush(ctx); err != nil {
+		jobErr = errors.Join(jobErr, fmt.Errorf("dispatch bus arrival reminders: %w", err))
 	}
 	log.Infof("[BUS_ETA] action=Bus_eta event=complete")
 	return jobErr
@@ -404,6 +432,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	upstreamByRoute := buildUpstreamObs(city, mp, etamap, now, baselineFor)
 	var predictionRows []predictionRecord
 	var historyRows [][]interface{}
+	var arrivalEvents []notify.ArrivalEvent
 	for _, b := range mp {
 		// Canonicalize before every downstream write: the Redis route key, the
 		// bus_eta_history row, dispatched notifications, and the app-facing protos
@@ -554,7 +583,10 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			if plateNumb != nil {
 				plate = *plateNumb
 			}
-			j.notifier.Arrival(ctx, "bus", uid, b.StopUID, strconv.Itoa(int(dir)), est, plate)
+			arrivalEvents = append(arrivalEvents, notify.ArrivalEvent{
+				RouteType: "bus", RouteKey: uid, StopKey: b.StopUID,
+				Direction: strconv.Itoa(int(dir)), ETASeconds: est, ArrivingPlate: plate,
+			})
 		}
 		if _, ok = routes[uid]; !ok {
 			routes[uid] = &models.Bus_RouteArrival{
@@ -607,6 +639,11 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	}
 	if ackErr != nil {
 		return ackErr
+	}
+	if j.notifier != nil {
+		if err := j.notifier.Arrivals(ctx, arrivalEvents); err != nil {
+			return fmt.Errorf("dispatch bus arrival reminders for %s: %w", city, err)
+		}
 	}
 	j.store.saveHistory(ctx, historyRows)
 	j.store.recordPredictions(ctx, predictionRows)

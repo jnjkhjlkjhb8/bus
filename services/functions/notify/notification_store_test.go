@@ -2,11 +2,46 @@ package notify
 
 import (
 	"context"
+	"regexp"
 	"testing"
 	"time"
 
 	"github.com/pashagolub/pgxmock/v4"
 )
+
+func TestNotificationStoreActiveRemindersUsesOneCompositeBatchQuery(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Unix(1_800_000_000, 0)
+	events := []ArrivalEvent{
+		{RouteType: "bus", RouteKey: "R", StopKey: "S1", Direction: "0", ETASeconds: 60, ArrivingPlate: "BUS-1"},
+		{RouteType: "bus", RouteKey: "R", StopKey: "S2", Direction: "1", ETASeconds: 240, ArrivingPlate: "BUS-2"},
+	}
+	db.ExpectQuery("jsonb_to_recordset"+regexp.QuoteMeta("($1::jsonb)")+
+		".*r\\.route_type=a\\.route_type AND r\\.route_key=a\\.route_key"+
+		".*r\\.stop_key=a\\.stop_key AND r\\.direction=a\\.direction"+
+		".*a\\.eta_seconds<=r\\.lead_minutes\\*60"+
+		".*r\\.plate='' OR r\\.plate=a\\.arriving_plate").
+		WithArgs(pgxmock.AnyArg(), now).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"reminder_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes", "plate",
+			"arrival_route_type", "arrival_route_key", "arrival_stop_key", "arrival_direction", "eta_seconds", "arriving_plate",
+		}).AddRow("r2", "token-2", "bus", "R", "S2", "1", 5, "BUS-2", "bus", "R", "S2", "1", int32(240), "BUS-2"))
+
+	matches, err := (Store{db: db}).activeRemindersForArrivals(context.Background(), events, now)
+	if err != nil {
+		t.Fatalf("activeRemindersForArrivals() error = %v", err)
+	}
+	if len(matches) != 1 || matches[0].reminder.id != "r2" || matches[0].arrival != events[1] {
+		t.Fatalf("matches = %#v, want reminder r2 matched to second composite event", matches)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestNotificationStoreFiltersRouteAndEnabledDevice(t *testing.T) {
 	db, err := pgxmock.NewPool()
