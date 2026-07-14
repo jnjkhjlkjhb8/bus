@@ -3,10 +3,55 @@ package main
 import (
 	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRunLegacyProdRoutesBootLoadThroughStaticGuard(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacy *ast.FuncDecl
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if ok && fn.Name.Name == "runLegacyProd" {
+			legacy = fn
+			break
+		}
+	}
+	if legacy == nil {
+		t.Fatal("runLegacyProd declaration not found")
+	}
+	var guardedBootCalls, directLoadCalls int
+	ast.Inspect(legacy.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := call.Fun.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		switch ident.Name {
+		case "runBootBusDailyTimetable":
+			guardedBootCalls++
+		case "runLoad":
+			directLoadCalls++
+		}
+		return true
+	})
+	if guardedBootCalls != 1 {
+		t.Fatalf("runLegacyProd guarded boot calls = %d, want 1", guardedBootCalls)
+	}
+	if directLoadCalls != 0 {
+		t.Fatalf("runLegacyProd direct runLoad calls = %d, want 0", directLoadCalls)
+	}
+}
 
 func TestVectorRefreshJobPropagatesError(t *testing.T) {
 	wantErr := errors.New("watermark unavailable")

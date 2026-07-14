@@ -219,6 +219,83 @@ func TestBootRunUsesTimeoutAndSameOverlapGuard(t *testing.T) {
 	})
 }
 
+type recordingBootLoadSource struct {
+	calls    atomic.Int64
+	once     sync.Once
+	deadline chan time.Time
+	err      error
+}
+
+func (s *recordingBootLoadSource) datasetJSON(ctx context.Context, _, _, _ string) ([]byte, time.Time, error) {
+	s.calls.Add(1)
+	s.once.Do(func() {
+		deadline, _ := ctx.Deadline()
+		s.deadline <- deadline
+	})
+	return nil, time.Time{}, s.err
+}
+
+func TestRunBootBusDailyTimetableUsesBoundedStaticRunner(t *testing.T) {
+	t.Run("deadline and advisory locker reach the real boot load", func(t *testing.T) {
+		const timeout = 250 * time.Millisecond
+		lockerDeadline := make(chan time.Time, 1)
+		runner := staticPipelineRunner{
+			gate: make(chan struct{}, 1),
+			locker: fakeStaticLocker{acquire: func(ctx context.Context) (func() error, error) {
+				deadline, _ := ctx.Deadline()
+				lockerDeadline <- deadline
+				return func() error { return nil }, nil
+			}},
+			timeout: timeout,
+		}
+		wantErr := errors.New("raw boot read failed")
+		src := &recordingBootLoadSource{deadline: make(chan time.Time, 1), err: wantErr}
+		started := time.Now()
+
+		err := runBootBusDailyTimetable(context.Background(), runner, src, nil, nil)
+
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("runBootBusDailyTimetable() error = %v, want wrapped %v", err, wantErr)
+		}
+		if src.calls.Load() == 0 {
+			t.Fatal("boot load source was not called")
+		}
+		for name, deadline := range map[string]time.Time{
+			"locker": <-lockerDeadline,
+			"load":   <-src.deadline,
+		} {
+			if deadline.IsZero() {
+				t.Fatalf("%s context has no deadline", name)
+			}
+			remaining := deadline.Sub(started)
+			if remaining <= 0 || remaining > timeout+25*time.Millisecond {
+				t.Fatalf("%s deadline after %v, want within (0, %v]", name, remaining, timeout)
+			}
+		}
+	})
+
+	t.Run("occupied shared gate prevents overlapping boot load", func(t *testing.T) {
+		gate := make(chan struct{}, 1)
+		gate <- struct{}{}
+		defer func() { <-gate }()
+		src := &recordingBootLoadSource{deadline: make(chan time.Time, 1), err: errors.New("must not run")}
+		runner := staticPipelineRunner{
+			gate:    gate,
+			locker:  noOpStaticLocker(),
+			timeout: 25 * time.Millisecond,
+		}
+
+		err := runBootBusDailyTimetable(context.Background(), runner, src, nil, nil)
+
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("runBootBusDailyTimetable() error = %v, want DeadlineExceeded", err)
+		}
+		if got := src.calls.Load(); got != 0 {
+			t.Fatalf("boot load source calls = %d, want 0 while shared gate is occupied", got)
+		}
+	})
+}
+
 func TestPGStaticPipelineLockerUsesTransactionScopedAdvisoryLock(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {

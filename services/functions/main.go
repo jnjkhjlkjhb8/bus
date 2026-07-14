@@ -387,6 +387,22 @@ func vectorRefreshJob(rc vectorRedis, db vectorDB, embedder embeddingClient) fun
 	}
 }
 
+// runBootBusDailyTimetable refreshes the legacy prod process's schedule cache
+// through the same bounded process gate and raw-database advisory lock as every
+// other static job. The caller logs an error and continues booting; this helper
+// intentionally adds no second timeout around the runner.
+func runBootBusDailyTimetable(
+	parent context.Context,
+	runner staticPipelineRunner,
+	src loadSource,
+	db *pgxpool.Pool,
+	rc *redis.Client,
+) error {
+	return runner.Run(parent, func(ctx context.Context) error {
+		return runLoad(ctx, src, db, rc, []string{"bus_dailytimetable"})
+	})
+}
+
 // runLegacyProd is the current prod path: Firebase, notification dispatcher, all
 // transform/realtime crons, and MQTT. Only ROLE="" reaches here — the ingestor
 // never initializes any of it.
@@ -396,7 +412,10 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		log.Fatal(err)
 	}
 	dispatcher := notify.NewDispatcher(notify.NewStore(db), sender)
-	if err := runLoad(context.Background(), rawTDXSource{pool: rawPool}, db, rc, []string{"bus_dailytimetable"}); err != nil {
+	bootLoadRunner := newStaticPipelineRunner(rawPool, loadTimeout)
+	if err := runBootBusDailyTimetable(
+		context.Background(), bootLoadRunner, rawTDXSource{pool: rawPool}, db, rc,
+	); err != nil {
 		log.Infof("[bus] action=bus_dailyroute event=error error=%v", err)
 	}
 	loadHolidays()
