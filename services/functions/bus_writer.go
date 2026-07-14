@@ -65,6 +65,12 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 			columns: []string{"uid", "rid", "d", "name1", "name2", "city", "depart", "destin", "geom", "rawstop", "schedule", "operators"}, rows: snapshot.subrouteRows,
 		},
 		{
+			name: "temp_bus_operators", create: `CREATE TEMP TABLE temp_bus_operators (
+				operator_id text, authority_code text, operator_name text,
+				operator_phone text, operator_url text) ON COMMIT DROP`,
+			columns: []string{"operator_id", "authority_code", "operator_name", "operator_phone", "operator_url"}, rows: snapshot.operatorRows,
+		},
+		{
 			name: "temp_bus_stations", create: `CREATE TEMP TABLE temp_bus_stations (
 				station_uid text, station_id text, station_name text,
 				position_lon double precision, position_lat double precision,
@@ -135,6 +141,15 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 		sql  string
 		args []any
 	}{
+		{name: "upsert operators", sql: `INSERT INTO bus_operators (
+			operator_id, authority_code, operator_name, operator_phone, operator_url)
+		SELECT operator_id, authority_code, operator_name, operator_phone, operator_url
+		FROM temp_bus_operators
+		ON CONFLICT (operator_id, authority_code) DO UPDATE SET
+			operator_name = EXCLUDED.operator_name,
+			operator_phone = EXCLUDED.operator_phone,
+			operator_url = EXCLUDED.operator_url,
+			updated_at = NOW()`},
 		{name: "upsert subroutes", sql: busSubroutesUpsertSQL},
 		{name: "upsert stations", sql: `INSERT INTO bus_stations (
 			station_uid, station_name, city, position, updated_at)
@@ -175,7 +190,8 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 				g.position::geography,
 				ST_SetSRID(ST_MakePoint(m.position_lon, m.position_lat), 4326)::geography,
 				1000)
-			ORDER BY g.position <-> ST_SetSRID(ST_MakePoint(m.position_lon, m.position_lat), 4326)
+			ORDER BY g.position <-> ST_SetSRID(ST_MakePoint(m.position_lon, m.position_lat), 4326),
+				g.group_uid
 			LIMIT 1
 		) nearby ON true
 		ON CONFLICT (station_uid) DO UPDATE SET
@@ -233,6 +249,12 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 		{name: "prune stale static routes", sql: `DELETE FROM bus_static current
 		WHERE current.city = $1
 		  AND NOT EXISTS (SELECT 1 FROM temp_bus_static fresh WHERE fresh.uid = current.sub_route_uid)`, args: []any{snapshot.city}},
+		{name: "prune stale operators", sql: `DELETE FROM bus_operators current
+		WHERE current.authority_code = $1
+		  AND NOT EXISTS (
+			SELECT 1 FROM temp_bus_operators fresh
+			WHERE fresh.operator_id = current.operator_id
+			  AND fresh.authority_code = current.authority_code)`, args: []any{snapshot.prefix}},
 	}
 	for _, step := range steps {
 		if _, err := tx.Exec(ctx, step.sql, step.args...); err != nil {

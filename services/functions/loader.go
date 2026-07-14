@@ -23,6 +23,14 @@ type loadSource interface {
 	datasetJSON(ctx context.Context, table, partCol, partVal string) ([]byte, time.Time, error)
 }
 
+// busLandingCycleSource is the stronger, additive source contract used only by
+// the correlated bus snapshot. JSON bytes, freshness, and the durable landing
+// cycle are read from one RepeatableRead transaction. Other loaders retain the
+// smaller loadSource contract and do not acquire cycle coupling accidentally.
+type busLandingCycleSource interface {
+	datasetJSONWithLandingCycle(ctx context.Context, table, partCol, partVal string) ([]byte, time.Time, string, error)
+}
+
 // loadSpec is one dataset's loader recipe: which raw_tdx table and partitions to
 // read, and the transform that consumes the reconstructed decoder. load's SQL
 // body is byte-identical to the legacy transform it was split from (ADR-0005:
@@ -170,7 +178,8 @@ func reportQuality(ctx context.Context, db *pgxpool.Pool, spec loadSpec) {
 // on the sink pool does not affect it) minus the partition and fetched_at
 // columns. Freshness comes from raw_tdx.landing_state, including for a verified
 // empty landing; raw row fetched_at is write-time bookkeeping and is never mass
-// updated on a 304.
+// updated on a 304. The bus-only method also returns landing_cycle from this
+// same RepeatableRead transaction.
 type rawReadTxBeginner interface {
 	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
 }
@@ -196,15 +205,24 @@ type rawTDXSource struct {
 // back into the traindate JSON key so the reconstructed payload matches what the
 // transform historically decoded.
 func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal string) ([]byte, time.Time, error) {
+	body, fetchedAt, _, err := r.readDatasetJSON(ctx, table, partCol, partVal, false)
+	return body, fetchedAt, err
+}
+
+func (r rawTDXSource) datasetJSONWithLandingCycle(ctx context.Context, table, partCol, partVal string) ([]byte, time.Time, string, error) {
+	return r.readDatasetJSON(ctx, table, partCol, partVal, true)
+}
+
+func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partVal string, includeCycle bool) ([]byte, time.Time, string, error) {
 	if err := validateRawTarget(table, partCol); err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, "", err
 	}
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,
 	})
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: begin: %w", table, partVal, err)
+		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: begin: %w", table, partVal, err)
 	}
 	defer func() {
 		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -214,16 +232,28 @@ func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal s
 
 	var fetchedAt time.Time
 	var expectedRows int64
-	err = tx.QueryRow(ctx, `
+	var landingCycle string
+	stateSQL := `
 		SELECT fetched_at, row_count
 		FROM raw_tdx.landing_state
-		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`,
-		table, partCol, partVal).Scan(&fetchedAt, &expectedRows)
+		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`
+	if includeCycle {
+		stateSQL = `
+			SELECT fetched_at, row_count, COALESCE(landing_cycle, '')
+			FROM raw_tdx.landing_state
+			WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`
+	}
+	row := tx.QueryRow(ctx, stateSQL, table, partCol, partVal)
+	if includeCycle {
+		err = row.Scan(&fetchedAt, &expectedRows, &landingCycle)
+	} else {
+		err = row.Scan(&fetchedAt, &expectedRows)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return []byte("[]"), time.Time{}, nil
+		return []byte("[]"), time.Time{}, "", nil
 	}
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: landing state: %w", table, partVal, err)
+		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: landing state: %w", table, partVal, err)
 	}
 	// Build the per-row jsonb: to_jsonb minus bookkeeping columns (fetched_at and,
 	// when partitioned, the partition column), with the thsr_dailytimetable
@@ -251,7 +281,7 @@ func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal s
 		elem, table, where)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
-		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: query rows: %w", table, partVal, err)
+		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: query rows: %w", table, partVal, err)
 	}
 	defer rows.Close()
 	var buf bytes.Buffer
@@ -260,7 +290,7 @@ func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal s
 	for rows.Next() {
 		var rowJSON []byte
 		if err := rows.Scan(&rowJSON); err != nil {
-			return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: scan row: %w", table, partVal, err)
+			return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: scan row: %w", table, partVal, err)
 		}
 		if buf.Len() > 1 {
 			buf.WriteByte(',')
@@ -269,10 +299,10 @@ func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal s
 		actualRows++
 	}
 	if err := rows.Err(); err != nil {
-		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: rows: %w", table, partVal, err)
+		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: rows: %w", table, partVal, err)
 	}
 	if actualRows != expectedRows {
-		return nil, time.Time{}, &rawLandingStateMismatchError{
+		return nil, time.Time{}, "", &rawLandingStateMismatchError{
 			Table: table, PartCol: partCol, PartVal: partVal,
 			Reason: "loader_row_count", Expected: fmt.Sprint(expectedRows), Observed: fmt.Sprint(actualRows),
 		}
@@ -280,9 +310,9 @@ func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal s
 	buf.WriteByte(']')
 	rows.Close()
 	if err := tx.Commit(ctx); err != nil {
-		return nil, time.Time{}, fmt.Errorf("read raw dataset %s partition %s: commit: %w", table, partVal, err)
+		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: commit: %w", table, partVal, err)
 	}
-	return buf.Bytes(), fetchedAt, nil
+	return buf.Bytes(), fetchedAt, landingCycle, nil
 }
 
 // railDateWindow returns today..today+n as YYYY-MM-DD strings, matching the
@@ -310,12 +340,9 @@ type loaderBinding struct {
 // by the bus binding because loadBus reads eight correlated raw_tdx tables (a
 // single decoder cannot feed a multi-endpoint correlation); the standalone
 // copy-upsert transforms ignore it and consume the decoder runLoadSpecs hands
-// them.
+// them. bus_operator is one of the bus binding's eight inputs, not a transform.
 func loaderTransforms(src loadSource) map[string]loaderBinding {
 	return map[string]loaderBinding{
-		"bus_operator": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
-			return sink.loadBusOperators(ctx, dec, part)
-		}},
 		"bus": {
 			load: func(ctx context.Context, _ *json.Decoder, sink loadSink, part string) error {
 				return sink.loadBusCity(ctx, src, part)
@@ -356,11 +383,10 @@ func loaderTransforms(src loadSource) map[string]loaderBinding {
 // loaderRegistry derives the ordered loader specs from the datasetRegistry: one
 // loadSpec per dataset that has a loadKey, in registry slice order, with its
 // table/partition-column/partition-enumerator taken from the dataset and its
-// transform/report from loaderTransforms. Because it walks the ordered slice,
-// the datasetRegistry's bus_operator-before-bus publication order is preserved:
-// the standalone operator table refresh precedes the atomic route snapshot. A
-// dataset whose loadPartitions differs from its landed partitions (bus static,
-// operator, and daily timetable) loads the selected subset/order here.
+// transform/report from loaderTransforms. bus_operator has no standalone spec:
+// it is validated and written by the atomic bus city snapshot. A dataset whose
+// loadPartitions differs from its landed partitions (bus static and daily
+// timetable) loads the selected subset/order here.
 func loaderRegistry(src loadSource) []loadSpec {
 	transforms := loaderTransforms(src)
 	var specs []loadSpec

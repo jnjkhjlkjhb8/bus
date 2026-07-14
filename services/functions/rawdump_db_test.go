@@ -31,11 +31,15 @@ func TestDumpRawTDXIntegration(t *testing.T) {
 	var provisioned bool
 	if err := pool.QueryRow(ctx, `
 		SELECT to_regclass('raw_tdx.bus_route') IS NOT NULL
-		   AND to_regclass('raw_tdx.landing_state') IS NOT NULL`).Scan(&provisioned); err != nil {
+		   AND to_regclass('raw_tdx.landing_state') IS NOT NULL
+		   AND EXISTS (
+			 SELECT 1 FROM information_schema.columns
+			 WHERE table_schema='raw_tdx' AND table_name='landing_state'
+			   AND column_name='landing_cycle')`).Scan(&provisioned); err != nil {
 		t.Fatalf("probe raw_tdx schema: %v", err)
 	}
 	if !provisioned {
-		t.Skip("raw_tdx schema or landing_state migration not provisioned; skipping raw_tdx integration test")
+		t.Skip("raw_tdx schema or landing-cycle migration not provisioned; skipping raw_tdx integration test")
 	}
 	const city = "ZZ_TEST_CITY"
 	cleanup := func() {
@@ -46,33 +50,33 @@ func TestDumpRawTDXIntegration(t *testing.T) {
 	cleanup()
 	defer cleanup()
 
-	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-EMPTY", []byte("[]")); err != nil {
+	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-EMPTY", "test-cycle-empty", []byte("[]")); err != nil {
 		t.Fatalf("empty-array dump: %v", err)
 	}
 	if n := countCity(t, pool, city); n != 0 {
 		t.Fatalf("empty array: got %d rows, want 0", n)
 	}
-	assertLandingState(t, pool, "bus_route", "city", city, "TEST-EMPTY", 0)
+	assertLandingState(t, pool, "bus_route", "city", city, "TEST-EMPTY", "test-cycle-empty", 0)
 
 	body := []byte(`[{"RouteUID":"ZZR1","RouteName":{"Zh_tw":"測"},"VersionID":1}]`)
-	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-ONE", body); err != nil {
+	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-ONE", "test-cycle-one", body); err != nil {
 		t.Fatalf("single-row dump: %v", err)
 	}
 	if n := countCity(t, pool, city); n != 1 {
 		t.Fatalf("single row: got %d rows, want 1", n)
 	}
-	assertLandingState(t, pool, "bus_route", "city", city, "TEST-ONE", 1)
+	assertLandingState(t, pool, "bus_route", "city", city, "TEST-ONE", "test-cycle-one", 1)
 
 	body2 := []byte(`[{"RouteUID":"ZZR2","VersionID":2},{"RouteUID":"ZZR3","VersionID":3}]`)
-	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-TWO", body2); err != nil {
+	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-TWO", "test-cycle-two", body2); err != nil {
 		t.Fatalf("partition-replace dump: %v", err)
 	}
 	if n := countCity(t, pool, city); n != 2 {
 		t.Fatalf("partition replace: got %d rows, want 2", n)
 	}
-	assertLandingState(t, pool, "bus_route", "city", city, "TEST-TWO", 2)
+	assertLandingState(t, pool, "bus_route", "city", city, "TEST-TWO", "test-cycle-two", 2)
 
-	if err := dumpRawTDX(ctx, "pg_class", "city", city, "TEST-BAD", body); err == nil {
+	if err := dumpRawTDX(ctx, "pg_class", "city", city, "TEST-BAD", "test-cycle-bad", body); err == nil {
 		t.Fatal("expected error for non-whitelisted table, got nil")
 	}
 }
@@ -103,11 +107,15 @@ func TestDumpRawTDXTHSRTraindateRoundtrip(t *testing.T) {
 	var provisioned bool
 	if err := pool.QueryRow(ctx, `
 		SELECT to_regclass('raw_tdx.thsr_dailytimetable') IS NOT NULL
-		   AND to_regclass('raw_tdx.landing_state') IS NOT NULL`).Scan(&provisioned); err != nil {
+		   AND to_regclass('raw_tdx.landing_state') IS NOT NULL
+		   AND EXISTS (
+			 SELECT 1 FROM information_schema.columns
+			 WHERE table_schema='raw_tdx' AND table_name='landing_state'
+			   AND column_name='landing_cycle')`).Scan(&provisioned); err != nil {
 		t.Fatalf("probe raw_tdx schema: %v", err)
 	}
 	if !provisioned {
-		t.Skip("raw_tdx schema or landing_state migration not provisioned; skipping raw_tdx integration test")
+		t.Skip("raw_tdx schema or landing-cycle migration not provisioned; skipping raw_tdx integration test")
 	}
 
 	const date = "2026-07-04"
@@ -131,7 +139,7 @@ func TestDumpRawTDXTHSRTraindateRoundtrip(t *testing.T) {
 	// payload's own TrainDate is dropped by jsonb_populate_recordset in favor of
 	// the injected traindate column (rawInsertSQL injects {"traindate": date}).
 	body := []byte(`[{"TrainDate":"2026-07-04","DailyTrainInfo":{"TrainNo":"0101"},"VersionID":1}]`)
-	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-FIRST", body); err != nil {
+	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-FIRST", "test-cycle-first", body); err != nil {
 		t.Fatalf("first landing: %v", err)
 	}
 	if n := countDate(); n != 1 {
@@ -142,7 +150,7 @@ func TestDumpRawTDXTHSRTraindateRoundtrip(t *testing.T) {
 	// holds if DELETE FROM ... WHERE traindate = '2026-07-04' matches the row the
 	// prior INSERT coerced to timestamptz.
 	body2 := []byte(`[{"TrainDate":"2026-07-04","DailyTrainInfo":{"TrainNo":"0201"},"VersionID":2},{"TrainDate":"2026-07-04","DailyTrainInfo":{"TrainNo":"0203"},"VersionID":3}]`)
-	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-SECOND", body2); err != nil {
+	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-SECOND", "test-cycle-second", body2); err != nil {
 		t.Fatalf("second landing: %v", err)
 	}
 	if n := countDate(); n != 2 {
@@ -163,19 +171,20 @@ func countCity(t *testing.T, pool *pgxpool.Pool, city string) int {
 func assertLandingState(
 	t *testing.T,
 	pool *pgxpool.Pool,
-	table, partCol, partVal, marker string,
+	table, partCol, partVal, marker, landingCycle string,
 	rowCount int64,
 ) {
 	t.Helper()
 	var gotMarker string
 	var gotRows int64
+	var gotCycle string
 	if err := pool.QueryRow(context.Background(), `
-		SELECT last_modified, row_count FROM raw_tdx.landing_state
+		SELECT last_modified, row_count, landing_cycle FROM raw_tdx.landing_state
 		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`,
-		table, partCol, partVal).Scan(&gotMarker, &gotRows); err != nil {
+		table, partCol, partVal).Scan(&gotMarker, &gotRows, &gotCycle); err != nil {
 		t.Fatalf("read landing state: %v", err)
 	}
-	if gotMarker != marker || gotRows != rowCount {
-		t.Fatalf("landing state marker/rows = %q/%d, want %q/%d", gotMarker, gotRows, marker, rowCount)
+	if gotMarker != marker || gotRows != rowCount || gotCycle != landingCycle {
+		t.Fatalf("landing state marker/rows/cycle = %q/%d/%q, want %q/%d/%q", gotMarker, gotRows, gotCycle, marker, rowCount, landingCycle)
 	}
 }

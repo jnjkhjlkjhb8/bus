@@ -228,22 +228,23 @@ func rawPartitionWhere(table, partCol string) string {
 // verifyAndTouchRawLanding validates a 304 against the durable state committed
 // with the last complete landing. It locks that state row, requires an exact
 // Last-Modified match, and verifies empty/non-empty parity against the raw
-// partition before bumping only landing_state.fetched_at. It deliberately does
-// not UPDATE every raw row: doing so daily for the largest fare tables would
-// create substantial WAL and table bloat. Exact row_count remains recorded for
-// audit, while the bounded 304 check detects missing/emptied partitions without
-// counting millions of rows; partial-row loss requires a full integrity audit.
-func verifyAndTouchRawLanding(ctx context.Context, table, partCol, partVal, marker string) error {
+// partition before bumping landing_state.fetched_at and the shared run cycle.
+// It deliberately does not UPDATE every raw row: doing so daily for the largest
+// fare tables would create substantial WAL and table bloat. Exact row_count
+// remains recorded for audit, while the bounded 304 check detects
+// missing/emptied partitions without counting millions of rows; partial-row
+// loss requires a full integrity audit.
+func verifyAndTouchRawLanding(ctx context.Context, table, partCol, partVal, marker, landingCycle string) error {
 	if ingestDB == nil {
 		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
 	}
-	return verifyAndTouchRawLandingWithDB(ctx, ingestDB, table, partCol, partVal, marker)
+	return verifyAndTouchRawLandingWithDB(ctx, ingestDB, table, partCol, partVal, marker, landingCycle)
 }
 
 func verifyAndTouchRawLandingWithDB(
 	ctx context.Context,
 	db rawLandingBeginner,
-	table, partCol, partVal, marker string,
+	table, partCol, partVal, marker, landingCycle string,
 ) error {
 	if err := validateRawTarget(table, partCol); err != nil {
 		return err
@@ -253,6 +254,9 @@ func verifyAndTouchRawLandingWithDB(
 			Table: table, PartCol: partCol, PartVal: partVal,
 			Reason: "empty_marker", Expected: "non-empty", Observed: "empty",
 		}
+	}
+	if strings.TrimSpace(landingCycle) == "" {
+		return fmt.Errorf("%w: landing cycle is empty", errRawDump)
 	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -309,8 +313,8 @@ func verifyAndTouchRawLandingWithDB(
 		}
 	}
 	ct, err := tx.Exec(ctx, `
-		UPDATE raw_tdx.landing_state SET fetched_at=now()
-		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`, table, partCol, partVal)
+		UPDATE raw_tdx.landing_state SET fetched_at=now(), landing_cycle=$4
+		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`, table, partCol, partVal, landingCycle)
 	if err != nil {
 		return fmt.Errorf("verify raw landing state: touch state: %w", err)
 	}
@@ -353,18 +357,18 @@ SELECT r.* FROM jsonb_array_elements($2::jsonb) elem,
 // TRUNCATE'd. A dump failure is an ingestion failure and is returned as an error:
 // the caller must NOT advance the Last-Modified / If-Modified-Since cache unless
 // the dump succeeds, otherwise a later 304 would leave raw_tdx permanently stale.
-func dumpRawTDX(ctx context.Context, table, partCol, partVal, marker string, body []byte) error {
+func dumpRawTDX(ctx context.Context, table, partCol, partVal, marker, landingCycle string, body []byte) error {
 	if len(body) == 0 {
 		body = []byte("[]")
 	}
-	return dumpRawTDXReader(ctx, table, partCol, partVal, marker, bytes.NewReader(body))
+	return dumpRawTDXReader(ctx, table, partCol, partVal, marker, landingCycle, bytes.NewReader(body))
 }
 
 // dumpRawTDXReader is the streaming landing entrypoint used by the ingestor.
 // body must be seekable because each transient transaction retry consumes it;
 // the reader is rewound before every attempt instead of retaining a second full
 // copy of the payload in memory.
-func dumpRawTDXReader(ctx context.Context, table, partCol, partVal, marker string, body io.ReadSeeker) error {
+func dumpRawTDXReader(ctx context.Context, table, partCol, partVal, marker, landingCycle string, body io.ReadSeeker) error {
 	if ingestDB == nil {
 		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
 	}
@@ -377,11 +381,14 @@ func dumpRawTDXReader(ctx context.Context, table, partCol, partVal, marker strin
 	if strings.TrimSpace(marker) == "" {
 		return fmt.Errorf("%w: last-modified marker is empty", errRawDump)
 	}
+	if strings.TrimSpace(landingCycle) == "" {
+		return fmt.Errorf("%w: landing cycle is empty", errRawDump)
+	}
 	return obs.Retry(ctx, 3, 2*time.Second, func() error {
 		if _, err := body.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("%w: rewind response: %w", errRawDump, err)
 		}
-		return obs.Transient(landRawTDX(ctx, table, partCol, partVal, marker, body))
+		return obs.Transient(landRawTDX(ctx, table, partCol, partVal, marker, landingCycle, body))
 	})
 }
 
@@ -390,17 +397,17 @@ func dumpRawTDXReader(ctx context.Context, table, partCol, partVal, marker strin
 // server statement_timeout, and TCP keepalive is too slow to notice). On timeout
 // pgx cancels the query; dumpRawTDX retries, and if all attempts fail the caller
 // leaves the IMS cache un-advanced so this partition refetches next run.
-func landRawTDX(ctx context.Context, table, partCol, partVal, marker string, body io.Reader) error {
+func landRawTDX(ctx context.Context, table, partCol, partVal, marker, landingCycle string, body io.Reader) error {
 	if ingestDB == nil {
 		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
 	}
-	return landRawTDXWithDB(ctx, ingestDB, table, partCol, partVal, marker, body)
+	return landRawTDXWithDB(ctx, ingestDB, table, partCol, partVal, marker, landingCycle, body)
 }
 
 func landRawTDXWithDB(
 	ctx context.Context,
 	db rawLandingBeginner,
-	table, partCol, partVal, marker string,
+	table, partCol, partVal, marker, landingCycle string,
 	body io.Reader,
 ) error {
 	if err := validateRawTarget(table, partCol); err != nil {
@@ -408,6 +415,9 @@ func landRawTDXWithDB(
 	}
 	if strings.TrimSpace(marker) == "" {
 		return fmt.Errorf("%w: last-modified marker is empty", errRawDump)
+	}
+	if strings.TrimSpace(landingCycle) == "" {
+		return fmt.Errorf("%w: landing cycle is empty", errRawDump)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
@@ -453,13 +463,14 @@ func landRawTDXWithDB(
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO raw_tdx.landing_state
-			(table_name, partition_column, partition_value, last_modified, row_count, fetched_at)
-		VALUES ($1, $2, $3, $4, $5, now())
+			(table_name, partition_column, partition_value, last_modified, row_count, fetched_at, landing_cycle)
+		VALUES ($1, $2, $3, $4, $5, now(), $6)
 		ON CONFLICT (table_name, partition_column, partition_value) DO UPDATE SET
 			last_modified=EXCLUDED.last_modified,
 			row_count=EXCLUDED.row_count,
-			fetched_at=EXCLUDED.fetched_at`,
-		table, partCol, partVal, marker, rows); err != nil {
+			fetched_at=EXCLUDED.fetched_at,
+			landing_cycle=EXCLUDED.landing_cycle`,
+		table, partCol, partVal, marker, rows, landingCycle); err != nil {
 		return fmt.Errorf("%w: upsert landing state: %w", errRawDump, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

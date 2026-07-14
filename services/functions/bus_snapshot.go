@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strings"
@@ -54,7 +55,9 @@ type rawBusStationGroup struct {
 type busCitySnapshot struct {
 	city         string
 	prefix       string
+	landingCycle string
 	subroutes    map[string]*models.BusSubroute
+	operatorRows [][]any
 	subrouteRows [][]any
 	stationRows  [][]any
 	groupRows    [][]any
@@ -72,8 +75,25 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	if prefix == "" {
 		return nil, fmt.Errorf("%w: city %q has no UID prefix", errBusSnapshotInvalid, city)
 	}
+	cycleSource, ok := src.(busLandingCycleSource)
+	if !ok {
+		return nil, fmt.Errorf("%w: source cannot return an atomic landing cycle", errBusSnapshotIncomplete)
+	}
+	landingCycle := ""
+	readDataset := func(table string) ([]byte, error) {
+		body, cycle, err := readBusRawDataset(ctx, cycleSource, city, table)
+		if err != nil {
+			return nil, err
+		}
+		if landingCycle == "" {
+			landingCycle = cycle
+		} else if cycle != landingCycle {
+			return nil, fmt.Errorf("%w: %s/%s landing cycle %q does not match %q", errBusSnapshotIncomplete, table, city, cycle, landingCycle)
+		}
+		return body, nil
+	}
 	var operators []rawBusOperator
-	operatorBody, err := readBusRawDataset(ctx, src, city, "bus_operator")
+	operatorBody, err := readDataset("bus_operator")
 	if err != nil {
 		return nil, err
 	}
@@ -82,8 +102,11 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 	opByID := make(map[string]rawBusOperator, len(operators))
 	for i, op := range operators {
-		if strings.TrimSpace(op.OperatorID) == "" {
-			return nil, fmt.Errorf("%w: Operator[%d] has empty OperatorID", errBusSnapshotInvalid, i)
+		if strings.TrimSpace(op.OperatorID) == "" || strings.TrimSpace(op.OperatorName.Zhtw) == "" || strings.TrimSpace(op.AuthorityCode) == "" {
+			return nil, fmt.Errorf("%w: Operator[%d] has incomplete identity", errBusSnapshotInvalid, i)
+		}
+		if op.AuthorityCode != prefix {
+			return nil, fmt.Errorf("%w: Operator[%d] authority %q does not belong to %s", errBusSnapshotInvalid, i, op.AuthorityCode, city)
 		}
 		if old, ok := opByID[op.OperatorID]; ok && !jsonSemanticEqual(old, op) {
 			return nil, fmt.Errorf("%w: OperatorID %s has divergent variants", errBusSnapshotConflict, op.OperatorID)
@@ -92,19 +115,34 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 
 	var routes []rawBusRoute
-	routeBody, err := readBusRawDataset(ctx, src, city, "bus_route")
+	routeBody, err := readDataset("bus_route")
 	if err != nil {
 		return nil, err
 	}
 	if err := decodeStrictJSONArray(routeBody, &routes); err != nil {
 		return nil, fmt.Errorf("%w: Route: %v", errBusSnapshotInvalid, err)
 	}
-	snapshot := &busCitySnapshot{city: city, prefix: prefix, subroutes: make(map[string]*models.BusSubroute)}
+	snapshot := &busCitySnapshot{city: city, prefix: prefix, landingCycle: landingCycle, subroutes: make(map[string]*models.BusSubroute)}
+	operatorIDs := make([]string, 0, len(opByID))
+	for operatorID := range opByID {
+		operatorIDs = append(operatorIDs, operatorID)
+	}
+	sort.Strings(operatorIDs)
+	for _, operatorID := range operatorIDs {
+		op := opByID[operatorID]
+		snapshot.operatorRows = append(snapshot.operatorRows, []any{
+			op.OperatorID, op.AuthorityCode, op.OperatorName.Zhtw,
+			sanitizeOperatorPhone(op.OperatorPhone), op.OperatorUrl,
+		})
+	}
 	routeToCanonical := make(map[string]map[string]struct{})
 	nativeToCanonical := make(map[string]string)
 	for ri, route := range routes {
 		if strings.TrimSpace(route.RouteUID) == "" || strings.TrimSpace(route.RouteName.Zhtw) == "" || len(route.SubRoutes) == 0 {
 			return nil, fmt.Errorf("%w: Route[%d] missing route identity or subroutes", errBusSnapshotInvalid, ri)
+		}
+		if !uidBelongsToPrefix(route.RouteUID, prefix) {
+			return nil, fmt.Errorf("%w: Route[%d] UID %q does not belong to %s", errBusSnapshotInvalid, ri, route.RouteUID, city)
 		}
 		var ops []*models.BusOperator
 		for _, ref := range route.Operators {
@@ -122,6 +160,9 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			if strings.TrimSpace(uid) == "" || strings.TrimSpace(sub.SubRouteUID) == "" || strings.TrimSpace(sub.SubRouteName.Zhtw) == "" || dir > 1 {
 				return nil, fmt.Errorf("%w: Route[%d].SubRoutes[%d] has invalid identity/direction", errBusSnapshotInvalid, ri, si)
 			}
+			if !uidBelongsToPrefix(sub.SubRouteUID, prefix) || !uidBelongsToPrefix(uid, prefix) {
+				return nil, fmt.Errorf("%w: Route[%d].SubRoutes[%d] UID %q canonical %q does not belong to %s", errBusSnapshotInvalid, ri, si, sub.SubRouteUID, uid, city)
+			}
 			for label, value := range map[string]string{
 				"FirstBusTime": sub.FirstBusTime, "LastBusTime": sub.LastBusTime,
 				"HolidayFirstBusTime": sub.HolidayFirstBusTime, "HolidayLastBusTime": sub.HolidayLastBusTime,
@@ -137,7 +178,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			if dest == "" {
 				dest = route.DestinationStopNameZh
 			}
-			if sub.Direction == 1 {
+			if dir == 1 {
 				dep, dest = dest, dep
 			}
 			candidate := &models.Direction{
@@ -199,7 +240,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 
 	var stopVariants []rawStopofroute
-	stopBody, err := readBusRawDataset(ctx, src, city, "bus_stopofroute")
+	stopBody, err := readDataset("bus_stopofroute")
 	if err != nil {
 		return nil, err
 	}
@@ -209,9 +250,13 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	seenStops := make(map[string]rawStopofroute)
 	for i, variant := range stopVariants {
 		uid, dir := shared.CanonicalSubroute(city, variant.SubRouteUID, variant.Direction)
+		route := snapshot.subroutes[uid]
 		direction := directionFor(snapshot.subroutes, uid, dir)
-		if direction == nil {
+		if !uidBelongsToPrefix(variant.RouteUID, prefix) || !uidBelongsToPrefix(variant.SubRouteUID, prefix) || !uidBelongsToPrefix(uid, prefix) || route == nil || direction == nil {
 			return nil, fmt.Errorf("%w: StopOfRoute[%d] references unknown %s/%d", errBusSnapshotInvalid, i, uid, dir)
+		}
+		if variant.RouteUID != route.RouteUID {
+			return nil, fmt.Errorf("%w: StopOfRoute[%d] parent %q does not match %q for %s", errBusSnapshotInvalid, i, variant.RouteUID, route.RouteUID, uid)
 		}
 		if len(variant.Stops) == 0 {
 			return nil, fmt.Errorf("%w: StopOfRoute[%d] has no stops", errBusSnapshotInvalid, i)
@@ -251,7 +296,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 
 	var shapes []rawBusShape
-	shapeBody, err := readBusRawDataset(ctx, src, city, "bus_shape")
+	shapeBody, err := readDataset("bus_shape")
 	if err != nil {
 		return nil, err
 	}
@@ -266,8 +311,14 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		var targets []string
 		if shape.SubRouteUID != "" {
 			uid, _ := shared.CanonicalSubroute(city, shape.SubRouteUID, shape.Direction)
+			if !uidBelongsToPrefix(shape.RouteUID, prefix) || !uidBelongsToPrefix(shape.SubRouteUID, prefix) || !uidBelongsToPrefix(uid, prefix) {
+				return nil, fmt.Errorf("%w: Shape[%d] subroute UID does not belong to %s", errBusSnapshotInvalid, i, city)
+			}
 			targets = []string{uid}
 		} else {
+			if !uidBelongsToPrefix(shape.RouteUID, prefix) {
+				return nil, fmt.Errorf("%w: Shape[%d] route UID does not belong to %s", errBusSnapshotInvalid, i, city)
+			}
 			for uid := range routeToCanonical[shape.RouteUID] {
 				targets = append(targets, uid)
 			}
@@ -277,9 +328,13 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		}
 		for _, uid := range targets {
 			_, dir := shared.CanonicalSubroute(city, shape.SubRouteUID, shape.Direction)
+			route := snapshot.subroutes[uid]
 			direction := directionFor(snapshot.subroutes, uid, dir)
-			if direction == nil {
+			if direction == nil || route == nil {
 				return nil, fmt.Errorf("%w: Shape[%d] references unknown %s/%d", errBusSnapshotInvalid, i, uid, dir)
+			}
+			if shape.RouteUID != "" && shape.RouteUID != route.RouteUID {
+				return nil, fmt.Errorf("%w: Shape[%d] parent %q does not match %q for %s", errBusSnapshotInvalid, i, shape.RouteUID, route.RouteUID, uid)
 			}
 			key := fmt.Sprintf("%s/%d", uid, dir)
 			if prior, ok := seenShapes[key]; ok && prior != shape.Geometry {
@@ -291,7 +346,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 
 	var schedules []rawBusSchedule
-	scheduleBody, err := readBusRawDataset(ctx, src, city, "bus_schedule")
+	scheduleBody, err := readDataset("bus_schedule")
 	if err != nil {
 		return nil, err
 	}
@@ -301,9 +356,13 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	seenSchedules := make(map[string]rawBusSchedule)
 	for i, schedule := range schedules {
 		uid, dir := shared.CanonicalSubroute(city, schedule.SubRouteUID, schedule.Direction)
+		route := snapshot.subroutes[uid]
 		direction := directionFor(snapshot.subroutes, uid, dir)
-		if direction == nil {
+		if !uidBelongsToPrefix(schedule.RouteUID, prefix) || !uidBelongsToPrefix(schedule.SubRouteUID, prefix) || !uidBelongsToPrefix(uid, prefix) || route == nil || direction == nil {
 			return nil, fmt.Errorf("%w: Schedule[%d] references unknown %s/%d", errBusSnapshotInvalid, i, uid, dir)
+		}
+		if schedule.RouteUID != route.RouteUID {
+			return nil, fmt.Errorf("%w: Schedule[%d] parent %q does not match %q for %s", errBusSnapshotInvalid, i, schedule.RouteUID, route.RouteUID, uid)
 		}
 		key := fmt.Sprintf("%s/%d", uid, dir)
 		if prior, ok := seenSchedules[key]; ok {
@@ -322,7 +381,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 
 	var stations []rawBusStation
-	stationBody, err := readBusRawDataset(ctx, src, city, "bus_station")
+	stationBody, err := readDataset("bus_station")
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +392,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	stationIDs := make(map[string]string, len(stations))
 	stationsByUID := make(map[string]rawBusStation, len(stations))
 	for i, station := range stations {
-		if station.StationUID == "" || station.StationID == "" || station.StationName.Zhtw == "" || !validPosition(station.StationPosition.PositionLon, station.StationPosition.PositionLat) {
+		if !uidBelongsToPrefix(station.StationUID, prefix) || station.StationID == "" || station.StationName.Zhtw == "" || !validPosition(station.StationPosition.PositionLon, station.StationPosition.PositionLat) {
 			return nil, fmt.Errorf("%w: Station[%d] has invalid identity/position", errBusSnapshotInvalid, i)
 		}
 		if prior, exists := stationsByUID[station.StationUID]; exists {
@@ -376,7 +435,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 
 	var groups []rawBusStationGroup
-	groupBody, err := readBusRawDataset(ctx, src, city, "bus_stationgroup")
+	groupBody, err := readDataset("bus_stationgroup")
 	if err != nil {
 		return nil, err
 	}
@@ -386,7 +445,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	groupsByID := make(map[string]rawBusStationGroup)
 	groupsByUID := make(map[string]rawBusStationGroup)
 	for i, group := range groups {
-		if group.StationGroupUID == "" || group.StationGroupID == "" || group.StationGroupName.Zhtw == "" || !validPosition(group.StationGroupPosition.PositionLon, group.StationGroupPosition.PositionLat) {
+		if !uidBelongsToPrefix(group.StationGroupUID, prefix) || group.StationGroupID == "" || group.StationGroupName.Zhtw == "" || !validPosition(group.StationGroupPosition.PositionLon, group.StationGroupPosition.PositionLat) {
 			return nil, fmt.Errorf("%w: StationGroup[%d] has invalid identity/position", errBusSnapshotInvalid, i)
 		}
 		if prior, ok := groupsByID[group.StationGroupID]; ok && !jsonSemanticEqual(prior, group) {
@@ -448,7 +507,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 
 	var fares []rawBusFare
-	fareBody, err := readBusRawDataset(ctx, src, city, "bus_routefare")
+	fareBody, err := readDataset("bus_routefare")
 	if err != nil {
 		return nil, err
 	}
@@ -505,18 +564,21 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	return snapshot, nil
 }
 
-func readBusRawDataset(ctx context.Context, src loadSource, city, table string) ([]byte, error) {
-	body, fetchedAt, err := src.datasetJSON(ctx, table, "city", city)
+func readBusRawDataset(ctx context.Context, src busLandingCycleSource, city, table string) ([]byte, string, error) {
+	body, fetchedAt, landingCycle, err := src.datasetJSONWithLandingCycle(ctx, table, "city", city)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s/%s read: %w", errBusSnapshotIncomplete, table, city, err)
+		return nil, "", fmt.Errorf("%w: %s/%s read: %w", errBusSnapshotIncomplete, table, city, err)
 	}
 	if fetchedAt.IsZero() || isStale(fetchedAt) {
-		return nil, fmt.Errorf("%w: %s/%s landing state fetched_at=%s", errBusSnapshotIncomplete, table, city, fetchedAt.Format(time.RFC3339))
+		return nil, "", fmt.Errorf("%w: %s/%s landing state fetched_at=%s", errBusSnapshotIncomplete, table, city, fetchedAt.Format(time.RFC3339))
+	}
+	if strings.TrimSpace(landingCycle) == "" {
+		return nil, "", fmt.Errorf("%w: %s/%s landing state has no cycle", errBusSnapshotIncomplete, table, city)
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return nil, fmt.Errorf("%w: %s/%s has empty JSON body", errBusSnapshotInvalid, table, city)
+		return nil, "", fmt.Errorf("%w: %s/%s has empty JSON body", errBusSnapshotInvalid, table, city)
 	}
-	return body, nil
+	return body, landingCycle, nil
 }
 
 func (s *busCitySnapshot) buildWriteRows() error {
@@ -617,10 +679,14 @@ func decodeStrictJSONArray(body []byte, target any) error {
 		return err
 	}
 	var trailing json.RawMessage
-	if err := dec.Decode(&trailing); err == nil {
+	err := dec.Decode(&trailing)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err == nil {
 		return errors.New("trailing JSON value")
 	}
-	return nil
+	return fmt.Errorf("malformed trailing JSON: %w", err)
 }
 
 func validClock(value string) bool {
@@ -637,6 +703,10 @@ func prefixID(prefix, id string) string {
 		return id
 	}
 	return prefix + id
+}
+
+func uidBelongsToPrefix(uid, prefix string) bool {
+	return uid != "" && prefix != "" && strings.HasPrefix(uid, prefix)
 }
 
 func manualGroupUID(city, name string) string {

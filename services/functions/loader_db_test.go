@@ -29,13 +29,17 @@ func loaderTestPool(t *testing.T) *pgxpool.Pool {
 	var provisioned bool
 	if err := pool.QueryRow(context.Background(), `
 		SELECT to_regclass('raw_tdx.bus_route') IS NOT NULL
-		   AND to_regclass('raw_tdx.landing_state') IS NOT NULL`).Scan(&provisioned); err != nil {
+		   AND to_regclass('raw_tdx.landing_state') IS NOT NULL
+		   AND EXISTS (
+			 SELECT 1 FROM information_schema.columns
+			 WHERE table_schema='raw_tdx' AND table_name='landing_state'
+			   AND column_name='landing_cycle')`).Scan(&provisioned); err != nil {
 		pool.Close()
 		t.Fatalf("probe raw_tdx schema: %v", err)
 	}
 	if !provisioned {
 		pool.Close()
-		t.Skip("raw_tdx schema or landing_state migration not provisioned; skipping loader integration test")
+		t.Skip("raw_tdx schema or landing-cycle migration not provisioned; skipping loader integration test")
 	}
 	return pool
 }
@@ -61,7 +65,7 @@ func TestRawTDXSourceStripsBookkeeping(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`[{"RouteUID":"ZZR1","RouteName":{"Zh_tw":"測"},"VersionID":7}]`)
-	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-ROUTE", body); err != nil {
+	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-ROUTE", "test-cycle-route", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 
@@ -137,7 +141,7 @@ func TestRawTDXSourceTHSRTraindateNormalized(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`[{"TrainDate":"2026-07-04","DailyTrainInfo":{"TrainNo":"0101"},"StopTimes":[],"VersionID":1}]`)
-	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-THSR", body); err != nil {
+	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-THSR", "test-cycle-thsr", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 
@@ -192,7 +196,7 @@ func TestRunLoadThroughRawTDXSource(t *testing.T) {
 	defer sinkCleanup()
 
 	body := []byte(`[{"StationID":"ZZ_LOAD_STATION","StationName":{"Zh_tw":"測站"},"LocationCityCode":"TPE","StationPosition":{"PositionLon":121.5,"PositionLat":25.0},"StationCode":"Z1"}]`)
-	if err := dumpRawTDX(ctx, "tra_station", "", "", "TEST-TRA", body); err != nil {
+	if err := dumpRawTDX(ctx, "tra_station", "", "", "TEST-TRA", "test-cycle-tra", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 	defer func() {
@@ -317,8 +321,9 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	// Fixture: one route with one operator-referencing subroute, its operator
 	// registry entry, and a matching subroute fare. Empty arrays for the bus
 	// datasets loadBus reads but this fixture does not exercise.
+	const landingCycle = "test-cycle-bus-city"
 	land := func(table, body string) {
-		if err := dumpRawTDX(ctx, table, "city", city, "TEST-BUS", []byte(body)); err != nil {
+		if err := dumpRawTDX(ctx, table, "city", city, "TEST-BUS", landingCycle, []byte(body)); err != nil {
 			t.Fatalf("land %s: %v", table, err)
 		}
 	}
@@ -328,7 +333,7 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	land("bus_schedule", `[]`)
 	land("bus_station", `[{"StationUID":"ZZZST1","StationID":"ST1","StationName":{"Zh_tw":"站一"},"StationPosition":{"PositionLon":120.8,"PositionLat":24.5}}]`)
 	land("bus_stationgroup", `[]`)
-	land("bus_operator", `[{"OperatorID":"ZZ_LOAD_OP","OperatorName":{"Zh_tw":"測運"},"OperatorPhone":"02-1234","OperatorUrl":"https://ex","AuthorityCode":"MIA"}]`)
+	land("bus_operator", `[{"OperatorID":"ZZ_LOAD_OP","OperatorName":{"Zh_tw":"測運"},"OperatorPhone":"02-1234","OperatorUrl":"https://ex","AuthorityCode":"ZZZ"}]`)
 	land("bus_routefare", `[{"RouteID":"1","SubRouteID":"100","FarePricingType":1,"IsFreeBus":0}]`)
 
 	// Point Redis at an unreachable address: the DB snapshot must remain committed
@@ -373,14 +378,13 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 		t.Fatal("bus_static.pb subroute has no Operators; operator enrichment did not flow")
 	}
 
-	// The city snapshot consumes operator detail but never writes bus_operators;
-	// the standalone bus_operator spec remains that table's sole writer.
+	// Operator target rows commit in the same city transaction as routes.
 	var opRows int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM bus_operators WHERE operator_id=$1", opID).Scan(&opRows); err != nil {
 		t.Fatalf("count bus_operators: %v", err)
 	}
-	if opRows != 0 {
-		t.Fatalf("bus_operators rows for %s = %d, want 0 from bus snapshot", opID, opRows)
+	if opRows != 1 {
+		t.Fatalf("bus_operators rows for %s = %d, want 1 from bus snapshot", opID, opRows)
 	}
 }
 
@@ -405,7 +409,7 @@ func TestVerifyAndTouchRawLandingRefreshesState(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`[{"TrainDate":"2020-01-02","DailyTrainInfo":{"TrainNo":"0101"},"StopTimes":[],"VersionID":1}]`)
-	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-304", body); err != nil {
+	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-304", "test-cycle-304-full", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 	// Backdate the landing past the 27h freshness window, as if every ingest run
@@ -423,7 +427,7 @@ func TestVerifyAndTouchRawLandingRefreshesState(t *testing.T) {
 		t.Fatalf("backdated partition not stale (fetched_at=%s); test premise broken", fetchedAt)
 	}
 
-	if err := verifyAndTouchRawLanding(ctx, "thsr_dailytimetable", "traindate", date, "TEST-304"); err != nil {
+	if err := verifyAndTouchRawLanding(ctx, "thsr_dailytimetable", "traindate", date, "TEST-304", "test-cycle-304-touch"); err != nil {
 		t.Fatalf("verifyAndTouchRawLanding: %v", err)
 	}
 

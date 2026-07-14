@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
@@ -303,8 +302,8 @@ type rawBusShape struct {
 	UpdateTime  string `json:"UpdateTime"`
 }
 
-// rawBusOperator decodes a TDX Bus/Operator element for the standalone operator
-// upsert and the atomic city snapshot's route enrichment.
+// rawBusOperator decodes a TDX Bus/Operator element for the atomic city
+// snapshot's target upsert and route enrichment.
 type rawBusOperator struct {
 	OperatorID   string `json:"OperatorID"`
 	OperatorName struct {
@@ -420,60 +419,4 @@ func cloneBusFare(f *models.Bus_Fare) *models.Bus_Fare {
 		return nil
 	}
 	return proto.Clone(f).(*models.Bus_Fare)
-}
-
-// loadBusOperators decodes a city's operators from an already-opened decoder
-// (the raw_tdx loader reconstructs it), upserts them into bus_operators, and
-// returns them keyed by OperatorID for the subroute assembly. The temp_op COPY
-// and ON CONFLICT (operator_id, authority_code) upsert are byte-identical to
-// the legacy fetch-coupled body. The map is returned even on a write error so
-// enrichment can proceed from whatever decoded.
-func loadBusOperators(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, city string) (map[string]rawBusOperator, error) {
-	result := make(map[string]rawBusOperator)
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=decode_error error=%v", city, err)
-		return result, err
-	}
-	var copyRows [][]interface{}
-	for dec.More() {
-		var op rawBusOperator
-		if err := dec.Decode(&op); err != nil {
-			continue
-		}
-		result[op.OperatorID] = op
-		copyRows = append(copyRows, []interface{}{op.OperatorID, op.AuthorityCode, op.OperatorName.Zhtw, sanitizeOperatorPhone(op.OperatorPhone), op.OperatorUrl})
-	}
-	if len(copyRows) == 0 {
-		return result, nil
-	}
-	b, err := db.Begin(ctx)
-	if err != nil {
-		log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=begin_error error=%v", city, err)
-		return result, err
-	}
-	defer func() { _ = b.Rollback(ctx) }()
-	if _, err := b.Exec(ctx, `CREATE TEMP TABLE temp_op (oid text, ac text, name text, phone text, url text) ON COMMIT DROP`); err != nil {
-		log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=create_temp_error error=%v", city, err)
-		return result, err
-	}
-	if _, err := b.CopyFrom(ctx, pgx.Identifier{"temp_op"}, []string{"oid", "ac", "name", "phone", "url"}, pgx.CopyFromRows(copyRows)); err != nil {
-		log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=copyfrom_error error=%v", city, err)
-		return result, err
-	}
-	if _, err := b.Exec(ctx, `INSERT INTO bus_operators (operator_id, authority_code, operator_name, operator_phone, operator_url)
-		SELECT DISTINCT ON (oid, ac) oid, ac, name, phone, url FROM temp_op
-		ON CONFLICT (operator_id, authority_code) DO UPDATE SET
-			operator_name  = EXCLUDED.operator_name,
-			operator_phone = EXCLUDED.operator_phone,
-			operator_url   = EXCLUDED.operator_url,
-			updated_at     = NOW()`); err != nil {
-		log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=insert_error error=%v", city, err)
-		return result, err
-	}
-	if err := b.Commit(ctx); err != nil {
-		log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=commit_error error=%v", city, err)
-		return result, err
-	}
-	log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=complete count=%d", city, len(result))
-	return result, nil
 }

@@ -36,10 +36,6 @@ func (f *fakeLoadSink) recordSemantic(operation, part string) error {
 	return nil
 }
 
-func (f *fakeLoadSink) loadBusOperators(_ context.Context, _ *json.Decoder, part string) error {
-	return f.recordSemantic("bus operators", part)
-}
-
 func (f *fakeLoadSink) loadBusCity(_ context.Context, _ loadSource, part string) error {
 	return f.recordSemantic("bus city assembly", part)
 }

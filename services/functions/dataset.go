@@ -134,16 +134,16 @@ func busName(apiSeg string) func(string) string {
 	return func(p string) string { return "bus_" + apiSeg + p }
 }
 
-// busDataset builds one per-city bus static dataset. loadKey is set on the
-// datasets with a standalone loader (bus_route→"bus", bus_operator); foldedInto
-// is set on the tables the multi-table bus assembly reads directly.
+// busDataset builds one per-city bus static dataset. Only bus_route carries the
+// "bus" loadKey; every other correlated table is folded into that one atomic
+// city snapshot and has no standalone target transaction.
 func busDataset(apiSeg, rawTable, loadKey, foldedInto string) datasetSpec {
 	spec := datasetSpec{
 		rawTable: rawTable, partCol: "city", partitions: allCities,
 		family: familyBusCity, apiSeg: apiSeg, name: busName(apiSeg),
 		loadKey: loadKey, foldedInto: foldedInto,
 	}
-	if loadKey == "bus" || loadKey == "bus_operator" {
+	if loadKey == "bus" {
 		spec.loadParts = busLoadCities
 	}
 	return spec
@@ -162,11 +162,11 @@ func railSingle(apiSeg, rawTable, loadKey, imsName string) datasetSpec {
 
 // datasetRegistry is the ordered dataset table. Slice order is the load order:
 // filtering to loadKey-bearing entries yields the loaderRegistry order. The
-// standalone operator table remains before the atomic bus snapshot, while both
-// use the municipal-first / InterCity-last load partition order.
+// bus_route owns the one atomic bus snapshot load. Operator and the other seven
+// correlated inputs remain adjacent raw landing datasets but are folded into it.
 func datasetRegistry() []datasetSpec {
 	return []datasetSpec{
-		busDataset("Operator", "bus_operator", "bus_operator", ""),
+		busDataset("Operator", "bus_operator", "", "bus"),
 		busDataset("Route", "bus_route", "bus", ""),
 		busDataset("StopOfRoute", "bus_stopofroute", "", "bus"),
 		busDataset("Shape", "bus_shape", "", "bus"),

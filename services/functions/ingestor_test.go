@@ -343,12 +343,15 @@ func TestFetchRawForcesOneEndpointRefetchOnLandingStateMismatch(t *testing.T) {
 		}
 		return shared.TDXIntoResult{Modified: true, Marker: "MARKER-NEW"}, nil
 	}}
-	verify := func(context.Context, string, string, string, string) error {
+	verify := func(_ context.Context, _, _, _, _, cycle string) error {
+		if cycle != "cycle-test" {
+			t.Fatalf("landing cycle = %q, want cycle-test", cycle)
+		}
 		return &rawLandingStateMismatchError{Reason: "missing_state"}
 	}
 
 	err := fetchRawWithVerifier(
-		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", verify,
+		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", verify,
 	)
 	if err != nil {
 		t.Fatalf("fetchRawWithVerifier: %v", err)
@@ -375,8 +378,8 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			}, nil
 		}}
 		err := fetchRawWithVerifier(
-			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei",
-			func(context.Context, string, string, string, string) error { return mismatch },
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+			func(context.Context, string, string, string, string, string) error { return mismatch },
 		)
 		if !errors.Is(err, errRawLandingStateMismatch) {
 			t.Fatalf("error = %v, want state mismatch", err)
@@ -399,8 +402,8 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			}, nil
 		}}
 		err := fetchRawWithVerifier(
-			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei",
-			func(context.Context, string, string, string, string) error { return mismatch },
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+			func(context.Context, string, string, string, string, string) error { return mismatch },
 		)
 		if !errors.Is(err, invalidateErr) || !errors.Is(err, errRawLandingStateMismatch) {
 			t.Fatalf("error = %v, want invalidation and mismatch", err)
@@ -425,8 +428,8 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			}, nil
 		}}
 		err := fetchRawWithVerifier(
-			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei",
-			func(context.Context, string, string, string, string) error { return dbErr },
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+			func(context.Context, string, string, string, string, string) error { return dbErr },
 		)
 		if !errors.Is(err, dbErr) {
 			t.Fatalf("error = %v, want %v", err, dbErr)

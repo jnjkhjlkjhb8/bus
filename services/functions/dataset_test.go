@@ -76,22 +76,24 @@ func TestDatasetRegistryConsistency(t *testing.T) {
 	}
 }
 
-// TestLoaderRegistryOrderFromDataset asserts the derived loader order preserves
-// the bus_operator-before-bus publication order: the standalone operator table
-// refresh precedes the atomic bus snapshot.
-func TestLoaderRegistryOrderFromDataset(t *testing.T) {
-	idx := map[string]int{}
-	for i, s := range loaderRegistry(nil) {
-		idx[s.key] = i
+// TestLoaderRegistryFoldsOperatorsIntoAtomicBusSnapshot asserts there is only
+// one target writer for correlated bus static data. The raw operator dataset is
+// still fetched, but it must not get a standalone loader transaction.
+func TestLoaderRegistryFoldsOperatorsIntoAtomicBusSnapshot(t *testing.T) {
+	for _, spec := range loaderRegistry(nil) {
+		if spec.key == "bus_operator" {
+			t.Fatal("bus_operator still has a standalone loader transaction")
+		}
 	}
-	op, okOp := idx["bus_operator"]
-	bus, okBus := idx["bus"]
-	if !okOp || !okBus {
-		t.Fatalf("missing bus_operator/bus loader specs: %v", idx)
+	for _, dataset := range datasetRegistry() {
+		if dataset.rawTable == "bus_operator" {
+			if dataset.loadKey != "" || dataset.foldedInto != "bus" {
+				t.Fatalf("bus_operator loadKey/foldedInto = %q/%q, want empty/bus", dataset.loadKey, dataset.foldedInto)
+			}
+			return
+		}
 	}
-	if op >= bus {
-		t.Fatalf("bus_operator (index %d) must sort before bus (index %d)", op, bus)
-	}
+	t.Fatal("bus_operator dataset missing")
 }
 
 // TestFetchURLsRoundTripToTargets proves the fetch list and the reverse target

@@ -16,7 +16,6 @@ import (
 // pgLoadSink; unit tests drive the transforms through fakeLoadSink.
 type loadSink interface {
 	copyUpsert(ctx context.Context, spec copyUpsertSpec, rows [][]any) error
-	loadBusOperators(ctx context.Context, dec *json.Decoder, city string) error
 	loadBusCity(ctx context.Context, src loadSource, city string) error
 	loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, city string) error
 	loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, system string) error
@@ -51,11 +50,6 @@ type copyUpsertSpec struct {
 type pgLoadSink struct {
 	db *pgxpool.Pool
 	rc *redis.Client
-}
-
-func (s pgLoadSink) loadBusOperators(ctx context.Context, dec *json.Decoder, city string) error {
-	_, err := loadBusOperators(ctx, dec, s.db, city)
-	return err
 }
 
 func (s pgLoadSink) loadBusCity(ctx context.Context, src loadSource, city string) error {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -95,6 +97,10 @@ func ingestRaw(ctx context.Context, tdx rawFetcher) error {
 	}
 
 	log.Infoln("[INGEST] action=raw event=start")
+	landingCycle, err := newRawLandingCycle()
+	if err != nil {
+		return fmt.Errorf("start raw landing cycle: %w", err)
+	}
 
 	// Build the fetch jobs from the single datasetRegistry: every fetched dataset
 	// (familyNone / landOnly excluded) crossed with its landing partitions. The
@@ -122,7 +128,7 @@ func ingestRaw(ctx context.Context, tdx rawFetcher) error {
 		go func(j job) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := fetchRaw(ctx, tdx, j.url, j.name); err != nil {
+			if err := fetchRaw(ctx, tdx, j.url, j.name, landingCycle); err != nil {
 				failures <- err
 			}
 		}(j)
@@ -142,25 +148,28 @@ func ingestRaw(ctx context.Context, tdx rawFetcher) error {
 // marker advances, so a failed dump refetches next run instead of being masked
 // by a later 304. Endpoints with no raw_tdx mapping still advance their marker
 // after the spool completes (commit is a no-op).
-func fetchRaw(ctx context.Context, tdx rawFetcher, url, name string) error {
-	return fetchRawWithVerifier(ctx, tdx, url, name, verifyAndTouchRawLanding)
+func fetchRaw(ctx context.Context, tdx rawFetcher, url, name, landingCycle string) error {
+	return fetchRawWithVerifier(ctx, tdx, url, name, landingCycle, verifyAndTouchRawLanding)
 }
 
-type rawLandingVerifier func(context.Context, string, string, string, string) error
+type rawLandingVerifier func(context.Context, string, string, string, string, string) error
 
 func fetchRawWithVerifier(
 	ctx context.Context,
 	tdx rawFetcher,
-	url, name string,
+	url, name, landingCycle string,
 	verify rawLandingVerifier,
 ) error {
+	if landingCycle == "" {
+		return errors.New("fetch raw: empty landing cycle")
+	}
 	table, partCol, partVal, mapped := rawDumpTarget(url)
 	for attempt := 0; attempt < 2; attempt++ {
 		result, err := tdx.GetInto(ctx, url, name, func(commit shared.TDXIntoCommit) error {
 			if !mapped {
 				return nil
 			}
-			return dumpRawTDXReader(ctx, table, partCol, partVal, commit.Marker, commit.Body)
+			return dumpRawTDXReader(ctx, table, partCol, partVal, commit.Marker, landingCycle, commit.Body)
 		})
 		if err != nil {
 			if errors.Is(err, errRawDump) {
@@ -178,7 +187,7 @@ func fetchRawWithVerifier(
 			return nil
 		}
 
-		err = verify(ctx, table, partCol, partVal, result.Marker)
+		err = verify(ctx, table, partCol, partVal, result.Marker, landingCycle)
 		if err == nil {
 			log.Infof("[INGEST] url=%s event=skip reason=not_modified", url)
 			return nil
@@ -199,4 +208,12 @@ func fetchRawWithVerifier(
 		log.Infof("[INGEST] url=%s event=refetch reason=landing_state_mismatch", url)
 	}
 	return nil
+}
+
+func newRawLandingCycle() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate random identity: %w", err)
+	}
+	return hex.EncodeToString(random[:]), nil
 }

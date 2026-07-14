@@ -14,7 +14,7 @@ import (
 
 const (
 	stateSelectForUpdatePattern = `SELECT last_modified, row_count FROM raw_tdx\.landing_state WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3 FOR UPDATE`
-	stateTouchPattern           = `UPDATE raw_tdx\.landing_state SET fetched_at=now\(\) WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3`
+	stateTouchPattern           = `UPDATE raw_tdx\.landing_state SET fetched_at=now\(\), landing_cycle=\$4 WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3`
 	stateUpsertPattern          = `INSERT INTO raw_tdx\.landing_state .* ON CONFLICT .* DO UPDATE SET .*`
 	stateFreshnessPattern       = `SELECT fetched_at, row_count FROM raw_tdx\.landing_state WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3`
 )
@@ -59,12 +59,12 @@ func TestVerifyAndTouchRawLandingAcceptsMatchingEmptyAndNonEmpty(t *testing.T) {
 				WithArgs("Taipei").
 				WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(tc.hasRows))
 			db.ExpectExec(stateTouchPattern).
-				WithArgs("bus_route", "city", "Taipei").
+				WithArgs("bus_route", "city", "Taipei", "cycle-test").
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			db.ExpectCommit()
 
 			if err := verifyAndTouchRawLandingWithDB(
-				context.Background(), db, "bus_route", "city", "Taipei", "MARKER",
+				context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test",
 			); err != nil {
 				t.Fatalf("verifyAndTouchRawLandingWithDB: %v", err)
 			}
@@ -84,7 +84,7 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 		db.ExpectRollback()
 
 		err := verifyAndTouchRawLandingWithDB(
-			context.Background(), db, "bus_route", "city", "Taipei", "MARKER",
+			context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test",
 		)
 		assertLandingMismatch(t, err, "missing_state")
 	})
@@ -98,7 +98,7 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 		db.ExpectRollback()
 
 		err := verifyAndTouchRawLandingWithDB(
-			context.Background(), db, "bus_route", "city", "Taipei", "HTTP-MARKER",
+			context.Background(), db, "bus_route", "city", "Taipei", "HTTP-MARKER", "cycle-test",
 		)
 		assertLandingMismatch(t, err, "marker")
 	})
@@ -123,7 +123,7 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 			db.ExpectRollback()
 
 			err := verifyAndTouchRawLandingWithDB(
-				context.Background(), db, "bus_route", "city", "Taipei", "MARKER",
+				context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test",
 			)
 			assertLandingMismatch(t, err, "row_presence")
 		})
@@ -139,12 +139,12 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 			WithArgs("Taipei").
 			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
 		db.ExpectExec(stateTouchPattern).
-			WithArgs("bus_route", "city", "Taipei").
+			WithArgs("bus_route", "city", "Taipei", "cycle-test").
 			WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 		db.ExpectRollback()
 
 		err := verifyAndTouchRawLandingWithDB(
-			context.Background(), db, "bus_route", "city", "Taipei", "MARKER",
+			context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test",
 		)
 		assertLandingMismatch(t, err, "state_update")
 	})
@@ -176,12 +176,12 @@ func TestLandRawTDXCommitsRowsAndStateAtomically(t *testing.T) {
 		WithArgs(`{"city":"Taipei"}`, []byte("[]")).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	db.ExpectExec(stateUpsertPattern).
-		WithArgs("bus_route", "city", "Taipei", "MARKER-EMPTY", int64(0)).
+		WithArgs("bus_route", "city", "Taipei", "MARKER-EMPTY", int64(0), "cycle-test").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	db.ExpectCommit()
 
 	err := landRawTDXWithDB(
-		context.Background(), db, "bus_route", "city", "Taipei", "MARKER-EMPTY", bytes.NewBufferString("[]"),
+		context.Background(), db, "bus_route", "city", "Taipei", "MARKER-EMPTY", "cycle-test", bytes.NewBufferString("[]"),
 	)
 	if err != nil {
 		t.Fatalf("landRawTDXWithDB: %v", err)
@@ -201,16 +201,63 @@ func TestLandRawTDXRollsBackWhenStateUpsertFails(t *testing.T) {
 		WithArgs(`{"city":"Taipei"}`, []byte("[]")).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	db.ExpectExec(stateUpsertPattern).
-		WithArgs("bus_route", "city", "Taipei", "MARKER", int64(0)).
+		WithArgs("bus_route", "city", "Taipei", "MARKER", int64(0), "cycle-test").
 		WillReturnError(stateErr)
 	db.ExpectRollback()
 
 	err := landRawTDXWithDB(
-		context.Background(), db, "bus_route", "city", "Taipei", "MARKER", bytes.NewBufferString("[]"),
+		context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test", bytes.NewBufferString("[]"),
 	)
 	if !errors.Is(err, stateErr) {
 		t.Fatalf("land error = %v, want %v", err, stateErr)
 	}
+}
+
+func TestRawLandingPersistsSharedCycleForFullAndVerified304(t *testing.T) {
+	t.Run("full verified empty landing", func(t *testing.T) {
+		db := newRawLandingMock(t)
+		db.ExpectBegin()
+		db.ExpectExec(regexp.QuoteMeta("SET LOCAL lock_timeout = '20s'")).
+			WillReturnResult(pgxmock.NewResult("SET", 0))
+		db.ExpectExec(regexp.QuoteMeta(rawDeleteSQL("bus_route", "city"))).
+			WithArgs("Taipei").
+			WillReturnResult(pgxmock.NewResult("DELETE", 3))
+		db.ExpectExec(regexp.QuoteMeta(rawInsertSQL("bus_route"))).
+			WithArgs(`{"city":"Taipei"}`, []byte("[]")).
+			WillReturnResult(pgxmock.NewResult("INSERT", 0))
+		db.ExpectExec(`INSERT INTO raw_tdx\.landing_state .*landing_cycle.*ON CONFLICT.*landing_cycle=EXCLUDED\.landing_cycle`).
+			WithArgs("bus_route", "city", "Taipei", "MARKER-EMPTY", int64(0), "cycle-shared").
+			WillReturnResult(pgxmock.NewResult("INSERT", 1))
+		db.ExpectCommit()
+
+		err := landRawTDXWithDB(
+			context.Background(), db, "bus_route", "city", "Taipei", "MARKER-EMPTY", "cycle-shared", bytes.NewBufferString("[]"),
+		)
+		if err != nil {
+			t.Fatalf("landRawTDXWithDB: %v", err)
+		}
+	})
+
+	t.Run("verified 304", func(t *testing.T) {
+		db := newRawLandingMock(t)
+		db.ExpectBegin()
+		db.ExpectExec(regexp.QuoteMeta("SET LOCAL lock_timeout = '20s'")).
+			WillReturnResult(pgxmock.NewResult("SET", 0))
+		expectStateRead(db, "MARKER", 0)
+		db.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS (SELECT 1 FROM raw_tdx.bus_route WHERE city = $1 LIMIT 1)")).
+			WithArgs("Taipei").
+			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+		db.ExpectExec(`UPDATE raw_tdx\.landing_state SET fetched_at=now\(\), landing_cycle=\$4 WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3`).
+			WithArgs("bus_route", "city", "Taipei", "cycle-shared").
+			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		db.ExpectCommit()
+
+		if err := verifyAndTouchRawLandingWithDB(
+			context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-shared",
+		); err != nil {
+			t.Fatalf("verifyAndTouchRawLandingWithDB: %v", err)
+		}
+	})
 }
 
 func TestRawTDXSourceUsesLandingStateForFreshEmptyAndCountIntegrity(t *testing.T) {
@@ -270,4 +317,28 @@ func TestRawTDXSourceUsesLandingStateForFreshEmptyAndCountIntegrity(t *testing.T
 		)
 		assertLandingMismatch(t, err, "loader_row_count")
 	})
+}
+
+func TestRawTDXSourceReturnsLandingCycleFromSameReadTransaction(t *testing.T) {
+	readOptions := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
+	db := newRawLandingMock(t)
+	fresh := time.Now().UTC().Truncate(time.Microsecond)
+	db.ExpectBeginTx(readOptions)
+	db.ExpectQuery(`SELECT fetched_at, row_count, COALESCE\(landing_cycle, ''\) FROM raw_tdx\.landing_state`).
+		WithArgs("bus_route", "city", "Taipei").
+		WillReturnRows(pgxmock.NewRows([]string{"fetched_at", "row_count", "landing_cycle"}).AddRow(fresh, int64(0), "cycle-shared"))
+	db.ExpectQuery(`SELECT .* FROM raw_tdx\.bus_route t WHERE city = \$1`).
+		WithArgs("Taipei").
+		WillReturnRows(pgxmock.NewRows([]string{"row"}))
+	db.ExpectCommit()
+
+	body, fetchedAt, cycle, err := (rawTDXSource{pool: db}).datasetJSONWithLandingCycle(
+		context.Background(), "bus_route", "city", "Taipei",
+	)
+	if err != nil {
+		t.Fatalf("datasetJSONWithLandingCycle: %v", err)
+	}
+	if string(body) != "[]" || !fetchedAt.Equal(fresh) || cycle != "cycle-shared" {
+		t.Fatalf("body/fetched/cycle = %s/%s/%q, want []/%s/cycle-shared", body, fetchedAt, cycle, fresh)
+	}
 }

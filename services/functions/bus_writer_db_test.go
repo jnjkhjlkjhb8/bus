@@ -47,6 +47,10 @@ func TestWriteBusCitySnapshotDB(t *testing.T) {
 	defer db.Close()
 	ddl := []string{
 		`CREATE TYPE stop AS (station_uid text, stop_name text, stop_sequence int, position_lon float, position_lat float)`,
+		`CREATE TABLE bus_operators (
+			operator_id text, authority_code text, operator_name text,
+			operator_phone text, operator_url text, updated_at timestamptz DEFAULT now(),
+			PRIMARY KEY (operator_id, authority_code))`,
 		`CREATE TABLE bus_subroutes (
 			sub_route_uid text, route_uid text, direction int, route_name text,
 			sub_route_name text, city text, depart text, destin text, geometry text,
@@ -85,6 +89,8 @@ func TestWriteBusCitySnapshotDB(t *testing.T) {
 		}
 	}
 	seed := []string{
+		`INSERT INTO bus_operators (operator_id, authority_code, operator_name) VALUES
+			('OLD_TPE','TPE','stale'), ('KEEP_NWT','NWT','other authority')`,
 		`INSERT INTO bus_stations VALUES ('TPEOLD','old','Taipei',ST_SetSRID(ST_MakePoint(121,25),4326),now()), ('TPEST1','old-city','OldCity',ST_SetSRID(ST_MakePoint(121,25),4326),now())`,
 		`INSERT INTO bus_station_groups VALUES ('TPEOLDG','OLD','old','Taipei',ST_SetSRID(ST_MakePoint(121,25),4326),'tdx',now())`,
 		`INSERT INTO bus_station_group_members VALUES ('TPEOLD','TPEOLDG','OLD','old','Taipei',ST_SetSRID(ST_MakePoint(121,25),4326),now())`,
@@ -117,6 +123,9 @@ func TestWriteBusCitySnapshotDB(t *testing.T) {
 		{`SELECT count(*) FROM bus_static WHERE sub_route_uid='TPE100'`, 1},
 		{`SELECT count(*) FROM bus_station_stop_map WHERE sub_route_uid='TPE100'`, 1},
 		{`SELECT count(*) FROM bus_station_stop_map WHERE sub_route_uid='TPEOLD'`, 0},
+		{`SELECT count(*) FROM bus_operators WHERE operator_id='OP1' AND authority_code='TPE'`, 1},
+		{`SELECT count(*) FROM bus_operators WHERE operator_id='OLD_TPE' AND authority_code='TPE'`, 0},
+		{`SELECT count(*) FROM bus_operators WHERE operator_id='KEEP_NWT' AND authority_code='NWT'`, 1},
 	}
 	for _, check := range checks {
 		var got int

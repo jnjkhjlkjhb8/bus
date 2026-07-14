@@ -149,7 +149,7 @@ func TestBusLoaderOrdersInterCityLastAndExcludesLienchiang(t *testing.T) {
 		t.Fatalf("allCities = %v, ingest order/coverage was changed", landed)
 	}
 	for _, spec := range loaderRegistry(&fakeLoadSource{}) {
-		if spec.key != "bus" && spec.key != "bus_operator" {
+		if spec.key != "bus" {
 			continue
 		}
 		parts := spec.partitions()
@@ -303,7 +303,6 @@ func TestLoaderExceptionalBindingsUseSemanticSink(t *testing.T) {
 		operation string
 		part      string
 	}{
-		{key: "bus_operator", operation: "bus operators", part: "Taipei"},
 		{key: "bus", operation: "bus city assembly", part: "Taipei"},
 		{key: "bus_dailytimetable", operation: "bus daily timetable", part: "Taipei"},
 		{key: "mrt_odfare", operation: "MRT journey matrix", part: "TRTC"},
