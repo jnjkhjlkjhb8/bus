@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -322,31 +323,32 @@ func mrtInService(windows map[string][]mrtServiceWindow, key string, now time.Ti
 // Entries outside their static first/last-train window are dropped: after close
 // TDX keeps returning rows with EstimateTime 0 and ServiceStatus 0, which would
 // otherwise surface as "approaching" in the app at night.
-func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) {
+func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) error {
 	log.Infof("[MRT_ETA] action=mrt_eta event=start")
 	windows := mrtServiceWindows(ctx, db)
 	now := time.Now().In(taipei)
 	var systems = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
+	var jobErr error
 	for _, system := range systems {
 		filtered := 0
 		log.Infof("[MRT_ETA] action=mrt_eta system=%s event=system_start", system)
-		dec, comp, flipopen, err := fetch(ctx, fmt.Sprintf("/v2/Rail/Metro/LiveBoard/%s", system), "mrt_LiveBoard"+system)
-		if !comp {
+		result, err := fetch(ctx, fmt.Sprintf("/v2/Rail/Metro/LiveBoard/%s", system), "mrt_LiveBoard"+system)
+		if err != nil {
+			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=skip reason=api_error", system)
+			jobErr = errors.Join(jobErr, fmt.Errorf("mrt %s fetch: %w", system, err))
+			continue
+		}
+		if !result.Modified {
 			// A 304 has already refreshed the cached arrivals' TTL via boundFetch.
 			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=skip reason=no updated", system)
 			continue
 		}
-		if err != nil {
-			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=skip reason=api_error", system)
-			continue
-		}
-		func() {
-			defer flipopen()
+		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
 			pipe := sink.pipeline()
-			if err := publishProto(dec, pipe, mrtLiveTTL, func(temp mrtLive) (string, string, proto.Message, bool) {
+			if err := decodeLiveItems(dec, func(temp mrtLive) error {
 				if !mrtInService(windows, mrtWindowKey(system, temp.StationID, temp.LineID, temp.DestinationStaionID), now) {
 					filtered++
-					return "", "", nil, false
+					return nil
 				}
 				raw := &models.MrtLive{
 					LineID:                 temp.LineID,
@@ -358,19 +360,30 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 					ServiceStatus:          int32(temp.ServiceStatus),
 					EstimateTime:           temp.EstimateTime,
 				}
-				return shared.MrtLiveKey(system, temp.StationID, temp.LineID),
-					shared.MrtLiveChannel(system, temp.StationID), raw, true
+				pb, err := proto.Marshal(raw)
+				if err != nil {
+					return err
+				}
+				pipe.Set(shared.MrtLiveKey(system, temp.StationID, temp.LineID), pb, mrtLiveTTL)
+				pipe.Publish(shared.MrtLiveChannel(system, temp.StationID), string(pb))
+				return nil
 			}); err != nil {
-				log.Infof("[MRT_ETA] action=mrt_eta system=%s event=decode_error error=%v", system, err)
-				return
+				return err
 			}
-			_ = pipe.Exec()
-		}()
+			if err := pipe.Exec(); err != nil {
+				return err
+			}
+			return nil
+		}); err != nil {
+			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=process_error error=%v", system, err)
+			jobErr = errors.Join(jobErr, fmt.Errorf("mrt %s process: %w", system, err))
+		}
 		if filtered > 0 {
 			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=out_of_service_filtered count=%d", system, filtered)
 		}
 	}
 	log.Infof("[MRT_ETA] action=mrt_eta event=complete")
+	return jobErr
 }
 
 // mrtODFare decodes a TDX Rail/Metro/ODFare element: fares between an

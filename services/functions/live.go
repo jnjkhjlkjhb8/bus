@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -22,11 +24,9 @@ import (
 // liveSource is the seam between a live job and TDX. The production adapter
 // (restLiveSource) wraps the shared TDX client's Get; the test adapter
 // (fakeLiveSource) serves committed fixture bytes. fetch mirrors Get's contract
-// (dec, modified, close, err): modified=false && err==nil is a 304 Not-Modified
-// (cached live data still valid); close closes the response body and is nil when
-// there is nothing to close.
+// A Modified=false fetch is a 304 Not-Modified (cached live data still valid).
 type liveSource interface {
-	fetch(ctx context.Context, url, name string) (dec *json.Decoder, modified bool, close func(), err error)
+	fetch(ctx context.Context, url, name string) (*shared.TDXFetch, error)
 }
 
 // livePipe is the subset of go-redis pipeline operations live jobs use. It is
@@ -82,20 +82,76 @@ type liveSpec struct {
 // live job (mrt/tra/bike previously just skipped and let their snapshots
 // expire). run still checks modified and returns on false; the TTL refresh has
 // already happened by then.
-type boundFetch func(ctx context.Context, url, name string) (dec *json.Decoder, modified bool, close func(), err error)
+type boundFetch func(ctx context.Context, url, name string) (*shared.TDXFetch, error)
 
 // bindFetch wraps src.fetch so a 304 for this spec re-arms its Redis TTLs
 // through sink before the result is returned.
 func bindFetch(src liveSource, sink liveSink, spec liveSpec) boundFetch {
-	return func(ctx context.Context, url, name string) (*json.Decoder, bool, func(), error) {
-		dec, modified, close, err := src.fetch(ctx, url, name)
-		if err == nil && !modified && spec.ttlPatterns != nil {
+	return func(ctx context.Context, url, name string) (*shared.TDXFetch, error) {
+		fetch, err := src.fetch(ctx, url, name)
+		if err == nil && fetch != nil && !fetch.Modified && spec.ttlPatterns != nil {
 			// 304 Not-Modified: the cached live data is still valid, so re-arm its
 			// TTL instead of letting it expire mid-validity (CONTEXT.md).
 			sink.refreshTTL(spec.ttlPatterns())
 		}
-		return dec, modified, close, err
+		return fetch, err
 	}
+}
+
+// decodeLiveItems strictly consumes one JSON array. Unlike the static-loader
+// decoder, realtime snapshots must fail closed: skipping a malformed element
+// and acknowledging the response would make the partial Redis snapshot look
+// complete on the next conditional request.
+func decodeLiveItems[T any](dec *json.Decoder, fn func(T) error) error {
+	opening, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if opening != json.Delim('[') {
+		return fmt.Errorf("TDX payload starts with %v, want array", opening)
+	}
+	for dec.More() {
+		var value T
+		if err := dec.Decode(&value); err != nil {
+			return err
+		}
+		if err := fn(value); err != nil {
+			return err
+		}
+	}
+	closing, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if closing != json.Delim(']') {
+		return fmt.Errorf("TDX payload ends with %v, want array", closing)
+	}
+	return nil
+}
+
+// commitTDXFetch acknowledges the conditional marker only after process has
+// durably published the full snapshot. Close is attempted on every path and its
+// error is joined with the primary processing or acknowledgement error.
+func commitTDXFetch(fetch *shared.TDXFetch, process func(*json.Decoder) error) (err error) {
+	if fetch == nil || !fetch.Modified || fetch.Decoder == nil {
+		return errors.New("cannot commit an empty TDX fetch")
+	}
+	defer func() {
+		if fetch.Close != nil {
+			err = errors.Join(err, fetch.Close())
+		}
+	}()
+	if err := process(fetch.Decoder); err != nil {
+		return err
+	}
+	return acknowledgeTDXFetch(fetch)
+}
+
+func acknowledgeTDXFetch(fetch *shared.TDXFetch) error {
+	if fetch == nil || fetch.Ack == nil {
+		return errors.New("modified TDX fetch has no acknowledgement")
+	}
+	return fetch.Ack()
 }
 
 // runLive executes the named live jobs once. keys selects registry entries by
@@ -145,12 +201,9 @@ type restLiveSource struct {
 	tdx *shared.TDXClient
 }
 
-// fetch delegates to the shared TDX client's Get, whose return already matches
-// the liveSource contract (dec, modified, close, err). ctx is accepted for
-// interface symmetry; the resty client carries its own timeout and the cron
-// wrapper bounds the job.
-func (s restLiveSource) fetch(_ context.Context, url, name string) (*json.Decoder, bool, func(), error) {
-	return s.tdx.Get(url, name)
+// fetch delegates to the shared TDX client's context-aware conditional Get.
+func (s restLiveSource) fetch(ctx context.Context, url, name string) (*shared.TDXFetch, error) {
+	return s.tdx.Get(ctx, url, name)
 }
 
 // redisLiveSink is the production liveSink backed by *redis.Client. refreshTTL
@@ -283,8 +336,7 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 	return []liveSpec{
 		{key: "bike", cadence: "@every 30s", ttlPatterns: bikeCityPatterns,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				bikeEta(ctx, fetch, sink, db)
-				return nil
+				return bikeEta(ctx, fetch, sink, db)
 			}},
 		// bus keeps ttlPatterns nil: it fetches per city and re-arms exactly that
 		// city's keys inline (processBusEtaCity → sink.refreshTTL(busEtaTTLPatterns))
@@ -293,18 +345,15 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 		// refresh is for the jobs that previously skipped (bike/mrt/tra).
 		{key: "bus", cadence: "@every 30s", ttlPatterns: nil,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				busEta(ctx, fetch, sink, db, dispatcher)
-				return nil
+				return busEta(ctx, fetch, sink, db, dispatcher)
 			}},
 		{key: "mrt", cadence: "@every 10s", ttlPatterns: mrtPatterns,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				mrtEta(ctx, fetch, sink, db)
-				return nil
+				return mrtEta(ctx, fetch, sink, db)
 			}},
 		{key: "tra", cadence: "@every 2m", ttlPatterns: traPatterns,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				traEta(ctx, fetch, sink)
-				return nil
+				return traEta(ctx, fetch, sink)
 			}},
 		// THSR available-seat status changes slowly, so it refreshes on a
 		// conservative 10-minute cadence (its own cron entry, unbounded like
@@ -312,8 +361,7 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 		// (ADR-0005 amendment).
 		{key: "thsr_seats", cadence: "@every 10m", ttlPatterns: thsrSeatsPatterns,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				thsrAvailableSeats(ctx, fetch, sink)
-				return nil
+				return thsrAvailableSeats(ctx, fetch, sink)
 			}},
 	}
 }

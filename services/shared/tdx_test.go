@@ -1,6 +1,8 @@
 package shared
 
 import (
+	"compress/gzip"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,9 +15,10 @@ import (
 // memTDXStore is an in-memory TDXStore that records deletes, so tests can assert
 // the token cache, the IMS marker, and the 401 dual-delete without a live Redis.
 type memTDXStore struct {
-	mu   sync.Mutex
-	data map[string]string
-	dels [][]string
+	mu     sync.Mutex
+	data   map[string]string
+	dels   [][]string
+	setErr error
 }
 
 func newMemTDXStore() *memTDXStore { return &memTDXStore{data: map[string]string{}} }
@@ -29,6 +32,9 @@ func (m *memTDXStore) Get(key string) (string, error) {
 func (m *memTDXStore) Set(key, value string, _ time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.setErr != nil {
+		return m.setErr
+	}
 	m.data[key] = value
 	return nil
 }
@@ -66,14 +72,14 @@ func TestTokenRefreshAndCache(t *testing.T) {
 	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey})
 	c.tokenURL = tokenSrv.URL
 
-	if got := c.Token(); got != "tok-123" {
-		t.Fatalf("Token() = %q, want tok-123", got)
+	if got, err := c.Token(context.Background()); err != nil || got != "tok-123" {
+		t.Fatalf("Token() = %q, %v; want tok-123, nil", got, err)
 	}
 	if store.get(TDXTokenKey) != "tok-123" {
 		t.Fatalf("token not cached under %s: %q", TDXTokenKey, store.get(TDXTokenKey))
 	}
-	if got := c.Token(); got != "tok-123" {
-		t.Fatalf("cached Token() = %q, want tok-123", got)
+	if got, err := c.Token(context.Background()); err != nil || got != "tok-123" {
+		t.Fatalf("cached Token() = %q, %v; want tok-123, nil", got, err)
 	}
 	if n := atomic.LoadInt32(&hits); n != 1 {
 		t.Fatalf("token endpoint hit %d times, want 1 (second call must serve cache)", n)
@@ -93,15 +99,18 @@ func TestGet304LeavesMarker(t *testing.T) {
 	store.data[TDXLegacyIMSKey("thing")] = "MARKER-OLD"
 	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
 
-	dec, modified, closeFn, err := c.Get("/x", "thing")
+	fetch, err := c.Get(context.Background(), "/x", "thing")
 	if err != nil {
 		t.Fatalf("Get on 304 returned error: %v", err)
 	}
-	if modified {
+	if fetch.Modified {
 		t.Fatal("Get on 304 reported modified=true")
 	}
-	if dec != nil || closeFn != nil {
-		t.Fatal("Get on 304 must return nil decoder and nil close")
+	if fetch.Decoder != nil {
+		t.Fatal("Get on 304 must return nil decoder")
+	}
+	if err := fetch.Close(); err != nil {
+		t.Fatalf("Close on 304 returned error: %v", err)
 	}
 	if store.get(TDXLegacyIMSKey("thing")) != "MARKER-OLD" {
 		t.Fatalf("304 overwrote IMS marker: %q", store.get(TDXLegacyIMSKey("thing")))
@@ -124,7 +133,7 @@ func TestGet4xxDoesNotCacheMarker(t *testing.T) {
 	store.data[TDXLegacyIMSKey("thing")] = "MARKER-OLD"
 	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
 
-	dec, modified, closeFn, err := c.Get("/x", "thing")
+	fetch, err := c.Get(context.Background(), "/x", "thing")
 	var statusErr *TDXStatusError
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("Get on 500 returned err %v, want *TDXStatusError", err)
@@ -132,8 +141,8 @@ func TestGet4xxDoesNotCacheMarker(t *testing.T) {
 	if statusErr.Status != http.StatusInternalServerError {
 		t.Fatalf("TDXStatusError.Status = %d, want 500", statusErr.Status)
 	}
-	if modified || dec != nil || closeFn != nil {
-		t.Fatal("Get on 500 must return no decoder, no close, modified=false")
+	if fetch != nil {
+		t.Fatal("Get on 500 must return no fetch")
 	}
 	if store.get(TDXLegacyIMSKey("thing")) != "MARKER-OLD" {
 		t.Fatalf("500 cached a bad IMS marker: %q", store.get(TDXLegacyIMSKey("thing")))
@@ -163,15 +172,15 @@ func TestGet401ReAuths(t *testing.T) {
 	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: apiSrv.URL})
 	c.tokenURL = tokenSrv.URL
 
-	dec, modified, closeFn, err := c.Get("/x", "thing")
+	fetch, err := c.Get(context.Background(), "/x", "thing")
 	if err != nil {
 		t.Fatalf("Get across a 401 retry returned error: %v", err)
 	}
-	if !modified || dec == nil {
+	if !fetch.Modified || fetch.Decoder == nil {
 		t.Fatal("Get after re-auth must return fresh data")
 	}
-	if closeFn != nil {
-		closeFn()
+	if err := fetch.Close(); err != nil {
+		t.Fatalf("Close after re-auth: %v", err)
 	}
 	if n := atomic.LoadInt32(&attempts); n != 2 {
 		t.Fatalf("API attempts = %d, want 2 (401 then retry)", n)
@@ -190,6 +199,277 @@ func TestGet401ReAuths(t *testing.T) {
 	}
 	if store.get(TDXTokenKey) != "fresh-tok" {
 		t.Fatalf("token after re-auth = %q, want fresh-tok", store.get(TDXTokenKey))
+	}
+}
+
+func TestGetHonorsCanceledContext(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	started := time.Now()
+	fetch, err := c.Get(ctx, "/x", "thing")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Get canceled context error = %v, want context.Canceled", err)
+	}
+	if fetch != nil {
+		t.Fatal("Get canceled context returned a fetch")
+	}
+	if got := atomic.LoadInt32(&hits); got != 0 {
+		t.Fatalf("canceled request reached server %d times, want 0", got)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("canceled Get took %v, want prompt return", elapsed)
+	}
+}
+
+func TestGetDoesNotAdvanceMarkerUntilAck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Last-Modified", "MARKER-NEW")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	store.data[TDXLegacyIMSKey("thing")] = "MARKER-OLD"
+	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+
+	fetch, err := c.Get(context.Background(), "/x", "thing")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer func() {
+		if err := fetch.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+	if got := store.get(TDXLegacyIMSKey("thing")); got != "MARKER-OLD" {
+		t.Fatalf("marker before Ack = %q, want MARKER-OLD", got)
+	}
+	if err := fetch.Ack(); err != nil {
+		t.Fatalf("Ack: %v", err)
+	}
+	if got := store.get(TDXLegacyIMSKey("thing")); got != "MARKER-NEW" {
+		t.Fatalf("marker after Ack = %q, want MARKER-NEW", got)
+	}
+}
+
+func TestGetAckReturnsMarkerStoreError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Last-Modified", "MARKER-NEW")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	storeErr := errors.New("redis unavailable")
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	store.data[TDXLegacyIMSKey("thing")] = "MARKER-OLD"
+	store.setErr = storeErr
+	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+
+	fetch, err := c.Get(context.Background(), "/x", "thing")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer func() { _ = fetch.Close() }()
+	if err := fetch.Ack(); !errors.Is(err, storeErr) {
+		t.Fatalf("Ack error = %v, want %v", err, storeErr)
+	}
+	if got := store.get(TDXLegacyIMSKey("thing")); got != "MARKER-OLD" {
+		t.Fatalf("failed Ack changed marker to %q", got)
+	}
+}
+
+func TestTokenExchangeHonorsContext(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		_, _ = w.Write([]byte(`{"access_token":"eventual-token"}`))
+	}))
+	defer tokenSrv.Close()
+
+	store := newMemTDXStore()
+	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey})
+	c.tokenURL = tokenSrv.URL
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Token(ctx)
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Token canceled context error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Token did not return after context cancellation")
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for store.get(TDXTokenKey) == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestTokenRefreshSurvivesFirstCallerCancellation(t *testing.T) {
+	var hits int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		close(started)
+		<-release
+		_, _ = w.Write([]byte(`{"access_token":"shared-token"}`))
+	}))
+	defer tokenSrv.Close()
+
+	c := NewTDXClient(TDXConfig{Store: newMemTDXStore(), IMSKey: legacyIMSKey})
+	c.tokenURL = tokenSrv.URL
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := c.Token(firstCtx)
+		firstDone <- err
+	}()
+	<-started
+	cancelFirst()
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first caller error = %v, want context.Canceled", err)
+	}
+
+	secondDone := make(chan struct {
+		token string
+		err   error
+	}, 1)
+	go func() {
+		token, err := c.Token(context.Background())
+		secondDone <- struct {
+			token string
+			err   error
+		}{token: token, err: err}
+	}()
+	close(release)
+	result := <-secondDone
+	if result.err != nil || result.token != "shared-token" {
+		t.Fatalf("second caller = %q, %v; want shared-token, nil", result.token, result.err)
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Fatalf("token endpoint hits = %d, want 1", got)
+	}
+}
+
+func TestTokenRefreshSingleflight(t *testing.T) {
+	const callers = 24
+	var hits int32
+	release := make(chan struct{})
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		<-release
+		_, _ = w.Write([]byte(`{"access_token":"shared-token"}`))
+	}))
+	defer tokenSrv.Close()
+
+	c := NewTDXClient(TDXConfig{Store: newMemTDXStore(), IMSKey: legacyIMSKey})
+	c.tokenURL = tokenSrv.URL
+	start := make(chan struct{})
+	results := make(chan error, callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			<-start
+			token, err := c.Token(context.Background())
+			if err == nil && token != "shared-token" {
+				err = errors.New("unexpected token " + token)
+			}
+			results <- err
+		}()
+	}
+	close(start)
+	deadline := time.Now().Add(time.Second)
+	for atomic.LoadInt32(&hits) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	for i := 0; i < callers; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("Token caller %d: %v", i, err)
+		}
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Fatalf("token endpoint hits = %d, want 1", got)
+	}
+}
+
+func TestRequestUsesAcceptEncoding(t *testing.T) {
+	var acceptEncoding, contentEncoding string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		acceptEncoding = r.Header.Get("Accept-Encoding")
+		contentEncoding = r.Header.Get("Content-Encoding")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+	fetch, err := c.Get(context.Background(), "/x", "thing")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := fetch.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if acceptEncoding != "gzip" {
+		t.Fatalf("Accept-Encoding = %q, want gzip", acceptEncoding)
+	}
+	if contentEncoding != "" {
+		t.Fatalf("Content-Encoding = %q, want empty", contentEncoding)
+	}
+}
+
+func TestGetDecodesAdvertisedEncoding(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept-Encoding"); got != "gzip" {
+			t.Errorf("Accept-Encoding = %q, want gzip", got)
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		_, _ = zw.Write([]byte(`[{"ok":true}]`))
+		_ = zw.Close()
+	}))
+	defer srv.Close()
+
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+	fetch, err := c.Get(context.Background(), "/x", "thing")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer func() { _ = fetch.Close() }()
+	var payload []struct {
+		OK bool `json:"ok"`
+	}
+	if err := fetch.Decoder.Decode(&payload); err != nil {
+		t.Fatalf("decode compressed payload: %v", err)
+	}
+	if len(payload) != 1 || !payload[0].OK {
+		t.Fatalf("decoded payload = %+v", payload)
 	}
 }
 

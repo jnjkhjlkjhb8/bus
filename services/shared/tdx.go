@@ -1,16 +1,22 @@
 package shared
 
 import (
+	"compress/gzip"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	"golang.org/x/sync/singleflight"
 )
 
 // This file is the single TDX HTTP client shared by both binaries. It owns the
@@ -83,9 +89,11 @@ type TDXConfig struct {
 // construct one with NewTDXClient.
 type TDXClient struct {
 	http          *resty.Client
+	tokenHTTP     *http.Client
 	store         TDXStore
 	imsKey        func(name string) string
 	sinceFallback func(name string) string
+	tokenRefresh  singleflight.Group
 	// tokenURL is the OAuth token endpoint. It defaults to tdxTokenURL and is a
 	// field only so unit tests can point the client_credentials exchange at an
 	// httptest server; production never overrides it.
@@ -93,10 +101,9 @@ type TDXClient struct {
 }
 
 // NewTDXClient builds a TDX client for the basic conditional-GET API: base URL,
-// Brotli/gzip decoding left to the caller (responses are not parsed), a 30s
-// timeout, transport/429 retries, a per-request bearer token from Store, and a
-// 401 handler that drops both token keys so the retry re-authenticates. TDX API
-// docs: https://tdx.transportdata.tw/
+// response compression negotiation, a 30s timeout, transport/429 retries, a
+// per-request bearer token from Store, and a 401 handler that drops both token
+// keys so the retry re-authenticates. TDX API docs: https://tdx.transportdata.tw/
 func NewTDXClient(cfg TDXConfig) *TDXClient {
 	base := cfg.BaseURL
 	if base == "" {
@@ -107,11 +114,12 @@ func NewTDXClient(cfg TDXConfig) *TDXClient {
 		imsKey:        cfg.IMSKey,
 		sinceFallback: cfg.SinceFallback,
 		tokenURL:      tdxTokenURL,
+		tokenHTTP:     &http.Client{Timeout: 30 * time.Second},
 	}
 	c.http = resty.New().
 		SetBaseURL(base).
 		SetHeader("Content-Type", "application/json").
-		SetHeader("Content-Encoding", "br,gzip").
+		SetHeader("Accept-Encoding", "gzip").
 		SetDoNotParseResponse(true).
 		SetTimeout(30 * time.Second).
 		SetRetryCount(5).
@@ -119,7 +127,11 @@ func NewTDXClient(cfg TDXConfig) *TDXClient {
 		SetRetryMaxWaitTime(5 * time.Second).
 		AddRetryCondition(c.retryOn).
 		OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
-			req.SetAuthToken(c.Token())
+			token, err := c.Token(req.Context())
+			if err != nil {
+				return err
+			}
+			req.SetAuthToken(token)
 			return nil
 		})
 	return c
@@ -130,6 +142,9 @@ func NewTDXClient(cfg TDXConfig) *TDXClient {
 // than resending the rejected token.
 func (c *TDXClient) retryOn(r *resty.Response, err error) bool {
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return false
+		}
 		return true
 	}
 	if r.StatusCode() == http.StatusUnauthorized {
@@ -143,14 +158,19 @@ func (c *TDXClient) retryOn(r *resty.Response, err error) bool {
 
 // NewAuthedClient builds a resty client for a TDX API family with a different
 // base URL and retry policy than the basic conditional-GET client (e.g. MaaS):
-// it installs only the shared bearer-token auth hook, leaving base URL, timeouts,
-// and retry conditions to the caller. This keeps the token exchange in one place
+// it installs the shared bearer-token auth hook and a finite timeout, leaving
+// retry conditions to the caller. This keeps the token exchange in one place
 // while letting each family keep its own request shape.
 func (c *TDXClient) NewAuthedClient(baseURL string) *resty.Client {
 	return resty.New().
 		SetBaseURL(baseURL).
+		SetTimeout(30 * time.Second).
 		OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
-			req.SetAuthToken(c.Token())
+			token, err := c.Token(req.Context())
+			if err != nil {
+				return err
+			}
+			req.SetAuthToken(token)
 			return nil
 		})
 }
@@ -158,42 +178,93 @@ func (c *TDXClient) NewAuthedClient(baseURL string) *resty.Client {
 // Token returns a TDX OAuth bearer token, preferring the cached value in Redis
 // (namespaced key, then legacy key). On a cache miss it does a client_credentials
 // exchange using TDX_CLIENT_ID / TDX_CLIENT_SECRET and caches the token for 6
-// hours. Any failure is logged and returns "" — the caller then sends an
-// unauthenticated request that TDX rejects with 401, which triggers a token
-// refresh on retry. Token endpoint: tdxTokenURL.
-func (c *TDXClient) Token() string {
-	if v, err := c.store.Get(TDXTokenKey); err == nil && v != "" {
-		return v
+// hours. Concurrent cache misses share a single exchange. The cache is checked
+// again inside the singleflight call so a waiter cannot start a redundant
+// exchange after another caller has already populated it.
+func (c *TDXClient) Token(ctx context.Context) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if v, err := c.store.Get(TDXTokenKeyLegacy); err == nil && v != "" {
-		return v
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
-	resp, err := resty.New().R().
-		SetHeader("content-type", "application/x-www-form-urlencoded").
-		SetFormData(map[string]string{
-			"grant_type":    "client_credentials",
-			"client_id":     os.Getenv("TDX_CLIENT_ID"),
-			"client_secret": os.Getenv("TDX_CLIENT_SECRET"),
-		}).
-		Post(c.tokenURL)
+	if token, err := c.cachedToken(); err != nil || token != "" {
+		return token, err
+	}
+	result := c.tokenRefresh.DoChan("refresh", func() (any, error) {
+		if token, err := c.cachedToken(); err != nil || token != "" {
+			return token, err
+		}
+		refreshCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return c.exchangeToken(refreshCtx)
+	})
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-result:
+		if res.Err != nil {
+			return "", res.Err
+		}
+		token, ok := res.Val.(string)
+		if !ok || token == "" {
+			return "", errors.New("tdx token exchange returned an empty token")
+		}
+		return token, nil
+	}
+}
+
+func (c *TDXClient) cachedToken() (string, error) {
+	token, err := c.store.Get(TDXTokenKey)
 	if err != nil {
-		obs.Logf("[TDX] action=token event=fetch_error error=%v", err)
-		return ""
+		return "", fmt.Errorf("read cached TDX token: %w", err)
 	}
-	var mp map[string]any
-	if err := json.Unmarshal(resp.Body(), &mp); err != nil {
-		obs.Logf("[TDX] action=token event=parse_error error=%v", err)
-		return ""
+	if token != "" {
+		return token, nil
 	}
-	token, ok := mp["access_token"].(string)
-	if !ok || token == "" {
-		obs.Logf("[TDX] action=token event=missing_access_token")
-		return ""
+	token, err = c.store.Get(TDXTokenKeyLegacy)
+	if err != nil {
+		return "", fmt.Errorf("read legacy cached TDX token: %w", err)
 	}
-	if err := c.store.Set(TDXTokenKey, token, tdxTokenTTL); err != nil {
-		obs.Logf("[TDX] action=token event=cache_error error=%v", err)
+	return token, nil
+}
+
+func (c *TDXClient) exchangeToken(ctx context.Context) (string, error) {
+	form := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {os.Getenv("TDX_CLIENT_ID")},
+		"client_secret": {os.Getenv("TDX_CLIENT_SECRET")},
 	}
-	return token
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", fmt.Errorf("build TDX token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.tokenHTTP.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("exchange TDX token: %w", err)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
+	if readErr != nil || closeErr != nil {
+		return "", errors.Join(readErr, closeErr)
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return "", fmt.Errorf("exchange TDX token: status %d", resp.StatusCode)
+	}
+	var payload struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("decode TDX token response: %w", err)
+	}
+	if payload.AccessToken == "" {
+		return "", errors.New("TDX token response is missing access_token")
+	}
+	if err := c.store.Set(TDXTokenKey, payload.AccessToken, tdxTokenTTL); err != nil {
+		return "", fmt.Errorf("cache TDX token: %w", err)
+	}
+	return payload.AccessToken, nil
 }
 
 // since resolves the If-Modified-Since value for name: the cached marker, or the
@@ -207,36 +278,94 @@ func (c *TDXClient) since(name string) string {
 	return v
 }
 
-// Get is the streaming conditional GET: it issues an If-Modified-Since request
-// for name's cached marker and, on fresh data (2xx), caches the new Last-Modified
-// and returns a streaming JSON decoder over the response body. modified=false
-// with a nil error is a 304 Not-Modified (cached data still valid); a 4xx/5xx is
-// returned as an error WITHOUT advancing the marker or decoding the body, so a
-// server error never caches a bad marker. close closes the response body and
-// must be called; it is nil when there is nothing to close.
-func (c *TDXClient) Get(url, name string) (dec *json.Decoder, modified bool, close func(), err error) {
+// TDXFetch is one conditional response. Ack advances its Last-Modified marker;
+// consumers call it only after the payload has decoded and its Redis pipeline
+// has committed. Close always returns the response-body close error.
+type TDXFetch struct {
+	Decoder  *json.Decoder
+	Modified bool
+	Ack      func() error
+	Close    func() error
+}
+
+type tdxResponseBody struct {
+	io.Reader
+	close func() error
+}
+
+func (b *tdxResponseBody) Close() error { return b.close() }
+
+func decodedTDXBody(resp *resty.Response) (io.ReadCloser, error) {
+	raw := resp.RawResponse.Body
+	switch strings.ToLower(strings.TrimSpace(resp.Header().Get("Content-Encoding"))) {
+	case "", "identity":
+		return raw, nil
+	case "gzip":
+		reader, err := gzip.NewReader(raw)
+		if err != nil {
+			return nil, errors.Join(err, raw.Close())
+		}
+		return &tdxResponseBody{
+			Reader: reader,
+			close: func() error {
+				return errors.Join(reader.Close(), raw.Close())
+			},
+		}, nil
+	default:
+		return nil, errors.Join(
+			fmt.Errorf("unsupported TDX content encoding %q", resp.Header().Get("Content-Encoding")),
+			raw.Close(),
+		)
+	}
+}
+
+func noopTDXFetch() *TDXFetch {
+	return &TDXFetch{
+		Ack:   func() error { return nil },
+		Close: func() error { return nil },
+	}
+}
+
+// Get is the streaming conditional GET. A successful response does not advance
+// its marker until the returned fetch's Ack is called. A 304 returns a
+// Modified=false fetch with safe no-op Ack and Close functions.
+func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	resp, err := c.http.R().
+		SetContext(ctx).
 		SetHeader("If-Modified-Since", c.since(name)).
 		Get(url)
 	if err != nil {
-		return nil, false, nil, err
+		return nil, err
 	}
 	if resp.StatusCode() == http.StatusNotModified {
 		if cerr := resp.RawResponse.Body.Close(); cerr != nil {
-			return nil, false, nil, cerr
+			return nil, cerr
 		}
 		obs.Logf("[TDX] action=fetch event=not_modified name=%s", name)
-		return nil, false, nil, nil
+		return noopTDXFetch(), nil
 	}
 	if resp.StatusCode() >= http.StatusBadRequest {
-		_ = resp.RawResponse.Body.Close()
-		return nil, false, nil, &TDXStatusError{Name: name, Status: resp.StatusCode()}
+		statusErr := &TDXStatusError{Name: name, Status: resp.StatusCode()}
+		return nil, errors.Join(statusErr, resp.RawResponse.Body.Close())
 	}
-	c.cacheIMS(name, resp)
-	return json.NewDecoder(resp.RawResponse.Body), true, func() {
-		if cerr := resp.RawResponse.Body.Close(); cerr != nil {
-			obs.Logf("[TDX] action=fetch event=close_error name=%s error=%v", name, cerr)
-		}
+	body, err := decodedTDXBody(resp)
+	if err != nil {
+		return nil, err
+	}
+	marker := resp.Header().Get("Last-Modified")
+	return &TDXFetch{
+		Decoder:  json.NewDecoder(body),
+		Modified: true,
+		Ack: func() error {
+			if err := c.store.Set(c.imsKey(name), marker, 0); err != nil {
+				return fmt.Errorf("ack TDX marker %s: %w", name, err)
+			}
+			return nil
+		},
+		Close: body.Close,
 	}, nil
 }
 
@@ -262,29 +391,32 @@ func (c *TDXClient) GetInto(url, name string, commit func(body []byte) error) (m
 		return false, nil
 	}
 	if resp.StatusCode() >= http.StatusBadRequest {
-		_ = resp.RawResponse.Body.Close()
-		return false, &TDXStatusError{Name: name, Status: resp.StatusCode()}
+		statusErr := &TDXStatusError{Name: name, Status: resp.StatusCode()}
+		return false, errors.Join(statusErr, resp.RawResponse.Body.Close())
 	}
-	body, rerr := io.ReadAll(resp.RawResponse.Body)
-	_ = resp.RawResponse.Body.Close()
-	if rerr != nil {
-		return false, rerr
+	responseBody, err := decodedTDXBody(resp)
+	if err != nil {
+		return false, err
+	}
+	body, rerr := io.ReadAll(responseBody)
+	if cerr := responseBody.Close(); rerr != nil || cerr != nil {
+		return false, errors.Join(rerr, cerr)
 	}
 	if commit != nil {
 		if cerr := commit(body); cerr != nil {
 			return true, cerr
 		}
 	}
-	c.cacheIMS(name, resp)
-	return true, nil
+	return true, c.cacheIMS(name, resp)
 }
 
 // cacheIMS stores the response's Last-Modified header under name's IMS key so the
 // next request can send it as If-Modified-Since.
-func (c *TDXClient) cacheIMS(name string, resp *resty.Response) {
+func (c *TDXClient) cacheIMS(name string, resp *resty.Response) error {
 	if err := c.store.Set(c.imsKey(name), resp.Header().Get("Last-Modified"), 0); err != nil {
-		obs.Logf("[TDX] action=fetch event=ims_cache_error name=%s error=%v", name, err)
+		return fmt.Errorf("cache TDX marker %s: %w", name, err)
 	}
+	return nil
 }
 
 // TDXStatusError reports a non-success TDX HTTP status (>=400). It is returned by

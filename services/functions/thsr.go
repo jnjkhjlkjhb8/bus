@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -35,56 +36,62 @@ type raw_thsr_availableseatstatus struct {
 //
 // This is the seat refresh ADR-0005 originally left on the router's read path;
 // moving it here makes the router a pure reader (ADR-0005 amendment).
-func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) {
+func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) error {
 	date := time.Now().In(taipei).Format(time.DateOnly)
 	log.Infof("[THSR_SEATS] action=thsr_seats event=start date=%s", date)
-	dec, comp, flipopen, err := fetch(ctx, fmt.Sprintf("/v2/Rail/THSR/AvailableSeatStatus/Train/OD/TrainDate/%s", date), "thsr_availableseats")
+	result, err := fetch(ctx, fmt.Sprintf("/v2/Rail/THSR/AvailableSeatStatus/Train/OD/TrainDate/%s", date), "thsr_availableseats")
 	if err != nil {
 		log.Infof("[THSR_SEATS] action=thsr_seats event=skip reason=api_error error=%v", err)
-		return
+		return err
 	}
-	if !comp {
+	if !result.Modified {
 		// A 304 has already re-armed the cached snapshots' TTL via boundFetch.
 		log.Infof("[THSR_SEATS] action=thsr_seats event=skip reason=no_update")
-		return
+		return nil
 	}
-	defer flipopen()
-	row := make(map[string]*models.ThsrAvailableSeats)
-	if decErr := decodeItems(dec, func(temp raw_thsr_availableseatstatus) {
-		for _, stop := range temp.Items {
-			if row[stop.TrainNo] == nil {
-				row[stop.TrainNo] = &models.ThsrAvailableSeats{}
+	err = commitTDXFetch(result, func(dec *json.Decoder) error {
+		row := make(map[string]*models.ThsrAvailableSeats)
+		if decErr := decodeLiveItems(dec, func(temp raw_thsr_availableseatstatus) error {
+			for _, stop := range temp.Items {
+				if row[stop.TrainNo] == nil {
+					row[stop.TrainNo] = &models.ThsrAvailableSeats{}
+				}
+				row[stop.TrainNo].Segments = append(row[stop.TrainNo].Segments, &models.ThsrSeatSegment{
+					OriginStationId:      stop.OriginStationID,
+					DestinationStationId: stop.DestinationStationID,
+					StandardSeatStatus:   stop.StandardSeatStatus,
+					BusinessSeatStatus:   stop.BusinessSeatStatus,
+				})
 			}
-			row[stop.TrainNo].Segments = append(row[stop.TrainNo].Segments, &models.ThsrSeatSegment{
-				OriginStationId:      stop.OriginStationID,
-				DestinationStationId: stop.DestinationStationID,
-				StandardSeatStatus:   stop.StandardSeatStatus,
-				BusinessSeatStatus:   stop.BusinessSeatStatus,
-			})
+			return nil
+		}); decErr != nil {
+			return decErr
 		}
-	}); decErr != nil {
-		log.Infof("[THSR_SEATS] action=thsr_seats event=decode_error error=%v", decErr)
-		return
-	}
-	// The router's AvailableSeats stream subscribes to this same per-date string
-	// (shared.ThsrSeatsPattern) as an opaque literal channel, so a plain PUBLISH
-	// reaches it — no pattern semantics. It seeds new clients by SCANning the
-	// per-train keys, so the SET keys carry the actual snapshots.
-	channel := shared.ThsrSeatsPattern(date)
-	pipe := sink.pipeline()
-	count := 0
-	for trainNo, seats := range row {
-		pb, err := proto.Marshal(seats)
-		if err != nil {
-			continue
+		// The router's AvailableSeats stream subscribes to this same per-date string
+		// (shared.ThsrSeatsPattern) as an opaque literal channel, so a plain PUBLISH
+		// reaches it — no pattern semantics. It seeds new clients by SCANning the
+		// per-train keys, so the SET keys carry the actual snapshots.
+		channel := shared.ThsrSeatsPattern(date)
+		pipe := sink.pipeline()
+		count := 0
+		for trainNo, seats := range row {
+			pb, err := proto.Marshal(seats)
+			if err != nil {
+				return err
+			}
+			pipe.Set(shared.ThsrSeatsKey(date, trainNo), pb, thsrSeatsLiveTTL)
+			pipe.Publish(channel, string(pb))
+			count++
 		}
-		pipe.Set(shared.ThsrSeatsKey(date, trainNo), pb, thsrSeatsLiveTTL)
-		pipe.Publish(channel, string(pb))
-		count++
+		if err := pipe.Exec(); err != nil {
+			return err
+		}
+		log.Infof("[THSR_SEATS] action=thsr_seats event=complete train_count=%d", count)
+		return nil
+	})
+	if err != nil {
+		log.Infof("[THSR_SEATS] action=thsr_seats event=process_error error=%v", err)
+		return err
 	}
-	if err := pipe.Exec(); err != nil {
-		log.Infof("[THSR_SEATS] action=thsr_seats event=redis_error error=%v", err)
-		return
-	}
-	log.Infof("[THSR_SEATS] action=thsr_seats event=complete train_count=%d", count)
+	return nil
 }

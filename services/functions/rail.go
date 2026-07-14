@@ -541,38 +541,49 @@ func loadThsrFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ strin
 // traEta refreshes TRA realtime data into Redis on the 2-minute cron: per-train
 // delays as hash tra:delay plus a published tra:delay:all snapshot, all with a
 // 3-minute TTL so stale data expires.
-func traEta(ctx context.Context, fetch boundFetch, sink liveSink) {
+func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 	log.Infof("[TRA_ETA] action=tra_eta event=start")
-	dec, comp, flipopen, err := fetch(ctx, "/v2/Rail/TRA/LiveTrainDelay", "tra_delay")
-	if err == nil && comp {
-		func() {
-			defer flipopen()
-			data := &models.TraDelays{
-				Delay: make(map[string]int32),
-			}
-			count := 0
-			pipe := sink.pipeline()
-			if decErr := decodeItems(dec, func(temp traDelay) {
-				count++
-				data.Delay[temp.TrainNo] = int32(temp.DelayTime)
-				pipe.HSet(shared.TraDelayHashKey, temp.TrainNo, temp.DelayTime)
-			}); decErr != nil {
-				return
-			}
-			bytes, _ := proto.Marshal(data)
-			pipe.Set(shared.TraDelayAllKey, bytes, traLiveTTL)
-			pipe.Publish(shared.TraDelayAllKey, string(bytes))
-			pipe.Expire(shared.TraDelayHashKey, traLiveTTL)
-			pipErr := pipe.Exec()
-			if pipErr != nil {
-				log.Infof("[TRA_ETA] action=tra_eta event=delay_redis_error error=%v", pipErr)
-			} else {
-				log.Infof("[TRA_ETA] action=tra_eta event=delay_redis_success count=%d", count)
-			}
-		}()
-	} else {
+	result, err := fetch(ctx, "/v2/Rail/TRA/LiveTrainDelay", "tra_delay")
+	if err != nil {
+		log.Infof("[TRA_ETA] action=tra_eta event=skip_delay reason=api_error error=%v", err)
+		return err
+	}
+	if !result.Modified {
 		// On a 304, boundFetch has already re-armed the delay keys' TTL.
-		log.Infof("[TRA_ETA] action=tra_eta event=skip_delay reason=api_error")
+		log.Infof("[TRA_ETA] action=tra_eta event=skip_delay reason=no_update")
+		return nil
+	}
+	err = commitTDXFetch(result, func(dec *json.Decoder) error {
+		data := &models.TraDelays{
+			Delay: make(map[string]int32),
+		}
+		count := 0
+		pipe := sink.pipeline()
+		if decErr := decodeLiveItems(dec, func(temp traDelay) error {
+			count++
+			data.Delay[temp.TrainNo] = int32(temp.DelayTime)
+			pipe.HSet(shared.TraDelayHashKey, temp.TrainNo, temp.DelayTime)
+			return nil
+		}); decErr != nil {
+			return decErr
+		}
+		bytes, err := proto.Marshal(data)
+		if err != nil {
+			return err
+		}
+		pipe.Set(shared.TraDelayAllKey, bytes, traLiveTTL)
+		pipe.Publish(shared.TraDelayAllKey, string(bytes))
+		pipe.Expire(shared.TraDelayHashKey, traLiveTTL)
+		if err := pipe.Exec(); err != nil {
+			return err
+		}
+		log.Infof("[TRA_ETA] action=tra_eta event=delay_redis_success count=%d", count)
+		return nil
+	})
+	if err != nil {
+		log.Infof("[TRA_ETA] action=tra_eta event=process_error error=%v", err)
+		return err
 	}
 	log.Infof("[TRA_ETA] action=tra_eta event=complete")
+	return nil
 }

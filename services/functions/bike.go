@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -120,32 +121,33 @@ var bikeHistorySampleGate bikeHistorySampler
 // (bikeHistorySampleGate), building the training data for future availability
 // prediction. A nil db skips history collection so the realtime path can run
 // without a database.
-func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) {
+func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) error {
 	log.Infof("[BIKE_ETA] action=bike_eta event=start")
 	now := time.Now()
 	var historyRows [][]interface{}
+	var jobErr error
 	for _, city := range cities {
 		if city == "Keelung" || city == "HsinchuCounty" || city == "NantouCounty" || city == "YilanCounty" || city == "PenghuCounty" || city == "KinmenCounty" || city == "LienchiangCounty" || city == "InterCity" || city == "HualienCounty" {
 			continue
 		}
 		log.Infof("[BIKE_ETA] action=bike_eta city=%s event=city_start", city)
-		dec, comp, flipopen, err := fetch(ctx, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
-		if !comp {
+		result, err := fetch(ctx, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
+		if err != nil {
+			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=api_error,error=%s", city, err)
+			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s fetch: %w", city, err))
+			continue
+		}
+		if !result.Modified {
 			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=no updated", city)
 			continue
 		}
-		if err != nil {
-			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=api_error,error=%s", city, err)
-			continue
-		}
-		func() {
-			defer flipopen()
+		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
 			pipe := sink.pipeline()
 			// Availability Set and the interleaved history sampling keep bikeEta on
-			// the streaming decodeItems helper rather than the per-item-proto
+			// the streaming strict decoder rather than the per-item-proto
 			// publisher: the history append is a per-item side effect the publisher
 			// does not model.
-			if err := decodeItems(dec, func(temp bikeAvailability) {
+			if err := decodeLiveItems(dec, func(temp bikeAvailability) error {
 				availableRent := int(temp.AvailableRentBikesDetail.GeneralBikes) + int(temp.AvailableRentBikesDetail.ElectricBikes)
 				raw := &models.BikeEta{
 					StationUID:           temp.StationUID,
@@ -157,7 +159,7 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 				}
 				pb, err := proto.Marshal(raw)
 				if err != nil {
-					return
+					return err
 				}
 				pipe.Set(shared.BikeAvailabilityKey(temp.StationUID), pb, bikeLiveTTL)
 				// Sample into history at most once per 5 minutes per station.
@@ -166,16 +168,23 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 						temp.StationUID, availableRent, int(temp.AvailableReturnBikes), now,
 					})
 				}
+				return nil
 			}); err != nil {
-				log.Infof("[BIKE_ETA] action=bike_eta city=%s event=decode_error error=%v", city, err)
-				return
+				return err
 			}
-			_ = pipe.Exec()
+			if err := pipe.Exec(); err != nil {
+				return err
+			}
 			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)
-		}()
+			return nil
+		}); err != nil {
+			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=process_error error=%v", city, err)
+			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s process: %w", city, err))
+		}
 	}
 	if db != nil {
 		saveBikeAvailabilityHistory(ctx, db, historyRows)
 	}
 	log.Infof("[BIKE_ETA] action=bike_eta event=complete")
+	return jobErr
 }

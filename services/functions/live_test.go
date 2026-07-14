@@ -26,16 +26,30 @@ import (
 type fakeLiveSource struct {
 	fixtures map[string][]byte // key: fetch name → raw TDX JSON array
 	calls    []string
+	acked    []string
+	closed   []string
+	ackErr   error
+	closeErr error
 }
 
-func (s *fakeLiveSource) fetch(_ context.Context, _, name string) (*json.Decoder, bool, func(), error) {
+func (s *fakeLiveSource) fetch(_ context.Context, _, name string) (*shared.TDXFetch, error) {
 	s.calls = append(s.calls, name)
 	body, ok := s.fixtures[name]
 	if !ok {
-		// 304 Not-Modified: no body, no close, no error.
-		return &json.Decoder{}, false, nil, nil
+		return &shared.TDXFetch{Modified: false}, nil
 	}
-	return json.NewDecoder(bytes.NewReader(body)), true, func() {}, nil
+	return &shared.TDXFetch{
+		Decoder:  json.NewDecoder(bytes.NewReader(body)),
+		Modified: true,
+		Ack: func() error {
+			s.acked = append(s.acked, name)
+			return s.ackErr
+		},
+		Close: func() error {
+			s.closed = append(s.closed, name)
+			return s.closeErr
+		},
+	}, nil
 }
 
 // setWrite records one pipelined SET.
@@ -77,6 +91,7 @@ type captureLiveSink struct {
 	// read and the tra delay-hash merge without a live Redis.
 	strings map[string]string
 	hashes  map[string]map[string]string
+	execErr error
 }
 
 func (s *captureLiveSink) pipeline() livePipe { return &capturePipe{sink: s} }
@@ -130,7 +145,7 @@ func (p *capturePipe) Expire(key string, ttl time.Duration) {
 	p.sink.expires = append(p.sink.expires, expireWrite{key: key, ttl: ttl})
 }
 
-func (p *capturePipe) Exec() error { return nil }
+func (p *capturePipe) Exec() error { return p.sink.execErr }
 
 // toBytes normalizes the []byte / string values the jobs marshal into SET/PUBLISH.
 func toBytes(v any) []byte {
@@ -380,11 +395,11 @@ func TestBoundFetch304RefreshesTTL(t *testing.T) {
 		},
 	}
 	fetch := bindFetch(src, sink, spec)
-	_, modified, _, err := fetch(context.Background(), "/x", "unseeded")
+	result, err := fetch(context.Background(), "/x", "unseeded")
 	if err != nil {
 		t.Fatalf("fetch error: %v", err)
 	}
-	if modified {
+	if result.Modified {
 		t.Fatal("expected modified=false for a 304")
 	}
 	if len(sink.refresh) != 1 {
@@ -393,6 +408,154 @@ func TestBoundFetch304RefreshesTTL(t *testing.T) {
 	got := sink.refresh[0]
 	if len(got) != 1 || got[0].pattern != "mrt_live:*" || got[0].ttl != mrtLiveTTL {
 		t.Fatalf("refresh patterns = %+v", got)
+	}
+}
+
+func TestFailedDecodeOrPublishLeavesMarkerUnchanged(t *testing.T) {
+	t.Run("decode", func(t *testing.T) {
+		src := &fakeLiveSource{fixtures: map[string][]byte{
+			"thsr_availableseats": []byte(`[{"TrainDate":`),
+		}}
+		sink := &captureLiveSink{}
+		spec := specByKey(t, "thsr_seats")
+
+		err := spec.run(context.Background(), bindFetch(src, sink, spec), sink)
+		if err == nil {
+			t.Fatal("malformed TDX payload returned nil error")
+		}
+		if len(src.acked) != 0 {
+			t.Fatalf("malformed payload acked marker: %v", src.acked)
+		}
+		if len(src.closed) != 1 {
+			t.Fatalf("malformed payload closes = %d, want 1", len(src.closed))
+		}
+	})
+
+	t.Run("publish", func(t *testing.T) {
+		publishErr := errors.New("redis publish failed")
+		src := &fakeLiveSource{fixtures: map[string][]byte{
+			"thsr_availableseats": readFixture(t, "tdx_thsr_availableseats.json"),
+		}}
+		sink := &captureLiveSink{execErr: publishErr}
+		spec := specByKey(t, "thsr_seats")
+
+		err := spec.run(context.Background(), bindFetch(src, sink, spec), sink)
+		if !errors.Is(err, publishErr) {
+			t.Fatalf("publish error = %v, want %v", err, publishErr)
+		}
+		if len(src.acked) != 0 {
+			t.Fatalf("failed publish acked marker: %v", src.acked)
+		}
+		if len(src.closed) != 1 {
+			t.Fatalf("failed publish closes = %d, want 1", len(src.closed))
+		}
+	})
+}
+
+func TestLiveConsumerReturnsAckAndCloseErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		ackErr   error
+		closeErr error
+	}{
+		{name: "ack", ackErr: errors.New("marker write failed")},
+		{name: "close", closeErr: errors.New("response close failed")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &fakeLiveSource{
+				fixtures: map[string][]byte{
+					"thsr_availableseats": readFixture(t, "tdx_thsr_availableseats.json"),
+				},
+				ackErr:   tt.ackErr,
+				closeErr: tt.closeErr,
+			}
+			sink := &captureLiveSink{}
+			spec := specByKey(t, "thsr_seats")
+
+			err := spec.run(context.Background(), bindFetch(src, sink, spec), sink)
+			want := tt.ackErr
+			if want == nil {
+				want = tt.closeErr
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("consumer error = %v, want %v", err, want)
+			}
+			if len(src.acked) != 1 || len(src.closed) != 1 {
+				t.Fatalf("acked/closed = %v/%v, want one each", src.acked, src.closed)
+			}
+		})
+	}
+}
+
+func TestBusPublishFailureDoesNotAckEitherFeed(t *testing.T) {
+	prefix := citymap["Taipei"]
+	busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
+		"bus_RealTimeByFrequencyTaipei":    []byte(`[]`),
+	}}
+	publishErr := errors.New("redis pipeline failed")
+	sink := &captureLiveSink{execErr: publishErr}
+	store := &fakeBusEtaStore{stops: []busStationmap{{
+		StationUID: "STATION1", StationName: "站牌一", SubRouteUID: "TPE1",
+		SubRouteName: "一路", StopUID: "STOP1", StopSequence: 1,
+	}}}
+	job := busLiveJob{
+		fetch: bindFetch(src, sink, specByKey(t, "bus")), sink: sink, store: store,
+		notifier: &captureBusArrivalNotifier{}, now: time.Now,
+	}
+
+	err := job.runCity(context.Background(), "Taipei")
+	if !errors.Is(err, publishErr) {
+		t.Fatalf("runCity error = %v, want %v", err, publishErr)
+	}
+	if len(src.acked) != 0 {
+		t.Fatalf("failed combined publish acked feeds: %v", src.acked)
+	}
+	if len(src.closed) != 2 {
+		t.Fatalf("closed feeds = %v, want both feeds", src.closed)
+	}
+}
+
+func TestBusAcknowledgesBothFeedsAfterPublish(t *testing.T) {
+	prefix := citymap["Taipei"]
+	busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
+		"bus_RealTimeByFrequencyTaipei":    []byte(`[]`),
+	}}
+	sink := &captureLiveSink{}
+	store := &fakeBusEtaStore{stops: []busStationmap{{
+		StationUID: "STATION1", StationName: "站牌一", SubRouteUID: "TPE1",
+		SubRouteName: "一路", StopUID: "STOP1", StopSequence: 1,
+	}}}
+	job := busLiveJob{
+		fetch: bindFetch(src, sink, specByKey(t, "bus")), sink: sink, store: store,
+		notifier: &captureBusArrivalNotifier{}, now: time.Now,
+	}
+
+	if err := job.runCity(context.Background(), "Taipei"); err != nil {
+		t.Fatalf("runCity: %v", err)
+	}
+	want := []string{
+		"bus_EstimatedTimeOfArrivalTaipei",
+		"bus_RealTimeByFrequencyTaipei",
+	}
+	if len(src.acked) != len(want) {
+		t.Fatalf("acked feeds = %v, want %v", src.acked, want)
+	}
+	for i := range want {
+		if src.acked[i] != want[i] {
+			t.Fatalf("acked feed[%d] = %q, want %q", i, src.acked[i], want[i])
+		}
+	}
+	if len(src.closed) != 2 {
+		t.Fatalf("closed feeds = %v, want both feeds", src.closed)
 	}
 }
 
