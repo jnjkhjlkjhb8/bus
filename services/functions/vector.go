@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // busSubroutes is a bus subroute row scanned for embedding-text construction.
@@ -91,8 +91,9 @@ var cityNames = map[string]string{
 // mrtSystemNames maps a metro system code to its Chinese display name for the
 // embedding text.
 var mrtSystemNames = map[string]string{
-	"TRTC": "台北捷運", "KRTC": "高雄捷運", "KLRT": "桃園捷運",
-	"TYMC": "台中捷運", "NTDLRT": "淡海輕軌", "KHLRT": "高雄輕軌",
+	"TRTC": "台北捷運", "KRTC": "高雄捷運", "KLRT": "高雄輕軌",
+	"TYMC": "桃園捷運", "NTMC": "新北捷運", "NTDLRT": "淡海輕軌",
+	"KHLRT": "高雄輕軌",
 }
 
 // cityName returns the Chinese display name for a city code, or the code itself
@@ -113,35 +114,161 @@ func mrtSystemName(code string) string {
 	return code
 }
 
-// size is the embedding batch size: rows are accumulated to this many before one
-// call to the embedding service and one DB batch upsert.
-const size = 1024
+const (
+	// size is the embedding batch size: rows are accumulated to this many before
+	// one call to the embedding service and one DB batch upsert.
+	size = 1024
+	// embeddingDimension is fixed by the search_vector pgvector schema and the
+	// configured qwen3-embedding model.
+	embeddingDimension = 1024
+)
 
-// Per-entity queries selecting rows that need (re-)embedding: updated since the
-// last run and not already present with an identical, non-null embedding (the
-// freshness skip built by freshVectorSkipSQL). $1 is the since timestamp.
+type embeddingClient interface {
+	Embed(context.Context, []string) ([][]float32, error)
+}
+
+type vectorDB interface {
+	Query(context.Context, string, ...interface{}) (pgx.Rows, error)
+	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
+}
+
+type vectorRedis interface {
+	Get(string) *redis.StringCmd
+	Set(string, interface{}, time.Duration) *redis.StatusCmd
+}
+
+// Per-entity queries selecting rows that need (re-)embedding: updated inside the
+// half-open [$1, $2) watermark window and not already present with an identical,
+// non-null embedding (the freshness skip built by freshVectorSkipSQL).
 var (
 	busSubroutesForVectorSQL = `
 	SELECT bs.sub_route_uid, bs.sub_route_name, bs.city, bs.depart, bs.destin
 	FROM bus_static bs
-	WHERE bs.updated_at >= $1` + freshVectorSkipSQL("bus_route", "bs.sub_route_uid",
+	WHERE bs.updated_at >= $1 AND bs.updated_at < $2` + freshVectorSkipSQL("bus_route", "bs.sub_route_uid",
 		"sv.name = bs.sub_route_name AND sv.depart = bs.depart AND sv.destin = bs.destin") + `;`
 	busStationsForVectorSQL = `
 	SELECT bg.group_uid, bg.group_name, bg.city, ST_AsText(bg.position)
 	FROM bus_station_groups bg
-	WHERE bg.updated_at >= $1` + freshVectorSkipSQL("bus_station", "bg.group_uid",
+	WHERE bg.updated_at >= $1 AND bg.updated_at < $2` + freshVectorSkipSQL("bus_station", "bg.group_uid",
 		"sv.name = bg.group_name AND ST_OrderingEquals(sv.geom, bg.position)") + `;`
 	bikeStationsForVectorSQL = `
 	SELECT bs.station_uid, bs.name, bs.city, ST_AsText(bs.geom)
 	FROM bike_stations bs
-	WHERE bs.updated_at >= $1` + freshVectorSkipSQL("bike_station", "bs.station_uid",
+	WHERE bs.updated_at >= $1 AND bs.updated_at < $2` + freshVectorSkipSQL("bike_station", "bs.station_uid",
 		"sv.name = bs.name AND ST_OrderingEquals(sv.geom, bs.geom)") + `;`
 	mrtStationsForVectorSQL = `
 	SELECT ms.station_id, ms.name, ms.system, ST_AsText(ms.stationposition)
 	FROM mrt_station ms
-	WHERE ms.updated_at >= $1` + freshVectorSkipSQL("mrt_station", "ms.station_id",
+	WHERE ms.updated_at >= $1 AND ms.updated_at < $2` + freshVectorSkipSQL("mrt_station", "ms.station_id",
 		"sv.name = ms.name AND ST_OrderingEquals(sv.geom, ms.stationposition)") + `;`
+	traStationsForVectorSQL = `
+	SELECT ts.station_id, ts.name, ts.city, ST_AsText(ts.geom)
+	FROM tra_stations ts
+	WHERE ts.updated_at >= $1 AND ts.updated_at < $2` + freshVectorSkipSQL("tra_station", "ts.station_id",
+		"sv.name = ts.name AND ST_OrderingEquals(sv.geom, ts.geom)") + `;`
+	thsrStationsForVectorSQL = `
+	SELECT ts.station_id, ts.name, ts.city, ST_AsText(ts.geom)
+	FROM thsr_stations ts
+	WHERE ts.updated_at >= $1 AND ts.updated_at < $2` + freshVectorSkipSQL("thsr_station", "ts.station_id",
+		"sv.name = ts.name AND ST_OrderingEquals(sv.geom, ts.geom)") + `;`
 )
+
+// vectorDataset keeps the query and row-to-embedding-input processor together,
+// preventing the registry order from drifting away from dataset-specific scan
+// and text construction behavior.
+type vectorDataset struct {
+	key        string
+	vectorType string
+	query      string
+	process    func(pgx.Rows) (string, resp, error)
+}
+
+var vectorDatasets = []vectorDataset{
+	{
+		key:        "bus_subroutes",
+		vectorType: "bus_route",
+		query:      busSubroutesForVectorSQL,
+		process: func(rows pgx.Rows) (string, resp, error) {
+			var uid, name, city, depart, destin string
+			if err := rows.Scan(&uid, &name, &city, &depart, &destin); err != nil {
+				return "", resp{}, err
+			}
+			cn := cityName(city)
+			text := fmt.Sprintf("類型：公車路線 子路線UID：%s 路線名：%s 縣市：%s 起點站：%s 終點站：%s", uid, name, cn, depart, destin)
+			return text, resp{UID: uid, Name: name, City: cn, DepartSystem: depart, Destin: destin}, nil
+		},
+	},
+	{
+		key:        "bus_station_groups",
+		vectorType: "bus_station",
+		query:      busStationsForVectorSQL,
+		process: func(rows pgx.Rows) (string, resp, error) {
+			var uid, name, city, geom string
+			if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
+				return "", resp{}, err
+			}
+			cn := cityName(city)
+			text := fmt.Sprintf("類型：公車組站位 組站位UID：%s 組站位名稱：%s 縣市：%s 位置：%s", uid, name, cn, geom)
+			return text, resp{UID: uid, Name: name, City: cn, Geom: geom}, nil
+		},
+	},
+	{
+		key:        "bike_stations",
+		vectorType: "bike_station",
+		query:      bikeStationsForVectorSQL,
+		process: func(rows pgx.Rows) (string, resp, error) {
+			var uid, name, city, geom string
+			if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
+				return "", resp{}, err
+			}
+			cn := cityName(city)
+			text := fmt.Sprintf("類型：公共自行車租借站 站點UID：%s 站點名稱：%s 縣市：%s 位置：%s", uid, name, cn, geom)
+			return text, resp{UID: uid, Name: name, City: cn, Geom: geom}, nil
+		},
+	},
+	{
+		key:        "mrt_station",
+		vectorType: "mrt_station",
+		query:      mrtStationsForVectorSQL,
+		process: func(rows pgx.Rows) (string, resp, error) {
+			var uid, name, system, geom string
+			if err := rows.Scan(&uid, &name, &system, &geom); err != nil {
+				return "", resp{}, err
+			}
+			cn := mrtSystemName(system)
+			text := fmt.Sprintf("類型：捷運站 車站UID：%s 車站名稱：%s 捷運系統：%s 位置：%s", uid, name, cn, geom)
+			return text, resp{UID: uid, Name: name, City: cn, Geom: geom}, nil
+		},
+	},
+	{
+		key:        "tra_stations",
+		vectorType: "tra_station",
+		query:      traStationsForVectorSQL,
+		process: func(rows pgx.Rows) (string, resp, error) {
+			var uid, name, city, geom string
+			if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
+				return "", resp{}, err
+			}
+			cn := cityName(city)
+			text := fmt.Sprintf("類型：台鐵車站 車站UID：%s 車站名稱：%s 縣市：%s 位置：%s", uid, name, cn, geom)
+			return text, resp{UID: uid, Name: name, City: cn, Geom: geom}, nil
+		},
+	},
+	{
+		key:        "thsr_stations",
+		vectorType: "thsr_station",
+		query:      thsrStationsForVectorSQL,
+		process: func(rows pgx.Rows) (string, resp, error) {
+			var uid, name, city, geom string
+			if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
+				return "", resp{}, err
+			}
+			cn := cityName(city)
+			text := fmt.Sprintf("類型：高鐵車站 車站UID：%s 車站名稱：%s 縣市：%s 位置：%s", uid, name, cn, geom)
+			return text, resp{UID: uid, Name: name, City: cn, Geom: geom}, nil
+		},
+	},
+}
 
 // freshVectorSkipSQL builds a NOT EXISTS clause that skips rows already embedded
 // with unchanged content, so a run only re-embeds new or changed entities.
@@ -159,236 +286,123 @@ func freshVectorSkipSQL(vectorType, uidExpr, samePredicate string) string {
 	  )`, vectorType, uidExpr, samePredicate)
 }
 
-// changetovector refreshes the search_vector embeddings powering offline search.
-// For each entity table it selects rows changed since the last run, builds a
-// descriptive Chinese text per row, embeds them in batches of size via the
-// embedding service, and upserts the vectors into search_vector. The
-// "LastTimeUpdate" watermark in Redis only advances if every table succeeded, so
-// a partial failure re-processes from the same point next run. No-op when no
-// embedding endpoint is configured (EMBED_URL).
-func changetovector(ctx context.Context, rc *redis.Client, db *pgxpool.Pool) {
-	if embeddingURL() == "" {
-		log.Infof("[vector] action=vector event=skip reason=embedding_disabled")
-		return
+const searchVectorUpsertSQL = `INSERT INTO search_vector(
+			type, uid, name, city, depart, destin, geom, embedding, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6,
+			CASE WHEN $7 = '' THEN NULL ELSE ST_GeomFromText($7, 4326) END,
+			$8::vector, NOW())
+		ON CONFLICT (type, uid, city)
+		DO UPDATE SET name = EXCLUDED.name,
+			depart = EXCLUDED.depart,
+			destin = EXCLUDED.destin,
+			geom = EXCLUDED.geom,
+			embedding = EXCLUDED.embedding,
+			updated_at = NOW();`
+
+func processVectorBatch(ctx context.Context, db vectorDB, embedder embeddingClient, input []string, rows []resp) error {
+	if len(input) == 0 {
+		return nil
 	}
-	since, _ := rc.Get("LastTimeUpdate").Result()
-	if since == "" {
-		since = time.Time{}.Format(time.RFC3339)
+	if len(rows) != len(input) {
+		return fmt.Errorf("vector metadata count = %d, input count = %d", len(rows), len(input))
 	}
-	tables := []string{"bus_subroutes", "bus_station_groups", "bike_stations", "mrt_station", "tra_stations", "thsr_stations"}
-	processBatch := func(table string, input []string, inrow []resp) bool {
-		if len(input) == 0 {
-			return true
-		}
-		body, comp, err, flipopen := callOllama(input)
-		if err != nil || !comp {
-			log.Infof("[vector] action=vector event=skip reason=api_error,error=%s", err)
-			return false
-		}
-		var result struct {
-			Embeddings [][]float32 `json:"embeddings"`
-		}
-		if err := json.Unmarshal(body, &result); err != nil {
-			log.Infof("[vector] action=vector event=unmarshal_error error=%v", err)
-			flipopen()
-			return false
-		}
-		flipopen()
-		resp := result.Embeddings
-		b := &pgx.Batch{}
-		c1 := `INSERT INTO search_vector(
-					type, uid, name, city, depart, destin, geom, embedding, updated_at
-				)
-				VALUES ($1, $2, $3, $4, $5, $6,
-					CASE WHEN $7 = '' THEN NULL ELSE ST_GeomFromText($7, 4326) END,
-					$8::vector, NOW())
-				ON CONFLICT (type, uid, city)
-				DO UPDATE SET name = EXCLUDED.name,
-					depart = EXCLUDED.depart,
-					destin = EXCLUDED.destin,
-					geom = EXCLUDED.geom,
-					embedding = EXCLUDED.embedding,
-					updated_at = NOW();`
-		for i, v := range resp {
-			d := inrow[i]
-			b.Queue(c1, d.Type, d.UID, d.Name, d.City, d.DepartSystem, d.Destin, d.Geom, toVecLiteral(v))
-		}
-		batchResults := db.SendBatch(ctx, b)
-		if err := batchResults.Close(); err != nil {
-			log.Infof("[vector] action=vector event=batch_error error=%v", err)
-			return false
-		}
-		log.Infof("[vector] action=vector event=success table=%s count=%d", table, len(resp))
-		return true
+	embeddings, err := embedder.Embed(ctx, input)
+	if err != nil {
+		return fmt.Errorf("embed vector batch: %w", err)
 	}
-	failed := false
-	for _, table := range tables {
-		if failed {
-			break
+	if len(embeddings) != len(input) {
+		return fmt.Errorf("embedding count = %d, input count = %d", len(embeddings), len(input))
+	}
+	for i, embedding := range embeddings {
+		if len(embedding) != embeddingDimension {
+			return fmt.Errorf("embedding %d dimension = %d, want %d", i, len(embedding), embeddingDimension)
 		}
-		func() {
-			switch table {
-			case "bus_subroutes":
-				rows, err := db.Query(ctx, busSubroutesForVectorSQL, since)
-				if err != nil {
-					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				defer rows.Close()
-				input := make([]string, 0, size)
-				inrow := make([]resp, 0, size)
-				for rows.Next() {
-					var uid, name, city, depart, destin string
-					if err := rows.Scan(&uid, &name, &city, &depart, &destin); err != nil {
-						log.Infof("[vector] action=vector event=scan_error error=%v", err)
-						continue
-					}
-					cn := cityName(city)
-					text := fmt.Sprintf("類型：公車路線 子路線UID：%s 路線名：%s 縣市：%s 起點站：%s 終點站：%s", uid, name, cn, depart, destin)
-					input = append(input, text)
-					inrow = append(inrow, resp{Type: "bus_route", UID: uid, Name: name, City: cn, DepartSystem: depart, Destin: destin})
-					if len(input) >= size {
-						if !processBatch(table, input, inrow) {
-							failed = true
-							return
-						}
-						input = input[:0]
-						inrow = inrow[:0]
-					}
-				}
-				if err := rows.Err(); err != nil {
-					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				if !processBatch(table, input, inrow) {
-					failed = true
-					return
-				}
-			case "bus_station_groups":
-				rows, err := db.Query(ctx, busStationsForVectorSQL, since)
-				if err != nil {
-					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				defer rows.Close()
-				input := make([]string, 0, size)
-				inrow := make([]resp, 0, size)
-				for rows.Next() {
-					var uid, name, city, geom string
-					if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
-						log.Infof("[vector] action=vector event=scan_error error=%v", err)
-						continue
-					}
-					cn := cityName(city)
-					text := fmt.Sprintf("類型：公車組站位 組站位UID：%s 組站位名稱：%s 縣市：%s 位置：%s", uid, name, cn, geom)
-					input = append(input, text)
-					inrow = append(inrow, resp{Type: "bus_station", UID: uid, Name: name, City: cn, Geom: geom})
-					if len(input) >= size {
-						if !processBatch(table, input, inrow) {
-							failed = true
-							return
-						}
-						input = input[:0]
-						inrow = inrow[:0]
-					}
-				}
-				if err := rows.Err(); err != nil {
-					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				if !processBatch(table, input, inrow) {
-					failed = true
-					return
-				}
-			case "bike_stations":
-				rows, err := db.Query(ctx, bikeStationsForVectorSQL, since)
-				if err != nil {
-					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				defer rows.Close()
-				input := make([]string, 0, size)
-				inrow := make([]resp, 0, size)
-				for rows.Next() {
-					var uid, name, city, geom string
-					if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
-						log.Infof("[vector] action=vector event=scan_error error=%v", err)
-						continue
-					}
-					cn := cityName(city)
-					text := fmt.Sprintf("類型：公共自行車租借站 站點UID：%s 站點名稱：%s 縣市：%s 位置：%s", uid, name, cn, geom)
-					input = append(input, text)
-					inrow = append(inrow, resp{Type: "bike_station", UID: uid, Name: name, City: cn, Geom: geom})
-					if len(input) >= size {
-						if !processBatch(table, input, inrow) {
-							failed = true
-							return
-						}
-						input = input[:0]
-						inrow = inrow[:0]
-					}
-				}
-				if err := rows.Err(); err != nil {
-					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				if !processBatch(table, input, inrow) {
-					failed = true
-					return
-				}
-			case "mrt_station":
-				rows, err := db.Query(ctx, mrtStationsForVectorSQL, since)
-				if err != nil {
-					log.Infof("[vector] action=vector event=query_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				defer rows.Close()
-				input := make([]string, 0, size)
-				inrow := make([]resp, 0, size)
-				for rows.Next() {
-					var uid, name, system, geom string
-					if err := rows.Scan(&uid, &name, &system, &geom); err != nil {
-						log.Infof("[vector] action=vector event=scan_error error=%v", err)
-						continue
-					}
-					cn := mrtSystemName(system)
-					text := fmt.Sprintf("類型：捷運站 車站UID：%s 車站名稱：%s 捷運系統：%s 位置：%s", uid, name, cn, geom)
-					input = append(input, text)
-					inrow = append(inrow, resp{Type: "mrt_station", UID: uid, Name: name, City: cn, Geom: geom})
-					if len(input) >= size {
-						if !processBatch(table, input, inrow) {
-							failed = true
-							return
-						}
-						input = input[:0]
-						inrow = inrow[:0]
-					}
-				}
-				if err := rows.Err(); err != nil {
-					log.Infof("[vector] action=vector event=rows_error table=%s error=%v", table, err)
-					failed = true
-					return
-				}
-				if !processBatch(table, input, inrow) {
-					failed = true
-					return
-				}
+	}
+
+	batch := &pgx.Batch{}
+	for i, embedding := range embeddings {
+		row := rows[i]
+		batch.Queue(searchVectorUpsertSQL,
+			row.Type, row.UID, row.Name, row.City, row.DepartSystem,
+			row.Destin, row.Geom, toVecLiteral(embedding))
+	}
+	if err := db.SendBatch(ctx, batch).Close(); err != nil {
+		return fmt.Errorf("write vector batch: %w", err)
+	}
+	return nil
+}
+
+func processVectorDataset(
+	ctx context.Context,
+	db vectorDB,
+	embedder embeddingClient,
+	dataset vectorDataset,
+	lower string,
+	upper time.Time,
+) error {
+	rows, err := db.Query(ctx, dataset.query, lower, upper)
+	if err != nil {
+		return fmt.Errorf("query vector dataset %s: %w", dataset.key, err)
+	}
+	defer rows.Close()
+
+	input := make([]string, 0, size)
+	metadata := make([]resp, 0, size)
+	for rows.Next() {
+		text, row, err := dataset.process(rows)
+		if err != nil {
+			return fmt.Errorf("scan vector dataset %s: %w", dataset.key, err)
+		}
+		row.Type = dataset.vectorType
+		input = append(input, text)
+		metadata = append(metadata, row)
+		if len(input) == size {
+			if err := processVectorBatch(ctx, db, embedder, input, metadata); err != nil {
+				return fmt.Errorf("process vector dataset %s: %w", dataset.key, err)
 			}
-		}()
+			input = input[:0]
+			metadata = metadata[:0]
+		}
 	}
-	if failed {
-		log.Infof("[vector] action=vector event=incomplete last_time_update=unchanged")
-		return
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read vector dataset %s rows: %w", dataset.key, err)
 	}
-	rc.Set("LastTimeUpdate", time.Now().Format(time.RFC3339), 0)
-	log.Infof("[vector] action=vector event=complete")
+	if err := processVectorBatch(ctx, db, embedder, input, metadata); err != nil {
+		return fmt.Errorf("process vector dataset %s: %w", dataset.key, err)
+	}
+	return nil
+}
+
+// changeToVector refreshes every registered search-vector dataset inside one
+// half-open watermark window. It advances LastTimeUpdate to the captured upper
+// cutoff only after all queries, scans, embeddings, and batch writes succeed.
+func changeToVector(ctx context.Context, rc vectorRedis, db vectorDB, embedder embeddingClient) error {
+	if embedder == nil {
+		log.Infof("[vector] action=vector event=skip reason=embedding_disabled")
+		return nil
+	}
+
+	cutoff := time.Now().UTC()
+	lower, err := rc.Get("LastTimeUpdate").Result()
+	if err != nil && err != redis.Nil {
+		return fmt.Errorf("get vector watermark: %w", err)
+	}
+	if lower == "" {
+		lower = time.Time{}.Format(time.RFC3339)
+	}
+
+	for _, dataset := range vectorDatasets {
+		if err := processVectorDataset(ctx, db, embedder, dataset, lower, cutoff); err != nil {
+			return err
+		}
+	}
+	watermark := cutoff.Format(time.RFC3339Nano)
+	if err := rc.Set("LastTimeUpdate", watermark, 0).Err(); err != nil {
+		return fmt.Errorf("set vector watermark: %w", err)
+	}
+	log.Infof("[vector] action=vector event=complete cutoff=%s", watermark)
+	return nil
 }
 
 // toVecLiteral formats an embedding as a pgvector text literal (e.g. "[1,2,3]")
@@ -407,28 +421,66 @@ func embeddingURL() string {
 	return strings.TrimSpace(os.Getenv("EMBED_URL"))
 }
 
-// callOllama sends a batch of texts to the Ollama-compatible embedding endpoint
-// (model qwen3-embedding:0.6b) and returns the raw response body. The bool is
-// false with no error when no endpoint is configured. The returned func closes
-// the response body and must be called when the bool is true.
-func callOllama(input []string) ([]byte, bool, error, func()) {
+const embeddingHTTPTimeout = 2 * time.Minute
+
+type httpEmbedder struct {
+	url    string
+	client *resty.Client
+}
+
+func newHTTPEmbedder(url string) *httpEmbedder {
+	return &httpEmbedder{
+		url: strings.TrimSpace(url),
+		client: resty.New().
+			SetHeader("Content-Type", "application/json").
+			SetTimeout(embeddingHTTPTimeout),
+	}
+}
+
+func configuredEmbeddingClient() embeddingClient {
 	url := embeddingURL()
 	if url == "" {
-		return nil, false, nil, nil
+		return nil
 	}
-	client := resty.New().SetHeader("Content-Type", "application/json")
-	resp, err := client.R().
+	return newHTTPEmbedder(url)
+}
+
+func (e *httpEmbedder) Embed(ctx context.Context, input []string) (embeddings [][]float32, err error) {
+	if e == nil || e.url == "" {
+		return nil, fmt.Errorf("embedding endpoint is disabled")
+	}
+	response, err := e.client.R().
+		SetContext(ctx).
+		SetDoNotParseResponse(true).
 		SetBody(map[string]interface{}{
 			"model": "qwen3-embedding:0.6b",
 			"input": input,
 		}).
-		Post(url)
+		Post(e.url)
 	if err != nil {
-		return nil, false, err, nil
+		return nil, fmt.Errorf("request embeddings: %w", err)
 	}
-	return resp.Body(), true, nil, func() {
-		if err := resp.RawResponse.Body.Close(); err != nil {
-			log.Infof("[embed] action=fail-close-response error=%v", err)
+	if response.RawResponse == nil || response.RawResponse.Body == nil {
+		return nil, fmt.Errorf("embedding endpoint returned no response body")
+	}
+	defer func() {
+		if closeErr := response.RawResponse.Body.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close embedding response: %w", closeErr)
 		}
+	}()
+
+	body, err := io.ReadAll(response.RawResponse.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read embedding response: %w", err)
 	}
+	if !response.IsSuccess() {
+		return nil, fmt.Errorf("embedding endpoint returned HTTP %d", response.StatusCode())
+	}
+	var result struct {
+		Embeddings [][]float32 `json:"embeddings"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("decode embedding response: %w", err)
+	}
+	return result.Embeddings, nil
 }

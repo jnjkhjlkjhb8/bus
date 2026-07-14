@@ -1,9 +1,23 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
+
+func TestVectorRefreshJobPropagatesError(t *testing.T) {
+	wantErr := errors.New("watermark unavailable")
+	job := vectorRefreshJob(
+		&testVectorRedis{getErr: wantErr},
+		nil,
+		&stubEmbeddingClient{},
+	)
+	if err := job(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("vectorRefreshJob() error = %v, want wrapped %v", err, wantErr)
+	}
+}
 
 func TestMask(t *testing.T) {
 	got := mask(true, false, true, false, false, false, true)
@@ -39,4 +53,3 @@ func TestBusScheduleInsertKeepsDuplicates(t *testing.T) {
 		}
 	}
 }
-

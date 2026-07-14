@@ -68,7 +68,10 @@ func main() {
 	if len(os.Args) > 2 && os.Args[1] == "run" {
 		switch os.Args[2] {
 		case "changetovector":
-			changetovector(context.Background(), rc, db)
+			job := vectorRefreshJob(rc, db, configuredEmbeddingClient())
+			if err := job(context.Background()); err != nil {
+				log.Fatalf("changetovector failed: %v", err)
+			}
 		default:
 			log.Fatalf("unknown job: %s", os.Args[2])
 		}
@@ -155,6 +158,12 @@ func runDaily(name string, d time.Duration, job func(context.Context) error) {
 	}
 }
 
+func vectorRefreshJob(rc vectorRedis, db vectorDB, embedder embeddingClient) func(context.Context) error {
+	return func(ctx context.Context) error {
+		return changeToVector(ctx, rc, db, embedder)
+	}
+}
+
 // runLegacyProd is the current prod path: Firebase, notification dispatcher, all
 // transform/realtime crons, and MQTT. Only ROLE="" reaches here — the ingestor
 // never initializes any of it.
@@ -178,11 +187,9 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pg
 	// 03:00 and the ROLE=loader container transforms it into this env's schema at
 	// 03:30. changetovector reads the tables the loader fills, so it runs at 03:45 —
 	// cross-service coordination by clock, the same way loader trails ingestor.
+	refreshVectors := vectorRefreshJob(rc, db, configuredEmbeddingClient())
 	_, _ = r.AddFunc("0 45 3 * * *", func() {
-		runDaily("changetovector", 10*time.Minute, func(ctx context.Context) error {
-			changetovector(ctx, rc, db)
-			return nil
-		})
+		runDaily("changetovector", 10*time.Minute, refreshVectors)
 	})
 	registerLiveCrons(r, tdx, rc, db, dispatcher)
 	_, _ = r.AddFunc("@every 10m", func() {
