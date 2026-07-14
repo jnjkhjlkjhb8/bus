@@ -17,7 +17,10 @@ import (
 // returns a cached token so the client never does a real client_credentials
 // exchange, and empty values (never an error) for every other key so the
 // conditional-GET sends no If-Modified-Since. Writes are dropped.
-type fakeTDXStore struct{ token string }
+type fakeTDXStore struct {
+	token string
+	set   func(key, value string, ttl time.Duration) error
+}
 
 func (f fakeTDXStore) Get(key string) (string, error) {
 	if key == shared.TDXTokenKey || key == shared.TDXTokenKeyLegacy {
@@ -25,8 +28,13 @@ func (f fakeTDXStore) Get(key string) (string, error) {
 	}
 	return "", nil
 }
-func (fakeTDXStore) Set(string, string, time.Duration) error { return nil }
-func (fakeTDXStore) Del(...string) error                     { return nil }
+func (f fakeTDXStore) Set(key, value string, ttl time.Duration) error {
+	if f.set != nil {
+		return f.set(key, value, ttl)
+	}
+	return nil
+}
+func (fakeTDXStore) Del(...string) error { return nil }
 
 // testTDXClient builds a TDX client pointed at a test server with a fake store,
 // so no request needs a live Redis or a real TDX token exchange.
@@ -150,6 +158,7 @@ func TestIngestRaw_FetchesAllBusCityAPIs(t *testing.T) {
 		mu.Lock()
 		seen[r.URL.Path]++
 		mu.Unlock()
+		w.Header().Set("Last-Modified", "fixture-v1")
 		_, _ = w.Write([]byte("[]"))
 	}))
 	defer srv.Close()
@@ -168,6 +177,53 @@ func TestIngestRaw_FetchesAllBusCityAPIs(t *testing.T) {
 				t.Fatalf("%s fetched %d times, want 1", path, got)
 			}
 		}
+	}
+}
+
+// TestRawLandingHTTPFixtureCommitsBeforeMarker guards the protocol assumption
+// used by the fan-out fixture above: a successful 200 response carries a marker,
+// invokes the durable landing callback, and advances the marker only afterward.
+// The callback is kept in-memory because dumpRawTDX's database integration is
+// covered separately by the DATABASE_URL-gated rawdump tests.
+func TestRawLandingHTTPFixtureCommitsBeforeMarker(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Last-Modified", "fixture-v1")
+		_, _ = w.Write([]byte(`[1,2,3]`))
+	}))
+	defer srv.Close()
+
+	var marker string
+	store := fakeTDXStore{
+		token: "test-token",
+		set: func(_ string, value string, _ time.Duration) error {
+			marker = value
+			return nil
+		},
+	}
+	tdx := shared.NewTDXClient(shared.TDXConfig{
+		Store:   store,
+		IMSKey:  func(name string) string { return "test:ims:" + name },
+		BaseURL: srv.URL,
+	})
+	committed := false
+	modified, err := tdx.GetInto("/raw", "fixture", func(body []byte) error {
+		if marker != "" {
+			t.Fatalf("marker advanced before durable callback: %q", marker)
+		}
+		if got := string(body); got != `[1,2,3]` {
+			t.Fatalf("landing callback body = %q, want [1,2,3]", got)
+		}
+		committed = true
+		return nil
+	})
+	if err != nil || !modified {
+		t.Fatalf("GetInto modified=%v err=%v, want true/nil", modified, err)
+	}
+	if !committed {
+		t.Fatal("durable landing callback was not invoked")
+	}
+	if marker != "fixture-v1" {
+		t.Fatalf("marker after commit = %q, want fixture-v1", marker)
 	}
 }
 

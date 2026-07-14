@@ -94,6 +94,9 @@ type TDXClient struct {
 	imsKey        func(name string) string
 	sinceFallback func(name string) string
 	tokenRefresh  singleflight.Group
+	maxRetries    int
+	retryWait     time.Duration
+	retryMaxWait  time.Duration
 	// tokenURL is the OAuth token endpoint. It defaults to tdxTokenURL and is a
 	// field only so unit tests can point the client_credentials exchange at an
 	// httptest server; production never overrides it.
@@ -115,6 +118,9 @@ func NewTDXClient(cfg TDXConfig) *TDXClient {
 		sinceFallback: cfg.SinceFallback,
 		tokenURL:      tdxTokenURL,
 		tokenHTTP:     &http.Client{Timeout: 30 * time.Second},
+		maxRetries:    5,
+		retryWait:     time.Second,
+		retryMaxWait:  5 * time.Second,
 	}
 	c.http = resty.New().
 		SetBaseURL(base).
@@ -122,14 +128,10 @@ func NewTDXClient(cfg TDXConfig) *TDXClient {
 		SetHeader("Accept-Encoding", "gzip").
 		SetDoNotParseResponse(true).
 		SetTimeout(30 * time.Second).
-		SetRetryCount(5).
-		SetRetryWaitTime(1 * time.Second).
-		SetRetryMaxWaitTime(5 * time.Second).
-		AddRetryCondition(c.retryOn).
 		OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
 			token, err := c.Token(req.Context())
 			if err != nil {
-				return err
+				return &TDXAuthError{Err: err}
 			}
 			req.SetAuthToken(token)
 			return nil
@@ -137,23 +139,20 @@ func NewTDXClient(cfg TDXConfig) *TDXClient {
 	return c
 }
 
-// retryOn retries on any transport error or HTTP 429. A 401 additionally drops
-// both the namespaced and legacy token keys so the retry re-authenticates rather
-// than resending the rejected token.
-func (c *TDXClient) retryOn(r *resty.Response, err error) bool {
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return false
-		}
-		return true
-	}
-	if r.StatusCode() == http.StatusUnauthorized {
-		if derr := c.store.Del(TDXTokenKey, TDXTokenKeyLegacy); derr != nil {
-			obs.Logf("[TDX] action=token event=invalidate_error error=%v", derr)
-		}
-		return true
-	}
-	return r.StatusCode() == http.StatusTooManyRequests
+// TDXAuthError marks failures from the shared token/cache hook. Callers with
+// their own retry policy (such as MaaS) must not retry these non-transport
+// failures.
+type TDXAuthError struct {
+	Err error
+}
+
+func (e *TDXAuthError) Error() string { return e.Err.Error() }
+func (e *TDXAuthError) Unwrap() error { return e.Err }
+
+// IsTDXAuthError reports whether err came from the shared auth hook.
+func IsTDXAuthError(err error) bool {
+	var authErr *TDXAuthError
+	return errors.As(err, &authErr)
 }
 
 // NewAuthedClient builds a resty client for a TDX API family with a different
@@ -168,7 +167,7 @@ func (c *TDXClient) NewAuthedClient(baseURL string) *resty.Client {
 		OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
 			token, err := c.Token(req.Context())
 			if err != nil {
-				return err
+				return &TDXAuthError{Err: err}
 			}
 			req.SetAuthToken(token)
 			return nil
@@ -270,22 +269,118 @@ func (c *TDXClient) exchangeToken(ctx context.Context) (string, error) {
 // since resolves the If-Modified-Since value for name: the cached marker, or the
 // SinceFallback (a DB-derived timestamp) when the cache is cold. A nil fallback
 // or an empty cache with no fallback yields "" (fetch everything).
-func (c *TDXClient) since(name string) string {
-	v, _ := c.store.Get(c.imsKey(name))
+func (c *TDXClient) since(name string) (string, error) {
+	v, err := c.store.Get(c.imsKey(name))
+	if err != nil {
+		return "", fmt.Errorf("read TDX marker %s: %w", name, err)
+	}
 	if v == "" && c.sinceFallback != nil {
 		v = c.sinceFallback(name)
 	}
-	return v
+	return v, nil
+}
+
+func drainAndCloseResponse(resp *resty.Response) error {
+	if resp == nil || resp.RawResponse == nil || resp.RawResponse.Body == nil {
+		return nil
+	}
+	_, readErr := io.Copy(io.Discard, resp.RawResponse.Body)
+	return errors.Join(readErr, resp.RawResponse.Body.Close())
+}
+
+func (c *TDXClient) retryDecision(resp *resty.Response, requestErr error) (bool, error) {
+	if requestErr != nil {
+		if errors.Is(requestErr, context.Canceled) || errors.Is(requestErr, context.DeadlineExceeded) || IsTDXAuthError(requestErr) {
+			return false, nil
+		}
+		return true, nil
+	}
+	if resp == nil {
+		return false, nil
+	}
+	switch resp.StatusCode() {
+	case http.StatusUnauthorized:
+		if err := c.store.Del(TDXTokenKey, TDXTokenKeyLegacy); err != nil {
+			return false, fmt.Errorf("invalidate rejected TDX token: %w", err)
+		}
+		return true, nil
+	case http.StatusTooManyRequests:
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func (c *TDXClient) retryDelay(attempt int) time.Duration {
+	delay := c.retryWait
+	for i := 0; i < attempt && delay < c.retryMaxWait; i++ {
+		if delay > c.retryMaxWait/2 {
+			return c.retryMaxWait
+		}
+		delay *= 2
+	}
+	if delay > c.retryMaxWait {
+		return c.retryMaxWait
+	}
+	return delay
+}
+
+// get performs bounded retries while retaining ownership of every streaming
+// response body. Intermediate bodies are drained and closed before another
+// attempt; final bodies remain owned by Get/GetInto.
+func (c *TDXClient) get(ctx context.Context, url, marker string) (*resty.Response, error) {
+	for attempt := 0; ; attempt++ {
+		resp, requestErr := c.http.R().
+			SetContext(ctx).
+			SetHeader("If-Modified-Since", marker).
+			Get(url)
+		retry, decisionErr := c.retryDecision(resp, requestErr)
+		if decisionErr != nil {
+			return nil, errors.Join(decisionErr, drainAndCloseResponse(resp))
+		}
+		if !retry {
+			if requestErr != nil {
+				return nil, errors.Join(requestErr, drainAndCloseResponse(resp))
+			}
+			return resp, nil
+		}
+		if attempt >= c.maxRetries {
+			if requestErr != nil {
+				return nil, errors.Join(requestErr, drainAndCloseResponse(resp))
+			}
+			return resp, nil
+		}
+		if err := drainAndCloseResponse(resp); err != nil {
+			return nil, err
+		}
+		delay := c.retryDelay(attempt)
+		if delay <= 0 {
+			continue
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, ctx.Err()
+		}
+	}
 }
 
 // TDXFetch is one conditional response. Ack advances its Last-Modified marker;
 // consumers call it only after the payload has decoded and its Redis pipeline
-// has committed. Close always returns the response-body close error.
+// has committed. Invalidate clears a stale conditional marker so the next call
+// is forced to fetch a full frame. Close drains the decoded stream before
+// closing it, surfacing gzip checksum/truncation failures even when a consumer
+// stopped decoding early.
 type TDXFetch struct {
-	Decoder  *json.Decoder
-	Modified bool
-	Ack      func() error
-	Close    func() error
+	Decoder    *json.Decoder
+	Modified   bool
+	Ack        func() error
+	Close      func() error
+	Invalidate func() error
 }
 
 type tdxResponseBody struct {
@@ -293,17 +388,20 @@ type tdxResponseBody struct {
 	close func() error
 }
 
-func (b *tdxResponseBody) Close() error { return b.close() }
+func (b *tdxResponseBody) Close() error {
+	_, readErr := io.Copy(io.Discard, b.Reader)
+	return errors.Join(readErr, b.close())
+}
 
 func decodedTDXBody(resp *resty.Response) (io.ReadCloser, error) {
 	raw := resp.RawResponse.Body
 	switch strings.ToLower(strings.TrimSpace(resp.Header().Get("Content-Encoding"))) {
 	case "", "identity":
-		return raw, nil
+		return &tdxResponseBody{Reader: raw, close: raw.Close}, nil
 	case "gzip":
 		reader, err := gzip.NewReader(raw)
 		if err != nil {
-			return nil, errors.Join(err, raw.Close())
+			return nil, errors.Join(err, drainAndCloseResponse(resp))
 		}
 		return &tdxResponseBody{
 			Reader: reader,
@@ -314,15 +412,16 @@ func decodedTDXBody(resp *resty.Response) (io.ReadCloser, error) {
 	default:
 		return nil, errors.Join(
 			fmt.Errorf("unsupported TDX content encoding %q", resp.Header().Get("Content-Encoding")),
-			raw.Close(),
+			drainAndCloseResponse(resp),
 		)
 	}
 }
 
-func noopTDXFetch() *TDXFetch {
+func noopTDXFetch(invalidate func() error) *TDXFetch {
 	return &TDXFetch{
-		Ack:   func() error { return nil },
-		Close: func() error { return nil },
+		Ack:        func() error { return nil },
+		Close:      func() error { return nil },
+		Invalidate: invalidate,
 	}
 }
 
@@ -333,39 +432,57 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	resp, err := c.http.R().
-		SetContext(ctx).
-		SetHeader("If-Modified-Since", c.since(name)).
-		Get(url)
+	marker, err := c.since(name)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.get(ctx, url, marker)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode() == http.StatusNotModified {
-		if cerr := resp.RawResponse.Body.Close(); cerr != nil {
+		if cerr := drainAndCloseResponse(resp); cerr != nil {
 			return nil, cerr
 		}
 		obs.Logf("[TDX] action=fetch event=not_modified name=%s", name)
-		return noopTDXFetch(), nil
+		return noopTDXFetch(func() error {
+			if err := c.store.Del(c.imsKey(name)); err != nil {
+				return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
+			}
+			return nil
+		}), nil
 	}
 	if resp.StatusCode() >= http.StatusBadRequest {
 		statusErr := &TDXStatusError{Name: name, Status: resp.StatusCode()}
-		return nil, errors.Join(statusErr, resp.RawResponse.Body.Close())
+		return nil, errors.Join(statusErr, drainAndCloseResponse(resp))
+	}
+	responseMarker := strings.TrimSpace(resp.Header().Get("Last-Modified"))
+	if responseMarker == "" {
+		return nil, errors.Join(
+			fmt.Errorf("tdx %s: successful response missing Last-Modified", name),
+			drainAndCloseResponse(resp),
+		)
 	}
 	body, err := decodedTDXBody(resp)
 	if err != nil {
 		return nil, err
 	}
-	marker := resp.Header().Get("Last-Modified")
 	return &TDXFetch{
 		Decoder:  json.NewDecoder(body),
 		Modified: true,
 		Ack: func() error {
-			if err := c.store.Set(c.imsKey(name), marker, 0); err != nil {
+			if err := c.store.Set(c.imsKey(name), responseMarker, 0); err != nil {
 				return fmt.Errorf("ack TDX marker %s: %w", name, err)
 			}
 			return nil
 		},
 		Close: body.Close,
+		Invalidate: func() error {
+			if err := c.store.Del(c.imsKey(name)); err != nil {
+				return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
+			}
+			return nil
+		},
 	}, nil
 }
 
@@ -377,14 +494,16 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 // was present; a commit error is returned verbatim (its own error identity is
 // preserved for the caller's errors.Is checks) and leaves the marker unadvanced.
 func (c *TDXClient) GetInto(url, name string, commit func(body []byte) error) (modified bool, err error) {
-	resp, err := c.http.R().
-		SetHeader("If-Modified-Since", c.since(name)).
-		Get(url)
+	marker, err := c.since(name)
+	if err != nil {
+		return false, err
+	}
+	resp, err := c.get(context.Background(), url, marker)
 	if err != nil {
 		return false, err
 	}
 	if resp.StatusCode() == http.StatusNotModified {
-		if cerr := resp.RawResponse.Body.Close(); cerr != nil {
+		if cerr := drainAndCloseResponse(resp); cerr != nil {
 			return false, cerr
 		}
 		obs.Logf("[TDX] action=fetch event=not_modified name=%s", name)
@@ -392,7 +511,14 @@ func (c *TDXClient) GetInto(url, name string, commit func(body []byte) error) (m
 	}
 	if resp.StatusCode() >= http.StatusBadRequest {
 		statusErr := &TDXStatusError{Name: name, Status: resp.StatusCode()}
-		return false, errors.Join(statusErr, resp.RawResponse.Body.Close())
+		return false, errors.Join(statusErr, drainAndCloseResponse(resp))
+	}
+	responseMarker := strings.TrimSpace(resp.Header().Get("Last-Modified"))
+	if responseMarker == "" {
+		return false, errors.Join(
+			fmt.Errorf("tdx %s: successful response missing Last-Modified", name),
+			drainAndCloseResponse(resp),
+		)
 	}
 	responseBody, err := decodedTDXBody(resp)
 	if err != nil {
@@ -407,13 +533,13 @@ func (c *TDXClient) GetInto(url, name string, commit func(body []byte) error) (m
 			return true, cerr
 		}
 	}
-	return true, c.cacheIMS(name, resp)
+	return true, c.cacheIMS(name, responseMarker)
 }
 
 // cacheIMS stores the response's Last-Modified header under name's IMS key so the
 // next request can send it as If-Modified-Since.
-func (c *TDXClient) cacheIMS(name string, resp *resty.Response) error {
-	if err := c.store.Set(c.imsKey(name), resp.Header().Get("Last-Modified"), 0); err != nil {
+func (c *TDXClient) cacheIMS(name, marker string) error {
+	if err := c.store.Set(c.imsKey(name), marker, 0); err != nil {
 		return fmt.Errorf("cache TDX marker %s: %w", name, err)
 	}
 	return nil

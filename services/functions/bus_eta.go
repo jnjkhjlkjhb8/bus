@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
@@ -38,6 +40,32 @@ type busLiveJob struct {
 	now      func() time.Time
 }
 
+const busFeedCacheTTL = 10 * time.Minute
+
+var errBusFeedCacheMiss = errors.New("bus raw feed cache missing")
+
+func readBusFeedCache[T any](sink liveSink, key string) ([]T, error) {
+	raw, err := sink.getString(key)
+	if errors.Is(err, redis.Nil) || (err == nil && raw == "") {
+		return nil, fmt.Errorf("%w: %s", errBusFeedCacheMiss, key)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", key, err)
+	}
+	var values []T
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", key, err)
+	}
+	return values, nil
+}
+
+func invalidateTDXFetch(fetch *shared.TDXFetch) error {
+	if fetch == nil || fetch.Invalidate == nil {
+		return errors.New("TDX fetch has no marker invalidation callback")
+	}
+	return fetch.Invalidate()
+}
+
 // pickBusEstimate resolves two ETA entries sharing an etaKey (multiple buses on
 // the same route toward the same stop): prefer a bus en route (StopStatus 0),
 // and among those keep the soonest (smallest EstimatedTime). If neither is
@@ -63,7 +91,9 @@ func pickBusEstimate(prev, next rawBusEsimated) rawBusEsimated {
 // 304, keeping the last good ETAs alive rather than blanking the route for a
 // tick until the next good fetch.
 func decodeBusEtaArray(dec *json.Decoder) (eat []rawBusEsimated, complete bool) {
-	if _, err := dec.Token(); err != nil { // opening '['
+	eat = make([]rawBusEsimated, 0)
+	opening, err := dec.Token()
+	if err != nil || opening != json.Delim('[') {
 		return nil, false
 	}
 	for dec.More() {
@@ -73,7 +103,12 @@ func decodeBusEtaArray(dec *json.Decoder) (eat []rawBusEsimated, complete bool) 
 		}
 		eat = append(eat, e)
 	}
-	if _, err := dec.Token(); err != nil { // closing ']'
+	closing, err := dec.Token()
+	if err != nil || closing != json.Delim(']') {
+		return eat, false
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
 		return eat, false
 	}
 	return eat, true
@@ -164,65 +199,120 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
 		return nil
 	}
-	var url string
+	var etaURL string
 	if city == "InterCity" {
-		url = "/v2/Bus/EstimatedTimeOfArrival/InterCity"
+		etaURL = "/v2/Bus/EstimatedTimeOfArrival/InterCity"
 	} else {
-		url = fmt.Sprintf("/v2/Bus/EstimatedTimeOfArrival/City/%s", city)
+		etaURL = fmt.Sprintf("/v2/Bus/EstimatedTimeOfArrival/City/%s", city)
 	}
-	etaFetch, err := j.fetch(ctx, url, "bus_EstimatedTimeOfArrival"+city)
+	etaFetch, err := j.fetch(ctx, etaURL, "bus_EstimatedTimeOfArrival"+city)
 	if err != nil {
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_eta error=%v", city, err)
 		return err
 	}
-	if !etaFetch.Modified {
-		if err == nil {
-			// 304 Not-Modified: the cached arrival instants are still valid, so
-			// re-arm their TTL instead of letting the snapshots expire mid-validity.
+	var eat []rawBusEsimated
+	var etaRaw []byte
+	if etaFetch.Modified {
+		var complete bool
+		eat, complete = decodeBusEtaArray(etaFetch.Decoder)
+		closeErr := etaFetch.Close()
+		var decodeErr error
+		if !complete {
+			decodeErr = errors.New("decode bus ETA response: incomplete JSON array")
+		}
+		if decodeErr != nil || closeErr != nil {
+			j.sink.refreshTTL(busEtaTTLPatterns(city))
+			return errors.Join(decodeErr, closeErr)
+		}
+		etaRaw, err = json.Marshal(eat)
+		if err != nil {
+			return err
+		}
+	}
+
+	posit := make([]rawBusPosition, 0)
+	var positionURL string
+	if city == "InterCity" {
+		positionURL = "/v2/Bus/RealTimeByFrequency/InterCity"
+	} else {
+		positionURL = fmt.Sprintf("/v2/Bus/RealTimeByFrequency/City/%s", city)
+	}
+	positionFetch, err := j.fetch(ctx, positionURL, "bus_RealTimeByFrequency"+city)
+	if err != nil {
+		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)
+		return err
+	}
+	var positionRaw []byte
+	if positionFetch.Modified {
+		decodeErr := decodeLiveItems(positionFetch.Decoder, func(p rawBusPosition) error {
+			posit = append(posit, p)
+			return nil
+		})
+		closeErr := positionFetch.Close()
+		if decodeErr != nil || closeErr != nil {
+			return errors.Join(decodeErr, closeErr)
+		}
+		positionRaw, err = json.Marshal(posit)
+		if err != nil {
+			return err
+		}
+	}
+
+	etaCacheKey := shared.BusETARawKey(city)
+	positionCacheKey := shared.BusPositionRawKey(city)
+	pipe := j.sink.pipeline()
+	var cacheErr error
+	if etaFetch.Modified {
+		pipe.Set(etaCacheKey, etaRaw, busFeedCacheTTL)
+	} else {
+		eat, err = readBusFeedCache[rawBusEsimated](j.sink, etaCacheKey)
+		if err != nil {
+			cacheErr = errors.Join(cacheErr, err)
+		} else {
+			pipe.Expire(etaCacheKey, busFeedCacheTTL)
+		}
+	}
+	if positionFetch.Modified {
+		pipe.Set(positionCacheKey, positionRaw, busFeedCacheTTL)
+	} else {
+		posit, err = readBusFeedCache[rawBusPosition](j.sink, positionCacheKey)
+		if err != nil {
+			cacheErr = errors.Join(cacheErr, err)
+		} else {
+			pipe.Expire(positionCacheKey, busFeedCacheTTL)
+		}
+	}
+
+	if cacheErr != nil {
+		if !etaFetch.Modified && !positionFetch.Modified {
 			j.sink.refreshTTL(busEtaTTLPatterns(city))
 		}
-		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_eta error=%v", city, err)
-		return nil
+		execErr := pipe.Exec()
+		var ackErr error
+		if execErr == nil {
+			if etaFetch.Modified {
+				ackErr = errors.Join(ackErr, acknowledgeTDXFetch(etaFetch))
+			}
+			if positionFetch.Modified {
+				ackErr = errors.Join(ackErr, acknowledgeTDXFetch(positionFetch))
+			}
+		}
+		var invalidateErr error
+		if !etaFetch.Modified {
+			invalidateErr = errors.Join(invalidateErr, invalidateTDXFetch(etaFetch))
+		}
+		if !positionFetch.Modified {
+			invalidateErr = errors.Join(invalidateErr, invalidateTDXFetch(positionFetch))
+		}
+		return errors.Join(cacheErr, execErr, ackErr, invalidateErr)
 	}
-	eat, complete := decodeBusEtaArray(etaFetch.Decoder)
-	if closeErr := etaFetch.Close(); closeErr != nil {
-		return closeErr
-	}
-	if !complete {
-		// Truncated or malformed body: committing it would overwrite the live
-		// snapshot with mostly status-67 blanks (the abrupt-blank-then-recover
-		// flicker). Treat it like a 304 — re-arm the last good snapshot's TTL.
+
+	if !etaFetch.Modified && !positionFetch.Modified {
+		if err := pipe.Exec(); err != nil {
+			return err
+		}
 		j.sink.refreshTTL(busEtaTTLPatterns(city))
-		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_partial_eta eat_count=%d", city, len(eat))
-		return errors.New("decode bus ETA response: incomplete JSON array")
-	}
-	var posit []rawBusPosition
-	if city == "InterCity" {
-		url = "/v2/Bus/RealTimeByFrequency/InterCity"
-	} else {
-		url = fmt.Sprintf("/v2/Bus/RealTimeByFrequency/City/%s", city)
-	}
-	positionFetch, err := j.fetch(ctx, url, "bus_RealTimeByFrequency"+city)
-	if err != nil {
-		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)
-		return err
-	}
-	if !positionFetch.Modified {
-		if err == nil {
-			// 304 Not-Modified on positions: the cached snapshot is still
-			// valid, so re-arm its TTL instead of letting it expire mid-validity.
-			j.sink.refreshTTL(busEtaTTLPatterns(city))
-		}
-		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)
 		return nil
-	}
-	decodeErr := decodeLiveItems(positionFetch.Decoder, func(p rawBusPosition) error {
-		posit = append(posit, p)
-		return nil
-	})
-	closeErr := positionFetch.Close()
-	if decodeErr != nil || closeErr != nil {
-		return errors.Join(decodeErr, closeErr)
 	}
 	stations := make(map[string]*models.Bus_StationArrival)
 	routes := make(map[string]*models.Bus_RouteArrival)
@@ -451,7 +541,6 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			ArrivalUnix:   arrivalUnix,
 		})
 	}
-	pipe := j.sink.pipeline()
 	for groupUID, pb := range stations {
 		data, err := proto.Marshal(pb)
 		if err != nil {
@@ -476,8 +565,15 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 		return err
 	}
 	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=redis_success station_count=%d route_count=%d eat_count=%d posit_count=%d", city, len(stations), len(routes), len(eat), len(posit))
-	if err := errors.Join(acknowledgeTDXFetch(etaFetch), acknowledgeTDXFetch(positionFetch)); err != nil {
-		return err
+	var ackErr error
+	if etaFetch.Modified {
+		ackErr = errors.Join(ackErr, acknowledgeTDXFetch(etaFetch))
+	}
+	if positionFetch.Modified {
+		ackErr = errors.Join(ackErr, acknowledgeTDXFetch(positionFetch))
+	}
+	if ackErr != nil {
+		return ackErr
 	}
 	j.store.saveHistory(ctx, historyRows)
 	j.store.recordPredictions(ctx, predictionRows)

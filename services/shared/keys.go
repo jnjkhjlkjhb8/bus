@@ -34,6 +34,16 @@ func BusStationEtaPattern(city string) string {
 	return fmt.Sprintf("bus_eta_station:%s:*", city)
 }
 
+// BusETARawKey holds the last durably decoded TDX ETA feed for a city.
+func BusETARawKey(city string) string {
+	return "bus:raw:eta:" + city
+}
+
+// BusPositionRawKey holds the last durably decoded TDX position feed for a city.
+func BusPositionRawKey(city string) string {
+	return "bus:raw:position:" + city
+}
+
 // BusDailyTimetableKey returns the key holding a canonical subroute's daily
 // timetable, written by the 03:30 load.
 func BusDailyTimetableKey(subRouteUID string) string {

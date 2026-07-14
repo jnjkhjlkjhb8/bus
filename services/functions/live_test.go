@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,30 +25,45 @@ import (
 // that loops over many partitions (cities/systems) while asserting on only the
 // seeded one, and exercise the 304→TTL path for the rest.
 type fakeLiveSource struct {
-	fixtures map[string][]byte // key: fetch name → raw TDX JSON array
-	calls    []string
-	acked    []string
-	closed   []string
-	ackErr   error
-	closeErr error
+	fixtures    map[string][]byte // key: fetch name → raw TDX JSON array
+	calls       []string
+	acked       []string
+	closed      []string
+	invalidated []string
+	ackErr      error
+	ackErrors   map[string]error
+	closeErr    error
 }
 
 func (s *fakeLiveSource) fetch(_ context.Context, _, name string) (*shared.TDXFetch, error) {
 	s.calls = append(s.calls, name)
 	body, ok := s.fixtures[name]
 	if !ok {
-		return &shared.TDXFetch{Modified: false}, nil
+		return &shared.TDXFetch{
+			Modified: false,
+			Invalidate: func() error {
+				s.invalidated = append(s.invalidated, name)
+				return nil
+			},
+		}, nil
 	}
 	return &shared.TDXFetch{
 		Decoder:  json.NewDecoder(bytes.NewReader(body)),
 		Modified: true,
 		Ack: func() error {
 			s.acked = append(s.acked, name)
+			if err := s.ackErrors[name]; err != nil {
+				return err
+			}
 			return s.ackErr
 		},
 		Close: func() error {
 			s.closed = append(s.closed, name)
 			return s.closeErr
+		},
+		Invalidate: func() error {
+			s.invalidated = append(s.invalidated, name)
+			return nil
 		},
 	}, nil
 }
@@ -119,6 +135,15 @@ func (s *captureLiveSink) setFor(key string) *setWrite {
 	for i := range s.sets {
 		if s.sets[i].key == key {
 			return &s.sets[i]
+		}
+	}
+	return nil
+}
+
+func (s *captureLiveSink) expireFor(key string) *expireWrite {
+	for i := range s.expires {
+		if s.expires[i].key == key {
+			return &s.expires[i]
 		}
 	}
 	return nil
@@ -457,9 +482,10 @@ func TestLiveConsumerReturnsAckAndCloseErrors(t *testing.T) {
 		name     string
 		ackErr   error
 		closeErr error
+		wantAcks int
 	}{
-		{name: "ack", ackErr: errors.New("marker write failed")},
-		{name: "close", closeErr: errors.New("response close failed")},
+		{name: "ack", ackErr: errors.New("marker write failed"), wantAcks: 1},
+		{name: "close", closeErr: errors.New("response close failed"), wantAcks: 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -481,10 +507,102 @@ func TestLiveConsumerReturnsAckAndCloseErrors(t *testing.T) {
 			if !errors.Is(err, want) {
 				t.Fatalf("consumer error = %v, want %v", err, want)
 			}
-			if len(src.acked) != 1 || len(src.closed) != 1 {
-				t.Fatalf("acked/closed = %v/%v, want one each", src.acked, src.closed)
+			if len(src.acked) != tt.wantAcks || len(src.closed) != 1 {
+				t.Fatalf("acked/closed = %v/%v, want %d/1", src.acked, src.closed, tt.wantAcks)
 			}
 		})
+	}
+}
+
+func TestLiveDecodersRejectWrongDelimitersAndTrailingData(t *testing.T) {
+	for _, body := range []string{`{}`, `[] {}`, `[{"StationUID":"S1"}] trailing`} {
+		t.Run(body, func(t *testing.T) {
+			err := decodeLiveItems(json.NewDecoder(strings.NewReader(body)), func(bikeAvailability) error { return nil })
+			if err == nil {
+				t.Fatalf("decodeLiveItems(%q) returned nil", body)
+			}
+
+			_, complete := decodeBusEtaArray(json.NewDecoder(strings.NewReader(body)))
+			if complete {
+				t.Fatalf("decodeBusEtaArray(%q) reported complete", body)
+			}
+		})
+	}
+}
+
+func TestCommitTDXFetchClosesBeforeAck(t *testing.T) {
+	closeErr := errors.New("close failed")
+	acked := false
+	fetch := &shared.TDXFetch{
+		Decoder:  json.NewDecoder(strings.NewReader(`[]`)),
+		Modified: true,
+		Ack: func() error {
+			acked = true
+			return nil
+		},
+		Close: func() error { return closeErr },
+	}
+	err := commitTDXFetch(fetch, func(dec *json.Decoder) error {
+		return decodeLiveItems(dec, func(struct{}) error { return nil })
+	})
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("commit error = %v, want %v", err, closeErr)
+	}
+	if acked {
+		t.Fatal("fetch was acknowledged despite close failure")
+	}
+}
+
+func TestCommitTDXFetchRequiresCloseBeforeAck(t *testing.T) {
+	acked := false
+	fetch := &shared.TDXFetch{
+		Decoder:  json.NewDecoder(strings.NewReader(`[]`)),
+		Modified: true,
+		Ack: func() error {
+			acked = true
+			return nil
+		},
+	}
+	err := commitTDXFetch(fetch, func(dec *json.Decoder) error {
+		return decodeLiveItems(dec, func(struct{}) error { return nil })
+	})
+	if err == nil {
+		t.Fatal("commit without Close returned nil error")
+	}
+	if acked {
+		t.Fatal("fetch without Close was acknowledged")
+	}
+}
+
+func TestCorruptGzipChecksumDoesNotAck(t *testing.T) {
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	_, _ = zw.Write([]byte(`[]`))
+	_ = zw.Close()
+	data := compressed.Bytes()
+	data = data[:len(data)-4]
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("gzip.NewReader: %v", err)
+	}
+	acked := false
+	fetch := &shared.TDXFetch{
+		Decoder:  json.NewDecoder(zr),
+		Modified: true,
+		Ack: func() error {
+			acked = true
+			return nil
+		},
+		Close: zr.Close,
+	}
+	err = commitTDXFetch(fetch, func(dec *json.Decoder) error {
+		return decodeLiveItems(dec, func(struct{}) error { return nil })
+	})
+	if err == nil {
+		t.Fatal("corrupt gzip checksum returned nil error")
+	}
+	if acked {
+		t.Fatal("corrupt gzip response was acknowledged")
 	}
 }
 
@@ -556,6 +674,142 @@ func TestBusAcknowledgesBothFeedsAfterPublish(t *testing.T) {
 	}
 	if len(src.closed) != 2 {
 		t.Fatalf("closed feeds = %v, want both feeds", src.closed)
+	}
+}
+
+func TestBusOneModifiedFeedUsesCachedCounterpartAndAdvances(t *testing.T) {
+	tests := []struct {
+		name       string
+		fixtures   map[string][]byte
+		cachedKey  string
+		modified   string
+		writtenKey string
+	}{
+		{
+			name: "ETA 200 positions 304",
+			fixtures: map[string][]byte{
+				"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
+			},
+			cachedKey:  shared.BusPositionRawKey("Taipei"),
+			modified:   "bus_EstimatedTimeOfArrivalTaipei",
+			writtenKey: shared.BusETARawKey("Taipei"),
+		},
+		{
+			name: "ETA 304 positions 200",
+			fixtures: map[string][]byte{
+				"bus_RealTimeByFrequencyTaipei": []byte(`[]`),
+			},
+			cachedKey:  shared.BusETARawKey("Taipei"),
+			modified:   "bus_RealTimeByFrequencyTaipei",
+			writtenKey: shared.BusPositionRawKey("Taipei"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := citymap["Taipei"]
+			busStaticMapCache.Delete(prefix)
+			t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+
+			src := &fakeLiveSource{fixtures: tt.fixtures}
+			sink := &captureLiveSink{strings: map[string]string{tt.cachedKey: `[]`}}
+			store := &fakeBusEtaStore{stops: []busStationmap{{
+				StationUID: "STATION1", StationName: "站牌一", SubRouteUID: "TPE1",
+				SubRouteName: "一路", StopUID: "STOP1", StopSequence: 1,
+			}}}
+			job := busLiveJob{
+				fetch: bindFetch(src, sink, specByKey(t, "bus")), sink: sink, store: store,
+				notifier: &captureBusArrivalNotifier{}, now: time.Now,
+			}
+
+			if err := job.runCity(context.Background(), "Taipei"); err != nil {
+				t.Fatalf("runCity: %v", err)
+			}
+			if len(src.acked) != 1 || src.acked[0] != tt.modified {
+				t.Fatalf("acked feeds = %v, want [%s]", src.acked, tt.modified)
+			}
+			if sw := sink.setFor(tt.writtenKey); sw == nil || sw.ttl != busFeedCacheTTL || string(sw.value) != `[]` {
+				t.Fatalf("raw feed cache %s = %+v, want ttl %v", tt.writtenKey, sw, busFeedCacheTTL)
+			}
+			if ew := sink.expireFor(tt.cachedKey); ew == nil || ew.ttl != busFeedCacheTTL {
+				t.Fatalf("cached counterpart %s expiry = %+v, want ttl %v", tt.cachedKey, ew, busFeedCacheTTL)
+			}
+			if sink.setFor(shared.BusRouteEtaKey("TPE1")) == nil {
+				t.Fatal("combined route snapshot was not published")
+			}
+		})
+	}
+}
+
+func TestBusMissingCachedCounterpartPersistsModifiedFeedAndInvalidatesMarker(t *testing.T) {
+	prefix := citymap["Taipei"]
+	busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
+	}}
+	sink := &captureLiveSink{}
+	store := &fakeBusEtaStore{stops: []busStationmap{{
+		StationUID: "STATION1", StationName: "站牌一", SubRouteUID: "TPE1",
+		SubRouteName: "一路", StopUID: "STOP1", StopSequence: 1,
+	}}}
+	job := busLiveJob{
+		fetch: bindFetch(src, sink, specByKey(t, "bus")), sink: sink, store: store,
+		notifier: &captureBusArrivalNotifier{}, now: time.Now,
+	}
+
+	if err := job.runCity(context.Background(), "Taipei"); err == nil {
+		t.Fatal("missing cached counterpart returned nil error")
+	}
+	if sw := sink.setFor(shared.BusETARawKey("Taipei")); sw == nil || sw.ttl != busFeedCacheTTL {
+		t.Fatalf("ETA raw cache = %+v, want durable bounded cache", sw)
+	}
+	if len(src.acked) != 1 || src.acked[0] != "bus_EstimatedTimeOfArrivalTaipei" {
+		t.Fatalf("acked feeds = %v, want modified ETA", src.acked)
+	}
+	if len(src.invalidated) != 1 || src.invalidated[0] != "bus_RealTimeByFrequencyTaipei" {
+		t.Fatalf("invalidated feeds = %v, want missing position marker", src.invalidated)
+	}
+}
+
+func TestBusIndependentAckFailuresLeaveBothRawFeedsDurable(t *testing.T) {
+	for _, failedFeed := range []string{
+		"bus_EstimatedTimeOfArrivalTaipei",
+		"bus_RealTimeByFrequencyTaipei",
+	} {
+		t.Run(failedFeed, func(t *testing.T) {
+			prefix := citymap["Taipei"]
+			busStaticMapCache.Delete(prefix)
+			t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+			ackErr := errors.New("marker write failed")
+			src := &fakeLiveSource{
+				fixtures: map[string][]byte{
+					"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
+					"bus_RealTimeByFrequencyTaipei":    []byte(`[]`),
+				},
+				ackErrors: map[string]error{failedFeed: ackErr},
+			}
+			sink := &captureLiveSink{}
+			store := &fakeBusEtaStore{stops: []busStationmap{{
+				StationUID: "STATION1", StationName: "站牌一", SubRouteUID: "TPE1",
+				SubRouteName: "一路", StopUID: "STOP1", StopSequence: 1,
+			}}}
+			job := busLiveJob{
+				fetch: bindFetch(src, sink, specByKey(t, "bus")), sink: sink, store: store,
+				notifier: &captureBusArrivalNotifier{}, now: time.Now,
+			}
+
+			if err := job.runCity(context.Background(), "Taipei"); !errors.Is(err, ackErr) {
+				t.Fatalf("runCity error = %v, want %v", err, ackErr)
+			}
+			if len(src.acked) != 2 {
+				t.Fatalf("Ack attempts = %v, want both independent feeds", src.acked)
+			}
+			for _, key := range []string{shared.BusETARawKey("Taipei"), shared.BusPositionRawKey("Taipei")} {
+				if sw := sink.setFor(key); sw == nil || sw.ttl != busFeedCacheTTL {
+					t.Fatalf("raw feed cache %s = %+v", key, sw)
+				}
+			}
+		})
 	}
 }
 

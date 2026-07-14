@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -126,22 +127,29 @@ func decodeLiveItems[T any](dec *json.Decoder, fn func(T) error) error {
 	if closing != json.Delim(']') {
 		return fmt.Errorf("TDX payload ends with %v, want array", closing)
 	}
-	return nil
+	var trailing any
+	if err := dec.Decode(&trailing); err == io.EOF {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return errors.New("TDX payload contains trailing data")
 }
 
 // commitTDXFetch acknowledges the conditional marker only after process has
 // durably published the full snapshot. Close is attempted on every path and its
 // error is joined with the primary processing or acknowledgement error.
-func commitTDXFetch(fetch *shared.TDXFetch, process func(*json.Decoder) error) (err error) {
+func commitTDXFetch(fetch *shared.TDXFetch, process func(*json.Decoder) error) error {
 	if fetch == nil || !fetch.Modified || fetch.Decoder == nil {
 		return errors.New("cannot commit an empty TDX fetch")
 	}
-	defer func() {
-		if fetch.Close != nil {
-			err = errors.Join(err, fetch.Close())
-		}
-	}()
+	if fetch.Close == nil {
+		return errors.New("cannot commit a TDX fetch without Close")
+	}
 	if err := process(fetch.Decoder); err != nil {
+		return errors.Join(err, fetch.Close())
+	}
+	if err := fetch.Close(); err != nil {
 		return err
 	}
 	return acknowledgeTDXFetch(fetch)

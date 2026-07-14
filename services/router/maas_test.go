@@ -2,16 +2,90 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"github.com/pashagolub/pgxmock/v4"
 )
+
+type maasTDXStore struct {
+	token  string
+	getErr error
+	gets   int32
+}
+
+func (s *maasTDXStore) Get(string) (string, error) {
+	atomic.AddInt32(&s.gets, 1)
+	if s.getErr != nil {
+		return "", s.getErr
+	}
+	return s.token, nil
+}
+
+func (*maasTDXStore) Set(string, string, time.Duration) error { return nil }
+func (*maasTDXStore) Del(...string) error                     { return nil }
+
+func TestMaasCanceledRequestDoesNotRetryOrReachUpstream(t *testing.T) {
+	var hits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	store := &maasTDXStore{token: "tok"}
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: store, IMSKey: shared.TDXLegacyIMSKey})
+	client := newMaasServer(nil, nil, tdx).maasClient.SetBaseURL(upstream.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	_, err := client.R().SetContext(ctx).Get("/routing")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("MaaS canceled error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("canceled MaaS request took %v", elapsed)
+	}
+	if got := atomic.LoadInt32(&hits); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0", got)
+	}
+}
+
+func TestMaasAuthCacheErrorIsNotRetried(t *testing.T) {
+	var hits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	cacheErr := errors.New("token cache unavailable")
+	store := &maasTDXStore{getErr: cacheErr}
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: store, IMSKey: shared.TDXLegacyIMSKey})
+	client := newMaasServer(nil, nil, tdx).maasClient.
+		SetBaseURL(upstream.URL).
+		SetRetryWaitTime(time.Nanosecond).
+		SetRetryMaxWaitTime(time.Nanosecond)
+	_, err := client.R().SetContext(context.Background()).Get("/routing")
+	if !errors.Is(err, cacheErr) {
+		t.Fatalf("MaaS auth error = %v, want %v", err, cacheErr)
+	}
+	if got := atomic.LoadInt32(&store.gets); got != 1 {
+		t.Fatalf("token cache reads = %d, want 1 (no retry)", got)
+	}
+	if got := atomic.LoadInt32(&hits); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0", got)
+	}
+}
 
 func TestMaasTimeParam(t *testing.T) {
 	now := time.Date(2026, 7, 11, 23, 0, 0, 0, time.Local)

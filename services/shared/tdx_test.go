@@ -1,11 +1,13 @@
 package shared
 
 import (
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,6 +21,7 @@ type memTDXStore struct {
 	data   map[string]string
 	dels   [][]string
 	setErr error
+	getErr map[string]error
 }
 
 func newMemTDXStore() *memTDXStore { return &memTDXStore{data: map[string]string{}} }
@@ -26,6 +29,9 @@ func newMemTDXStore() *memTDXStore { return &memTDXStore{data: map[string]string
 func (m *memTDXStore) Get(key string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.getErr[key]; err != nil {
+		return "", err
+	}
 	return m.data[key], nil
 }
 
@@ -115,6 +121,12 @@ func TestGet304LeavesMarker(t *testing.T) {
 	if store.get(TDXLegacyIMSKey("thing")) != "MARKER-OLD" {
 		t.Fatalf("304 overwrote IMS marker: %q", store.get(TDXLegacyIMSKey("thing")))
 	}
+	if err := fetch.Invalidate(); err != nil {
+		t.Fatalf("Invalidate on 304 returned error: %v", err)
+	}
+	if got := store.get(TDXLegacyIMSKey("thing")); got != "" {
+		t.Fatalf("Invalidate left IMS marker %q, want empty", got)
+	}
 }
 
 // TestGet4xxDoesNotCacheMarker is the regression guard for the router's old bug:
@@ -149,6 +161,134 @@ func TestGet4xxDoesNotCacheMarker(t *testing.T) {
 	}
 }
 
+type trackingResponseBody struct {
+	reader   *strings.Reader
+	read     int
+	closed   int
+	closeErr error
+}
+
+func newTrackingResponseBody(body string) *trackingResponseBody {
+	return &trackingResponseBody{reader: strings.NewReader(body)}
+}
+
+func (b *trackingResponseBody) Read(p []byte) (int, error) {
+	n, err := b.reader.Read(p)
+	b.read += n
+	return n, err
+}
+
+func (b *trackingResponseBody) Close() error {
+	b.closed++
+	return b.closeErr
+}
+
+type tdxRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f tdxRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func trackingResponse(req *http.Request, status int, body *trackingResponseBody) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     make(http.Header),
+		Body:       body,
+		Request:    req,
+	}
+}
+
+func TestRetryDrainsAndClosesIntermediateResponses(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			first := newTrackingResponseBody("retry response")
+			last := newTrackingResponseBody(`[]`)
+			var attempts int
+			store := newMemTDXStore()
+			store.data[TDXTokenKey] = "stale-token"
+			client := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: "https://tdx.invalid"})
+			if status == http.StatusUnauthorized {
+				tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					_, _ = w.Write([]byte(`{"access_token":"fresh-token"}`))
+				}))
+				defer tokenSrv.Close()
+				client.tokenURL = tokenSrv.URL
+			}
+			client.maxRetries = 1
+			client.retryWait = time.Nanosecond
+			client.retryMaxWait = time.Nanosecond
+			client.http.SetTransport(tdxRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				attempts++
+				if attempts == 1 {
+					return trackingResponse(req, status, first), nil
+				}
+				resp := trackingResponse(req, http.StatusOK, last)
+				resp.Header.Set("Last-Modified", "MARKER-NEW")
+				return resp, nil
+			}))
+
+			fetch, err := client.Get(context.Background(), "/x", "thing")
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if err := fetch.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if first.read != len("retry response") || first.closed != 1 {
+				t.Fatalf("intermediate body read/close = %d/%d, want %d/1", first.read, first.closed, len("retry response"))
+			}
+		})
+	}
+}
+
+func TestFinalErrorResponseIsDrainedAndClosed(t *testing.T) {
+	body := newTrackingResponseBody("final rate limit response")
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	client := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: "https://tdx.invalid"})
+	client.maxRetries = 0
+	client.http.SetTransport(tdxRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return trackingResponse(req, http.StatusTooManyRequests, body), nil
+	}))
+
+	_, err := client.Get(context.Background(), "/x", "thing")
+	var statusErr *TDXStatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("Get error = %v, want TDXStatusError", err)
+	}
+	if body.read != len("final rate limit response") || body.closed != 1 {
+		t.Fatalf("final body read/close = %d/%d, want %d/1", body.read, body.closed, len("final rate limit response"))
+	}
+}
+
+func TestIntermediateResponseCloseErrorStopsRetry(t *testing.T) {
+	closeErr := errors.New("close retry response")
+	body := newTrackingResponseBody("retry response")
+	body.closeErr = closeErr
+	var attempts int
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	client := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: "https://tdx.invalid"})
+	client.maxRetries = 1
+	client.retryWait = time.Nanosecond
+	client.retryMaxWait = time.Nanosecond
+	client.http.SetTransport(tdxRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return trackingResponse(req, http.StatusTooManyRequests, body), nil
+		}
+		return trackingResponse(req, http.StatusOK, newTrackingResponseBody(`[]`)), nil
+	}))
+
+	_, err := client.Get(context.Background(), "/x", "thing")
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("Get error = %v, want %v", err, closeErr)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1 after close failure", attempts)
+	}
+}
+
 // TestGet401ReAuths proves a 401 drops both token keys and retries with a freshly
 // exchanged token, so a stale token self-heals on the next attempt.
 func TestGet401ReAuths(t *testing.T) {
@@ -163,6 +303,7 @@ func TestGet401ReAuths(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		w.Header().Set("Last-Modified", "MARKER-NEW")
 		_, _ = w.Write([]byte(`[{"ok":true}]`))
 	}))
 	defer apiSrv.Close()
@@ -288,6 +429,94 @@ func TestGetAckReturnsMarkerStoreError(t *testing.T) {
 	}
 	if got := store.get(TDXLegacyIMSKey("thing")); got != "MARKER-OLD" {
 		t.Fatalf("failed Ack changed marker to %q", got)
+	}
+}
+
+func TestMarkerReadErrorPreventsRequest(t *testing.T) {
+	markerErr := errors.New("marker redis unavailable")
+	for _, tt := range []struct {
+		name string
+		call func(*TDXClient) error
+	}{
+		{name: "Get", call: func(c *TDXClient) error {
+			_, err := c.Get(context.Background(), "/x", "thing")
+			return err
+		}},
+		{name: "GetInto", call: func(c *TDXClient) error {
+			_, err := c.GetInto("/x", "thing", func([]byte) error { return nil })
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var hits int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				atomic.AddInt32(&hits, 1)
+				_, _ = w.Write([]byte(`[]`))
+			}))
+			defer srv.Close()
+
+			store := newMemTDXStore()
+			store.data[TDXTokenKey] = "tok"
+			store.getErr = map[string]error{TDXLegacyIMSKey("thing"): markerErr}
+			client := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+			if err := tt.call(client); !errors.Is(err, markerErr) {
+				t.Fatalf("error = %v, want %v", err, markerErr)
+			}
+			if got := atomic.LoadInt32(&hits); got != 0 {
+				t.Fatalf("upstream hits = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestSuccessWithoutLastModifiedFailsClosed(t *testing.T) {
+	unexpectedFetch := errors.New("returned a fetch without Last-Modified")
+	unexpectedCommit := errors.New("committed a response without Last-Modified")
+	for _, tt := range []struct {
+		name string
+		call func(*TDXClient) error
+	}{
+		{name: "Get", call: func(c *TDXClient) error {
+			fetch, err := c.Get(context.Background(), "/x", "thing")
+			if fetch != nil {
+				_ = fetch.Close()
+				return unexpectedFetch
+			}
+			return err
+		}},
+		{name: "GetInto", call: func(c *TDXClient) error {
+			committed := false
+			_, err := c.GetInto("/x", "thing", func([]byte) error {
+				committed = true
+				return nil
+			})
+			if committed {
+				return unexpectedCommit
+			}
+			return err
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`[]`))
+			}))
+			defer srv.Close()
+
+			store := newMemTDXStore()
+			store.data[TDXTokenKey] = "tok"
+			store.data[TDXLegacyIMSKey("thing")] = "MARKER-OLD"
+			client := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+			err := tt.call(client)
+			if errors.Is(err, unexpectedFetch) || errors.Is(err, unexpectedCommit) {
+				t.Fatal(err)
+			}
+			if err == nil {
+				t.Fatal("success without Last-Modified returned nil error")
+			}
+			if got := store.get(TDXLegacyIMSKey("thing")); got != "MARKER-OLD" {
+				t.Fatalf("marker = %q, want MARKER-OLD", got)
+			}
+		})
 	}
 }
 
@@ -420,6 +649,7 @@ func TestRequestUsesAcceptEncoding(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		acceptEncoding = r.Header.Get("Accept-Encoding")
 		contentEncoding = r.Header.Get("Content-Encoding")
+		w.Header().Set("Last-Modified", "MARKER-NEW")
 		_, _ = w.Write([]byte(`[]`))
 	}))
 	defer srv.Close()
@@ -448,6 +678,7 @@ func TestGetDecodesAdvertisedEncoding(t *testing.T) {
 			t.Errorf("Accept-Encoding = %q, want gzip", got)
 		}
 		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Last-Modified", "MARKER-NEW")
 		zw := gzip.NewWriter(w)
 		_, _ = zw.Write([]byte(`[{"ok":true}]`))
 		_ = zw.Close()
@@ -470,6 +701,33 @@ func TestGetDecodesAdvertisedEncoding(t *testing.T) {
 	}
 	if len(payload) != 1 || !payload[0].OK {
 		t.Fatalf("decoded payload = %+v", payload)
+	}
+}
+
+func TestGetCloseValidatesUnreadGzip(t *testing.T) {
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	_, _ = zw.Write([]byte(`[1,2,3]`))
+	_ = zw.Close()
+	corrupt := append([]byte(nil), compressed.Bytes()...)
+	corrupt[len(corrupt)-1] ^= 0xff
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Last-Modified", "MARKER-NEW")
+		_, _ = w.Write(corrupt)
+	}))
+	defer srv.Close()
+
+	store := newMemTDXStore()
+	store.data[TDXTokenKey] = "tok"
+	c := NewTDXClient(TDXConfig{Store: store, IMSKey: legacyIMSKey, BaseURL: srv.URL})
+	fetch, err := c.Get(context.Background(), "/x", "thing")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := fetch.Close(); err == nil {
+		t.Fatal("Close on unread corrupt gzip returned nil error")
 	}
 }
 

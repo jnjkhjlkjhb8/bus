@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -37,6 +39,15 @@ type maasDB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
+func shouldRetryMaas(resp *resty.Response, err error) bool {
+	if err != nil {
+		return !errors.Is(err, context.Canceled) &&
+			!errors.Is(err, context.DeadlineExceeded) &&
+			!shared.IsTDXAuthError(err)
+	}
+	return resp != nil && (resp.StatusCode() == http.StatusTooManyRequests || resp.StatusCode() == http.StatusServiceUnavailable)
+}
+
 func newMaasServer(rc *redis.Client, db maasDB, tdx *shared.TDXClient) *MaasServer {
 	// The MaaS API family has a different base URL and retry policy than the
 	// basic conditional-GET client, so it gets its own resty client — but the
@@ -46,12 +57,7 @@ func newMaasServer(rc *redis.Client, db maasDB, tdx *shared.TDXClient) *MaasServ
 		SetHeader("Content-Type", "application/json").
 		SetRetryCount(3).
 		SetRetryWaitTime(500 * time.Millisecond).
-		AddRetryCondition(func(r *resty.Response, err error) bool {
-			if err != nil {
-				return true
-			}
-			return r.StatusCode() == 429 || r.StatusCode() == 503
-		})
+		AddRetryCondition(shouldRetryMaas)
 	return &MaasServer{rc: rc, db: db, maasClient: c, osrmClient: resty.New().SetTimeout(5 * time.Second)}
 }
 
