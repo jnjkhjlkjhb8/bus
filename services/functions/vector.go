@@ -13,6 +13,7 @@ import (
 	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // busSubroutes is a bus subroute row scanned for embedding-text construction.
@@ -88,13 +89,33 @@ var cityNames = map[string]string{
 	"Kinmen": "金門縣", "Lienchiang": "連江縣",
 }
 
+type mrtSystemLabel struct {
+	code    string
+	current string
+	legacy  []string
+}
+
+// mrtSystemLabels is the single source for both embedding labels and the SQL
+// revision checks that invalidate vectors created with an older label mapping.
+var mrtSystemLabels = []mrtSystemLabel{
+	{code: "TRTC", current: "台北捷運"},
+	{code: "KRTC", current: "高雄捷運"},
+	{code: "KLRT", current: "高雄輕軌", legacy: []string{"桃園捷運"}},
+	{code: "TYMC", current: "桃園捷運", legacy: []string{"台中捷運"}},
+	{code: "NTMC", current: "新北捷運", legacy: []string{"NTMC"}},
+	{code: "NTDLRT", current: "淡海輕軌"},
+	{code: "KHLRT", current: "高雄輕軌"},
+}
+
 // mrtSystemNames maps a metro system code to its Chinese display name for the
 // embedding text.
-var mrtSystemNames = map[string]string{
-	"TRTC": "台北捷運", "KRTC": "高雄捷運", "KLRT": "高雄輕軌",
-	"TYMC": "桃園捷運", "NTMC": "新北捷運", "NTDLRT": "淡海輕軌",
-	"KHLRT": "高雄輕軌",
-}
+var mrtSystemNames = func() map[string]string {
+	names := make(map[string]string, len(mrtSystemLabels))
+	for _, label := range mrtSystemLabels {
+		names[label.code] = label.current
+	}
+	return names
+}()
 
 // cityName returns the Chinese display name for a city code, or the code itself
 // when unmapped.
@@ -114,6 +135,82 @@ func mrtSystemName(code string) string {
 	return code
 }
 
+func sqlStringLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func mrtSystemNameSQL(systemExpr string) string {
+	var sql strings.Builder
+	sql.WriteString("CASE ")
+	sql.WriteString(systemExpr)
+	for _, label := range mrtSystemLabels {
+		sql.WriteString(" WHEN ")
+		sql.WriteString(sqlStringLiteral(label.code))
+		sql.WriteString(" THEN ")
+		sql.WriteString(sqlStringLiteral(label.current))
+	}
+	sql.WriteString(" ELSE ")
+	sql.WriteString(systemExpr)
+	sql.WriteString(" END")
+	return sql.String()
+}
+
+func mrtVectorSamePredicate(vectorAlias, stationAlias string) string {
+	return fmt.Sprintf(
+		"%[1]s.name = %[2]s.name AND %[1]s.city = %[3]s AND %[1]s.depart = %[2]s.system AND ST_OrderingEquals(%[1]s.geom, %[2]s.stationposition)",
+		vectorAlias,
+		stationAlias,
+		mrtSystemNameSQL(stationAlias+".system"),
+	)
+}
+
+func buildMRTStationsForVectorSQL() string {
+	currentRevision := mrtVectorSamePredicate("current_sv", "ms")
+	return fmt.Sprintf(`
+	SELECT ms.station_id, ms.name, ms.system, ST_AsText(ms.stationposition)
+	FROM mrt_station ms
+	WHERE ms.updated_at < $2
+	  AND (
+	    ms.updated_at >= $1
+	    OR NOT EXISTS (
+	      SELECT 1
+	      FROM search_vector current_sv
+	      WHERE current_sv.type = 'mrt_station'
+	        AND current_sv.uid = ms.station_id
+	        AND current_sv.embedding IS NOT NULL
+	        AND %s
+	    )
+	  )`, currentRevision) + freshVectorSkipSQL("mrt_station", "ms.station_id",
+		mrtVectorSamePredicate("sv", "ms")) + `;`
+}
+
+func buildMRTLegacyVectorPrepareSQL() string {
+	legacyValues := make([]string, 0)
+	for _, label := range mrtSystemLabels {
+		for _, legacy := range label.legacy {
+			legacyValues = append(legacyValues, fmt.Sprintf("(%s, %s)",
+				sqlStringLiteral(label.code), sqlStringLiteral(legacy)))
+		}
+	}
+	if len(legacyValues) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+	DELETE FROM search_vector stale_sv
+	USING mrt_station stale_ms,
+	      (VALUES %s) AS legacy(system, label)
+	WHERE stale_sv.type = 'mrt_station'
+	  AND stale_sv.uid = stale_ms.station_id
+	  AND stale_ms.system = legacy.system
+	  AND stale_sv.city = legacy.label
+	  AND NOT EXISTS (
+	    SELECT 1
+	    FROM mrt_station keeper_ms
+	    WHERE keeper_ms.station_id = stale_sv.uid
+	      AND %s = stale_sv.city
+	  );`, strings.Join(legacyValues, ", "), mrtSystemNameSQL("keeper_ms.system"))
+}
+
 const (
 	// size is the embedding batch size: rows are accumulated to this many before
 	// one call to the embedding service and one DB batch upsert.
@@ -128,6 +225,7 @@ type embeddingClient interface {
 }
 
 type vectorDB interface {
+	Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error)
 	Query(context.Context, string, ...interface{}) (pgx.Rows, error)
 	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
 }
@@ -156,12 +254,9 @@ var (
 	FROM bike_stations bs
 	WHERE bs.updated_at >= $1 AND bs.updated_at < $2` + freshVectorSkipSQL("bike_station", "bs.station_uid",
 		"sv.name = bs.name AND ST_OrderingEquals(sv.geom, bs.geom)") + `;`
-	mrtStationsForVectorSQL = `
-	SELECT ms.station_id, ms.name, ms.system, ST_AsText(ms.stationposition)
-	FROM mrt_station ms
-	WHERE ms.updated_at >= $1 AND ms.updated_at < $2` + freshVectorSkipSQL("mrt_station", "ms.station_id",
-		"sv.name = ms.name AND ST_OrderingEquals(sv.geom, ms.stationposition)") + `;`
-	traStationsForVectorSQL = `
+	mrtStationsForVectorSQL   = buildMRTStationsForVectorSQL()
+	mrtLegacyVectorPrepareSQL = buildMRTLegacyVectorPrepareSQL()
+	traStationsForVectorSQL   = `
 	SELECT ts.station_id, ts.name, ts.city, ST_AsText(ts.geom)
 	FROM tra_stations ts
 	WHERE ts.updated_at >= $1 AND ts.updated_at < $2` + freshVectorSkipSQL("tra_station", "ts.station_id",
@@ -179,6 +274,7 @@ var (
 type vectorDataset struct {
 	key        string
 	vectorType string
+	prepareSQL string
 	query      string
 	process    func(pgx.Rows) (string, resp, error)
 }
@@ -229,6 +325,7 @@ var vectorDatasets = []vectorDataset{
 	{
 		key:        "mrt_station",
 		vectorType: "mrt_station",
+		prepareSQL: mrtLegacyVectorPrepareSQL,
 		query:      mrtStationsForVectorSQL,
 		process: func(rows pgx.Rows) (string, resp, error) {
 			var uid, name, system, geom string
@@ -237,7 +334,7 @@ var vectorDatasets = []vectorDataset{
 			}
 			cn := mrtSystemName(system)
 			text := fmt.Sprintf("類型：捷運站 車站UID：%s 車站名稱：%s 捷運系統：%s 位置：%s", uid, name, cn, geom)
-			return text, resp{UID: uid, Name: name, City: cn, Geom: geom}, nil
+			return text, resp{UID: uid, Name: name, City: cn, DepartSystem: system, Geom: geom}, nil
 		},
 	},
 	{
@@ -341,6 +438,11 @@ func processVectorDataset(
 	lower string,
 	upper time.Time,
 ) error {
+	if dataset.prepareSQL != "" {
+		if _, err := db.Exec(ctx, dataset.prepareSQL); err != nil {
+			return fmt.Errorf("prepare vector dataset %s: %w", dataset.key, err)
+		}
+	}
 	rows, err := db.Query(ctx, dataset.query, lower, upper)
 	if err != nil {
 		return fmt.Errorf("query vector dataset %s: %w", dataset.key, err)

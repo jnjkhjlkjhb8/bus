@@ -86,10 +86,25 @@ func newVectorDBMock(t *testing.T) pgxmock.PgxPoolIface {
 
 func expectEmptyVectorQueries(db pgxmock.PgxPoolIface, lower string, cutoff pgxmock.Argument) {
 	for _, dataset := range vectorDatasets {
+		if dataset.prepareSQL != "" {
+			db.ExpectExec(dataset.prepareSQL).
+				WillReturnResult(pgxmock.NewResult("DELETE", 0))
+		}
 		db.ExpectQuery(dataset.query).
 			WithArgs(lower, cutoff).
 			WillReturnRows(db.NewRows([]string{"unused"}))
 	}
+}
+
+func vectorDatasetByType(t *testing.T, vectorType string) vectorDataset {
+	t.Helper()
+	for _, dataset := range vectorDatasets {
+		if dataset.vectorType == vectorType {
+			return dataset
+		}
+	}
+	t.Fatalf("vector dataset %q not found", vectorType)
+	return vectorDataset{}
 }
 
 func validBusVectorRows(db pgxmock.PgxPoolIface) *pgxmock.Rows {
@@ -131,6 +146,77 @@ func TestVectorRegistryUsesCorrectMRTLabels(t *testing.T) {
 	}
 	if _, ok := mrtSystemNames["NTMC"]; !ok {
 		t.Error("mrtSystemNames is missing NTMC")
+	}
+}
+
+func TestMRTVectorQueryBackfillsLegacyRevisionBeforeLowerWatermark(t *testing.T) {
+	for _, want := range []string{
+		"ms.updated_at >= $1",
+		"ms.updated_at < $2",
+		"OR NOT EXISTS",
+		"sv.city = CASE ms.system",
+		"sv.depart = ms.system",
+	} {
+		if !strings.Contains(mrtStationsForVectorSQL, want) {
+			t.Errorf("MRT vector query missing %q: %s", want, mrtStationsForVectorSQL)
+		}
+	}
+}
+
+func TestMRTLegacyLabelsAreInvalidatedBackfilledAndReembedded(t *testing.T) {
+	dataset := vectorDatasetByType(t, "mrt_station")
+	if dataset.prepareSQL == "" {
+		t.Fatal("MRT vector dataset has no legacy-label invalidation")
+	}
+	for _, want := range []string{
+		"DELETE FROM search_vector",
+		"'KLRT'", "'桃園捷運'",
+		"'TYMC'", "'台中捷運'",
+		"'NTMC'", "'NTMC'",
+		"keeper_ms.station_id = stale_sv.uid",
+		"CASE keeper_ms.system",
+		"= stale_sv.city",
+	} {
+		if !strings.Contains(dataset.prepareSQL, want) {
+			t.Errorf("MRT prepare SQL missing %q: %s", want, dataset.prepareSQL)
+		}
+	}
+
+	db := newVectorDBMock(t)
+	const lower = "2026-07-14T00:00:00Z"
+	upper := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
+	db.ExpectExec(dataset.prepareSQL).
+		WillReturnResult(pgxmock.NewResult("DELETE", 2))
+	db.ExpectQuery(dataset.query).
+		WithArgs(lower, upper).
+		WillReturnRows(db.NewRows([]string{"station_id", "name", "system", "geom"}).
+			AddRow("shared", "輕軌轉乘站", "KLRT", "POINT(120 22)").
+			AddRow("shared", "機捷轉乘站", "TYMC", "POINT(121 25)").
+			AddRow("N01", "新北產業園區", "NTMC", "POINT(121.4 25.1)"))
+	embedder := &stubEmbeddingClient{embeddings: [][]float32{
+		make([]float32, embeddingDimension),
+		make([]float32, embeddingDimension),
+		make([]float32, embeddingDimension),
+	}}
+	batch := db.ExpectBatch()
+	batch.ExpectExec(searchVectorUpsertSQL).
+		WithArgs("mrt_station", "shared", "輕軌轉乘站", "高雄輕軌", "KLRT", "", "POINT(120 22)", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	batch.ExpectExec(searchVectorUpsertSQL).
+		WithArgs("mrt_station", "shared", "機捷轉乘站", "桃園捷運", "TYMC", "", "POINT(121 25)", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	batch.ExpectExec(searchVectorUpsertSQL).
+		WithArgs("mrt_station", "N01", "新北產業園區", "新北捷運", "NTMC", "", "POINT(121.4 25.1)", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	if err := processVectorDataset(context.Background(), db, embedder, dataset, lower, upper); err != nil {
+		t.Fatalf("processVectorDataset() error = %v", err)
+	}
+	if embedder.calls != 1 {
+		t.Fatalf("Embed() calls = %d, want 1 backfill batch", embedder.calls)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatalf("database expectations: %v", err)
 	}
 }
 
@@ -205,6 +291,7 @@ func TestChangeToVectorDoesNotAdvanceWatermarkOnAnyFailure(t *testing.T) {
 	for _, failure := range []string{
 		"redis get",
 		"query",
+		"prepare",
 		"scan",
 		"rows",
 		"embed",
@@ -222,6 +309,16 @@ func TestChangeToVectorDoesNotAdvanceWatermarkOnAnyFailure(t *testing.T) {
 				db.ExpectQuery(vectorDatasets[0].query).
 					WithArgs(lower, pgxmock.AnyArg()).
 					WillReturnError(wantErr)
+			case "prepare":
+				for _, dataset := range vectorDatasets {
+					if dataset.prepareSQL != "" {
+						db.ExpectExec(dataset.prepareSQL).WillReturnError(wantErr)
+						break
+					}
+					db.ExpectQuery(dataset.query).
+						WithArgs(lower, pgxmock.AnyArg()).
+						WillReturnRows(db.NewRows([]string{"unused"}))
+				}
 			case "scan":
 				db.ExpectQuery(vectorDatasets[0].query).
 					WithArgs(lower, pgxmock.AnyArg()).
