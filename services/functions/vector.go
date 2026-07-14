@@ -13,7 +13,6 @@ import (
 	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // busSubroutes is a bus subroute row scanned for embedding-text construction.
@@ -69,6 +68,12 @@ type resp struct {
 	DepartSystem string
 	Destin       string
 	Geom         string
+	postUpsert   []vectorWrite
+}
+
+type vectorWrite struct {
+	sql  string
+	args []interface{}
 }
 
 // cityNames maps a TDX city code to its Chinese display name, embedded into the
@@ -165,50 +170,48 @@ func mrtVectorSamePredicate(vectorAlias, stationAlias string) string {
 }
 
 func buildMRTStationsForVectorSQL() string {
-	currentRevision := mrtVectorSamePredicate("current_sv", "ms")
-	return fmt.Sprintf(`
+	return `
 	SELECT ms.station_id, ms.name, ms.system, ST_AsText(ms.stationposition)
 	FROM mrt_station ms
-	WHERE ms.updated_at < $2
-	  AND (
-	    ms.updated_at >= $1
-	    OR NOT EXISTS (
-	      SELECT 1
-	      FROM search_vector current_sv
-	      WHERE current_sv.type = 'mrt_station'
-	        AND current_sv.uid = ms.station_id
-	        AND current_sv.embedding IS NOT NULL
-	        AND %s
-	    )
-	  )`, currentRevision) + freshVectorSkipSQL("mrt_station", "ms.station_id",
+	WHERE ms.updated_at < $1` + freshVectorSkipSQL("mrt_station", "ms.station_id",
 		mrtVectorSamePredicate("sv", "ms")) + `;`
 }
 
-func buildMRTLegacyVectorPrepareSQL() string {
-	legacyValues := make([]string, 0)
-	for _, label := range mrtSystemLabels {
-		for _, legacy := range label.legacy {
-			legacyValues = append(legacyValues, fmt.Sprintf("(%s, %s)",
-				sqlStringLiteral(label.code), sqlStringLiteral(legacy)))
-		}
-	}
-	if len(legacyValues) == 0 {
-		return ""
-	}
+func buildMRTLegacyVectorCleanupSQL() string {
 	return fmt.Sprintf(`
 	DELETE FROM search_vector stale_sv
-	USING mrt_station stale_ms,
-	      (VALUES %s) AS legacy(system, label)
 	WHERE stale_sv.type = 'mrt_station'
-	  AND stale_sv.uid = stale_ms.station_id
-	  AND stale_ms.system = legacy.system
-	  AND stale_sv.city = legacy.label
+	  AND stale_sv.uid = $1
+	  AND stale_sv.city = $2
+	  AND EXISTS (
+	    SELECT 1
+	    FROM mrt_station stale_ms
+	    WHERE stale_ms.station_id = stale_sv.uid
+	      AND stale_ms.system = $3
+	  )
 	  AND NOT EXISTS (
 	    SELECT 1
 	    FROM mrt_station keeper_ms
 	    WHERE keeper_ms.station_id = stale_sv.uid
 	      AND %s = stale_sv.city
-	  );`, strings.Join(legacyValues, ", "), mrtSystemNameSQL("keeper_ms.system"))
+	  );`, mrtSystemNameSQL("keeper_ms.system"))
+}
+
+func mrtLegacyVectorCleanupWrites(uid, system string) []vectorWrite {
+	for _, label := range mrtSystemLabels {
+		if label.code != system {
+			continue
+		}
+		writes := make([]vectorWrite, 0, len(label.legacy))
+		for _, legacy := range label.legacy {
+			writes = append(writes, vectorWrite{
+				sql:  mrtLegacyVectorCleanupSQL,
+				args: []interface{}{uid, legacy, system},
+			})
+		}
+		return writes
+	}
+	return nil
 }
 
 const (
@@ -225,7 +228,6 @@ type embeddingClient interface {
 }
 
 type vectorDB interface {
-	Exec(context.Context, string, ...interface{}) (pgconn.CommandTag, error)
 	Query(context.Context, string, ...interface{}) (pgx.Rows, error)
 	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
 }
@@ -235,9 +237,10 @@ type vectorRedis interface {
 	Set(string, interface{}, time.Duration) *redis.StatusCmd
 }
 
-// Per-entity queries selecting rows that need (re-)embedding: updated inside the
-// half-open [$1, $2) watermark window and not already present with an identical,
-// non-null embedding (the freshness skip built by freshVectorSkipSQL).
+// Per-entity queries select rows not already present with an identical,
+// non-null embedding (the freshness skip built by freshVectorSkipSQL). Most use
+// the half-open watermark window; MRT checks all rows below the captured upper
+// cutoff so code-only label revisions older than the lower watermark backfill.
 var (
 	busSubroutesForVectorSQL = `
 	SELECT bs.sub_route_uid, bs.sub_route_name, bs.city, bs.depart, bs.destin
@@ -255,7 +258,7 @@ var (
 	WHERE bs.updated_at >= $1 AND bs.updated_at < $2` + freshVectorSkipSQL("bike_station", "bs.station_uid",
 		"sv.name = bs.name AND ST_OrderingEquals(sv.geom, bs.geom)") + `;`
 	mrtStationsForVectorSQL   = buildMRTStationsForVectorSQL()
-	mrtLegacyVectorPrepareSQL = buildMRTLegacyVectorPrepareSQL()
+	mrtLegacyVectorCleanupSQL = buildMRTLegacyVectorCleanupSQL()
 	traStationsForVectorSQL   = `
 	SELECT ts.station_id, ts.name, ts.city, ST_AsText(ts.geom)
 	FROM tra_stations ts
@@ -274,9 +277,17 @@ var (
 type vectorDataset struct {
 	key        string
 	vectorType string
-	prepareSQL string
 	query      string
+	queryArgs  func(string, interface{}) []interface{}
 	process    func(pgx.Rows) (string, resp, error)
+}
+
+func watermarkWindowQueryArgs(lower string, upper interface{}) []interface{} {
+	return []interface{}{lower, upper}
+}
+
+func upperCutoffQueryArgs(_ string, upper interface{}) []interface{} {
+	return []interface{}{upper}
 }
 
 var vectorDatasets = []vectorDataset{
@@ -284,6 +295,7 @@ var vectorDatasets = []vectorDataset{
 		key:        "bus_subroutes",
 		vectorType: "bus_route",
 		query:      busSubroutesForVectorSQL,
+		queryArgs:  watermarkWindowQueryArgs,
 		process: func(rows pgx.Rows) (string, resp, error) {
 			var uid, name, city, depart, destin string
 			if err := rows.Scan(&uid, &name, &city, &depart, &destin); err != nil {
@@ -298,6 +310,7 @@ var vectorDatasets = []vectorDataset{
 		key:        "bus_station_groups",
 		vectorType: "bus_station",
 		query:      busStationsForVectorSQL,
+		queryArgs:  watermarkWindowQueryArgs,
 		process: func(rows pgx.Rows) (string, resp, error) {
 			var uid, name, city, geom string
 			if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
@@ -312,6 +325,7 @@ var vectorDatasets = []vectorDataset{
 		key:        "bike_stations",
 		vectorType: "bike_station",
 		query:      bikeStationsForVectorSQL,
+		queryArgs:  watermarkWindowQueryArgs,
 		process: func(rows pgx.Rows) (string, resp, error) {
 			var uid, name, city, geom string
 			if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
@@ -325,8 +339,8 @@ var vectorDatasets = []vectorDataset{
 	{
 		key:        "mrt_station",
 		vectorType: "mrt_station",
-		prepareSQL: mrtLegacyVectorPrepareSQL,
 		query:      mrtStationsForVectorSQL,
+		queryArgs:  upperCutoffQueryArgs,
 		process: func(rows pgx.Rows) (string, resp, error) {
 			var uid, name, system, geom string
 			if err := rows.Scan(&uid, &name, &system, &geom); err != nil {
@@ -334,13 +348,21 @@ var vectorDatasets = []vectorDataset{
 			}
 			cn := mrtSystemName(system)
 			text := fmt.Sprintf("類型：捷運站 車站UID：%s 車站名稱：%s 捷運系統：%s 位置：%s", uid, name, cn, geom)
-			return text, resp{UID: uid, Name: name, City: cn, DepartSystem: system, Geom: geom}, nil
+			return text, resp{
+				UID:          uid,
+				Name:         name,
+				City:         cn,
+				DepartSystem: system,
+				Geom:         geom,
+				postUpsert:   mrtLegacyVectorCleanupWrites(uid, system),
+			}, nil
 		},
 	},
 	{
 		key:        "tra_stations",
 		vectorType: "tra_station",
 		query:      traStationsForVectorSQL,
+		queryArgs:  watermarkWindowQueryArgs,
 		process: func(rows pgx.Rows) (string, resp, error) {
 			var uid, name, city, geom string
 			if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
@@ -355,6 +377,7 @@ var vectorDatasets = []vectorDataset{
 		key:        "thsr_stations",
 		vectorType: "thsr_station",
 		query:      thsrStationsForVectorSQL,
+		queryArgs:  watermarkWindowQueryArgs,
 		process: func(rows pgx.Rows) (string, resp, error) {
 			var uid, name, city, geom string
 			if err := rows.Scan(&uid, &name, &city, &geom); err != nil {
@@ -423,7 +446,13 @@ func processVectorBatch(ctx context.Context, db vectorDB, embedder embeddingClie
 		batch.Queue(searchVectorUpsertSQL,
 			row.Type, row.UID, row.Name, row.City, row.DepartSystem,
 			row.Destin, row.Geom, toVecLiteral(embedding))
+		for _, write := range row.postUpsert {
+			batch.Queue(write.sql, write.args...)
+		}
 	}
+	// With no transaction-control statements, pgx executes the batch in an
+	// implicit transaction. A cleanup failure therefore rolls back its preceding
+	// replacement upsert, and an upsert failure prevents its cleanup from running.
 	if err := db.SendBatch(ctx, batch).Close(); err != nil {
 		return fmt.Errorf("write vector batch: %w", err)
 	}
@@ -438,12 +467,7 @@ func processVectorDataset(
 	lower string,
 	upper time.Time,
 ) error {
-	if dataset.prepareSQL != "" {
-		if _, err := db.Exec(ctx, dataset.prepareSQL); err != nil {
-			return fmt.Errorf("prepare vector dataset %s: %w", dataset.key, err)
-		}
-	}
-	rows, err := db.Query(ctx, dataset.query, lower, upper)
+	rows, err := db.Query(ctx, dataset.query, dataset.queryArgs(lower, upper)...)
 	if err != nil {
 		return fmt.Errorf("query vector dataset %s: %w", dataset.key, err)
 	}

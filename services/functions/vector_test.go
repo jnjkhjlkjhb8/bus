@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v4"
 )
 
@@ -61,6 +63,37 @@ type trackingReadCloser struct {
 	closed bool
 }
 
+type capturingBatchDB struct {
+	pgxmock.PgxPoolIface
+	batch    *pgx.Batch
+	closeErr error
+}
+
+func (db *capturingBatchDB) SendBatch(_ context.Context, batch *pgx.Batch) pgx.BatchResults {
+	db.batch = batch
+	return closeErrorBatchResults{err: db.closeErr}
+}
+
+type closeErrorBatchResults struct {
+	err error
+}
+
+func (r closeErrorBatchResults) Exec() (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, r.err
+}
+
+func (r closeErrorBatchResults) Query() (pgx.Rows, error) {
+	return nil, r.err
+}
+
+func (r closeErrorBatchResults) QueryRow() pgx.Row {
+	return nil
+}
+
+func (r closeErrorBatchResults) Close() error {
+	return r.err
+}
+
 func (b *trackingReadCloser) Close() error {
 	b.closed = true
 	return nil
@@ -86,12 +119,8 @@ func newVectorDBMock(t *testing.T) pgxmock.PgxPoolIface {
 
 func expectEmptyVectorQueries(db pgxmock.PgxPoolIface, lower string, cutoff pgxmock.Argument) {
 	for _, dataset := range vectorDatasets {
-		if dataset.prepareSQL != "" {
-			db.ExpectExec(dataset.prepareSQL).
-				WillReturnResult(pgxmock.NewResult("DELETE", 0))
-		}
 		db.ExpectQuery(dataset.query).
-			WithArgs(lower, cutoff).
+			WithArgs(dataset.queryArgs(lower, cutoff)...).
 			WillReturnRows(db.NewRows([]string{"unused"}))
 	}
 }
@@ -150,10 +179,10 @@ func TestVectorRegistryUsesCorrectMRTLabels(t *testing.T) {
 }
 
 func TestMRTVectorQueryBackfillsLegacyRevisionBeforeLowerWatermark(t *testing.T) {
+	dataset := vectorDatasetByType(t, "mrt_station")
 	for _, want := range []string{
-		"ms.updated_at >= $1",
-		"ms.updated_at < $2",
-		"OR NOT EXISTS",
+		"ms.updated_at < $1",
+		"NOT EXISTS",
 		"sv.city = CASE ms.system",
 		"sv.depart = ms.system",
 	} {
@@ -161,34 +190,133 @@ func TestMRTVectorQueryBackfillsLegacyRevisionBeforeLowerWatermark(t *testing.T)
 			t.Errorf("MRT vector query missing %q: %s", want, mrtStationsForVectorSQL)
 		}
 	}
+	for _, unwanted := range []string{"ms.updated_at >=", "$2", "current_sv"} {
+		if strings.Contains(mrtStationsForVectorSQL, unwanted) {
+			t.Errorf("MRT vector query contains redundant %q: %s", unwanted, mrtStationsForVectorSQL)
+		}
+	}
+	if got := strings.Count(mrtStationsForVectorSQL, "NOT EXISTS"); got != 1 {
+		t.Errorf("MRT vector query has %d correlated freshness lookups, want 1: %s", got, mrtStationsForVectorSQL)
+	}
+	upper := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
+	args := dataset.queryArgs("ignored lower watermark", upper)
+	if len(args) != 1 || args[0] != upper {
+		t.Fatalf("MRT query args = %v, want upper cutoff only", args)
+	}
+}
+
+func TestMRTFailuresDoNotDeleteLegacyVectorsBeforeReplacement(t *testing.T) {
+	dataset := vectorDatasetByType(t, "mrt_station")
+	const lower = "2026-07-14T00:00:00Z"
+	upper := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
+
+	t.Run("query", func(t *testing.T) {
+		db := newVectorDBMock(t)
+		wantErr := errors.New("MRT query failed")
+		db.ExpectQuery(dataset.query).
+			WithArgs(dataset.queryArgs(lower, upper)...).
+			WillReturnError(wantErr)
+
+		err := processVectorDataset(context.Background(), db, &stubEmbeddingClient{}, dataset, lower, upper)
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("processVectorDataset() error = %v, want wrapped %v", err, wantErr)
+		}
+		if err := db.ExpectationsWereMet(); err != nil {
+			t.Fatalf("database expectations: %v", err)
+		}
+	})
+
+	t.Run("embed", func(t *testing.T) {
+		db := newVectorDBMock(t)
+		wantErr := errors.New("MRT embed failed")
+		db.ExpectQuery(dataset.query).
+			WithArgs(dataset.queryArgs(lower, upper)...).
+			WillReturnRows(db.NewRows([]string{"station_id", "name", "system", "geom"}).
+				AddRow("KLRT-C01", "籬仔內", "KLRT", "POINT(120 22)"))
+
+		err := processVectorDataset(context.Background(), db, &stubEmbeddingClient{err: wantErr}, dataset, lower, upper)
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("processVectorDataset() error = %v, want wrapped %v", err, wantErr)
+		}
+		if err := db.ExpectationsWereMet(); err != nil {
+			t.Fatalf("database expectations: %v", err)
+		}
+	})
+
+	t.Run("upsert", func(t *testing.T) {
+		pool := newVectorDBMock(t)
+		wantErr := errors.New("MRT upsert failed")
+		pool.ExpectQuery(dataset.query).
+			WithArgs(dataset.queryArgs(lower, upper)...).
+			WillReturnRows(pool.NewRows([]string{"station_id", "name", "system", "geom"}).
+				AddRow("KLRT-C01", "籬仔內", "KLRT", "POINT(120 22)"))
+		db := &capturingBatchDB{PgxPoolIface: pool, closeErr: wantErr}
+
+		err := processVectorDataset(context.Background(), db, &stubEmbeddingClient{
+			embeddings: [][]float32{make([]float32, embeddingDimension)},
+		}, dataset, lower, upper)
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("processVectorDataset() error = %v, want wrapped %v", err, wantErr)
+		}
+		if db.batch == nil || db.batch.Len() != 2 {
+			t.Fatalf("atomic MRT batch length = %v, want upsert plus cleanup", db.batch)
+		}
+		if db.batch.QueuedQueries[0].SQL != searchVectorUpsertSQL || db.batch.QueuedQueries[1].SQL != mrtLegacyVectorCleanupSQL {
+			t.Fatalf("MRT batch order = [%q, %q], want upsert then cleanup",
+				db.batch.QueuedQueries[0].SQL, db.batch.QueuedQueries[1].SQL)
+		}
+		if err := pool.ExpectationsWereMet(); err != nil {
+			t.Fatalf("database expectations: %v", err)
+		}
+	})
+
+	t.Run("cleanup", func(t *testing.T) {
+		db := newVectorDBMock(t)
+		wantErr := errors.New("MRT cleanup failed")
+		db.ExpectQuery(dataset.query).
+			WithArgs(dataset.queryArgs(lower, upper)...).
+			WillReturnRows(db.NewRows([]string{"station_id", "name", "system", "geom"}).
+				AddRow("KLRT-C01", "籬仔內", "KLRT", "POINT(120 22)"))
+		batch := db.ExpectBatch()
+		batch.ExpectExec(searchVectorUpsertSQL).
+			WithArgs("mrt_station", "KLRT-C01", "籬仔內", "高雄輕軌", "KLRT", "", "POINT(120 22)", pgxmock.AnyArg()).
+			WillReturnResult(pgxmock.NewResult("INSERT", 1))
+		batch.ExpectExec(mrtLegacyVectorCleanupSQL).
+			WithArgs("KLRT-C01", "桃園捷運", "KLRT").
+			WillReturnError(wantErr)
+
+		err := processVectorDataset(context.Background(), db, &stubEmbeddingClient{
+			embeddings: [][]float32{make([]float32, embeddingDimension)},
+		}, dataset, lower, upper)
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("processVectorDataset() error = %v, want wrapped %v", err, wantErr)
+		}
+		if err := db.ExpectationsWereMet(); err != nil {
+			t.Fatalf("database expectations: %v", err)
+		}
+	})
 }
 
 func TestMRTLegacyLabelsAreInvalidatedBackfilledAndReembedded(t *testing.T) {
 	dataset := vectorDatasetByType(t, "mrt_station")
-	if dataset.prepareSQL == "" {
-		t.Fatal("MRT vector dataset has no legacy-label invalidation")
-	}
 	for _, want := range []string{
 		"DELETE FROM search_vector",
-		"'KLRT'", "'桃園捷運'",
-		"'TYMC'", "'台中捷運'",
-		"'NTMC'", "'NTMC'",
+		"stale_ms.station_id = stale_sv.uid",
+		"stale_ms.system = $3",
 		"keeper_ms.station_id = stale_sv.uid",
 		"CASE keeper_ms.system",
 		"= stale_sv.city",
 	} {
-		if !strings.Contains(dataset.prepareSQL, want) {
-			t.Errorf("MRT prepare SQL missing %q: %s", want, dataset.prepareSQL)
+		if !strings.Contains(mrtLegacyVectorCleanupSQL, want) {
+			t.Errorf("MRT cleanup SQL missing %q: %s", want, mrtLegacyVectorCleanupSQL)
 		}
 	}
 
 	db := newVectorDBMock(t)
 	const lower = "2026-07-14T00:00:00Z"
 	upper := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
-	db.ExpectExec(dataset.prepareSQL).
-		WillReturnResult(pgxmock.NewResult("DELETE", 2))
 	db.ExpectQuery(dataset.query).
-		WithArgs(lower, upper).
+		WithArgs(dataset.queryArgs(lower, upper)...).
 		WillReturnRows(db.NewRows([]string{"station_id", "name", "system", "geom"}).
 			AddRow("shared", "輕軌轉乘站", "KLRT", "POINT(120 22)").
 			AddRow("shared", "機捷轉乘站", "TYMC", "POINT(121 25)").
@@ -202,12 +330,21 @@ func TestMRTLegacyLabelsAreInvalidatedBackfilledAndReembedded(t *testing.T) {
 	batch.ExpectExec(searchVectorUpsertSQL).
 		WithArgs("mrt_station", "shared", "輕軌轉乘站", "高雄輕軌", "KLRT", "", "POINT(120 22)", pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	batch.ExpectExec(mrtLegacyVectorCleanupSQL).
+		WithArgs("shared", "桃園捷運", "KLRT").
+		WillReturnResult(pgxmock.NewResult("DELETE", 0))
 	batch.ExpectExec(searchVectorUpsertSQL).
 		WithArgs("mrt_station", "shared", "機捷轉乘站", "桃園捷運", "TYMC", "", "POINT(121 25)", pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	batch.ExpectExec(mrtLegacyVectorCleanupSQL).
+		WithArgs("shared", "台中捷運", "TYMC").
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 	batch.ExpectExec(searchVectorUpsertSQL).
 		WithArgs("mrt_station", "N01", "新北產業園區", "新北捷運", "NTMC", "", "POINT(121.4 25.1)", pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	batch.ExpectExec(mrtLegacyVectorCleanupSQL).
+		WithArgs("N01", "NTMC", "NTMC").
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
 	if err := processVectorDataset(context.Background(), db, embedder, dataset, lower, upper); err != nil {
 		t.Fatalf("processVectorDataset() error = %v", err)
@@ -291,7 +428,6 @@ func TestChangeToVectorDoesNotAdvanceWatermarkOnAnyFailure(t *testing.T) {
 	for _, failure := range []string{
 		"redis get",
 		"query",
-		"prepare",
 		"scan",
 		"rows",
 		"embed",
@@ -309,16 +445,6 @@ func TestChangeToVectorDoesNotAdvanceWatermarkOnAnyFailure(t *testing.T) {
 				db.ExpectQuery(vectorDatasets[0].query).
 					WithArgs(lower, pgxmock.AnyArg()).
 					WillReturnError(wantErr)
-			case "prepare":
-				for _, dataset := range vectorDatasets {
-					if dataset.prepareSQL != "" {
-						db.ExpectExec(dataset.prepareSQL).WillReturnError(wantErr)
-						break
-					}
-					db.ExpectQuery(dataset.query).
-						WithArgs(lower, pgxmock.AnyArg()).
-						WillReturnRows(db.NewRows([]string{"unused"}))
-				}
 			case "scan":
 				db.ExpectQuery(vectorDatasets[0].query).
 					WithArgs(lower, pgxmock.AnyArg()).
@@ -437,14 +563,23 @@ func TestVectorQueriesSkipFreshEmbeddings(t *testing.T) {
 	}
 	for vectorType, query := range queries {
 		for _, want := range []string{
-			"updated_at >= $1",
-			"updated_at < $2",
 			"NOT EXISTS",
 			"sv.type = '" + vectorType + "'",
 			"sv.embedding IS NOT NULL",
 		} {
 			if !strings.Contains(query, want) {
 				t.Fatalf("%s query missing %q", vectorType, want)
+			}
+		}
+		if vectorType == "mrt_station" {
+			if !strings.Contains(query, "updated_at < $1") {
+				t.Fatalf("%s query missing upper-only cutoff", vectorType)
+			}
+		} else {
+			for _, want := range []string{"updated_at >= $1", "updated_at < $2"} {
+				if !strings.Contains(query, want) {
+					t.Fatalf("%s query missing %q", vectorType, want)
+				}
 			}
 		}
 		if strings.Contains(query, "sv.updated_at >=") {
