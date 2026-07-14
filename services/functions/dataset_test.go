@@ -77,8 +77,8 @@ func TestDatasetRegistryConsistency(t *testing.T) {
 }
 
 // TestLoaderRegistryOrderFromDataset asserts the derived loader order preserves
-// the bus_operator-before-bus invariant loadBus depends on (it reads
-// bus_operators back after the operator upsert).
+// the bus_operator-before-bus publication order: the standalone operator table
+// refresh precedes the atomic bus snapshot.
 func TestLoaderRegistryOrderFromDataset(t *testing.T) {
 	idx := map[string]int{}
 	for i, s := range loaderRegistry(nil) {

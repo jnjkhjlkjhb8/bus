@@ -28,8 +28,8 @@ var cities = []string{
 
 // citymap maps a TDX city code to its short prefix used in UID construction and
 // as the authority_code for operators. Every entry in cities must have a key
-// here: an unmapped city yields an empty prefix, which degrades the LIKE
-// patterns built from it into '%' — see the guards in loadBus/saveschedule.
+// here: readBusCitySnapshot rejects an unmapped city before the writer can turn
+// its partition-replacement prefix into the destructive pattern "%".
 var citymap = map[string]string{
 	"Taipei": "TPE", "NewTaipei": "NWT", "Taoyuan": "TAO", "Taichung": "TXG",
 	"Tainan": "TNN", "Kaohsiung": "KHH", "InterCity": "THB", "Keelung": "KEE",
@@ -71,7 +71,7 @@ const busSubroutesUpsertSQL = `
 			SELECT DISTINCT ON (uid, d) uid, rid, d, name1, name2,city,depart,destin,geom,
 				   ARRAY(
 					   SELECT ROW(
-								  s ->> 'StationUID',
+								  s ->> 'StationID',
 								  s ->> 'StopName',
 								  (s ->> 'StopSequence')::int,
 								  (s ->> 'PositionLon')::float,
@@ -82,12 +82,23 @@ const busSubroutesUpsertSQL = `
 			FROM temp_bus
 			ORDER BY uid, d
 			ON CONFLICT (sub_route_uid, direction)
-			DO UPDATE SET city = excluded.city,geometry = EXCLUDED.geometry,stops = EXCLUDED.stops,depart = EXCLUDED.depart,destin = EXCLUDED.destin,schedule = EXCLUDED.schedule,operators = EXCLUDED.operators,updated_at = NOW();
+			DO UPDATE SET
+				route_uid = EXCLUDED.route_uid,
+				route_name = EXCLUDED.route_name,
+				sub_route_name = EXCLUDED.sub_route_name,
+				city = EXCLUDED.city,
+				geometry = EXCLUDED.geometry,
+				stops = EXCLUDED.stops,
+				depart = EXCLUDED.depart,
+				destin = EXCLUDED.destin,
+				schedule = EXCLUDED.schedule,
+				operators = EXCLUDED.operators,
+				updated_at = NOW();
 			`
 
-// busScheduleInsertSQL inserts bus timetable and frequency rows from temp_bus
-// into bus_schedule after saveschedule has deleted the city's partition in the
-// same transaction (partition-replace). No DISTINCT ON and no ON CONFLICT: the
+// busScheduleInsertSQL inserts the write-ready timetable and frequency rows
+// from temp_bus_schedule after the atomic writer has deleted the city's
+// partition in the same transaction. No DISTINCT ON and no ON CONFLICT: the
 // natural key (sub_route_uid, direction, type, service_day, tripid,
 // "stop_uid/MinHeadwayMins") is not unique in real data — a circular route
 // visits the same stop twice in one trip — so every raw row must survive rather
@@ -96,7 +107,7 @@ const busSubroutesUpsertSQL = `
 // frequency-based headway depending on the type flag.
 const busScheduleInsertSQL = `INSERT INTO bus_schedule (sub_route_uid, direction, type, tripid, islowfloor, stopsequence, "stop_uid/MinHeadwayMins", "stop_name/MaxHeadwayMins", "arrival_time/StartTime", "departure_time/EndTime", service_day, updated_at)
 				SELECT uid, dir, type, id, floor, seq, stopuid, stopname, arrival::time, departure::time, sdays, NOW()
-				FROM temp_bus`
+				FROM temp_bus_schedule`
 
 // rawBusRoute decodes a TDX Bus/Route element: a route and its per-direction
 // subroutes, operators, and first/last service times.
@@ -292,8 +303,8 @@ type rawBusShape struct {
 	UpdateTime  string `json:"UpdateTime"`
 }
 
-// rawBusOperator decodes a TDX Bus/Operator element and doubles as the row shape
-// for the DB fallback in busOperatorsFromDB.
+// rawBusOperator decodes a TDX Bus/Operator element for the standalone operator
+// upsert and the atomic city snapshot's route enrichment.
 type rawBusOperator struct {
 	OperatorID   string `json:"OperatorID"`
 	OperatorName struct {
@@ -409,68 +420,6 @@ func cloneBusFare(f *models.Bus_Fare) *models.Bus_Fare {
 		return nil
 	}
 	return proto.Clone(f).(*models.Bus_Fare)
-}
-
-// loadBusFares parses a city's route fares from an already-opened decoder (the
-// raw_tdx loader, via loadBusFareMaps) into two lookups: fares keyed by subroute
-// UID, and route-wide fares (IsForAllSubRoutes) keyed by route UID. Pure parsing
-// — no SQL; the fare protos are embedded into bus_subroutes / bus_static by the
-// downstream upserts.
-func loadBusFares(dec *json.Decoder, city string) (map[string]*models.Bus_Fare, map[string]*models.Bus_Fare, error) {
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[BUS_FARE] action=bus_fare city=%s event=decode_error error=%v", city, err)
-		return nil, nil, err
-	}
-	pre := citymap[city]
-	bySub := make(map[string]*models.Bus_Fare)
-	byRoute := make(map[string]*models.Bus_Fare)
-	for dec.More() {
-		var f rawBusFare
-		if err := dec.Decode(&f); err != nil {
-			continue
-		}
-		fare := &models.Bus_Fare{
-			FarePricingType:  f.FarePricingType,
-			IsFreeBus:        f.IsFreeBus == 1,
-			SectionFaresJson: jsonOrNil(f.SectionFares),
-			StageFaresJson:   jsonOrNil(f.StageFares),
-			OdFaresJson:      jsonOrNil(f.ODFares),
-		}
-		if f.SubRouteID != "" {
-			uid := pre + f.SubRouteID
-			bySub[uid] = fare
-		}
-		if f.IsForAllSubRoutes == 1 && f.RouteID != "" {
-			byRoute[pre+f.RouteID] = fare
-		}
-	}
-	log.Infof("[BUS_FARE] action=bus_fare city=%s event=success sub_count=%d route_count=%d", city, len(bySub), len(byRoute))
-	return bySub, byRoute, nil
-}
-
-// busOperatorsFromDB reads a city's previously stored operators from
-// bus_operators, the fallback used when the TDX operator feed is unavailable so
-// a transient outage does not blank out operator detail on routes. The SELECT is
-// byte-identical to the legacy inline fallback.
-func busOperatorsFromDB(ctx context.Context, db *pgxpool.Pool, city string) map[string]rawBusOperator {
-	result := make(map[string]rawBusOperator)
-	rows, qErr := db.Query(ctx, `SELECT operator_id, operator_name, COALESCE(operator_phone,''), COALESCE(operator_url,''), authority_code FROM bus_operators WHERE authority_code = $1`, citymap[city])
-	if qErr != nil {
-		log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=db_fallback_error error=%v", city, qErr)
-		return result
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var op rawBusOperator
-		if err := rows.Scan(&op.OperatorID, &op.OperatorName.Zhtw, &op.OperatorPhone, &op.OperatorUrl, &op.AuthorityCode); err == nil {
-			result[op.OperatorID] = op
-		}
-	}
-	if err := rows.Err(); err != nil {
-		log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=rows_error error=%v", city, err)
-	}
-	log.Infof("[BUS_OPERATOR] action=busOperators city=%s event=loaded_from_db count=%d", city, len(result))
-	return result
 }
 
 // loadBusOperators decodes a city's operators from an already-opened decoder

@@ -213,19 +213,14 @@ func TestRunLoadThroughRawTDXSource(t *testing.T) {
 	}
 }
 
-// provisionBusSinks creates the env-schema tables loadBus writes on the
-// operator/fare assertion path (stop composite type, bus_subroutes,
-// bus_operators, bus_static, bus_station_stop_map, bus_schedule). The throwaway
-// loader cluster is raw_tdx-only and has no PostGIS, so bus_stations /
-// bus_station_groups are intentionally omitted: savestations / saveStationGroups
-// run in their own transactions, log the missing-relation error, and do not
-// abort loadBus — the assertion path (bus_subroutes + bus_operators +
-// bus_static.pb) does not touch them. Column shapes mirror the production upsert
-// targets (busSubroutesUpsertSQL, busScheduleInsertSQL, savestatictodb,
-// loadBusOperators).
+// provisionBusSinks creates the complete env-schema surface written by the
+// atomic bus snapshot. PostgreSQL/PostGIS semantics are also covered by the
+// isolated BUS_WRITER_DATABASE_URL test; this fixture keeps the raw-source
+// integration useful when DATABASE_URL points at a fully provisioned test DB.
 func provisionBusSinks(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
 	ddl := []string{
+		`CREATE EXTENSION IF NOT EXISTS postgis`,
 		`DO $$ BEGIN
 			CREATE TYPE stop AS (station_uid text, stop_name text, stop_sequence int, position_lon float, position_lat float);
 		EXCEPTION WHEN duplicate_object THEN NULL; END $$`,
@@ -240,6 +235,18 @@ func provisionBusSinks(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 			geometry text, stops stop[], schedule jsonb, operators jsonb,
 			updated_at timestamptz NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (sub_route_uid, direction))`,
+		`CREATE TABLE IF NOT EXISTS bus_stations (
+			station_uid text PRIMARY KEY, station_name text, city text,
+			position geometry(Point,4326), updated_at timestamptz NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE IF NOT EXISTS bus_station_groups (
+			group_uid text PRIMARY KEY, group_id text, group_name text, city text,
+			position geometry(Point,4326), source text,
+			updated_at timestamptz NOT NULL DEFAULT NOW(), UNIQUE (city, group_id))`,
+		`CREATE TABLE IF NOT EXISTS bus_station_group_members (
+			station_uid text PRIMARY KEY,
+			group_uid text REFERENCES bus_station_groups(group_uid),
+			station_id text, station_name text, city text,
+			position geometry(Point,4326), updated_at timestamptz NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE IF NOT EXISTS bus_static (
 			sub_route_name text, route_name text, sub_route_uid text PRIMARY KEY,
 			route_uid text, city text, depart text, destin text, pb bytea,
@@ -261,19 +268,18 @@ func provisionBusSinks(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	}
 	for _, s := range ddl {
 		if _, err := pool.Exec(ctx, s); err != nil {
+			if strings.Contains(s, "CREATE EXTENSION") {
+				t.Skipf("PostGIS unavailable; skipping complete bus integration: %v", err)
+			}
 			t.Fatalf("provision sink: %v\nDDL: %s", err, s)
 		}
 	}
 }
 
-// TestLoadBusEnrichesFromRawTDX is the loadBus per-spec coverage: it lands
-// route/stop/operator/fare fixtures for one city into raw_tdx, provisions the
-// env-schema sinks, then runs the bus_operator and bus specs together through
-// runLoad. It asserts (1) a bus_subroutes row exists carrying the operator
-// detail (proving loadBusOperatorMap decoded raw_tdx.bus_operator in-memory)
-// and (2) the bus_static.pb proto carries the Fare (proving loadBusFareMaps
-// enrichment flowed through), and (3) the bus_operators row landed via the
-// standalone bus_operator spec, the only remaining upsert path in the loader.
+// TestLoadBusEnrichesFromRawTDX lands a synthetic city, reads all eight raw
+// partitions through rawTDXSource, and proves the atomic snapshot committed its
+// operator/fare enrichment. The synthetic prefix prevents an accidentally
+// configured shared database from pruning a real city's target partition.
 func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	pool := loaderTestPool(t)
 	defer pool.Close()
@@ -285,17 +291,11 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 
 	provisionBusSinks(t, ctx, pool)
 
-	// MiaoliCounty deliberately: citymap has no "MiaoliCounty" key (only
-	// "Miaoli"), so any operator path routed through citymap[city] — like a
-	// busOperatorsFromDB read filtering on authority_code — returns zero rows and
-	// operator enrichment silently blanks. This fixture proves loadBus enriches
-	// County-suffixed cities via the in-memory raw_tdx decode. CanonicalSubroute
-	// is identity for non-InterCity, so the subroute UID is the raw SubRouteUID
-	// "MIA100"; the fare prefix citymap["MiaoliCounty"] is "", so the fare's
-	// SubRouteID carries the full "MIA100".
-	const city = "MiaoliCounty"
-	const subUID = "MIA100"
+	const city = "ZZLoadCity"
+	const subUID = "ZZZ100"
 	const opID = "ZZ_LOAD_OP"
+	citymap[city] = "ZZZ"
+	defer delete(citymap, city)
 
 	cleanup := func() {
 		for _, tbl := range []string{"bus_route", "bus_stopofroute", "bus_shape", "bus_schedule", "bus_station", "bus_stationgroup", "bus_operator", "bus_routefare"} {
@@ -304,6 +304,11 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 		}
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_subroutes WHERE sub_route_uid=$1", subUID)
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_static WHERE sub_route_uid=$1", subUID)
+		_, _ = pool.Exec(ctx, "DELETE FROM bus_station_group_members WHERE city=$1", city)
+		_, _ = pool.Exec(ctx, "DELETE FROM bus_station_groups WHERE city=$1", city)
+		_, _ = pool.Exec(ctx, "DELETE FROM bus_stations WHERE city=$1", city)
+		_, _ = pool.Exec(ctx, "DELETE FROM bus_station_stop_map WHERE sub_route_uid LIKE 'ZZZ%'")
+		_, _ = pool.Exec(ctx, "DELETE FROM bus_schedule WHERE sub_route_uid LIKE 'ZZZ%'")
 		_, _ = pool.Exec(ctx, "DELETE FROM bus_operators WHERE operator_id=$1", opID)
 	}
 	cleanup()
@@ -317,18 +322,17 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 			t.Fatalf("land %s: %v", table, err)
 		}
 	}
-	land("bus_route", `[{"RouteUID":"MIA1","RouteName":{"Zh_tw":"1路"},"Operators":[{"OperatorID":"ZZ_LOAD_OP"}],"SubRoutes":[{"SubRouteUID":"MIA100","SubRouteName":{"Zh_tw":"1路"},"Direction":0}]}]`)
-	land("bus_stopofroute", `[{"RouteUID":"MIA1","SubRouteUID":"MIA100","Direction":0,"Stops":[{"StopUID":"MIA_S1","StopName":{"Zh_tw":"站一"},"StopSequence":1,"StationID":"MIA_ST1","StopPosition":{"PositionLon":120.8,"PositionLat":24.5}}]}]`)
+	land("bus_route", `[{"RouteUID":"ZZZ1","RouteName":{"Zh_tw":"1路"},"Operators":[{"OperatorID":"ZZ_LOAD_OP"}],"SubRoutes":[{"SubRouteUID":"ZZZ100","SubRouteID":"100","SubRouteName":{"Zh_tw":"1路"},"Direction":0}]}]`)
+	land("bus_stopofroute", `[{"RouteUID":"ZZZ1","SubRouteUID":"ZZZ100","Direction":0,"Stops":[{"StopUID":"ZZZ_S1","StopName":{"Zh_tw":"站一"},"StopSequence":1,"StationID":"ST1","StopPosition":{"PositionLon":120.8,"PositionLat":24.5}}]}]`)
 	land("bus_shape", `[]`)
 	land("bus_schedule", `[]`)
-	land("bus_station", `[]`)
+	land("bus_station", `[{"StationUID":"ZZZST1","StationID":"ST1","StationName":{"Zh_tw":"站一"},"StationPosition":{"PositionLon":120.8,"PositionLat":24.5}}]`)
 	land("bus_stationgroup", `[]`)
 	land("bus_operator", `[{"OperatorID":"ZZ_LOAD_OP","OperatorName":{"Zh_tw":"測運"},"OperatorPhone":"02-1234","OperatorUrl":"https://ex","AuthorityCode":"MIA"}]`)
-	land("bus_routefare", `[{"RouteID":"MIA1","SubRouteID":"MIA100","FarePricingType":1,"IsFreeBus":0}]`)
+	land("bus_routefare", `[{"RouteID":"1","SubRouteID":"100","FarePricingType":1,"IsFreeBus":0}]`)
 
-	// loadBus clears the legacy Redis static cache; point at an unreachable addr
-	// with tiny timeouts so the Del calls log-and-continue instead of blocking (no
-	// live Redis needed for this DB-path test), matching ingestor_test.go.
+	// Point Redis at an unreachable address: the DB snapshot must remain committed
+	// and the post-commit generation failure must be returned for retry.
 	rc := redis.NewClient(&redis.Options{
 		Addr:         "127.0.0.1:1",
 		DialTimeout:  time.Millisecond,
@@ -339,8 +343,8 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	defer rc.Close()
 
 	src := rawTDXSource{pool: pool}
-	if err := runLoad(ctx, src, pool, rc, []string{"bus_operator", "bus"}); err != nil {
-		t.Fatalf("runLoad: %v", err)
+	if err := loadBus(ctx, src, pool, rc, city); err == nil || !strings.Contains(err.Error(), "committed; invalidate cache") {
+		t.Fatalf("loadBus error = %v, want committed cache-invalidation failure", err)
 	}
 
 	// (1) subroute row exists with operator detail embedded.
@@ -369,17 +373,14 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 		t.Fatal("bus_static.pb subroute has no Operators; operator enrichment did not flow")
 	}
 
-	// (3) the operators row landed via the standalone bus_operator spec — the only
-	// upsert path left in the loader (loadBus no longer writes bus_operators).
-	// Row count alone cannot distinguish one upsert from two idempotent ones; the
-	// single-writer property is enforced structurally (loadBusOperatorMap performs
-	// no SQL write), this just confirms the standalone spec's write landed.
+	// The city snapshot consumes operator detail but never writes bus_operators;
+	// the standalone bus_operator spec remains that table's sole writer.
 	var opRows int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM bus_operators WHERE operator_id=$1", opID).Scan(&opRows); err != nil {
 		t.Fatalf("count bus_operators: %v", err)
 	}
-	if opRows != 1 {
-		t.Fatalf("bus_operators rows for %s = %d, want 1", opID, opRows)
+	if opRows != 0 {
+		t.Fatalf("bus_operators rows for %s = %d, want 0 from bus snapshot", opID, opRows)
 	}
 }
 

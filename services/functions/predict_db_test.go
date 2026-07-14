@@ -25,11 +25,11 @@ func predictTestPool(t *testing.T) *pgxpool.Pool {
 
 // TestBatchNextDepartures is the regression test for the query rewrite: the
 // original filter (type = true AND stopsequence = 0) matched no row the
-// loader ever writes (saveschedule writes frequency rows as type=true,
+// loader ever writes (the atomic writer stores frequency rows as type=true,
 // stopsequence=-1, and timetable rows as type=false, stopsequence=<TDX
 // StopSequence>), so batchNextDepartures always returned an empty map. This
 // pins the fixed query against rows inserted through the same shape
-// saveschedule writes: timetable origin-stop selection (not sequence 0),
+// the atomic writer stores: timetable origin-stop selection (not sequence 0),
 // service_day bitmask filtering (Monday=bit0..Sunday=bit6, mask2 order), and
 // the frequency-window fallback.
 func TestBatchNextDepartures(t *testing.T) {
@@ -92,7 +92,7 @@ func TestBatchNextDepartures(t *testing.T) {
 	freqKey := routeDirKey{subRouteUID: freqUID, direction: 0}
 	keys := []routeDirKey{ttKey, freqKey}
 
-	const monday = 1 // mask2 bit order: Monday = bit0
+	const monday = 1  // mask2 bit order: Monday = bit0
 	const sunday = 64 // mask2 bit order: Sunday = bit6
 
 	// Query at 07:00 on Monday: trip A's origin stop (08:00) wins, not 08:10.

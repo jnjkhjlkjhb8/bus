@@ -44,6 +44,20 @@ func BusPositionRawKey(city string) string {
 	return "bus:raw:position:" + city
 }
 
+// BusStaticGenerationKey is the durable cross-process version of one city's
+// static stop map. The loader increments it only after the PostgreSQL snapshot
+// commits; realtime workers compare it before reusing their local cache.
+func BusStaticGenerationKey(city string) string {
+	return "bus:static:generation:" + city
+}
+
+// BusStaticGenerationChannel optionally wakes online consumers after a static
+// commit. Correctness never depends on Pub/Sub: the durable generation key is
+// checked on every realtime refresh, so a disconnected worker catches up.
+func BusStaticGenerationChannel(city string) string {
+	return "bus:static:generation:changed:" + city
+}
+
 // BusDailyTimetableKey returns the key holding a canonical subroute's daily
 // timetable, written by the 03:30 load.
 func BusDailyTimetableKey(subRouteUID string) string {

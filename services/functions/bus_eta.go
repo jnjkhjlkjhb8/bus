@@ -188,7 +188,13 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_prefix", city)
 		return nil
 	}
-	mp, cached := cachedBusStaticMap(prefix)
+	generation, generationErr := j.sink.getString(shared.BusStaticGenerationKey(city))
+	if generationErr != nil {
+		// Redis is the cross-process signal, but an outage must not stop realtime
+		// service. The local cache falls back to its bounded TTL in this case.
+		generation = ""
+	}
+	mp, cached := cachedBusStaticMapFrom(&busStaticMapCache, prefix, generation, j.now())
 	if !cached {
 		var err error
 		mp, err = j.store.staticStops(ctx, prefix)
@@ -196,7 +202,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
 			return err
 		}
-		storeBusStaticMap(prefix, mp)
+		storeBusStaticMapIn(&busStaticMapCache, prefix, mp, generation, j.now())
 	}
 	if len(mp) <= 0 {
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)

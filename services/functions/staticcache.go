@@ -1,36 +1,67 @@
 package main
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // busStaticMapCache holds each city prefix's station map in memory so the 30s
-// bus ETA cron does not re-query PostgreSQL every tick. It is invalidated after a
-// daily static rebuild (invalidateBusStaticMap).
+// bus ETA cron does not re-query PostgreSQL every tick. A committed city rebuild
+// invalidates its prefix locally and advances the durable Redis generation.
 var busStaticMapCache sync.Map
+
+const busStaticMapCacheTTL = 5 * time.Minute
+
+type busStaticMapCacheEntry struct {
+	stops      []busStationmap
+	generation string
+	loadedAt   time.Time
+}
 
 // cachedBusStaticMap returns the cached station map for a city prefix, or
 // (nil, false) on a miss (including a value of an unexpected type).
 func cachedBusStaticMap(prefix string) ([]busStationmap, bool) {
-	v, ok := busStaticMapCache.Load(prefix)
+	return cachedBusStaticMapFrom(&busStaticMapCache, prefix, "", time.Now())
+}
+
+func cachedBusStaticMapFrom(cache *sync.Map, prefix, generation string, now time.Time) ([]busStationmap, bool) {
+	v, ok := cache.Load(prefix)
 	if !ok {
 		return nil, false
 	}
-	list, ok := v.([]busStationmap)
-	if !ok {
+	entry, ok := v.(busStaticMapCacheEntry)
+	if !ok || now.Sub(entry.loadedAt) >= busStaticMapCacheTTL {
+		cache.Delete(prefix)
 		return nil, false
 	}
-	return list, true
+	// A non-empty durable generation is authoritative. During a Redis outage
+	// generation is empty; the bounded TTL is the fallback that prevents an
+	// offline worker from retaining yesterday's map indefinitely.
+	if generation != "" && entry.generation != generation {
+		cache.Delete(prefix)
+		return nil, false
+	}
+	return entry.stops, true
 }
 
 // storeBusStaticMap caches a city prefix's station map for reuse by later ETA ticks.
 func storeBusStaticMap(prefix string, list []busStationmap) {
-	busStaticMapCache.Store(prefix, list)
+	storeBusStaticMapIn(&busStaticMapCache, prefix, list, "", time.Now())
 }
 
-// invalidateBusStaticMap clears every cached station map, called after a daily
-// static rebuild so the ETA path reloads fresh data on its next tick.
+func storeBusStaticMapIn(cache *sync.Map, prefix string, list []busStationmap, generation string, now time.Time) {
+	cache.Store(prefix, busStaticMapCacheEntry{stops: list, generation: generation, loadedAt: now})
+}
+
+// invalidateBusStaticMap clears all maps for tests/process teardown. Production
+// commits use invalidateBusStaticMapCity to avoid evicting unrelated cities.
 func invalidateBusStaticMap() {
 	busStaticMapCache.Range(func(key, _ any) bool {
 		busStaticMapCache.Delete(key)
 		return true
 	})
+}
+
+func invalidateBusStaticMapCity(prefix string) {
+	busStaticMapCache.Delete(prefix)
 }

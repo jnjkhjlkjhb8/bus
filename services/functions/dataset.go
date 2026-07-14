@@ -49,7 +49,7 @@ type datasetSpec struct {
 	loadKey    string
 	foldedInto string
 	landOnly   bool
-	staleOK bool
+	staleOK    bool
 }
 
 // fetched reports whether the ingestor issues requests for this dataset.
@@ -91,6 +91,21 @@ func (d datasetSpec) url(part string) string {
 // loader-local closures before the registry unified them.
 func allCities() []string { return cities }
 
+// busLoadCities is deliberately load-only: raw landing keeps the TDX fetch
+// order above, while target assembly excludes unsupported Lienchiang and loads
+// every municipality before InterCity. InterCity station grouping may consult
+// committed municipal groups in its own target transaction.
+func busLoadCities() []string {
+	out := make([]string, 0, len(cities)-1)
+	for _, city := range cities {
+		if city == "LienchiangCounty" || city == "InterCity" {
+			continue
+		}
+		out = append(out, city)
+	}
+	return append(out, "InterCity")
+}
+
 func bikeCities() []string {
 	var out []string
 	for _, c := range cities {
@@ -123,11 +138,15 @@ func busName(apiSeg string) func(string) string {
 // datasets with a standalone loader (bus_route→"bus", bus_operator); foldedInto
 // is set on the tables the multi-table bus assembly reads directly.
 func busDataset(apiSeg, rawTable, loadKey, foldedInto string) datasetSpec {
-	return datasetSpec{
+	spec := datasetSpec{
 		rawTable: rawTable, partCol: "city", partitions: allCities,
 		family: familyBusCity, apiSeg: apiSeg, name: busName(apiSeg),
 		loadKey: loadKey, foldedInto: foldedInto,
 	}
+	if loadKey == "bus" || loadKey == "bus_operator" {
+		spec.loadParts = busLoadCities
+	}
+	return spec
 }
 
 // railSingle builds an unpartitioned TRA/THSR dataset (single TRUNCATE-lifecycle
@@ -142,9 +161,9 @@ func railSingle(apiSeg, rawTable, loadKey, imsName string) datasetSpec {
 }
 
 // datasetRegistry is the ordered dataset table. Slice order is the load order:
-// filtering to loadKey-bearing entries yields exactly the legacy loaderRegistry
-// order, so the bus_operator-before-bus invariant is structural (bus_operator is
-// listed first and loadBus reads bus_operators back after it upserts).
+// filtering to loadKey-bearing entries yields the loaderRegistry order. The
+// standalone operator table remains before the atomic bus snapshot, while both
+// use the municipal-first / InterCity-last load partition order.
 func datasetRegistry() []datasetSpec {
 	return []datasetSpec{
 		busDataset("Operator", "bus_operator", "bus_operator", ""),

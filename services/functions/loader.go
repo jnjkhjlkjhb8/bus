@@ -307,7 +307,7 @@ type loaderBinding struct {
 }
 
 // loaderTransforms maps each dataset's loadKey to its transform. src is captured
-// by the bus binding because loadBus reads six correlated raw_tdx tables (a
+// by the bus binding because loadBus reads eight correlated raw_tdx tables (a
 // single decoder cannot feed a multi-endpoint correlation); the standalone
 // copy-upsert transforms ignore it and consume the decoder runLoadSpecs hands
 // them.
@@ -357,10 +357,10 @@ func loaderTransforms(src loadSource) map[string]loaderBinding {
 // loadSpec per dataset that has a loadKey, in registry slice order, with its
 // table/partition-column/partition-enumerator taken from the dataset and its
 // transform/report from loaderTransforms. Because it walks the ordered slice,
-// the datasetRegistry's bus_operator-before-bus ordering is preserved — loadBus
-// reads bus_operators back after the staleness-gated bus_operator upsert. A
-// dataset whose loadPartitions differs from its landed partitions (only
-// bus_dailytimetable) loads the subset here.
+// the datasetRegistry's bus_operator-before-bus publication order is preserved:
+// the standalone operator table refresh precedes the atomic route snapshot. A
+// dataset whose loadPartitions differs from its landed partitions (bus static,
+// operator, and daily timetable) loads the selected subset/order here.
 func loaderRegistry(src loadSource) []loadSpec {
 	transforms := loaderTransforms(src)
 	var specs []loadSpec

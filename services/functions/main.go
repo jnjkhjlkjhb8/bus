@@ -514,16 +514,6 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 	return list, nil
 }
 
-// clearBusStaticCache deletes the legacy IMS cache keys for every bus static
-// endpoint of a city, forcing the next fetch of each to pull fresh data.
-func clearBusStaticCache(rc *redis.Client, city string) {
-	for _, api := range []string{"Route", "StopOfRoute", "Shape", "Schedule", "Station", "StationGroup"} {
-		if err := rc.Del("LastTimeGet_bus_" + api + city).Err(); err != nil {
-			log.Infof("[BUS_STATIC] action=clear_cache city=%s api=%s event=cache_delete_error error=%v", city, api, err)
-		}
-	}
-}
-
 // mask packs a weekly service pattern into a bitmask: bit 0 = Monday through bit
 // 6 = Sunday, and bit 7 = national holiday when the optional nationalHoliday
 // argument is true. The stored uint8 is what schedule lookups match the current

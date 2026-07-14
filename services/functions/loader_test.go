@@ -135,6 +135,30 @@ func TestStalenessCheckSkips(t *testing.T) {
 	}
 }
 
+func TestBusLoaderOrdersInterCityLastAndExcludesLienchiang(t *testing.T) {
+	got := busLoadCities()
+	if len(got) == 0 || got[len(got)-1] != "InterCity" {
+		t.Fatalf("busLoadCities = %v, want InterCity last", got)
+	}
+	if slices.Contains(got, "LienchiangCounty") {
+		t.Fatalf("busLoadCities = %v, must exclude unsupported Lienchiang", got)
+	}
+	// Landing still covers both partitions; this ordering is load-only.
+	landed := allCities()
+	if !slices.Contains(landed, "InterCity") || !slices.Contains(landed, "LienchiangCounty") {
+		t.Fatalf("allCities = %v, ingest order/coverage was changed", landed)
+	}
+	for _, spec := range loaderRegistry(&fakeLoadSource{}) {
+		if spec.key != "bus" && spec.key != "bus_operator" {
+			continue
+		}
+		parts := spec.partitions()
+		if !slices.Equal(parts, got) {
+			t.Fatalf("%s loader partitions = %v, want %v", spec.key, parts, got)
+		}
+	}
+}
+
 // railDateWindow feeds both the ingestor's landing partitions and the loader's
 // read partitions; an off-by-one here silently drops the first or last landed
 // timetable date from every load.
