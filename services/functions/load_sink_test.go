@@ -4,7 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // copyUpsertCall records one captured copyUpsert invocation so a test can assert
@@ -90,9 +98,10 @@ func TestLoadMrtStationsThroughSink(t *testing.T) {
 }
 
 func TestLoadTraTimetableThroughSink(t *testing.T) {
-	// WheelchairFlag (bit 0) + DiningFlag (bit 2) set ⇒ railMask = 1|4 = 5. The
-	// service-day mask stays in the transform's row mapping, not the sink helper.
-	body := `[{"DailyTrainInfo":{"TrainNo":"123","Direction":0,"WheelchairFlag":1,"DiningFlag":1},"StopTimes":[{"StopSequence":1,"StationID":"1000","StationName":{"Zh_tw":"台北"},"ArrivalTime":"08:00","DepartureTime":"08:01"}]}]`
+	// WheelchairFlag (bit 0) + DiningFlag (bit 2) + the train-wide
+	// SuspendedFlag (bit 7) set => railMask = 1|4|128 = 133. A suspended train
+	// marks every staged stop suspended even when the stop-level flag is zero.
+	body := `[{"DailyTrainInfo":{"TrainNo":"123","Direction":0,"StartingStationID":"1000","EndingStationID":"1001","WheelchairFlag":1,"DiningFlag":1,"SuspendedFlag":1},"StopTimes":[{"StopSequence":1,"StationID":"1000","StationName":{"Zh_tw":"台北"},"ArrivalTime":"08:00","DepartureTime":"08:01"}]}]`
 	sink := &fakeLoadSink{}
 	if err := loadTraTimetable(context.Background(), decodeInto(body), sink, "2026-07-04"); err != nil {
 		t.Fatalf("loadTraTimetable: %v", err)
@@ -108,8 +117,8 @@ func TestLoadTraTimetableThroughSink(t *testing.T) {
 		t.Fatalf("rows = %d, want 1", len(c.rows))
 	}
 	// mask is column index 16 in the temp_tra_timetable row layout.
-	if got, ok := c.rows[0][16].(uint16); !ok || got != 5 {
-		t.Fatalf("mask = %#v, want uint16(5)", c.rows[0][16])
+	if got, ok := c.rows[0][16].(uint16); !ok || got != 133 {
+		t.Fatalf("mask = %#v, want uint16(133)", c.rows[0][16])
 	}
 	if c.rows[0][0] != "2026-07-04" || c.rows[0][12] != "1000" {
 		t.Fatalf("row train_date/stationid = %v/%v", c.rows[0][0], c.rows[0][12])
@@ -119,7 +128,7 @@ func TestLoadTraTimetableThroughSink(t *testing.T) {
 func TestLoadThsrTimetableThroughSink(t *testing.T) {
 	// Overnight handling stays in the THSR row mapping; assert it survives to the
 	// staged row (column index 13 in the temp_thsr_timetable layout).
-	body := `[{"TrainDate":"2026-07-04","DailyTrainInfo":{"TrainNo":"0101","Direction":1,"Overnight":true},"StopTimes":[{"StopSequence":1,"StationID":"0990","StationName":{"Zh_tw":"南港"},"ArrivalTime":"23:50","DepartureTime":"23:51"}]}]`
+	body := `[{"TrainDate":"2026-07-04","DailyTrainInfo":{"TrainNo":"0101","Direction":1,"StartingStationID":"0990","EndingStationID":"1070","Overnight":true},"StopTimes":[{"StopSequence":1,"StationID":"0990","StationName":{"Zh_tw":"南港"},"ArrivalTime":"23:50","DepartureTime":"23:51"}]}]`
 	sink := &fakeLoadSink{}
 	if err := loadThsrTimetable(context.Background(), decodeInto(body), sink, "2026-07-04"); err != nil {
 		t.Fatalf("loadThsrTimetable: %v", err)
@@ -162,4 +171,281 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+type faultLoadTxBeginner struct {
+	tx       *faultLoadTx
+	beginErr error
+}
+
+func (b *faultLoadTxBeginner) BeginLoadTx(context.Context) (loadTx, error) {
+	if b.beginErr != nil {
+		return nil, b.beginErr
+	}
+	return b.tx, nil
+}
+
+type faultLoadTx struct {
+	failAt              string
+	failErr             error
+	cancel              context.CancelFunc
+	rolledBack          bool
+	rollbackContextLive bool
+	rollbackHasDeadline bool
+	rollbackDeadline    time.Time
+	rollbackErr         error
+}
+
+func (t *faultLoadTx) fail(stage string) error {
+	if t.failAt != stage {
+		return nil
+	}
+	if t.cancel != nil {
+		t.cancel()
+	}
+	return t.failErr
+}
+
+func (t *faultLoadTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	stage := sql
+	if err := t.fail(stage); err != nil {
+		return pgconn.CommandTag{}, err
+	}
+	return pgconn.NewCommandTag("OK"), nil
+}
+
+func (t *faultLoadTx) CopyFrom(context.Context, pgx.Identifier, []string, pgx.CopyFromSource) (int64, error) {
+	if err := t.fail("COPY"); err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
+func (t *faultLoadTx) Commit(context.Context) error {
+	return t.fail("COMMIT")
+}
+
+func (t *faultLoadTx) Rollback(ctx context.Context) error {
+	t.rolledBack = true
+	t.rollbackContextLive = ctx.Err() == nil
+	t.rollbackDeadline, t.rollbackHasDeadline = ctx.Deadline()
+	return t.rollbackErr
+}
+
+func TestRunCopyUpsertWrapsEveryFailureStage(t *testing.T) {
+	wantErr := errors.New("injected write failure")
+	spec := copyUpsertSpec{
+		key:       "probe",
+		preExec:   []copyUpsertStmt{{sql: "PRE"}},
+		createSQL: "CREATE",
+		tempTable: "temp_probe",
+		copyCols:  []string{"id"},
+		insertSQL: "INSERT",
+	}
+	tests := []struct {
+		name      string
+		failAt    string
+		beginErr  bool
+		wantStage string
+	}{
+		{"begin", "", true, "begin"},
+		{"pre exec", "PRE", false, "pre-exec"},
+		{"create temp", "CREATE", false, "create temp"},
+		{"copy", "COPY", false, "COPY"},
+		{"final exec", "INSERT", false, "final exec"},
+		{"commit", "COMMIT", false, "commit"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tx := &faultLoadTx{failAt: tt.failAt, failErr: wantErr}
+			beginner := &faultLoadTxBeginner{tx: tx}
+			if tt.beginErr {
+				beginner.beginErr = wantErr
+			}
+			err := runCopyUpsert(context.Background(), beginner, spec, [][]any{{1}})
+			if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "probe") || !strings.Contains(err.Error(), tt.wantStage) {
+				t.Fatalf("runCopyUpsert error = %v, want wrapped probe/%s error", err, tt.wantStage)
+			}
+			if !tt.beginErr && !tx.rolledBack {
+				t.Fatal("started transaction was not rolled back")
+			}
+		})
+	}
+}
+
+func TestRunCopyUpsertCanceledFailureUsesBoundedLiveRollback(t *testing.T) {
+	wantErr := errors.New("late insert failure")
+	ctx, cancel := context.WithCancel(context.Background())
+	tx := &faultLoadTx{failAt: "INSERT", failErr: wantErr, cancel: cancel}
+	spec := copyUpsertSpec{
+		key: "probe", createSQL: "CREATE", tempTable: "temp_probe",
+		copyCols: []string{"id"}, insertSQL: "INSERT",
+	}
+	err := runCopyUpsert(ctx, &faultLoadTxBeginner{tx: tx}, spec, [][]any{{1}})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runCopyUpsert error = %v, want %v", err, wantErr)
+	}
+	if !tx.rolledBack || !tx.rollbackContextLive || !tx.rollbackHasDeadline {
+		t.Fatalf("rollback = %v live=%v bounded=%v, want true/true/true", tx.rolledBack, tx.rollbackContextLive, tx.rollbackHasDeadline)
+	}
+	remaining := time.Until(tx.rollbackDeadline)
+	if remaining <= 0 || remaining > 5*time.Second {
+		t.Fatalf("rollback deadline remaining = %s, want (0,5s]", remaining)
+	}
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("test caller context unexpectedly had a deadline; rollback deadline was not independent")
+	}
+}
+
+func TestRunCopyUpsertJoinsCommitAndRollbackFailures(t *testing.T) {
+	commitErr := errors.New("commit outcome failed")
+	rollbackErr := errors.New("rollback transport failed")
+	tx := &faultLoadTx{failAt: "COMMIT", failErr: commitErr, rollbackErr: rollbackErr}
+	spec := copyUpsertSpec{
+		key: "probe", createSQL: "CREATE", tempTable: "temp_probe",
+		copyCols: []string{"id"}, insertSQL: "INSERT",
+	}
+	err := runCopyUpsert(context.Background(), &faultLoadTxBeginner{tx: tx}, spec, [][]any{{1}})
+	if !errors.Is(err, commitErr) || !errors.Is(err, rollbackErr) {
+		t.Fatalf("runCopyUpsert error = %v, want joined commit and rollback failures", err)
+	}
+	if !strings.Contains(err.Error(), "commit") || !strings.Contains(err.Error(), "rollback") {
+		t.Fatalf("runCopyUpsert error = %v, want wrapped commit and rollback stages", err)
+	}
+}
+
+func TestRunCopyUpsertCommitFailureIgnoresClosedTransactionRollback(t *testing.T) {
+	commitErr := errors.New("commit outcome failed")
+	tx := &faultLoadTx{failAt: "COMMIT", failErr: commitErr, rollbackErr: pgx.ErrTxClosed}
+	spec := copyUpsertSpec{
+		key: "probe", createSQL: "CREATE", tempTable: "temp_probe",
+		copyCols: []string{"id"}, insertSQL: "INSERT",
+	}
+	err := runCopyUpsert(context.Background(), &faultLoadTxBeginner{tx: tx}, spec, [][]any{{1}})
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("runCopyUpsert error = %v, want primary commit failure", err)
+	}
+	if errors.Is(err, pgx.ErrTxClosed) || strings.Contains(err.Error(), "rollback") {
+		t.Fatalf("runCopyUpsert error = %v, closed transaction rollback must not mask the commit outcome", err)
+	}
+}
+
+func TestRunCopyUpsertDoesNotHideRollbackFailureJoinedWithErrTxClosed(t *testing.T) {
+	commitErr := errors.New("commit outcome failed")
+	rollbackErr := errors.New("rollback transport failed")
+	tx := &faultLoadTx{
+		failAt:      "COMMIT",
+		failErr:     commitErr,
+		rollbackErr: errors.Join(pgx.ErrTxClosed, rollbackErr),
+	}
+	spec := copyUpsertSpec{
+		key: "probe", createSQL: "CREATE", tempTable: "temp_probe",
+		copyCols: []string{"id"}, insertSQL: "INSERT",
+	}
+	err := runCopyUpsert(context.Background(), &faultLoadTxBeginner{tx: tx}, spec, [][]any{{1}})
+	if !errors.Is(err, commitErr) || !errors.Is(err, rollbackErr) {
+		t.Fatalf("runCopyUpsert error = %v, want primary commit and non-sentinel rollback failures", err)
+	}
+}
+
+func TestCopyUpsertPostgresLateFailureRollsBackAndEmptyReplaceCommits(t *testing.T) {
+	dsn := os.Getenv("TASK5_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TASK5_DATABASE_URL not set; skipping PostgreSQL rollback integration")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+	const target = "task5_copy_upsert_target"
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS `+target); err != nil {
+		t.Fatalf("drop target: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DROP TABLE IF EXISTS `+target) }()
+	if _, err := pool.Exec(ctx, `CREATE TABLE `+target+` (id int PRIMARY KEY, marker text NOT NULL)`); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO `+target+` VALUES (1, 'old')`); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	spec := copyUpsertSpec{
+		key:       "pg_probe",
+		preExec:   []copyUpsertStmt{{sql: `DELETE FROM ` + target}},
+		createSQL: `CREATE TEMP TABLE temp_task5_probe (id int, marker text) ON COMMIT DROP`,
+		tempTable: "temp_task5_probe",
+		copyCols:  []string{"id", "marker"},
+		insertSQL: `INSERT INTO ` + target + ` SELECT id, marker FROM temp_task5_probe`,
+	}
+	sink := pgLoadSink{db: pool}
+	err = sink.copyUpsert(ctx, spec, [][]any{{2, "new-a"}, {2, "new-b"}})
+	if err == nil || !strings.Contains(err.Error(), "final exec") {
+		t.Fatalf("copyUpsert error = %v, want wrapped late INSERT failure", err)
+	}
+	var oldCount, newCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE id=1 AND marker='old'), count(*) FILTER (WHERE id=2) FROM `+target).Scan(&oldCount, &newCount); err != nil {
+		t.Fatalf("read rollback target: %v", err)
+	}
+	if oldCount != 1 || newCount != 0 {
+		t.Fatalf("after rollback old=%d new=%d, want old=1 new=0", oldCount, newCount)
+	}
+
+	if err := sink.copyUpsert(ctx, spec, nil); err != nil {
+		t.Fatalf("empty partition replacement: %v", err)
+	}
+	var remaining int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM `+target).Scan(&remaining); err != nil {
+		t.Fatalf("count empty replacement: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("empty replacement left %d rows, want 0", remaining)
+	}
+}
+
+func TestCopyUpsertPostgresCommitFailureReturnsPrimaryErrorOnly(t *testing.T) {
+	dsn := os.Getenv("TASK5_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TASK5_DATABASE_URL not set; skipping PostgreSQL commit-error integration")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect PostgreSQL: %v", err)
+	}
+	defer pool.Close()
+	const target = "task5_copy_upsert_commit_target"
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS `+target); err != nil {
+		t.Fatalf("drop target: %v", err)
+	}
+	defer func() { _, _ = pool.Exec(ctx, `DROP TABLE IF EXISTS `+target) }()
+	if _, err := pool.Exec(ctx, `CREATE TABLE `+target+` (
+		id int,
+		CONSTRAINT task5_copy_upsert_commit_unique UNIQUE (id) DEFERRABLE INITIALLY DEFERRED
+	)`); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	spec := copyUpsertSpec{
+		key:       "pg_commit_probe",
+		createSQL: `CREATE TEMP TABLE temp_task5_commit_probe (id int) ON COMMIT DROP`,
+		tempTable: "temp_task5_commit_probe",
+		copyCols:  []string{"id"},
+		insertSQL: `INSERT INTO ` + target + ` SELECT id FROM temp_task5_commit_probe`,
+	}
+	err = (pgLoadSink{db: pool}).copyUpsert(ctx, spec, [][]any{{1}, {1}})
+	if err == nil || !strings.Contains(err.Error(), "commit") {
+		t.Fatalf("copyUpsert error = %v, want wrapped commit-time constraint failure", err)
+	}
+	if strings.Contains(err.Error(), "rollback") {
+		t.Fatalf("copyUpsert error = %v, pgx closed-transaction rollback must be ignored", err)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM `+target).Scan(&rows); err != nil {
+		t.Fatalf("count target after failed commit: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("failed commit left %d rows, want 0", rows)
+	}
 }

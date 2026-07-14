@@ -3,15 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
@@ -170,67 +167,185 @@ func railMask(f railTrainFlags) uint16 {
 	return res
 }
 
+func validateBinaryFlag(field string, value uint8) error {
+	if value > 1 {
+		return fmt.Errorf("%s must be 0 or 1, got %d", field, value)
+	}
+	return nil
+}
+
+func validateTraTimetable(timetable raw_tra_timetable, partitionDate string) error {
+	trainDate := timetable.TrainDate
+	if trainDate == "" {
+		trainDate = partitionDate
+	}
+	if _, err := time.Parse(time.DateOnly, trainDate); err != nil {
+		return fmt.Errorf("TrainDate %q: %w", trainDate, err)
+	}
+	if trainDate != partitionDate {
+		return fmt.Errorf("TrainDate %q does not match partition date %q", trainDate, partitionDate)
+	}
+	info := timetable.DailyTrainInfo
+	if strings.TrimSpace(info.TrainNo) == "" {
+		return errors.New("TrainNo is required")
+	}
+	if strings.TrimSpace(info.StartingStationID) == "" {
+		return errors.New("StartingStationID is required")
+	}
+	if strings.TrimSpace(info.EndingStationID) == "" {
+		return errors.New("EndingStationID is required")
+	}
+	if info.Direction > 1 {
+		return fmt.Errorf("Direction must be 0 or 1, got %d", info.Direction)
+	}
+	for _, flag := range []struct {
+		name  string
+		value uint8
+	}{
+		{"WheelchairFlag", info.WheelchairFlag},
+		{"PackageServiceFlag", info.PackageServiceFlag},
+		{"DiningFlag", info.DiningFlag},
+		{"BikeFlag", info.BikeFlag},
+		{"BreastFeedingFlag", info.BreastFeedingFlag},
+		{"DailyFlag", info.DailyFlag},
+		{"ServiceAddedFlag", info.ServiceAddedFlag},
+		{"SuspendedFlag", info.SuspendedFlag},
+	} {
+		if err := validateBinaryFlag(flag.name, flag.value); err != nil {
+			return err
+		}
+	}
+	if len(timetable.StopTimes) == 0 {
+		return errors.New("StopTimes must not be empty")
+	}
+	for index, stop := range timetable.StopTimes {
+		if stop.StopSequence == 0 {
+			return fmt.Errorf("StopTimes element %d StopSequence must be positive", index)
+		}
+		if strings.TrimSpace(stop.StationID) == "" {
+			return fmt.Errorf("StopTimes element %d StationID is required", index)
+		}
+		if !validClock(stop.ArrivalTime) {
+			return fmt.Errorf("StopTimes element %d ArrivalTime is invalid: %q", index, stop.ArrivalTime)
+		}
+		if !validClock(stop.DepartureTime) {
+			return fmt.Errorf("StopTimes element %d DepartureTime is invalid: %q", index, stop.DepartureTime)
+		}
+		if err := validateBinaryFlag("SuspendedFlag", stop.SuspendedFlag); err != nil {
+			return fmt.Errorf("StopTimes element %d: %w", index, err)
+		}
+	}
+	return nil
+}
+
+func validateThsrTimetable(timetable raw_thsr_timetable, partitionDate string) error {
+	if _, err := time.Parse(time.DateOnly, timetable.TrainDate); err != nil {
+		return fmt.Errorf("TrainDate %q: %w", timetable.TrainDate, err)
+	}
+	if timetable.TrainDate != partitionDate {
+		return fmt.Errorf("TrainDate %q does not match partition date %q", timetable.TrainDate, partitionDate)
+	}
+	info := timetable.DailyTrainInfo
+	if strings.TrimSpace(info.TrainNo) == "" {
+		return errors.New("TrainNo is required")
+	}
+	if strings.TrimSpace(info.StartingStationID) == "" {
+		return errors.New("StartingStationID is required")
+	}
+	if strings.TrimSpace(info.EndingStationID) == "" {
+		return errors.New("EndingStationID is required")
+	}
+	if info.Direction > 1 {
+		return fmt.Errorf("Direction must be 0 or 1, got %d", info.Direction)
+	}
+	if len(timetable.StopTimes) == 0 {
+		return errors.New("StopTimes must not be empty")
+	}
+	for index, stop := range timetable.StopTimes {
+		if stop.StopSequence == 0 {
+			return fmt.Errorf("StopTimes element %d StopSequence must be positive", index)
+		}
+		if strings.TrimSpace(stop.StationID) == "" {
+			return fmt.Errorf("StopTimes element %d StationID is required", index)
+		}
+		if !validClock(stop.ArrivalTime) {
+			return fmt.Errorf("StopTimes element %d ArrivalTime is invalid: %q", index, stop.ArrivalTime)
+		}
+		if !validClock(stop.DepartureTime) {
+			return fmt.Errorf("StopTimes element %d DepartureTime is invalid: %q", index, stop.DepartureTime)
+		}
+	}
+	return nil
+}
+
 // loadTraTimetable upserts one day's TRA daily timetable stop rows into
-// tra_timetable via a temp-table COPY. Stop times parse as "15:04"; unparseable
-// times become the zero time. It consumes an already-opened decoder; the
-// temp_tra_timetable COPY and ON CONFLICT (train_date,trainno,stationid) upsert
-// (and railMask/railTrainFlags) are byte-identical to the legacy transform.
+// tra_timetable via a temp-table COPY. Stop times are validated and parsed as
+// "15:04" before any sink call. It consumes an already-opened decoder; the
+// temp_tra_timetable drain upserts by (train_date,trainno,stationid), with the
+// train-wide and stop-wide suspension flags combined in the stored stop mask.
 func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, date string) error {
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[RAIL] action=tra_prefetch event=decode_error date=%s error=%v", date, err)
+	if _, err := time.Parse(time.DateOnly, date); err != nil {
+		return fmt.Errorf("TRA timetable partition date %q: %w", date, err)
+	}
+	timetables, err := decodeLoadArray[raw_tra_timetable](dec, "TRA timetable "+date, func(_ int, timetable raw_tra_timetable) error {
+		return validateTraTimetable(timetable, date)
+	})
+	if err != nil {
 		return err
 	}
 	row := [][]any{}
-	for dec.More() {
-		var temp raw_tra_timetable
-		if err := dec.Decode(&temp); err == nil {
-			// datasetJSON strips the traindate partition column from every
-			// reconstructed element, so TrainDate decodes empty; the partition
-			// value is that date by definition.
-			if temp.TrainDate == "" {
-				temp.TrainDate = date
+	seen := make(map[string][]any)
+	for _, temp := range timetables {
+		if temp.TrainDate == "" {
+			temp.TrainDate = date
+		}
+		for _, stop := range temp.StopTimes {
+			at, err := time.Parse("15:04", stop.ArrivalTime)
+			if err != nil {
+				return fmt.Errorf("TRA timetable %s train %q station %q ArrivalTime %q: %w", date, temp.DailyTrainInfo.TrainNo, stop.StationID, stop.ArrivalTime, err)
 			}
-			for _, stop := range temp.StopTimes {
-				at, _ := time.Parse("15:04", stop.ArrivalTime)
-				dt, _ := time.Parse("15:04", stop.DepartureTime)
-				row = append(row, []any{
-					temp.TrainDate,
-					temp.DailyTrainInfo.TrainNo,
-					temp.DailyTrainInfo.Direction,
-					temp.DailyTrainInfo.StartingStationID,
-					temp.DailyTrainInfo.StartingStationName.ZhTw,
-					temp.DailyTrainInfo.EndingStationID,
-					temp.DailyTrainInfo.EndingStationName.ZhTw,
-					temp.DailyTrainInfo.TrainTypeID,
-					temp.DailyTrainInfo.TrainTypeCode,
-					temp.DailyTrainInfo.TrainTypeName.ZhTw,
-					temp.DailyTrainInfo.TripLine,
-					stop.StopSequence,
-					stop.StationID,
-					stop.StationName.ZhTw,
-					at,
-					dt,
-					railMask(railTrainFlags{
-						wheel:     temp.DailyTrainInfo.WheelchairFlag,
-						pack:      temp.DailyTrainInfo.PackageServiceFlag,
-						dining:    temp.DailyTrainInfo.DiningFlag,
-						bike:      temp.DailyTrainInfo.BikeFlag,
-						breast:    temp.DailyTrainInfo.BreastFeedingFlag,
-						daily:     temp.DailyTrainInfo.DailyFlag,
-						service:   temp.DailyTrainInfo.ServiceAddedFlag,
-						suspended: stop.SuspendedFlag,
-					}),
-					temp.DailyTrainInfo.Note.ZhTw,
-				})
+			dt, err := time.Parse("15:04", stop.DepartureTime)
+			if err != nil {
+				return fmt.Errorf("TRA timetable %s train %q station %q DepartureTime %q: %w", date, temp.DailyTrainInfo.TrainNo, stop.StationID, stop.DepartureTime, err)
+			}
+			candidate := []any{
+				temp.TrainDate,
+				temp.DailyTrainInfo.TrainNo,
+				temp.DailyTrainInfo.Direction,
+				temp.DailyTrainInfo.StartingStationID,
+				temp.DailyTrainInfo.StartingStationName.ZhTw,
+				temp.DailyTrainInfo.EndingStationID,
+				temp.DailyTrainInfo.EndingStationName.ZhTw,
+				temp.DailyTrainInfo.TrainTypeID,
+				temp.DailyTrainInfo.TrainTypeCode,
+				temp.DailyTrainInfo.TrainTypeName.ZhTw,
+				temp.DailyTrainInfo.TripLine,
+				stop.StopSequence,
+				stop.StationID,
+				stop.StationName.ZhTw,
+				at,
+				dt,
+				railMask(railTrainFlags{
+					wheel:     temp.DailyTrainInfo.WheelchairFlag,
+					pack:      temp.DailyTrainInfo.PackageServiceFlag,
+					dining:    temp.DailyTrainInfo.DiningFlag,
+					bike:      temp.DailyTrainInfo.BikeFlag,
+					breast:    temp.DailyTrainInfo.BreastFeedingFlag,
+					daily:     temp.DailyTrainInfo.DailyFlag,
+					service:   temp.DailyTrainInfo.ServiceAddedFlag,
+					suspended: temp.DailyTrainInfo.SuspendedFlag | stop.SuspendedFlag,
+				}),
+				temp.DailyTrainInfo.Note.ZhTw,
+			}
+			key := temp.TrainDate + "\x00" + temp.DailyTrainInfo.TrainNo + "\x00" + stop.StationID
+			if err := appendUniqueLoadRow(&row, seen, key, "timetable", candidate); err != nil {
+				return fmt.Errorf("TRA timetable %s: %w", date, err)
 			}
 		}
 	}
-	if len(row) == 0 {
-		log.Infof("[RAIL] action=tra_prefetch event=complete date=%s reason=no_data", date)
-		return nil
-	}
 	return sink.copyUpsert(ctx, copyUpsertSpec{
-		key: "tra_timetable",
+		key:     "tra_timetable",
+		preExec: []copyUpsertStmt{{sql: `DELETE FROM tra_timetable WHERE train_date = $1`, args: []any{date}}},
 		createSQL: `CREATE TEMP TABLE temp_tra_timetable (
 				train_date            date not null,
 				trainno               text not null,
@@ -279,49 +394,57 @@ func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, dat
 }
 
 // loadThsrTimetable upserts one day's THSR daily timetable stop rows into
-// thsr_timetable via a temp-table COPY. Stop times parse as "15:04"; unparseable
-// times become the zero time. It consumes an already-opened decoder;
+// thsr_timetable via a temp-table COPY. Stop times are validated and parsed as
+// "15:04" before any sink call. It consumes an already-opened decoder;
 // the temp_thsr_timetable COPY and ON CONFLICT (train_date,trainno,stationid)
 // upsert are byte-identical to the legacy transform.
 func loadThsrTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, date string) error {
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[RAIL] action=thsr_prefetch event=decode_error date=%s error=%v", date, err)
+	if _, err := time.Parse(time.DateOnly, date); err != nil {
+		return fmt.Errorf("THSR timetable partition date %q: %w", date, err)
+	}
+	timetables, err := decodeLoadArray[raw_thsr_timetable](dec, "THSR timetable "+date, func(_ int, timetable raw_thsr_timetable) error {
+		return validateThsrTimetable(timetable, date)
+	})
+	if err != nil {
 		return err
 	}
 	row := [][]any{}
-	for dec.More() {
-		var temp raw_thsr_timetable
-		if err := dec.Decode(&temp); err == nil {
-			for _, stop := range temp.StopTimes {
-				// Parse "15:04" strings like the TRA path: pgx cannot binary-encode
-				// a raw string into a time column during COPY.
-				at, _ := time.Parse("15:04", stop.ArrivalTime)
-				dt, _ := time.Parse("15:04", stop.DepartureTime)
-				row = append(row, []any{
-					temp.TrainDate,
-					temp.DailyTrainInfo.TrainNo,
-					temp.DailyTrainInfo.Direction,
-					temp.DailyTrainInfo.StartingStationID,
-					temp.DailyTrainInfo.StartingStationName.ZhTw,
-					temp.DailyTrainInfo.EndingStationID,
-					temp.DailyTrainInfo.EndingStationName.ZhTw,
-					stop.StopSequence,
-					stop.StationID,
-					stop.StationName.ZhTw,
-					at,
-					dt,
-					temp.DailyTrainInfo.Note.ZhTw,
-					temp.DailyTrainInfo.Overnight,
-				})
+	seen := make(map[string][]any)
+	for _, temp := range timetables {
+		for _, stop := range temp.StopTimes {
+			at, err := time.Parse("15:04", stop.ArrivalTime)
+			if err != nil {
+				return fmt.Errorf("THSR timetable %s train %q station %q ArrivalTime %q: %w", date, temp.DailyTrainInfo.TrainNo, stop.StationID, stop.ArrivalTime, err)
+			}
+			dt, err := time.Parse("15:04", stop.DepartureTime)
+			if err != nil {
+				return fmt.Errorf("THSR timetable %s train %q station %q DepartureTime %q: %w", date, temp.DailyTrainInfo.TrainNo, stop.StationID, stop.DepartureTime, err)
+			}
+			candidate := []any{
+				temp.TrainDate,
+				temp.DailyTrainInfo.TrainNo,
+				temp.DailyTrainInfo.Direction,
+				temp.DailyTrainInfo.StartingStationID,
+				temp.DailyTrainInfo.StartingStationName.ZhTw,
+				temp.DailyTrainInfo.EndingStationID,
+				temp.DailyTrainInfo.EndingStationName.ZhTw,
+				stop.StopSequence,
+				stop.StationID,
+				stop.StationName.ZhTw,
+				at,
+				dt,
+				temp.DailyTrainInfo.Note.ZhTw,
+				temp.DailyTrainInfo.Overnight,
+			}
+			key := temp.TrainDate + "\x00" + temp.DailyTrainInfo.TrainNo + "\x00" + stop.StationID
+			if err := appendUniqueLoadRow(&row, seen, key, "timetable", candidate); err != nil {
+				return fmt.Errorf("THSR timetable %s: %w", date, err)
 			}
 		}
 	}
-	if len(row) == 0 {
-		log.Infof("[RAIL] action=thsr_prefetch event=complete date=%s reason=no_data", date)
-		return nil
-	}
 	return sink.copyUpsert(ctx, copyUpsertSpec{
-		key: "thsr_timetable",
+		key:     "thsr_timetable",
+		preExec: []copyUpsertStmt{{sql: `DELETE FROM thsr_timetable WHERE train_date = $1`, args: []any{date}}},
 		createSQL: `CREATE TEMP TABLE temp_thsr_timetable (
 				train_date            date not null,
 				trainno               text not null,
@@ -369,21 +492,24 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, da
 // COPY and ON CONFLICT (station_id) upsert are byte-identical to the legacy
 // transform. It returns the first hard error instead of logging-and-returning.
 func loadTraStation(ctx context.Context, dec *json.Decoder, sink loadSink, _ string) error {
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[RAIL] action=tra_station event=decode_error error=%v", err)
+	stations, err := decodeLoadArray[railStation](dec, "TRA stations", func(_ int, station railStation) error {
+		return validateRailStation(station, false)
+	})
+	if err != nil {
 		return err
 	}
 	row := [][]any{}
-	for dec.More() {
-		var temp railStation
-		if err := dec.Decode(&temp); err == nil {
-			g := fmt.Sprintf("POINT(%.6f %.6f)", temp.StationPosition.PositionLon, temp.StationPosition.PositionLat)
-			row = append(row, []any{
-				temp.StationID,
-				temp.StationName.ZhTw,
-				citymap2[temp.LocationCityCode],
-				g,
-			})
+	seen := make(map[string][]any, len(stations))
+	for _, temp := range stations {
+		g := fmt.Sprintf("POINT(%.6f %.6f)", temp.StationPosition.PositionLon, temp.StationPosition.PositionLat)
+		candidate := []any{
+			temp.StationID,
+			temp.StationName.ZhTw,
+			citymap2[temp.LocationCityCode],
+			g,
+		}
+		if err := appendUniqueLoadRow(&row, seen, temp.StationID, "station", candidate); err != nil {
+			return fmt.Errorf("TRA stations: %w", err)
 		}
 	}
 	if len(row) > 0 {
@@ -417,36 +543,68 @@ func loadTraStation(ctx context.Context, dec *json.Decoder, sink loadSink, _ str
 	return nil
 }
 
-// loadThsrStation upserts THSR stations into thsr_stations using a batched
-// per-station INSERT (there are few HSR stations, so no temp table). It consumes
-// an already-opened decoder; the INSERT ... ON CONFLICT (station_id) and
-// db.SendBatch are byte-identical to the legacy transform.
-func loadThsrStation(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _ *redis.Client, _ string) error {
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[RAIL] action=thsr_station event=decode_error error=%v", err)
+// loadThsrStation upserts THSR stations into thsr_stations via one temp-table
+// COPY transaction. It consumes an already-opened decoder and rejects an
+// invalid or ambiguous payload before opening the transaction.
+func loadThsrStation(ctx context.Context, dec *json.Decoder, sink copyUpsertSink, _ string) error {
+	stations, err := decodeLoadArray[railStation](dec, "THSR stations", func(_ int, station railStation) error {
+		return validateRailStation(station, true)
+	})
+	if err != nil {
 		return err
 	}
-	c1 := `INSERT INTO thsr_stations (
-                          station_id,
-                          name,
-                          city,
-                          geom,
-                          stationcode,
-                          updated_at
-                          )
-			VALUES ($1, $2, $3,ST_GeomFromText($4, 4326),$5, NOW())
-			ON CONFLICT (station_id) DO UPDATE SET name = EXCLUDED.name, updated_at = NOW();`
-	batch := &pgx.Batch{}
-	for dec.More() {
-		var temp railStation
-		if err := dec.Decode(&temp); err == nil {
-			g := fmt.Sprintf("POINT(%.6f %.6f)", temp.StationPosition.PositionLon, temp.StationPosition.PositionLat)
-			batch.Queue(c1, temp.StationID, temp.StationName.ZhTw, citymap2[temp.LocationCityCode], g, temp.StationCode)
+	if len(stations) == 0 {
+		return nil
+	}
+	rows := make([][]any, 0, len(stations))
+	seen := make(map[string][]any, len(stations))
+	for _, station := range stations {
+		g := fmt.Sprintf("POINT(%.6f %.6f)", station.StationPosition.PositionLon, station.StationPosition.PositionLat)
+		candidate := []any{
+			station.StationID,
+			station.StationName.ZhTw,
+			citymap2[station.LocationCityCode],
+			g,
+			station.StationCode,
+		}
+		if err := appendUniqueLoadRow(&rows, seen, station.StationID, "station", candidate); err != nil {
+			return fmt.Errorf("THSR stations: %w", err)
 		}
 	}
-	b := db.SendBatch(ctx, batch)
-	_ = b.Close()
-	log.Infof("[RAIL] action=thsr_station event=complete")
+	return sink.copyUpsert(ctx, copyUpsertSpec{
+		key: "thsr_station",
+		createSQL: `CREATE TEMP TABLE temp_thsr_station (
+			station_id text, name text, city text, geom text, stationcode text
+		) ON COMMIT DROP`,
+		tempTable: "temp_thsr_station",
+		copyCols:  []string{"station_id", "name", "city", "geom", "stationcode"},
+		insertSQL: `INSERT INTO thsr_stations (
+			station_id, name, city, geom, stationcode, updated_at
+		)
+		SELECT station_id, name, city, ST_GeomFromText(geom, 4326), stationcode, NOW()
+		FROM temp_thsr_station
+		ON CONFLICT (station_id) DO UPDATE SET
+			name = EXCLUDED.name, city = EXCLUDED.city, geom = EXCLUDED.geom,
+			stationcode = EXCLUDED.stationcode, updated_at = NOW()`,
+	}, rows)
+}
+
+func validateRailStation(station railStation, requireStationCode bool) error {
+	if strings.TrimSpace(station.StationID) == "" {
+		return errors.New("StationID is required")
+	}
+	if strings.TrimSpace(station.LocationCityCode) == "" {
+		return errors.New("LocationCityCode is required")
+	}
+	if _, ok := citymap2[station.LocationCityCode]; !ok {
+		return fmt.Errorf("LocationCityCode %q is unknown", station.LocationCityCode)
+	}
+	if requireStationCode && strings.TrimSpace(station.StationCode) == "" {
+		return errors.New("StationCode is required")
+	}
+	if !validPosition(station.StationPosition.PositionLon, station.StationPosition.PositionLat) {
+		return fmt.Errorf("position is invalid: lon=%v lat=%v", station.StationPosition.PositionLon, station.StationPosition.PositionLat)
+	}
 	return nil
 }
 
@@ -456,16 +614,40 @@ func loadThsrStation(ctx context.Context, dec *json.Decoder, db *pgxpool.Pool, _
 // (origin_station_id, destination_station_id, ticket_type) upsert are
 // byte-identical to the legacy transform.
 func loadTraFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ string) error {
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[RAIL] action=tra_fare event=decode_error error=%v", err)
+	fares, err := decodeLoadArray[tra_fare](dec, "TRA fares", func(_ int, fare tra_fare) error {
+		if strings.TrimSpace(fare.OriginStationID) == "" {
+			return errors.New("OriginStationID is required")
+		}
+		if strings.TrimSpace(fare.DestinationStationID) == "" {
+			return errors.New("DestinationStationID is required")
+		}
+		if len(fare.Fares) == 0 {
+			return errors.New("Fares must not be empty")
+		}
+		for index, item := range fare.Fares {
+			if strings.TrimSpace(item.TicketType) == "" {
+				return fmt.Errorf("Fares element %d TicketType is required", index)
+			}
+			if item.Price < 0 {
+				return fmt.Errorf("Fares element %d Price must be non-negative", index)
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
+	if len(fares) == 0 {
+		return nil
+	}
 	row := [][]any{}
-	for dec.More() {
-		var temp tra_fare
-		if err := dec.Decode(&temp); err == nil {
-			for _, t1 := range temp.Fares {
-				row = append(row, []any{temp.OriginStationID, temp.DestinationStationID, t1.TicketType, t1.Price})
+	seen := make(map[string][]any)
+	for _, temp := range fares {
+		for _, t1 := range temp.Fares {
+			candidate := []any{temp.OriginStationID, temp.DestinationStationID, t1.TicketType, t1.Price}
+			key := temp.OriginStationID + "\x00" + temp.DestinationStationID + "\x00" + t1.TicketType
+			if err := appendUniqueLoadRow(&row, seen, key, "fare", candidate); err != nil {
+				return fmt.Errorf("TRA fares: %w", err)
 			}
 		}
 	}
@@ -498,16 +680,43 @@ func loadTraFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ string
 // (origin,destination,ticket_type,fare_class,cabin_class) upsert are
 // byte-identical to the legacy transform.
 func loadThsrFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ string) error {
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[RAIL] action=thsr_fare event=decode_error error=%v", err)
+	fares, err := decodeLoadArray[thsr_fare](dec, "THSR fares", func(_ int, fare thsr_fare) error {
+		if strings.TrimSpace(fare.OriginStationID) == "" {
+			return errors.New("OriginStationID is required")
+		}
+		if strings.TrimSpace(fare.DestinationStationID) == "" {
+			return errors.New("DestinationStationID is required")
+		}
+		if len(fare.Fares) == 0 {
+			return errors.New("Fares must not be empty")
+		}
+		for index, item := range fare.Fares {
+			if item.TicketType == 0 {
+				return fmt.Errorf("Fares element %d TicketType is required", index)
+			}
+			if item.FareClass == 0 {
+				return fmt.Errorf("Fares element %d FareClass is required", index)
+			}
+			if item.CabinClass == 0 {
+				return fmt.Errorf("Fares element %d CabinClass is required", index)
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
+	if len(fares) == 0 {
+		return nil
+	}
 	row := [][]any{}
-	for dec.More() {
-		var temp thsr_fare
-		if err := dec.Decode(&temp); err == nil {
-			for _, t1 := range temp.Fares {
-				row = append(row, []any{temp.OriginStationID, temp.DestinationStationID, t1.TicketType, t1.FareClass, t1.CabinClass, t1.Price})
+	seen := make(map[string][]any)
+	for _, temp := range fares {
+		for _, t1 := range temp.Fares {
+			candidate := []any{temp.OriginStationID, temp.DestinationStationID, t1.TicketType, t1.FareClass, t1.CabinClass, t1.Price}
+			key := fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%d", temp.OriginStationID, temp.DestinationStationID, t1.TicketType, t1.FareClass, t1.CabinClass)
+			if err := appendUniqueLoadRow(&row, seen, key, "fare", candidate); err != nil {
+				return fmt.Errorf("THSR fares: %w", err)
 			}
 		}
 	}

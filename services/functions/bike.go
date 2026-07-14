@@ -8,9 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"google.golang.org/protobuf/proto"
 )
@@ -54,25 +53,43 @@ type bikeAvailability struct {
 // the temp_bike COPY/upsert are byte-identical to the legacy transform. part is
 // the partition value, which for this dataset is the city.
 func loadBikeStations(ctx context.Context, dec *json.Decoder, sink loadSink, city string) error {
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[BIKE] action=getbike_station city=%s event=decode_error error=%v", city, err.Error())
+	if strings.TrimSpace(city) == "" {
+		return errors.New("bike stations: city is required")
+	}
+	stations, err := decodeLoadArray[bikeStation](dec, "bike stations "+city, func(_ int, station bikeStation) error {
+		if strings.TrimSpace(station.StationUID) == "" {
+			return errors.New("StationUID is required")
+		}
+		if strings.TrimSpace(station.StationID) == "" {
+			return errors.New("StationID is required")
+		}
+		if !validPosition(station.StationPosition.PositionLon, station.StationPosition.PositionLat) {
+			return fmt.Errorf("position is invalid: lon=%v lat=%v", station.StationPosition.PositionLon, station.StationPosition.PositionLat)
+		}
+		if station.ServiceType != 1 && station.ServiceType != 2 {
+			return fmt.Errorf("ServiceType must be 1 or 2, got %d", station.ServiceType)
+		}
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	row := [][]any{}
-	for dec.More() {
-		var temp bikeStation
-		if err := dec.Decode(&temp); err == nil {
-			g := fmt.Sprintf("POINT(%.6f %.6f)", temp.StationPosition.PositionLon, temp.StationPosition.PositionLat)
-			row = append(row, []any{
-				temp.StationUID,
-				temp.StationID,
-				strings.TrimPrefix(temp.StationName.ZhTw, "YouBike2.0_"),
-				temp.BikesCapacity,
-				temp.ServiceType,
-				city,
-				g,
-				temp.StationAddress.ZhTw,
-			})
+	seen := make(map[string][]any, len(stations))
+	for _, temp := range stations {
+		g := fmt.Sprintf("POINT(%.6f %.6f)", temp.StationPosition.PositionLon, temp.StationPosition.PositionLat)
+		candidate := []any{
+			temp.StationUID,
+			temp.StationID,
+			strings.TrimPrefix(temp.StationName.ZhTw, "YouBike2.0_"),
+			temp.BikesCapacity,
+			temp.ServiceType,
+			city,
+			g,
+			temp.StationAddress.ZhTw,
+		}
+		if err := appendUniqueLoadRow(&row, seen, temp.StationUID, "StationUID", candidate); err != nil {
+			return fmt.Errorf("bike stations %s: %w", city, err)
 		}
 	}
 	if len(row) == 0 {

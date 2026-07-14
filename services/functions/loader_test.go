@@ -374,8 +374,8 @@ func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
 		t.Fatalf("assembled trip = %+v, want TripID T1 with one stop", dir0.DailyTimetables[0])
 	}
 	ttl := rc.TTL(key).Val()
-	if ttl <= 23*time.Hour || ttl > 23*time.Hour+30*time.Minute {
-		t.Fatalf("TTL = %s, want ~23h30m", ttl)
+	if ttl <= 25*time.Hour+59*time.Minute || ttl > 26*time.Hour {
+		t.Fatalf("TTL = %s, want 26h", ttl)
 	}
 }
 

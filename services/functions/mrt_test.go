@@ -26,7 +26,10 @@ func TestMrtTravelGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stations, dist, segs, xfers := mrtTravelGraph(lines, transfers)
+	stations, dist, segs, xfers, err := mrtTravelGraph(lines, transfers)
+	if err != nil {
+		t.Fatalf("mrtTravelGraph: %v", err)
+	}
 	if segs != 3 || xfers != 1 {
 		t.Fatalf("edge counts: segs=%d xfers=%d, want 3/1", segs, xfers)
 	}

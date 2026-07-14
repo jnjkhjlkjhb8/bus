@@ -5,7 +5,10 @@ import (
 
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -343,62 +346,137 @@ func busDailyTimetableSkip(city string) bool {
 
 // loadBusDailyTimetable assembles one city's daily timetables from an opened
 // decoder and writes each subroute's protobuf into Redis under
-// bus_daily_timetable:<subRouteUID> (TTL 23h30m). It consumes the decoder from
+// bus_daily_timetable:<subRouteUID> (TTL 26h). It consumes the decoder from
 // the opening '[' onward; the loader hands it an unopened decoder over
 // reconstructed raw_tdx.bus_dailytimetable bytes. db is unused (this dataset is
 // Redis-only); the parameter keeps the loadSpec signature.
-func loadBusDailyTimetable(_ context.Context, dec *json.Decoder, _ *pgxpool.Pool, rc *redis.Client, city string) error {
-	if _, err := dec.Token(); err != nil {
-		log.Infof("[bus] action=bus_dailyroute city=%s event=decode_error error=%v", city, err)
+func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Pool, rc *redis.Client, city string) error {
+	if strings.TrimSpace(city) == "" {
+		return errors.New("bus daily timetable: city is required")
+	}
+	entries, err := decodeLoadArray[rawBusDailytimetable](dec, "bus daily timetable "+city, func(_ int, timetable rawBusDailytimetable) error {
+		return validateBusDailyTimetable(timetable)
+	})
+	if err != nil {
 		return err
 	}
-	pipe := rc.Pipeline()
 	mp := make(map[string]map[int32]*models.Bus_DirectionTimetable, 300)
-	var temp rawBusDailytimetable
-	for dec.More() {
-		temp = rawBusDailytimetable{}
-		if err := dec.Decode(&temp); err == nil {
-			uid, dir := shared.CanonicalSubroute(city, temp.SubRouteUID, temp.Direction)
-			if _, exists := mp[uid]; !exists {
-				mp[uid] = make(map[int32]*models.Bus_DirectionTimetable, 4)
-			}
-			if _, exists := mp[uid][int32(dir)]; !exists {
-				mp[uid][int32(dir)] = &models.Bus_DirectionTimetable{
-					DailyTimetables: make([]*models.Bus_DailyTimetable, 0, 64),
-				}
-			}
-			for _, t := range temp.Timetables {
-				stop := make([]*models.Bus_StopTime, len(t.StopTimes))
-				for i, st := range t.StopTimes {
-					stop[i] = &models.Bus_StopTime{
-						StopSequence:  int32(st.StopSequence),
-						ArrivalTime:   st.ArrivalTime,
-						DepartureTime: st.DepartureTime,
-					}
-				}
-				timtable := &models.Bus_DailyTimetable{
-					TripID:     t.TripID,
-					IsLowFloor: t.IsLowFloor,
-					StopTimes:  stop,
-				}
-				mp[uid][int32(dir)].DailyTimetables = append(mp[uid][int32(dir)].DailyTimetables, timtable)
+	seenTrips := make(map[string]*models.Bus_DailyTimetable)
+	for _, temp := range entries {
+		uid, dir := shared.CanonicalSubroute(city, temp.SubRouteUID, temp.Direction)
+		if _, exists := mp[uid]; !exists {
+			mp[uid] = make(map[int32]*models.Bus_DirectionTimetable, 4)
+		}
+		if _, exists := mp[uid][int32(dir)]; !exists {
+			mp[uid][int32(dir)] = &models.Bus_DirectionTimetable{
+				DailyTimetables: make([]*models.Bus_DailyTimetable, 0, 64),
 			}
 		}
+		for _, t := range temp.Timetables {
+			stop := make([]*models.Bus_StopTime, len(t.StopTimes))
+			for i, st := range t.StopTimes {
+				stop[i] = &models.Bus_StopTime{
+					StopSequence:  int32(st.StopSequence),
+					ArrivalTime:   st.ArrivalTime,
+					DepartureTime: st.DepartureTime,
+					StopUID:       st.StopUID,
+				}
+			}
+			timetable := &models.Bus_DailyTimetable{
+				TripID:     t.TripID,
+				IsLowFloor: t.IsLowFloor,
+				StopTimes:  stop,
+			}
+			key := fmt.Sprintf("%s\x00%d\x00%s", uid, dir, t.TripID)
+			if prior, exists := seenTrips[key]; exists {
+				if proto.Equal(prior, timetable) {
+					continue
+				}
+				return fmt.Errorf("bus daily timetable %s: divergent duplicate TripID %q for subroute %s direction %d", city, t.TripID, uid, dir)
+			}
+			seenTrips[key] = timetable
+			mp[uid][int32(dir)].DailyTimetables = append(mp[uid][int32(dir)].DailyTimetables, timetable)
+		}
 	}
-	for subRouteUID, t := range mp {
+	type redisWrite struct {
+		key   string
+		value []byte
+	}
+	uids := make([]string, 0, len(mp))
+	for uid := range mp {
+		uids = append(uids, uid)
+	}
+	sort.Strings(uids)
+	writes := make([]redisWrite, 0, len(uids))
+	for _, subRouteUID := range uids {
 		pbRoute := &models.Bus_DailyTimetables{
 			SubRouteUID: subRouteUID,
-			Direction:   t,
+			Direction:   mp[subRouteUID],
 		}
-		pb, err := proto.Marshal(pbRoute)
+		pb, err := (proto.MarshalOptions{Deterministic: true}).Marshal(pbRoute)
 		if err != nil {
-			log.Infof("[bus] action=bus_dailyroute subRouteUID=%s event=marshal_error error=%v", subRouteUID, err)
-			continue
+			return fmt.Errorf("bus daily timetable %s marshal %s: %w", city, subRouteUID, err)
 		}
-		pipe.Set(shared.BusDailyTimetableKey(subRouteUID), pb, 23*time.Hour+30*time.Minute)
+		writes = append(writes, redisWrite{key: shared.BusDailyTimetableKey(subRouteUID), value: pb})
 	}
-	_, _ = pipe.Exec()
+	if len(writes) == 0 {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("bus daily timetable %s context before Redis transaction: %w", city, err)
+	}
+	if rc == nil {
+		return fmt.Errorf("bus daily timetable %s Redis transaction: nil client", city)
+	}
+	pipe := rc.TxPipeline()
+	defer func() { _ = pipe.Close() }()
+	for _, write := range writes {
+		pipe.Set(write.key, write.value, 26*time.Hour)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = pipe.Discard()
+		return fmt.Errorf("bus daily timetable %s context before Redis transaction: %w", city, err)
+	}
+	if _, err := pipe.Exec(); err != nil {
+		return fmt.Errorf("bus daily timetable %s Redis transaction: %w", city, err)
+	}
 	log.Infof("[BUS] action=bus_dailyroute event=complete city=%s", city)
+	return nil
+}
+
+func validateBusDailyTimetable(timetable rawBusDailytimetable) error {
+	if strings.TrimSpace(timetable.SubRouteUID) == "" {
+		return errors.New("SubRouteUID is required")
+	}
+	if timetable.Direction > 1 {
+		return fmt.Errorf("Direction must be 0 or 1, got %d", timetable.Direction)
+	}
+	if len(timetable.Timetables) == 0 {
+		return errors.New("Timetables must not be empty")
+	}
+	for timetableIndex, trip := range timetable.Timetables {
+		if strings.TrimSpace(trip.TripID) == "" {
+			return fmt.Errorf("Timetables element %d TripID is required", timetableIndex)
+		}
+		if len(trip.StopTimes) == 0 {
+			return fmt.Errorf("Timetables element %d StopTimes must not be empty", timetableIndex)
+		}
+		for stopIndex, stop := range trip.StopTimes {
+			prefix := fmt.Sprintf("Timetables element %d StopTimes element %d", timetableIndex, stopIndex)
+			if stop.StopSequence <= 0 {
+				return fmt.Errorf("%s StopSequence must be positive", prefix)
+			}
+			if strings.TrimSpace(stop.StopUID) == "" {
+				return fmt.Errorf("%s StopUID is required", prefix)
+			}
+			if !validClock(stop.ArrivalTime) {
+				return fmt.Errorf("%s ArrivalTime is invalid: %q", prefix, stop.ArrivalTime)
+			}
+			if !validClock(stop.DepartureTime) {
+				return fmt.Errorf("%s DepartureTime is invalid: %q", prefix, stop.DepartureTime)
+			}
+		}
+	}
 	return nil
 }
 
