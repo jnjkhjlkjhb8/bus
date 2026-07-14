@@ -1,22 +1,25 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 )
 
-// cwaBase is the base URL of the CWA (Central Weather Administration) open-data
-// datastore API. Docs: https://opendata.cwa.gov.tw/
 const cwaBase = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
 
-// weatherData is the per-city weather snapshot cached in Redis and used as ETA
-// prediction features.
+const weatherHTTPTimeout = 30 * time.Second
+
 type weatherData struct {
 	Temperature   float64 `json:"temperature"`
 	Precipitation float64 `json:"precipitation"`
@@ -24,9 +27,6 @@ type weatherData struct {
 	Humidity      float64 `json:"humidity"`
 }
 
-// countyToCity maps the CWA station's Chinese county name to the internal city
-// code, so observation records can be bucketed per city. Stations in counties
-// not listed here are ignored.
 var countyToCity = map[string]string{
 	"臺北市": "Taipei", "新北市": "NewTaipei", "桃園市": "Taoyuan",
 	"臺中市": "Taichung", "臺南市": "Tainan", "高雄市": "Kaohsiung",
@@ -38,146 +38,235 @@ var countyToCity = map[string]string{
 	"連江縣": "LienchiangCounty",
 }
 
-// weatherSync fetches current weather from two CWA datasets and caches a merged
-// per-city snapshot in Redis (weather:<city>, 60-minute TTL) for ETA prediction.
-// O-A0003-001 supplies station observations (temperature, wind, humidity) and
-// O-A0002-001 supplies rainfall stations (precipitation), each taking the most
-// recent station per city. No-op when CWA_API_KEY is unset; a failure of either
-// dataset is logged and the other's data is still cached. The TTL runs well ahead
-// of the 10-minute refresh cron so a single transient CWA failure leaves a
-// slightly stale snapshot in place rather than nulling the weather features on
-// every bus_eta_history row written until the next success.
-func weatherSync(rc *redis.Client) {
-	cwaKey := os.Getenv("CWA_API_KEY")
-	if cwaKey == "" {
+func weatherSync(ctx context.Context, rc *redis.Client) error {
+	apiKey := os.Getenv("CWA_API_KEY")
+	if apiKey == "" {
 		log.Infof("[WEATHER] CWA_API_KEY not set, skipping")
-		return
+		return nil
 	}
-	client := resty.New()
-	merged := make(map[string]weatherData)
+	if rc == nil {
+		return errors.New("weather Redis client is nil")
+	}
+	client := &http.Client{Timeout: weatherHTTPTimeout}
+	snapshot, err := fetchWeatherSnapshot(ctx, client, cwaBase, apiKey)
+	if err != nil {
+		return err
+	}
+	return writeWeatherSnapshot(ctx, rc, snapshot)
+}
 
-	var obs struct {
-		Records struct {
-			Station []struct {
-				GeoInfo struct {
-					CountyName string `json:"CountyName"`
-				} `json:"GeoInfo"`
-				ObsTime struct {
-					DateTime string `json:"DateTime"`
-				} `json:"ObsTime"`
-				WeatherElement struct {
-					AirTemperature   string `json:"AirTemperature"`
-					WindSpeed        string `json:"WindSpeed"`
-					RelativeHumidity string `json:"RelativeHumidity"`
-				} `json:"WeatherElement"`
-			} `json:"Station"`
-		} `json:"records"`
-	}
-	type stationBest struct {
-		obsTime time.Time
-		data    weatherData
-	}
-	best := make(map[string]stationBest)
-
-	resp, err := client.R().SetHeader("Authorization", cwaKey).
-		Get(cwaBase + "/O-A0003-001")
-	if err == nil && resp.StatusCode() == 200 {
-		if jsonErr := json.Unmarshal(resp.Body(), &obs); jsonErr == nil {
-			for _, s := range obs.Records.Station {
-				city, ok := countyToCity[s.GeoInfo.CountyName]
-				if !ok {
-					continue
-				}
-				t, _ := time.Parse(time.RFC3339, s.ObsTime.DateTime)
-				if prev, exists := best[city]; exists && !t.After(prev.obsTime) {
-					continue
-				}
-				d := weatherData{}
-				if v, err := strconv.ParseFloat(s.WeatherElement.AirTemperature, 64); err == nil && v > -90 {
-					d.Temperature = v
-				}
-				if v, err := strconv.ParseFloat(s.WeatherElement.WindSpeed, 64); err == nil && v > -90 {
-					d.WindSpeed = v
-				}
-				if v, err := strconv.ParseFloat(s.WeatherElement.RelativeHumidity, 64); err == nil && v > -90 {
-					d.Humidity = v
-				}
-				best[city] = stationBest{t, d}
-			}
+func writeWeatherSnapshot(ctx context.Context, rc *redis.Client, snapshot map[string]weatherData) error {
+	pipe := rc.WithContext(ctx).TxPipeline()
+	for city, data := range snapshot {
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("marshal weather for %s: %w", city, err)
 		}
-		for city, b := range best {
-			merged[city] = b.data
-		}
-	} else if err != nil {
-		log.Infof("[WEATHER] O-A0003-001 fetch error: %v", err)
-	} else {
-		log.Infof("[WEATHER] O-A0003-001 error status=%d", resp.StatusCode())
+		pipe.Set(shared.WeatherKey(city), encoded, time.Hour)
 	}
+	if _, err := pipe.Exec(); err != nil {
+		return fmt.Errorf("write weather snapshot to Redis: %w", err)
+	}
+	log.Infof("[WEATHER] synced %d cities", len(snapshot))
+	return nil
+}
 
-	// Precipitation comes from the automatic rainfall-station dataset (O-A0002-001),
-	// bucketed per city exactly like the observation stations above: the newest
-	// station per county wins, contributing its "Now" 10-minute accumulation. This
-	// replaced the former F-B0046-001 precipitation grid, whose dataset id CWA
-	// retired — it now 404s, so the whole grid branch was skipped and precipitation
-	// was never written.
-	var rain struct {
-		Records struct {
-			Station []struct {
-				GeoInfo struct {
-					CountyName string `json:"CountyName"`
-				} `json:"GeoInfo"`
-				ObsTime struct {
-					DateTime string `json:"DateTime"`
-				} `json:"ObsTime"`
-				RainfallElement struct {
-					Now struct {
-						Precipitation string `json:"Precipitation"`
-					} `json:"Now"`
-				} `json:"RainfallElement"`
-			} `json:"Station"`
-		} `json:"records"`
+func fetchWeatherSnapshot(ctx context.Context, client *http.Client, baseURL, apiKey string) (map[string]weatherData, error) {
+	if ctx == nil {
+		return nil, errors.New("weather context is nil")
 	}
-	type rainBest struct {
-		obsTime time.Time
-		precip  float64
+	if client == nil {
+		return nil, errors.New("weather HTTP client is nil")
 	}
-	bestRain := make(map[string]rainBest)
-	resp2, err2 := client.R().SetHeader("Authorization", cwaKey).
-		Get(cwaBase + "/O-A0002-001")
-	if err2 == nil && resp2.StatusCode() == 200 {
-		if jsonErr := json.Unmarshal(resp2.Body(), &rain); jsonErr == nil {
-			for _, s := range rain.Records.Station {
-				city, ok := countyToCity[s.GeoInfo.CountyName]
-				if !ok {
-					continue
-				}
-				t, _ := time.Parse(time.RFC3339, s.ObsTime.DateTime)
-				if prev, exists := bestRain[city]; exists && !t.After(prev.obsTime) {
-					continue
-				}
-				// CWA flags no-data with negative sentinels (e.g. -99); skip those so
-				// precipitation stays unset rather than recording a bogus value.
-				v, err := strconv.ParseFloat(s.RainfallElement.Now.Precipitation, 64)
-				if err != nil || v < 0 {
-					continue
-				}
-				bestRain[city] = rainBest{t, v}
-			}
-			for city, b := range bestRain {
-				d := merged[city]
-				d.Precipitation = b.precip
-				merged[city] = d
-			}
+	obsBody, err := fetchCWA(ctx, client, baseURL+"/O-A0003-001", apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("fetch observations: %w", err)
+	}
+	rainBody, err := fetchCWA(ctx, client, baseURL+"/O-A0002-001", apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("fetch rainfall: %w", err)
+	}
+	observations, err := parseObservations(obsBody)
+	if err != nil {
+		return nil, fmt.Errorf("parse observations: %w", err)
+	}
+	rainfall, err := parseRainfall(rainBody)
+	if err != nil {
+		return nil, fmt.Errorf("parse rainfall: %w", err)
+	}
+	for city, precipitation := range rainfall {
+		data, ok := observations[city]
+		if !ok {
+			continue
 		}
-	} else if err2 != nil {
-		log.Infof("[WEATHER] O-A0002-001 fetch error: %v", err2)
-	} else {
-		log.Infof("[WEATHER] O-A0002-001 error status=%d", resp2.StatusCode())
+		data.Precipitation = precipitation
+		observations[city] = data
 	}
+	if len(observations) == 0 {
+		return nil, errors.New("weather snapshot contains no usable cities")
+	}
+	return observations, nil
+}
 
-	for city, d := range merged {
-		b, _ := json.Marshal(d)
-		rc.Set(shared.WeatherKey(city), string(b), 60*time.Minute)
+func fetchCWA(ctx context.Context, client *http.Client, url, apiKey string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
 	}
-	log.Infof("[WEATHER] synced %d cities", len(merged))
+	req.Header.Set("Authorization", apiKey)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, fmt.Errorf("read %s body: %w", url, readErr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("request %s: HTTP status %d", url, resp.StatusCode)
+	}
+	return body, nil
+}
+
+type observationResponse struct {
+	Records struct {
+		Station []struct {
+			GeoInfo struct {
+				CountyName string `json:"CountyName"`
+			} `json:"GeoInfo"`
+			ObsTime struct {
+				DateTime string `json:"DateTime"`
+			} `json:"ObsTime"`
+			WeatherElement struct {
+				AirTemperature   string `json:"AirTemperature"`
+				WindSpeed        string `json:"WindSpeed"`
+				RelativeHumidity string `json:"RelativeHumidity"`
+			} `json:"WeatherElement"`
+		} `json:"Station"`
+	} `json:"records"`
+}
+
+func parseObservations(body []byte) (map[string]weatherData, error) {
+	var payload observationResponse
+	if err := decodeWeatherJSON(body, &payload); err != nil {
+		return nil, err
+	}
+	type best struct {
+		time time.Time
+		data weatherData
+	}
+	latest := make(map[string]best)
+	for _, station := range payload.Records.Station {
+		city, ok := countyToCity[station.GeoInfo.CountyName]
+		if !ok {
+			continue
+		}
+		observedAt, err := time.Parse(time.RFC3339, station.ObsTime.DateTime)
+		if err != nil {
+			return nil, fmt.Errorf("city %s observation time: %w", city, err)
+		}
+		if previous, exists := latest[city]; exists && !observedAt.After(previous.time) {
+			continue
+		}
+		temperature, err := parseCWAValue(station.WeatherElement.AirTemperature, "temperature")
+		if err != nil {
+			return nil, fmt.Errorf("city %s: %w", city, err)
+		}
+		wind, err := parseCWAValue(station.WeatherElement.WindSpeed, "wind speed")
+		if err != nil {
+			return nil, fmt.Errorf("city %s: %w", city, err)
+		}
+		humidity, err := parseCWAValue(station.WeatherElement.RelativeHumidity, "humidity")
+		if err != nil {
+			return nil, fmt.Errorf("city %s: %w", city, err)
+		}
+		if temperature < -90 || wind < -90 || humidity < -90 {
+			continue
+		}
+		latest[city] = best{time: observedAt, data: weatherData{Temperature: temperature, WindSpeed: wind, Humidity: humidity}}
+	}
+	out := make(map[string]weatherData, len(latest))
+	for city, value := range latest {
+		out[city] = value.data
+	}
+	return out, nil
+}
+
+type rainfallResponse struct {
+	Records struct {
+		Station []struct {
+			GeoInfo struct {
+				CountyName string `json:"CountyName"`
+			} `json:"GeoInfo"`
+			ObsTime struct {
+				DateTime string `json:"DateTime"`
+			} `json:"ObsTime"`
+			RainfallElement struct {
+				Now struct {
+					Precipitation string `json:"Precipitation"`
+				} `json:"Now"`
+			} `json:"RainfallElement"`
+		} `json:"Station"`
+	} `json:"records"`
+}
+
+func parseRainfall(body []byte) (map[string]float64, error) {
+	var payload rainfallResponse
+	if err := decodeWeatherJSON(body, &payload); err != nil {
+		return nil, err
+	}
+	type best struct {
+		time  time.Time
+		value float64
+	}
+	latest := make(map[string]best)
+	for _, station := range payload.Records.Station {
+		city, ok := countyToCity[station.GeoInfo.CountyName]
+		if !ok {
+			continue
+		}
+		observedAt, err := time.Parse(time.RFC3339, station.ObsTime.DateTime)
+		if err != nil {
+			return nil, fmt.Errorf("city %s rainfall time: %w", city, err)
+		}
+		value, err := parseCWAValue(station.RainfallElement.Now.Precipitation, "precipitation")
+		if err != nil {
+			return nil, fmt.Errorf("city %s: %w", city, err)
+		}
+		if value < 0 {
+			continue
+		}
+		if previous, exists := latest[city]; !exists || observedAt.After(previous.time) {
+			latest[city] = best{time: observedAt, value: value}
+		}
+	}
+	out := make(map[string]float64, len(latest))
+	for city, value := range latest {
+		out[city] = value.value
+	}
+	return out, nil
+}
+
+func parseCWAValue(raw, field string) (float64, error) {
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s %q: %w", field, raw, err)
+	}
+	return value, nil
+}
+
+func decodeWeatherJSON(body []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("JSON body contains trailing data")
+		}
+		return err
+	}
+	return nil
 }

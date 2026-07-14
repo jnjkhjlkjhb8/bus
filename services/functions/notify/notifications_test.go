@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -153,6 +154,38 @@ func TestRouteAlertsRequireIdentity(t *testing.T) {
 	}
 	if got := routeAlerts("v2/Rail/Metro/Alert/TRTC", []byte(`{"LineID":"BL","Description":"x"}`)); len(got) != 0 {
 		t.Fatalf("non-bus alert leaked: %v", got)
+	}
+}
+
+func TestInterCityRouteAlertsUseCanonicalSubrouteIdentity(t *testing.T) {
+	got := routeAlerts("v2/Bus/News/InterCity", []byte(`[
+		{"SubRouteUID":"THB902301","Description":"outbound"},
+		{"SubRouteUID":"THB902302","Description":"inbound"}
+	]`))
+	if len(got) != 2 {
+		t.Fatalf("alerts = %+v", got)
+	}
+	for i := range got {
+		if got[i].routeKey != "THB9023" {
+			t.Fatalf("alert[%d] routeKey = %q, want canonical THB9023", i, got[i].routeKey)
+		}
+	}
+}
+
+func TestInterCityVehicleMQTTUsesRESTCanonicalIdentity(t *testing.T) {
+	payload := canonicalInterCityBusPayload("v2/Bus/RealTimeNearStop/InterCity", []byte(`[
+		{"PlateNumb":"KKA-1","SubRouteUID":"THB902301","Direction":9},
+		{"PlateNumb":"KKA-2","SubRouteUID":"THB902302","Direction":9}
+	]`))
+	var got []struct {
+		SubRouteUID string `json:"SubRouteUID"`
+		Direction   uint8  `json:"Direction"`
+	}
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("decode canonical payload: %v", err)
+	}
+	if len(got) != 2 || got[0].SubRouteUID != "THB9023" || got[0].Direction != 0 || got[1].SubRouteUID != "THB9023" || got[1].Direction != 1 {
+		t.Fatalf("canonical vehicle payload = %+v", got)
 	}
 }
 

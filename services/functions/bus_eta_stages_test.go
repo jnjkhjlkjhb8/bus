@@ -122,18 +122,22 @@ func TestBuildBusPositionMap(t *testing.T) {
 	posit := []rawBusPosition{
 		{PlateNumb: "AAA-1", SubRouteUID: "R1", Direction: 0, Speed: 42.7, Azimuth: 180},
 		{PlateNumb: "AAA-2", SubRouteUID: "R1", Direction: 0, Speed: 0, Azimuth: 90},
+		{PlateNumb: "WRONG-WAY", SubRouteUID: "R1", Direction: 1, Speed: 9, Azimuth: 270},
 		{PlateNumb: "BBB-1", SubRouteUID: "R2", Direction: 1, Speed: 10, Azimuth: 0},
 	}
 	posit[0].BusPosition.PositionLon = 121.5
 	posit[0].BusPosition.PositionLat = 25.0
-	m := buildBusPositionMap("Taipei", posit)
-	if len(m["R1"]) != 2 {
-		t.Fatalf("R1 buses = %d, want 2", len(m["R1"]))
+	m := buildDirectionAwareBusPositionMap("Taipei", posit)
+	if len(m["R1\x000"]) != 2 {
+		t.Fatalf("R1 direction 0 buses = %d, want 2", len(m["R1\x000"]))
 	}
-	if len(m["R2"]) != 1 {
-		t.Fatalf("R2 buses = %d, want 1", len(m["R2"]))
+	if len(m["R1\x001"]) != 1 || m["R1\x001"][0].PlateNumb != "WRONG-WAY" {
+		t.Fatalf("R1 direction 1 buses = %+v, want WRONG-WAY only", m["R1\x001"])
 	}
-	first := m["R1"][0]
+	if len(m["R2\x001"]) != 1 {
+		t.Fatalf("R2 direction 1 buses = %d, want 1", len(m["R2\x001"]))
+	}
+	first := m["R1\x000"][0]
 	if first.PlateNumb != "AAA-1" || first.Speed != 42 || first.Azimuth != 180 {
 		t.Errorf("first R1 bus = %+v, want plate AAA-1 speed 42 azimuth 180 (float truncated)", first)
 	}

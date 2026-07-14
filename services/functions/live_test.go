@@ -105,25 +105,46 @@ type captureLiveSink struct {
 	refresh  [][]ttlPattern
 	// strings and hashes seed the read seam so a test can drive the bus weather
 	// read and the tra delay-hash merge without a live Redis.
-	strings map[string]string
-	hashes  map[string]map[string]string
-	execErr error
+	strings    map[string]string
+	hashes     map[string]map[string]string
+	owned      map[string][]string
+	execErr    error
+	refreshErr error
+	contexts   []context.Context
 }
 
 func (s *captureLiveSink) pipeline() livePipe { return &capturePipe{sink: s} }
 
-func (s *captureLiveSink) refreshTTL(patterns []ttlPattern) {
-	s.refresh = append(s.refresh, patterns)
+func (s *captureLiveSink) pipelineContext(ctx context.Context) livePipe {
+	s.contexts = append(s.contexts, ctx)
+	return &capturePipe{sink: s}
 }
 
-func (s *captureLiveSink) getString(key string) (string, error) {
+func (s *captureLiveSink) refreshTTL(_ context.Context, patterns []ttlPattern) error {
+	s.refresh = append(s.refresh, patterns)
+	return s.refreshErr
+}
+
+func (s *captureLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time.Duration) error {
+	members := s.owned[key]
+	if len(members) == 0 {
+		return nil
+	}
+	patterns := make([]ttlPattern, 0, len(members))
+	for _, member := range members {
+		patterns = append(patterns, ttlPattern{pattern: member, ttl: ttl})
+	}
+	return s.refreshTTL(ctx, patterns)
+}
+
+func (s *captureLiveSink) getString(_ context.Context, key string) (string, error) {
 	if v, ok := s.strings[key]; ok {
 		return v, nil
 	}
 	return "", redis.Nil
 }
 
-func (s *captureLiveSink) getHash(key string) (map[string]string, error) {
+func (s *captureLiveSink) getHash(_ context.Context, key string) (map[string]string, error) {
 	if v, ok := s.hashes[key]; ok {
 		return v, nil
 	}
@@ -151,7 +172,9 @@ func (s *captureLiveSink) expireFor(key string) *expireWrite {
 
 // capturePipe records writes into its sink; Exec is a no-op that never errors.
 type capturePipe struct {
-	sink *captureLiveSink
+	sink                *captureLiveSink
+	pendingOwnedKey     string
+	pendingOwnedMembers []string
 }
 
 func (p *capturePipe) Set(key string, value any, ttl time.Duration) {
@@ -170,7 +193,23 @@ func (p *capturePipe) Expire(key string, ttl time.Duration) {
 	p.sink.expires = append(p.sink.expires, expireWrite{key: key, ttl: ttl})
 }
 
-func (p *capturePipe) Exec() error { return p.sink.execErr }
+func (p *capturePipe) ReplaceOwnedKeys(key string, members []string, _ time.Duration) {
+	p.pendingOwnedKey = key
+	p.pendingOwnedMembers = append([]string(nil), members...)
+}
+
+func (p *capturePipe) Exec() error {
+	if p.sink.execErr != nil {
+		return p.sink.execErr
+	}
+	if p.pendingOwnedKey != "" {
+		if p.sink.owned == nil {
+			p.sink.owned = make(map[string][]string)
+		}
+		p.sink.owned[p.pendingOwnedKey] = append([]string(nil), p.pendingOwnedMembers...)
+	}
+	return nil
+}
 
 // toBytes normalizes the []byte / string values the jobs marshal into SET/PUBLISH.
 func toBytes(v any) []byte {
@@ -226,7 +265,7 @@ func TestMrtSpecRunWritesArrivals(t *testing.T) {
 	sink := &captureLiveSink{}
 	runLiveSpec(context.Background(), src, sink, specByKey(t, "mrt"))
 
-	key := shared.MrtLiveKey("TRTC", "BL12", "BL")
+	key := shared.MrtLiveKey("TRTC", "BL12", "BL", "BL23")
 	sw := sink.setFor(key)
 	if sw == nil {
 		t.Fatalf("expected SET for %s; got keys %v", key, setKeys(sink))
@@ -254,6 +293,27 @@ func TestMrtSpecRunWritesArrivals(t *testing.T) {
 	}
 	if pubCount != 2 {
 		t.Fatalf("publishes to %s = %d, want 2", ch, pubCount)
+	}
+}
+
+func TestMrtOppositeDestinationsUseDistinctRedisKeys(t *testing.T) {
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"mrt_LiveBoardTRTC": readFixture(t, "tdx_mrt_liveboard_trtc.json"),
+	}}
+	sink := &captureLiveSink{}
+	spec := specByKey(t, "mrt")
+
+	if err := spec.run(context.Background(), bindFetch(src, sink, spec), sink); err != nil {
+		t.Fatalf("mrt run: %v", err)
+	}
+	keys := map[string]struct{}{}
+	for _, write := range sink.sets {
+		if strings.HasPrefix(write.key, shared.MrtLiveChannel("TRTC", "BL12")+":") {
+			keys[write.key] = struct{}{}
+		}
+	}
+	if len(keys) != 2 {
+		t.Fatalf("distinct Redis keys for opposite BL destinations = %d, want 2; writes=%v", len(keys), setKeys(sink))
 	}
 }
 
@@ -294,6 +354,23 @@ func TestTraSpecCachesDelays(t *testing.T) {
 	}
 	if pub == nil {
 		t.Fatalf("expected PUBLISH to %s; got %+v", shared.TraDelayAllKey, sink.publishs)
+	}
+	trainChannel := shared.TraDelayTrainChannel("1234")
+	var trainPublish *publishWrite
+	for i := range sink.publishs {
+		if sink.publishs[i].channel == trainChannel {
+			trainPublish = &sink.publishs[i]
+		}
+	}
+	if trainPublish == nil {
+		t.Fatalf("expected per-train PUBLISH to %s; got %+v", trainChannel, sink.publishs)
+	}
+	var trainSnapshot models.TraDelays
+	if err := proto.Unmarshal(trainPublish.value, &trainSnapshot); err != nil {
+		t.Fatalf("unmarshal per-train delay: %v", err)
+	}
+	if len(trainSnapshot.Delay) != 1 || trainSnapshot.Delay["1234"] != 5 {
+		t.Fatalf("per-train snapshot = %+v", trainSnapshot.Delay)
 	}
 	// No liveboard writes remain.
 	for _, k := range setKeys(sink) {
@@ -415,7 +492,7 @@ func TestBoundFetch304RefreshesTTL(t *testing.T) {
 	sink := &captureLiveSink{}
 	spec := liveSpec{
 		key: "probe",
-		ttlPatterns: func() []ttlPattern {
+		ttlPatterns: func(string) []ttlPattern {
 			return []ttlPattern{{pattern: "mrt_live:*", ttl: mrtLiveTTL}}
 		},
 	}
@@ -433,6 +510,22 @@ func TestBoundFetch304RefreshesTTL(t *testing.T) {
 	got := sink.refresh[0]
 	if len(got) != 1 || got[0].pattern != "mrt_live:*" || got[0].ttl != mrtLiveTTL {
 		t.Fatalf("refresh patterns = %+v", got)
+	}
+}
+
+func TestBoundFetchReturnsTTLRefreshError(t *testing.T) {
+	wantErr := errors.New("expire failed")
+	src := &fakeLiveSource{fixtures: map[string][]byte{}}
+	sink := &captureLiveSink{refreshErr: wantErr}
+	spec := liveSpec{
+		key: "probe",
+		ttlPatterns: func(string) []ttlPattern {
+			return []ttlPattern{{pattern: "probe:*", ttl: time.Minute}}
+		},
+	}
+	_, err := bindFetch(src, sink, spec)(context.Background(), "/probe", "probe")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("304 refresh error = %v, want %v", err, wantErr)
 	}
 }
 
@@ -475,6 +568,50 @@ func TestFailedDecodeOrPublishLeavesMarkerUnchanged(t *testing.T) {
 			t.Fatalf("failed publish closes = %d, want 1", len(src.closed))
 		}
 	})
+}
+
+func TestRealtimePipelineFailureDoesNotAcknowledge(t *testing.T) {
+	wantErr := errors.New("redis pipeline failed")
+	tests := []struct {
+		name    string
+		specKey string
+		fixture string
+		body    []byte
+	}{
+		{name: "bike", specKey: "bike", fixture: "bike_availabilityTaipei", body: readFixture(t, "tdx_bike_availability.json")},
+		{name: "mrt", specKey: "mrt", fixture: "mrt_LiveBoardTRTC", body: readFixture(t, "tdx_mrt_liveboard_trtc.json")},
+		{name: "tra", specKey: "tra", fixture: "tra_delay", body: readFixture(t, "tdx_tra_delay.json")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := &fakeLiveSource{fixtures: map[string][]byte{tt.fixture: tt.body}}
+			sink := &captureLiveSink{execErr: wantErr}
+			spec := specByKey(t, tt.specKey)
+			err := spec.run(context.Background(), bindFetch(src, sink, spec), sink)
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("pipeline error = %v, want wrapped %v", err, wantErr)
+			}
+			if len(src.acked) != 0 {
+				t.Fatalf("pipeline failure acknowledged marker: %v", src.acked)
+			}
+		})
+	}
+}
+
+func TestRealtimePipelineReceivesJobContext(t *testing.T) {
+	type contextKey string
+	ctx := context.WithValue(context.Background(), contextKey("job"), "bike")
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"bike_availabilityTaipei": readFixture(t, "tdx_bike_availability.json"),
+	}}
+	sink := &captureLiveSink{}
+	spec := specByKey(t, "bike")
+	if err := spec.run(ctx, bindFetch(src, sink, spec), sink); err != nil {
+		t.Fatalf("bike run: %v", err)
+	}
+	if len(sink.contexts) == 0 || sink.contexts[0] != ctx {
+		t.Fatalf("pipeline contexts = %v, want job context", sink.contexts)
+	}
 }
 
 func TestLiveConsumerReturnsAckAndCloseErrors(t *testing.T) {
@@ -681,7 +818,7 @@ func TestReadBusFeedCacheRejectsNullButAcceptsEmptyArray(t *testing.T) {
 	const key = "bus:raw:test"
 
 	nullSink := &captureLiveSink{strings: map[string]string{key: `null`}}
-	values, err := readBusFeedCache[rawBusEsimated](nullSink, key)
+	values, err := readBusFeedCache[rawBusEsimated](context.Background(), nullSink, key)
 	if !errors.Is(err, errBusFeedCacheMiss) {
 		t.Fatalf("null cache error = %v, want %v", err, errBusFeedCacheMiss)
 	}
@@ -690,7 +827,7 @@ func TestReadBusFeedCacheRejectsNullButAcceptsEmptyArray(t *testing.T) {
 	}
 
 	emptySink := &captureLiveSink{strings: map[string]string{key: `[]`}}
-	values, err = readBusFeedCache[rawBusEsimated](emptySink, key)
+	values, err = readBusFeedCache[rawBusEsimated](context.Background(), emptySink, key)
 	if err != nil {
 		t.Fatalf("empty array cache error = %v", err)
 	}
@@ -846,8 +983,119 @@ func TestMrtSpec304RefreshesTTLPerSystem(t *testing.T) {
 	if len(sink.sets) != 0 {
 		t.Fatalf("expected no SETs on all-304; got %v", setKeys(sink))
 	}
-	if len(sink.refresh) != 4 {
-		t.Fatalf("refreshTTL calls = %d, want 4 (one per system)", len(sink.refresh))
+	if len(sink.refresh) != 0 {
+		t.Fatalf("never-owned systems refreshed keys on 304: %+v", sink.refresh)
+	}
+}
+
+func TestBike304RefreshesOnlyPartitionOwnedKeys(t *testing.T) {
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"bike_availabilityTaipei": readFixture(t, "tdx_bike_availability.json"),
+	}}
+	sink := &captureLiveSink{}
+	spec := specByKey(t, "bike")
+	if err := spec.run(context.Background(), bindFetch(src, sink, spec), sink); err != nil {
+		t.Fatalf("initial bike update: %v", err)
+	}
+
+	src.fixtures = map[string][]byte{}
+	sink.refresh = nil
+	if err := spec.run(context.Background(), bindFetch(src, sink, spec), sink); err != nil {
+		t.Fatalf("bike 304 update: %v", err)
+	}
+	want := map[string]bool{
+		shared.BikeAvailabilityKey("TPE500101001"): true,
+		shared.BikeAvailabilityKey("TPE500101002"): true,
+	}
+	if len(sink.refresh) != 1 || len(sink.refresh[0]) != len(want) {
+		t.Fatalf("bike 304 refreshes = %+v, want owned keys %v", sink.refresh, want)
+	}
+	for _, refresh := range sink.refresh[0] {
+		if !want[refresh.pattern] || refresh.ttl != bikeLiveTTL {
+			t.Fatalf("bike 304 refreshed unowned key or wrong TTL: %+v", refresh)
+		}
+	}
+}
+
+func TestFailedFullUpdateDoesNotReplacePartitionOwnership(t *testing.T) {
+	wantErr := errors.New("redis exec failed")
+	owner := shared.LiveOwnedKeysKey("bike", "Taipei")
+	sink := &captureLiveSink{
+		owned:   map[string][]string{owner: {"bike_availability:OLD"}},
+		execErr: wantErr,
+	}
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"bike_availabilityTaipei": readFixture(t, "tdx_bike_availability.json"),
+	}}
+	spec := specByKey(t, "bike")
+	if err := spec.run(context.Background(), bindFetch(src, sink, spec), sink); !errors.Is(err, wantErr) {
+		t.Fatalf("bike update error = %v, want %v", err, wantErr)
+	}
+	if got := sink.owned[owner]; len(got) != 1 || got[0] != "bike_availability:OLD" {
+		t.Fatalf("ownership after failed update = %v, want previous ownership", got)
+	}
+}
+
+func TestRedisOwnedTTLIntegration(t *testing.T) {
+	addr := os.Getenv("REDIS_TEST_ADDR")
+	if addr == "" {
+		t.Skip("REDIS_TEST_ADDR not set")
+	}
+	rc := redis.NewClient(&redis.Options{Addr: addr})
+	defer rc.Close()
+	if err := rc.FlushDB().Err(); err != nil {
+		t.Fatalf("flush Redis: %v", err)
+	}
+	t.Cleanup(func() { _ = rc.FlushDB().Err() })
+	owner := shared.LiveOwnedKeysKey("bike", "Taipei")
+	owned := shared.BikeAvailabilityKey("TPE-OWNED")
+	unowned := shared.BikeAvailabilityKey("NWT-UNOWNED")
+	pipe := redisLiveSink{rc: rc}.pipelineContext(context.Background())
+	pipe.Set(owned, "owned", 5*time.Second)
+	pipe.Set(unowned, "unowned", 5*time.Second)
+	pipe.ReplaceOwnedKeys(owner, []string{owned}, ownedKeysTTL)
+	if err := pipe.Exec(); err != nil {
+		t.Fatalf("seed ownership: %v", err)
+	}
+	if err := (redisLiveSink{rc: rc}).refreshOwnedTTL(context.Background(), owner, bikeLiveTTL); err != nil {
+		t.Fatalf("refresh owned TTL: %v", err)
+	}
+	ownedTTL, err := rc.PTTL(owned).Result()
+	if err != nil || ownedTTL < time.Minute {
+		t.Fatalf("owned TTL = %v, err=%v, want refreshed", ownedTTL, err)
+	}
+	unownedTTL, err := rc.PTTL(unowned).Result()
+	if err != nil || unownedTTL <= 0 || unownedTTL >= 30*time.Second {
+		t.Fatalf("unowned TTL = %v, err=%v, want original short TTL", unownedTTL, err)
+	}
+}
+
+func TestMrt304RefreshesOnlyPartitionOwnedKeys(t *testing.T) {
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"mrt_LiveBoardTRTC": readFixture(t, "tdx_mrt_liveboard_trtc.json"),
+	}}
+	sink := &captureLiveSink{}
+	spec := specByKey(t, "mrt")
+	if err := spec.run(context.Background(), bindFetch(src, sink, spec), sink); err != nil {
+		t.Fatalf("initial MRT update: %v", err)
+	}
+
+	src.fixtures = map[string][]byte{}
+	sink.refresh = nil
+	if err := spec.run(context.Background(), bindFetch(src, sink, spec), sink); err != nil {
+		t.Fatalf("MRT 304 update: %v", err)
+	}
+	want := map[string]bool{
+		shared.MrtLiveKey("TRTC", "BL12", "BL", "BL23"): true,
+		shared.MrtLiveKey("TRTC", "BL12", "BL", "BL01"): true,
+	}
+	if len(sink.refresh) != 1 || len(sink.refresh[0]) != len(want) {
+		t.Fatalf("MRT 304 refreshes = %+v, want TRTC-owned keys %v", sink.refresh, want)
+	}
+	for _, refresh := range sink.refresh[0] {
+		if !want[refresh.pattern] {
+			t.Fatalf("MRT 304 refreshed unowned key/pattern %q", refresh.pattern)
+		}
 	}
 }
 

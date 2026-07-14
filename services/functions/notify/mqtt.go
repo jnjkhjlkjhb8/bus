@@ -26,6 +26,7 @@ type mqttTopicCfg struct {
 // near-stop bus data is short-lived (60s); news and alert topics keep 5 minutes.
 var mqttTopics = []mqttTopicCfg{
 	{"v2/Bus/RealTimeNearStop/City/#", 60 * time.Second},
+	{"v2/Bus/RealTimeNearStop/InterCity", 60 * time.Second},
 	{"v2/Bus/News/City/+", 5 * time.Minute},
 	{"v2/Bus/News/InterCity", 5 * time.Minute},
 	{"v2/Rail/Metro/Alert/#", 5 * time.Minute},
@@ -97,17 +98,59 @@ func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *Dispatcher) {
 // cross-run dedupe claim so the same alert is not pushed twice within its window.
 func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatcher *Dispatcher) {
 	key := shared.MQTTChannel(msg.Topic())
-	if err := rc.Set(key, msg.Payload(), ttl).Err(); err != nil {
+	payload := canonicalInterCityBusPayload(msg.Topic(), msg.Payload())
+	if err := rc.Set(key, payload, ttl).Err(); err != nil {
 		log.Infof("[MQTT] redis set failed key=%s err=%v", key, err)
 		return
 	}
-	if err := rc.Publish(key, msg.Payload()).Err(); err != nil {
+	if err := rc.Publish(key, payload).Err(); err != nil {
 		log.Infof("[MQTT] redis publish failed key=%s err=%v", key, err)
 	}
 	dispatchRouteAlerts(context.Background(), routeAlerts(msg.Topic(), msg.Payload()), func(key string, ttl time.Duration) bool {
 		ok, err := rc.SetNX("fcm:alert:"+key, "1", ttl).Result()
 		return err == nil && ok
 	}, dispatcher)
+}
+
+// canonicalInterCityBusPayload puts MQTT vehicle snapshots in the same
+// canonical subroute+direction identity space as the REST realtime path.
+func canonicalInterCityBusPayload(topic string, payload []byte) []byte {
+	if !strings.Contains(topic, "/Bus/") || !strings.Contains(topic, "/InterCity") {
+		return payload
+	}
+	var decoded any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return payload
+	}
+	canonicalize := func(item any) {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			return
+		}
+		uid, ok := entry["SubRouteUID"].(string)
+		if !ok || strings.TrimSpace(uid) == "" {
+			return
+		}
+		direction := uint8(0)
+		if rawDirection, ok := entry["Direction"].(float64); ok && rawDirection >= 0 && rawDirection <= 255 {
+			direction = uint8(rawDirection)
+		}
+		canonicalUID, canonicalDirection := shared.CanonicalSubroute("InterCity", strings.TrimSpace(uid), direction)
+		entry["SubRouteUID"] = canonicalUID
+		entry["Direction"] = canonicalDirection
+	}
+	if items, ok := decoded.([]any); ok {
+		for _, item := range items {
+			canonicalize(item)
+		}
+	} else {
+		canonicalize(decoded)
+	}
+	canonical, err := json.Marshal(decoded)
+	if err != nil {
+		return payload
+	}
+	return canonical
 }
 
 // normalizedRouteAlert is one alert extracted from an MQTT payload, reduced to
@@ -169,6 +212,9 @@ func routeAlerts(topic string, payload []byte) []normalizedRouteAlert {
 		key := firstString(m, routeKeyFields(routeType)...)
 		if key == "" {
 			continue
+		}
+		if strings.Contains(topic, "/InterCity") {
+			key, _ = shared.CanonicalSubroute("InterCity", key, 0)
 		}
 		body := firstString(m, "Description", "NewsContent", "AlertDescription", "Message")
 		if body == "" {

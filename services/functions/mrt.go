@@ -374,7 +374,8 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 			continue
 		}
 		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
-			pipe := sink.pipeline()
+			pipe := sink.pipelineContext(ctx)
+			ownedKeys := make([]string, 0)
 			if err := decodeLiveItems(dec, func(temp mrtLive) error {
 				if !mrtInService(windows, mrtWindowKey(system, temp.StationID, temp.LineID, temp.DestinationStaionID), now) {
 					filtered++
@@ -394,14 +395,17 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 				if err != nil {
 					return err
 				}
-				pipe.Set(shared.MrtLiveKey(system, temp.StationID, temp.LineID), pb, mrtLiveTTL)
+				key := shared.MrtLiveKey(system, temp.StationID, temp.LineID, temp.DestinationStaionID)
+				pipe.Set(key, pb, mrtLiveTTL)
+				ownedKeys = append(ownedKeys, key)
 				pipe.Publish(shared.MrtLiveChannel(system, temp.StationID), string(pb))
 				return nil
 			}); err != nil {
 				return err
 			}
+			pipe.ReplaceOwnedKeys(shared.LiveOwnedKeysKey("mrt", system), ownedKeys, ownedKeysTTL)
 			if err := pipe.Exec(); err != nil {
-				return err
+				return fmt.Errorf("publish MRT live board for %s: %w", system, err)
 			}
 			return nil
 		}); err != nil {

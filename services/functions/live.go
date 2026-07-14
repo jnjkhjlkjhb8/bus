@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -38,6 +39,7 @@ type livePipe interface {
 	Publish(channel string, value any)
 	HSet(key, field string, value any)
 	Expire(key string, ttl time.Duration)
+	ReplaceOwnedKeys(key string, members []string, ttl time.Duration)
 	Exec() error
 }
 
@@ -48,13 +50,15 @@ type livePipe interface {
 // operation the 304 path needs.
 type liveSink interface {
 	pipeline() livePipe
-	refreshTTL(patterns []ttlPattern)
+	pipelineContext(ctx context.Context) livePipe
+	refreshTTL(ctx context.Context, patterns []ttlPattern) error
+	refreshOwnedTTL(ctx context.Context, key string, ttl time.Duration) error
 	// getString and getHash close the read seam: two jobs need to read a value
 	// back from Redis mid-tick (bus reads the cached weather snapshot for
 	// prediction features; tra reads the delay hash to merge into the live board),
 	// so those reads go through the sink instead of a raw *redis.Client capture.
-	getString(key string) (string, error)
-	getHash(key string) (map[string]string, error)
+	getString(ctx context.Context, key string) (string, error)
+	getHash(ctx context.Context, key string) (map[string]string, error)
 }
 
 // ttlPattern pairs a Redis key glob with the TTL to re-arm on a 304
@@ -73,7 +77,9 @@ type ttlPattern struct {
 type liveSpec struct {
 	key         string
 	cadence     string
-	ttlPatterns func() []ttlPattern
+	ttlPatterns func(fetchName string) []ttlPattern
+	ownedKey    func(fetchName string) string
+	ownedTTL    time.Duration
 	run         func(ctx context.Context, fetch boundFetch, sink liveSink) error
 }
 
@@ -90,10 +96,16 @@ type boundFetch func(ctx context.Context, url, name string) (*shared.TDXFetch, e
 func bindFetch(src liveSource, sink liveSink, spec liveSpec) boundFetch {
 	return func(ctx context.Context, url, name string) (*shared.TDXFetch, error) {
 		fetch, err := src.fetch(ctx, url, name)
-		if err == nil && fetch != nil && !fetch.Modified && spec.ttlPatterns != nil {
+		if err == nil && fetch != nil && !fetch.Modified && spec.ownedKey != nil {
+			if refreshErr := sink.refreshOwnedTTL(ctx, spec.ownedKey(name), spec.ownedTTL); refreshErr != nil {
+				return nil, fmt.Errorf("refresh %s owned live keys: %w", name, refreshErr)
+			}
+		} else if err == nil && fetch != nil && !fetch.Modified && spec.ttlPatterns != nil {
 			// 304 Not-Modified: the cached live data is still valid, so re-arm its
 			// TTL instead of letting it expire mid-validity (CONTEXT.md).
-			sink.refreshTTL(spec.ttlPatterns())
+			if refreshErr := sink.refreshTTL(ctx, spec.ttlPatterns(name)); refreshErr != nil {
+				return nil, fmt.Errorf("refresh %s live TTLs: %w", name, refreshErr)
+			}
 		}
 		return fetch, err
 	}
@@ -147,10 +159,14 @@ func commitTDXFetch(fetch *shared.TDXFetch, process func(*json.Decoder) error) e
 		return errors.New("cannot commit a TDX fetch without Close")
 	}
 	if err := process(fetch.Decoder); err != nil {
-		return errors.Join(err, fetch.Close())
+		closeErr := fetch.Close()
+		if closeErr != nil {
+			closeErr = fmt.Errorf("close TDX fetch: %w", closeErr)
+		}
+		return errors.Join(err, closeErr)
 	}
 	if err := fetch.Close(); err != nil {
-		return err
+		return fmt.Errorf("close TDX fetch: %w", err)
 	}
 	return acknowledgeTDXFetch(fetch)
 }
@@ -159,7 +175,10 @@ func acknowledgeTDXFetch(fetch *shared.TDXFetch) error {
 	if fetch == nil || fetch.Ack == nil {
 		return errors.New("modified TDX fetch has no acknowledgement")
 	}
-	return fetch.Ack()
+	if err := fetch.Ack(); err != nil {
+		return fmt.Errorf("acknowledge TDX fetch: %w", err)
+	}
+	return nil
 }
 
 // runLive executes the named live jobs once. keys selects registry entries by
@@ -225,40 +244,47 @@ func (s redisLiveSink) pipeline() livePipe {
 	return &redisLivePipe{pipe: s.rc.Pipeline()}
 }
 
+func (s redisLiveSink) pipelineContext(ctx context.Context) livePipe {
+	return &redisLivePipe{pipe: s.rc.WithContext(ctx).TxPipeline()}
+}
+
 // getString reads a single string value, delegating to the underlying client so
 // a missing key surfaces the same redis.Nil error the jobs previously handled
 // inline.
-func (s redisLiveSink) getString(key string) (string, error) {
-	return s.rc.Get(key).Result()
+func (s redisLiveSink) getString(ctx context.Context, key string) (string, error) {
+	return s.rc.WithContext(ctx).Get(key).Result()
 }
 
 // getHash reads a whole hash, used by the tra job to merge cached per-train
 // delays into the live board.
-func (s redisLiveSink) getHash(key string) (map[string]string, error) {
-	return s.rc.HGetAll(key).Result()
+func (s redisLiveSink) getHash(ctx context.Context, key string) (map[string]string, error) {
+	return s.rc.WithContext(ctx).HGetAll(key).Result()
 }
 
 // refreshTTL re-arms the TTL on every key matching each pattern via SCAN +
-// pipelined EXPIRE. Errors are logged and the scan for that pattern stops;
-// a refresh failure never aborts the caller (this runs on a 304, off the write
-// path).
-func (s redisLiveSink) refreshTTL(patterns []ttlPattern) {
+// pipelined EXPIRE. Errors are logged, wrapped, and returned so a failed 304
+// refresh cannot be reported as a successful live tick.
+func (s redisLiveSink) refreshTTL(ctx context.Context, patterns []ttlPattern) error {
+	rc := s.rc.WithContext(ctx)
 	total := 0
+	var refreshErr error
 	for _, p := range patterns {
 		var cursor uint64
 		for {
-			keys, next, err := s.rc.Scan(cursor, p.pattern, 500).Result()
+			keys, next, err := rc.Scan(cursor, p.pattern, 500).Result()
 			if err != nil {
 				log.Infof("[LIVE] action=ttl_refresh event=scan_error pattern=%s error=%v", p.pattern, err)
+				refreshErr = errors.Join(refreshErr, fmt.Errorf("scan TTL pattern %s: %w", p.pattern, err))
 				break
 			}
 			if len(keys) > 0 {
-				pipe := s.rc.Pipeline()
+				pipe := rc.Pipeline()
 				for _, k := range keys {
 					pipe.Expire(k, p.ttl)
 				}
 				if _, err := pipe.Exec(); err != nil {
 					log.Infof("[LIVE] action=ttl_refresh event=expire_error pattern=%s error=%v", p.pattern, err)
+					refreshErr = errors.Join(refreshErr, fmt.Errorf("expire TTL pattern %s: %w", p.pattern, err))
 					break
 				}
 				total += len(keys)
@@ -269,7 +295,31 @@ func (s redisLiveSink) refreshTTL(patterns []ttlPattern) {
 			}
 		}
 	}
+	if refreshErr != nil {
+		return refreshErr
+	}
 	log.Infof("[LIVE] action=ttl_refresh event=success keys=%d", total)
+	return nil
+}
+
+func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time.Duration) error {
+	rc := s.rc.WithContext(ctx)
+	members, err := rc.SMembers(key).Result()
+	if err != nil {
+		return fmt.Errorf("read ownership set %s: %w", key, err)
+	}
+	if len(members) == 0 {
+		return nil
+	}
+	pipe := rc.Pipeline()
+	for _, member := range members {
+		pipe.Expire(member, ttl)
+	}
+	pipe.Expire(key, ownedKeysTTL)
+	if _, err := pipe.Exec(); err != nil {
+		return fmt.Errorf("refresh ownership set %s: %w", key, err)
+	}
+	return nil
 }
 
 // redisLivePipe adapts a go-redis Pipeliner to the livePipe interface, dropping
@@ -294,6 +344,19 @@ func (p *redisLivePipe) Expire(key string, ttl time.Duration) {
 	p.pipe.Expire(key, ttl)
 }
 
+func (p *redisLivePipe) ReplaceOwnedKeys(key string, members []string, ttl time.Duration) {
+	p.pipe.Del(key)
+	if len(members) == 0 {
+		return
+	}
+	values := make([]interface{}, len(members))
+	for i := range members {
+		values[i] = members[i]
+	}
+	p.pipe.SAdd(key, values...)
+	p.pipe.Expire(key, ttl)
+}
+
 func (p *redisLivePipe) Exec() error {
 	_, err := p.pipe.Exec()
 	return err
@@ -309,6 +372,7 @@ const (
 	bikeLiveTTL      = 2 * time.Minute
 	traLiveTTL       = 3 * time.Minute
 	thsrSeatsLiveTTL = 15 * time.Minute
+	ownedKeysTTL     = 24 * time.Hour
 )
 
 // liveRegistry lists every realtime dataset the runner knows how to refresh, in
@@ -320,29 +384,26 @@ const (
 // *redis.Client: the two jobs that read Redis mid-tick (bus weather, tra delay
 // hash) now go through the liveSink read seam.
 func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
-	bikeCityPatterns := func() []ttlPattern {
-		// Bike availability keys are per-station-UID with no city prefix, so a
-		// single-city 304 cannot target its own keys precisely. Re-arm the whole
-		// bike keyspace: over-refreshing a still-valid snapshot is harmless, and a
-		// missing refresh would let live data expire.
-		return []ttlPattern{{pattern: shared.BikeAvailabilityKey("*"), ttl: bikeLiveTTL}}
+	bikeOwnedKey := func(fetchName string) string {
+		return shared.LiveOwnedKeysKey("bike", strings.TrimPrefix(fetchName, "bike_availability"))
 	}
-	mrtPatterns := func() []ttlPattern {
-		return []ttlPattern{{pattern: shared.MrtLivePattern(), ttl: mrtLiveTTL}}
+	mrtOwnedKey := func(fetchName string) string {
+		return shared.LiveOwnedKeysKey("mrt", strings.TrimPrefix(fetchName, "mrt_LiveBoard"))
 	}
-	traPatterns := func() []ttlPattern {
+	traPatterns := func(string) []ttlPattern {
 		return []ttlPattern{
 			{pattern: shared.TraDelayAllKey, ttl: traLiveTTL},
 			{pattern: shared.TraDelayHashKey, ttl: traLiveTTL},
+			{pattern: shared.TraDelayTrainChannel("*"), ttl: traLiveTTL},
 		}
 	}
-	thsrSeatsPatterns := func() []ttlPattern {
+	thsrSeatsPatterns := func(string) []ttlPattern {
 		// Re-arm today's per-train seat keys on a 304; the date is resolved when the
 		// 304 fires so the pattern always targets the current service day.
 		return []ttlPattern{{pattern: shared.ThsrSeatsPattern(time.Now().In(taipei).Format(time.DateOnly)), ttl: thsrSeatsLiveTTL}}
 	}
 	return []liveSpec{
-		{key: "bike", cadence: "@every 30s", ttlPatterns: bikeCityPatterns,
+		{key: "bike", cadence: "@every 30s", ownedKey: bikeOwnedKey, ownedTTL: bikeLiveTTL,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				return bikeEta(ctx, fetch, sink, db)
 			}},
@@ -355,7 +416,7 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				return busEta(ctx, fetch, sink, db, dispatcher)
 			}},
-		{key: "mrt", cadence: "@every 10s", ttlPatterns: mrtPatterns,
+		{key: "mrt", cadence: "@every 10s", ownedKey: mrtOwnedKey, ownedTTL: mrtLiveTTL,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				return mrtEta(ctx, fetch, sink, db)
 			}},

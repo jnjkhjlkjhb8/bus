@@ -421,13 +421,21 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	); err != nil {
 		log.Infof("[bus] action=bus_dailyroute event=error error=%v", err)
 	}
-	loadHolidays()
+	holidayCtx, holidayCancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
+	if err := loadHolidays(holidayCtx); err != nil {
+		log.Infof("[HOLIDAY] initial refresh failed; weekend/last-good fallback active: %v", err)
+	}
+	holidayCancel()
 	loadModel()
 	// Prime the weather cache at boot: the @every 10m cron below does not fire until
 	// 10 minutes in, so without this every bus_eta_history row written in that window
-	// after a restart would carry null weather features. Run it off the boot path so
-	// the CWA round-trip does not delay cron startup.
-	go weatherSync(rc)
+	// after a restart would carry null weather features. The bounded context keeps
+	// startup delay finite while avoiding a detached refresh goroutine.
+	weatherCtx, weatherCancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
+	if err := weatherSync(weatherCtx, rc); err != nil {
+		log.Infof("[WEATHER] initial sync failed; keeping last good Redis snapshot: %v", err)
+	}
+	weatherCancel()
 	// The legacy direct-fetch static jobs are gone: the ingestor lands raw_tdx at
 	// 03:00 and the ROLE=loader container transforms it into this env's schema at
 	// 03:30. changetovector reads the tables the loader fills, so it runs at 03:45 —
@@ -441,7 +449,18 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	})
 	registerLiveCrons(r, tdx, rc, db, dispatcher)
 	_, _ = r.AddFunc("@every 10m", func() {
-		weatherSync(rc)
+		ctx, cancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
+		defer cancel()
+		if err := weatherSync(ctx, rc); err != nil {
+			log.Infof("[WEATHER] sync failed; keeping last good Redis snapshot: %v", err)
+		}
+	})
+	_, _ = r.AddFunc("@every 24h", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
+		defer cancel()
+		if err := loadHolidays(ctx); err != nil {
+			log.Infof("[HOLIDAY] refresh failed; keeping last good snapshot: %v", err)
+		}
 	})
 	_, _ = r.AddFunc("0 0 4 * * *", func() {
 		runDaily("computeTravelAvg", 15*time.Minute, func(ctx context.Context) error { return computeTravelAvg(ctx, db) })

@@ -786,11 +786,19 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 			Delay: make(map[string]int32),
 		}
 		count := 0
-		pipe := sink.pipeline()
+		pipe := sink.pipelineContext(ctx)
 		if decErr := decodeLiveItems(dec, func(temp traDelay) error {
 			count++
-			data.Delay[temp.TrainNo] = int32(temp.DelayTime)
+			delay := int32(temp.DelayTime)
+			data.Delay[temp.TrainNo] = delay
 			pipe.HSet(shared.TraDelayHashKey, temp.TrainNo, temp.DelayTime)
+			trainBytes, err := proto.Marshal(&models.TraDelays{Delay: map[string]int32{temp.TrainNo: delay}})
+			if err != nil {
+				return fmt.Errorf("marshal TRA delay for train %s: %w", temp.TrainNo, err)
+			}
+			trainKey := shared.TraDelayTrainChannel(temp.TrainNo)
+			pipe.Set(trainKey, trainBytes, traLiveTTL)
+			pipe.Publish(trainKey, trainBytes)
 			return nil
 		}); decErr != nil {
 			return decErr
@@ -803,7 +811,7 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 		pipe.Publish(shared.TraDelayAllKey, string(bytes))
 		pipe.Expire(shared.TraDelayHashKey, traLiveTTL)
 		if err := pipe.Exec(); err != nil {
-			return err
+			return fmt.Errorf("publish TRA delay snapshot: %w", err)
 		}
 		log.Infof("[TRA_ETA] action=tra_eta event=delay_redis_success count=%d", count)
 		return nil

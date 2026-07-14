@@ -28,6 +28,29 @@ type etaKey struct {
 	stopUID     string
 }
 
+func busPositionIdentity(subRouteUID string, direction uint8) string {
+	return fmt.Sprintf("%s\x00%d", subRouteUID, direction)
+}
+
+func buildDirectionAwareBusPositionMap(city string, positions []rawBusPosition) map[string][]*models.BusPosition {
+	byIdentity := make(map[string][]*models.BusPosition)
+	for _, position := range positions {
+		uid, direction := shared.CanonicalSubroute(city, position.SubRouteUID, position.Direction)
+		key := busPositionIdentity(uid, direction)
+		byIdentity[key] = append(byIdentity[key], &models.BusPosition{
+			PlateNumb:   position.PlateNumb,
+			PositionLon: position.BusPosition.PositionLon,
+			PositionLat: position.BusPosition.PositionLat,
+			Speed:       int32(position.Speed),
+			Azimuth:     int32(position.Azimuth),
+			DutyStatus:  int32(position.DutyStatus),
+			BusStatus:   int32(position.BusStatus),
+			GpsTimeUnix: parseGPSTimeUnix(position.GPSTime),
+		})
+	}
+	return byIdentity
+}
+
 type busArrivalNotifier interface {
 	Arrival(ctx context.Context, routeType, routeKey, stopKey, direction string, etaSeconds int32, arrivingPlate string)
 }
@@ -44,8 +67,8 @@ const busFeedCacheTTL = 10 * time.Minute
 
 var errBusFeedCacheMiss = errors.New("bus raw feed cache missing")
 
-func readBusFeedCache[T any](sink liveSink, key string) ([]T, error) {
-	raw, err := sink.getString(key)
+func readBusFeedCache[T any](ctx context.Context, sink liveSink, key string) ([]T, error) {
+	raw, err := sink.getString(ctx, key)
 	if errors.Is(err, redis.Nil) || (err == nil && raw == "") {
 		return nil, fmt.Errorf("%w: %s", errBusFeedCacheMiss, key)
 	}
@@ -188,7 +211,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_prefix", city)
 		return nil
 	}
-	generation, generationErr := j.sink.getString(shared.BusStaticGenerationKey(city))
+	generation, generationErr := j.sink.getString(ctx, shared.BusStaticGenerationKey(city))
 	if generationErr != nil {
 		// Redis is the cross-process signal, but an outage must not stop realtime
 		// service. The local cache falls back to its bounded TTL in this case.
@@ -230,8 +253,8 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			decodeErr = errors.New("decode bus ETA response: incomplete JSON array")
 		}
 		if decodeErr != nil || closeErr != nil {
-			j.sink.refreshTTL(busEtaTTLPatterns(city))
-			return errors.Join(decodeErr, closeErr)
+			refreshErr := j.sink.refreshTTL(ctx, busEtaTTLPatterns(city))
+			return errors.Join(decodeErr, closeErr, refreshErr)
 		}
 		etaRaw, err = json.Marshal(eat)
 		if err != nil {
@@ -269,12 +292,12 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 
 	etaCacheKey := shared.BusETARawKey(city)
 	positionCacheKey := shared.BusPositionRawKey(city)
-	pipe := j.sink.pipeline()
+	pipe := j.sink.pipelineContext(ctx)
 	var cacheErr error
 	if etaFetch.Modified {
 		pipe.Set(etaCacheKey, etaRaw, busFeedCacheTTL)
 	} else {
-		eat, err = readBusFeedCache[rawBusEsimated](j.sink, etaCacheKey)
+		eat, err = readBusFeedCache[rawBusEsimated](ctx, j.sink, etaCacheKey)
 		if err != nil {
 			cacheErr = errors.Join(cacheErr, err)
 		} else {
@@ -284,7 +307,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	if positionFetch.Modified {
 		pipe.Set(positionCacheKey, positionRaw, busFeedCacheTTL)
 	} else {
-		posit, err = readBusFeedCache[rawBusPosition](j.sink, positionCacheKey)
+		posit, err = readBusFeedCache[rawBusPosition](ctx, j.sink, positionCacheKey)
 		if err != nil {
 			cacheErr = errors.Join(cacheErr, err)
 		} else {
@@ -293,8 +316,9 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	}
 
 	if cacheErr != nil {
+		var refreshErr error
 		if !etaFetch.Modified && !positionFetch.Modified {
-			j.sink.refreshTTL(busEtaTTLPatterns(city))
+			refreshErr = j.sink.refreshTTL(ctx, busEtaTTLPatterns(city))
 		}
 		execErr := pipe.Exec()
 		var ackErr error
@@ -313,25 +337,24 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 		if !positionFetch.Modified {
 			invalidateErr = errors.Join(invalidateErr, invalidateTDXFetch(positionFetch))
 		}
-		return errors.Join(cacheErr, execErr, ackErr, invalidateErr)
+		return errors.Join(cacheErr, execErr, ackErr, invalidateErr, refreshErr)
 	}
 
 	if !etaFetch.Modified && !positionFetch.Modified {
 		if err := pipe.Exec(); err != nil {
-			return err
+			return fmt.Errorf("refresh bus raw feed cache for %s: %w", city, err)
 		}
-		j.sink.refreshTTL(busEtaTTLPatterns(city))
-		return nil
+		return j.sink.refreshTTL(ctx, busEtaTTLPatterns(city))
 	}
 	stations := make(map[string]*models.Bus_StationArrival)
 	routes := make(map[string]*models.Bus_RouteArrival)
 	// Assemble-inputs stage: collapse the raw TDX ETA array, group live positions,
 	// and count route lengths, all keyed on canonical subroute/direction (ADR-0006).
 	etamap := buildBusEtaMap(city, eat, mp)
-	busmap := buildBusPositionMap(city, posit)
+	busmap := buildDirectionAwareBusPositionMap(city, posit)
 	totalStops := buildTotalStops(city, mp)
 	var weather *weatherData
-	if wjson, wErr := j.sink.getString(shared.WeatherKey(city)); wErr == nil {
+	if wjson, wErr := j.sink.getString(ctx, shared.WeatherKey(city)); wErr == nil {
 		var w weatherData
 		if json.Unmarshal([]byte(wjson), &w) == nil {
 			weather = &w
@@ -388,6 +411,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 		// router (which no longer normalizes) and the training data see one
 		// identity space. For non-InterCity, this is identity.
 		uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
+		positionKey := busPositionIdentity(uid, dir)
 		eta, ok := etamap[etaKey{uid, dir, b.StopUID}]
 		status := uint8(67)
 		var est int32
@@ -405,7 +429,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			ts := totalStops[uid]
 			var busSpeed *int16
 			var busDist *int
-			plateNumb, busSpeed, busDist = nearestBus(b.Lat, b.Lon, busmap[uid])
+			plateNumb, busSpeed, busDist = nearestBus(b.Lat, b.Lon, busmap[positionKey])
 			var srcTime *time.Time
 			if stime != "" {
 				if t, err := time.Parse(time.RFC3339, stime); err == nil {
@@ -522,7 +546,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			NextBusTime:   eta.NextBusTime,
 			StopStatus:    int32(status),
 			SrcUpdateTime: stime,
-			Buses:         busmap[uid],
+			Buses:         busmap[positionKey],
 			ArrivalUnix:   arrivalUnix,
 		})
 		if shouldDispatchBusArrival(ok, status, est) {
@@ -545,7 +569,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			StopStatus:    int32(status),
 			NextBusTime:   eta.NextBusTime,
 			SrcUpdateTime: stime,
-			Buses:         busmap[uid],
+			Buses:         busmap[positionKey],
 			StopSequence:  int32(b.StopSequence),
 			ArrivalUnix:   arrivalUnix,
 		})
@@ -571,7 +595,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	err = pipe.Exec()
 	if err != nil {
 		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=redis_error error=%v station_count=%d route_count=%d eat_count=%d posit_count=%d", city, err, len(stations), len(routes), len(eat), len(posit))
-		return err
+		return fmt.Errorf("publish bus realtime snapshot for %s: %w", city, err)
 	}
 	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=redis_success station_count=%d route_count=%d eat_count=%d posit_count=%d", city, len(stations), len(routes), len(eat), len(posit))
 	var ackErr error

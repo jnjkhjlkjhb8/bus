@@ -159,7 +159,8 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			continue
 		}
 		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
-			pipe := sink.pipeline()
+			pipe := sink.pipelineContext(ctx)
+			ownedKeys := make([]string, 0)
 			// Availability Set and the interleaved history sampling keep bikeEta on
 			// the streaming strict decoder rather than the per-item-proto
 			// publisher: the history append is a per-item side effect the publisher
@@ -178,7 +179,9 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 				if err != nil {
 					return err
 				}
-				pipe.Set(shared.BikeAvailabilityKey(temp.StationUID), pb, bikeLiveTTL)
+				key := shared.BikeAvailabilityKey(temp.StationUID)
+				pipe.Set(key, pb, bikeLiveTTL)
+				ownedKeys = append(ownedKeys, key)
 				// Sample into history at most once per 5 minutes per station.
 				if db != nil && bikeHistorySampleGate.shouldSample(temp.StationUID, now) {
 					historyRows = append(historyRows, []any{
@@ -189,8 +192,9 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			}); err != nil {
 				return err
 			}
+			pipe.ReplaceOwnedKeys(shared.LiveOwnedKeysKey("bike", city), ownedKeys, ownedKeysTTL)
 			if err := pipe.Exec(); err != nil {
-				return err
+				return fmt.Errorf("publish bike availability for %s: %w", city, err)
 			}
 			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)
 			return nil

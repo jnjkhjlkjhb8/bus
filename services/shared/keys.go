@@ -64,9 +64,11 @@ func BusDailyTimetableKey(subRouteUID string) string {
 	return "bus_daily_timetable:" + subRouteUID
 }
 
-// MrtLiveKey returns the key holding one (station, line) metro arrival.
-func MrtLiveKey(system, stationID, lineID string) string {
-	return fmt.Sprintf("mrt_live:%s:%s:%s", system, stationID, lineID)
+// MrtLiveKey returns the key holding one metro arrival. Destination is part of
+// the identity because a station can have simultaneous arrivals on the same
+// line in opposite directions.
+func MrtLiveKey(system, stationID, lineID, destinationStationID string) string {
+	return fmt.Sprintf("mrt_live:%s:%s:%s:%s", system, stationID, lineID, destinationStationID)
 }
 
 // MrtLiveChannel returns the channel publishing a metro station's arrivals
@@ -94,10 +96,8 @@ const TraDelayHashKey = "tra:delay"
 // TRA delay snapshot.
 const TraDelayAllKey = "tra:delay:all"
 
-// TraDelayTrainChannel returns the per-train delay channel the router's
-// Tra_DetainService subscribes to. No writer publishes it yet: functions only
-// writes TraDelayHashKey and TraDelayAllKey, so this stream stays silent until
-// the realtime TRA job publishes per-train snapshots.
+// TraDelayTrainChannel returns the per-train delay key/channel written by the
+// realtime TRA job and consumed by the router's Tra_DetainService.
 func TraDelayTrainChannel(trainNo string) string {
 	return "tra:delay:" + trainNo
 }
@@ -106,6 +106,12 @@ func TraDelayTrainChannel(trainNo string) string {
 // station's live availability.
 func BikeAvailabilityKey(stationUID string) string {
 	return "bike_availability:" + stationUID
+}
+
+// LiveOwnedKeysKey stores the exact data keys last written by one live
+// partition. A partition 304 uses the set to refresh only its own TTLs.
+func LiveOwnedKeysKey(dataset, partition string) string {
+	return fmt.Sprintf("live:owned:%s:%s", dataset, partition)
 }
 
 // WeatherKey returns the key holding one city's cached weather snapshot. It is a
