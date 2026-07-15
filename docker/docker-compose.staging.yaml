@@ -5,6 +5,13 @@ services:
       PG_SCHEMA: staging
       ROUTER_DB_MAX_CONNS: 4
       ROUTER_DB_MIN_CONNS: 1
+    # Staging terminates gRPC TLS (GRPC_TLS=true, App Check disabled) so it
+    # needs exactly the cert/key pair -- not the whole ./secrets directory,
+    # and not firebase-sa.json, which staging never reads (FIREBASE_ENABLED
+    # is false here).
+    volumes:
+      - ./secrets/grpc.crt:/run/secrets/grpc.crt:ro
+      - ./secrets/grpc.key:/run/secrets/grpc.key:ro
 
   functions:
     environment:

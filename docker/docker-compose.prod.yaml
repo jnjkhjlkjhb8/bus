@@ -5,6 +5,13 @@ services:
       PG_SCHEMA: public
       ROUTER_DB_MAX_CONNS: 10
       ROUTER_DB_MIN_CONNS: 2
+    # Prod terminates gRPC TLS and enables Firebase App Check, so the router
+    # needs the cert/key pair plus the Firebase service-account key -- each
+    # mounted as its own file, not the whole ./secrets directory.
+    volumes:
+      - ./secrets/grpc.crt:/run/secrets/grpc.crt:ro
+      - ./secrets/grpc.key:/run/secrets/grpc.key:ro
+      - ./secrets/firebase-sa.json:/run/secrets/firebase-sa.json:ro
 
   functions:
     environment:
@@ -12,6 +19,10 @@ services:
       PG_SCHEMA: public
       FUNCTIONS_DB_MAX_CONNS: 5
       FUNCTIONS_DB_MIN_CONNS: 2
+    # Firebase Admin SDK (FCM notification dispatch) loads Application
+    # Default Credentials from this key.
+    volumes:
+      - ./secrets/firebase-sa.json:/run/secrets/firebase-sa.json:ro
 
   ingestor:
     environment:
