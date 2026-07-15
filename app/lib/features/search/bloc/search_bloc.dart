@@ -10,9 +10,9 @@ import 'package:wheres_the_car/features/search/bloc/search_state.dart';
 
 class SearchBloc extends Bloc<SearchEvent, SearchState> {
   SearchBloc({
-    SearchRepository searchRepository = SearchRepository.instance,
+    SearchRepository? searchRepository,
     SearchRecentRepository recentRepository = SearchRecentRepository.instance,
-  }) : _searchRepository = searchRepository,
+  }) : _searchRepository = searchRepository ?? SearchRepository.instance,
        _recentRepository = recentRepository,
        super(const SearchState()) {
     on<SearchQueryChanged>(_onQueryChanged);

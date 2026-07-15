@@ -12,32 +12,28 @@ const String _envPowersyncUrl = String.fromEnvironment(
   'POWERSYNC_URL',
 );
 
+// Every table declared here must have a matching bucket data query in
+// powersync/sync-rules.yaml (same FROM table name, since PowerSync names the
+// local SQLite table after the query's source table) that projects every
+// column listed below under a matching alias, plus a stable `id`. Enforced by
+// test/core/powersync/sync_rules_contract_test.dart.
+//
+// `mrt_stations` and `bus_stops` were dropped from a prior revision of this
+// schema: no repository queried them and no Postgres table backed them
+// (`mrt_stations` vs. the real `mrt_station`), so they were permanently
+// unsynced dead schema. `tra_stations`/`thsr_stations` keep only the columns
+// `TraRepository.stationId`/`ThsrRepository.stationId` actually read —
+// lat/lon would require exposing PostGIS geometry columns as flat
+// lat/lon (a Postgres-side view or generated column), which is out of scope
+// here; see the migration note in the task report.
 const _schema = Schema([
-  Table('bus_stops', [
-    Column.text('stop_uid'),
-    Column.text('stop_name'),
-    Column.real('lat'),
-    Column.real('lon'),
-    Column.text('city'),
-  ]),
-  Table('mrt_stations', [
-    Column.text('station_id'),
-    Column.text('station_name'),
-    Column.text('lines'),
-    Column.real('lat'),
-    Column.real('lon'),
-  ]),
   Table('tra_stations', [
     Column.text('station_id'),
     Column.text('station_name'),
-    Column.real('lat'),
-    Column.real('lon'),
   ]),
   Table('thsr_stations', [
     Column.text('station_id'),
     Column.text('station_name'),
-    Column.real('lat'),
-    Column.real('lon'),
   ]),
   Table('mrt_journey_matrix', [
     Column.text('from_station_id'),
@@ -53,6 +49,19 @@ const _schema = Schema([
     Column.integer('serviceday'),
     Column.text('first_train_time'),
     Column.text('last_train_time'),
+  ]),
+  // Offline mirror of the backend `search_vector` table (services/router/
+  // search.go, services/functions/vector.go). Excludes `geom`/`embedding`:
+  // PowerSync sync-rule data queries can't call PostGIS functions, and
+  // SearchRepository's offline path only needs substring matching over the
+  // text columns — HTTP enrichment covers ranked/semantic/geo results.
+  Table('search_vector', [
+    Column.text('type'),
+    Column.text('uid'),
+    Column.text('name'),
+    Column.text('city'),
+    Column.text('depart'),
+    Column.text('destin'),
   ]),
 ]);
 
