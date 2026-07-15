@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"regexp"
 	"testing"
 	"time"
 
@@ -33,6 +34,32 @@ func TestThsrFarePayloadReadsFare(t *testing.T) {
 	}
 	if len(fares.Items) != 1 || fares.Items[0].Price != 120 {
 		t.Fatalf("fares = %+v, want one fare priced 120", fares.Items)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestQueryThsrFaresOrdersCheapestFareFirst(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	wantQuery := `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 ORDER BY price, ticket_type, fare_class, cabin_class;`
+	db.ExpectQuery(regexp.QuoteMeta(wantQuery)).
+		WithArgs("0990", "1000").
+		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "fare_class", "cabin_class", "price"}).
+			AddRow(uint8(2), uint8(1), uint8(1), int32(60)).
+			AddRow(uint8(1), uint8(1), uint8(1), int32(120)))
+
+	fares, err := queryThsrFares(context.Background(), db, "0990", "1000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fares) != 2 || fares[0].Price != 60 {
+		t.Fatalf("fares = %+v, want cheapest fare first", fares)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -123,6 +150,69 @@ func TestThsrTimetablePayloadUsesOriginDeparture(t *testing.T) {
 	}
 	if got.Travel_Time != "1h30m0s" {
 		t.Errorf("Travel_Time = %q, want 1h30m0s", got.Travel_Time)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestThsrTimetablePayloadAddsDayForNegativeDuration(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cols := []string{
+		"trainno", "starting_station_id", "starting_station_name",
+		"ending_station_id", "ending_station_name", "arrivaltime",
+		"departuretime", "note", "overnight", "stationid", "stopsequence",
+	}
+	db.ExpectQuery("FROM thsr_timetable WHERE stationid").
+		WithArgs([]string{"0990", "1070"}, "2026-07-10").
+		WillReturnRows(pgxmock.NewRows(cols).
+			AddRow("0801", "0990", "南港", "1070", "左營", "23:48:00", "23:50:00", "", false, "0990", 1).
+			AddRow("0801", "0990", "南港", "1070", "左營", "00:10:00", "00:12:00", "", false, "1070", 12))
+
+	date := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	payload, n, err := thsrTimetablePayload(context.Background(), db, "0990", "1070", date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("paired legs = %d, want 1", n)
+	}
+	var tt models.ThsrTimetables
+	if err := proto.Unmarshal(payload, &tt); err != nil {
+		t.Fatal(err)
+	}
+	if got := tt.Items[0].Travel_Time; got != "20m0s" {
+		t.Fatalf("Travel_Time = %q, want 20m0s", got)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestThsrTimetablePayloadQueryHasDeterministicOrder(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	wantQuery := `FROM thsr_timetable WHERE stationid = ANY($1) AND train_date = $2 ORDER BY trainno, stopsequence, stationid;`
+	db.ExpectQuery(regexp.QuoteMeta(wantQuery)).
+		WithArgs([]string{"0990", "1070"}, "2026-07-10").
+		WillReturnRows(pgxmock.NewRows([]string{"station_id"}))
+
+	date := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	_, n, err := thsrTimetablePayload(context.Background(), db, "0990", "1070", date)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("paired legs = %d, want 0", n)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

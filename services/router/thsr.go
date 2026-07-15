@@ -47,7 +47,7 @@ func thsrFarePayload(ctx context.Context, start, end string, db railDB) ([]byte,
 	return proto.Marshal(&models.ThsaFares{Items: arr})
 }
 func queryThsrFares(ctx context.Context, db railDB, start, end string) ([]*models.ThsaFare, error) {
-	rows, err := db.Query(ctx, `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2;`, start, end)
+	rows, err := db.Query(ctx, `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 ORDER BY price, ticket_type, fare_class, cabin_class;`, start, end)
 	if err != nil {
 		return nil, err
 	}
@@ -103,9 +103,15 @@ func thsrStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr strin
 // the marshaled ThsrTimetables proto plus the number of paired legs. A zero count
 // signals NotFound (ADR-0005); it never fetches from TDX.
 func thsrTimetablePayload(ctx context.Context, db railDB, start, end string, date time.Time) ([]byte, int, error) {
-	start = resolveRailStationID(ctx, db, "thsr_stations", start)
-	end = resolveRailStationID(ctx, db, "thsr_stations", end)
-	const combined = `SELECT trainno, starting_station_id,starting_station_name,ending_station_id,ending_station_name,arrivaltime,departuretime,note,overnight,stationid,stopsequence FROM thsr_timetable WHERE stationid = ANY($1) AND train_date = $2;`
+	start, err := resolveRailStationID(ctx, db, "thsr_stations", start)
+	if err != nil {
+		return nil, 0, err
+	}
+	end, err = resolveRailStationID(ctx, db, "thsr_stations", end)
+	if err != nil {
+		return nil, 0, err
+	}
+	const combined = `SELECT trainno, starting_station_id,starting_station_name,ending_station_id,ending_station_name,arrivaltime,departuretime,note,overnight,stationid,stopsequence FROM thsr_timetable WHERE stationid = ANY($1) AND train_date = $2 ORDER BY trainno, stopsequence, stationid;`
 	stations := []string{start, end}
 	rows, err := db.Query(ctx, combined, stations, date.Format(time.DateOnly))
 	if err != nil {
@@ -158,7 +164,7 @@ func thsrTimetablePayload(ctx context.Context, db railDB, start, end string, dat
 			continue
 		}
 		duration := t.Sub(w)
-		if seed.Overnight {
+		if duration < 0 {
 			duration += 24 * time.Hour
 		}
 		seed.Ending_Time = temp.Arrivaltime

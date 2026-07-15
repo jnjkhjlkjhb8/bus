@@ -52,7 +52,7 @@ type trafare struct {
 // rows match, so callers treat an unlanded date as NotFound (ADR-0005); it never
 // fetches from TDX.
 func traFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, error) {
-	const q = `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2;`
+	const q = `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2 ORDER BY price, ticket_type;`
 	rows, err := db.Query(ctx, q, start, end)
 	if err != nil {
 		return nil, err
@@ -122,25 +122,30 @@ func isNumericStationID(s string) bool {
 // resolveRailStationID maps a station name to its numeric station_id, tolerating
 // the 臺/台 spelling split (TDX data stores 臺, the app's labels use 台). Inputs
 // that are already numeric ids, or that match no station, are returned as-is.
+// Database errors are returned to the caller rather than treated as a miss.
 // table is a caller-supplied constant ("tra_stations"/"thsr_stations").
-func resolveRailStationID(ctx context.Context, db railDB, table, s string) string {
+func resolveRailStationID(ctx context.Context, db railDB, table, s string) (string, error) {
 	if isNumericStationID(s) {
-		return s
+		return s, nil
 	}
 	rows, err := db.Query(ctx,
 		`SELECT station_id FROM `+table+
-			` WHERE replace(name, '臺', '台') = replace($1, '臺', '台') LIMIT 1`, s)
+			` WHERE replace(name, '臺', '台') = replace($1, '臺', '台') ORDER BY station_id LIMIT 1`, s)
 	if err != nil {
-		return s
+		return "", err
 	}
 	defer rows.Close()
 	if rows.Next() {
 		var id string
-		if rows.Scan(&id) == nil {
-			return id
+		if err := rows.Scan(&id); err != nil {
+			return "", err
 		}
+		return id, nil
 	}
-	return s
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return s, nil
 }
 
 // traTimetablePayload reads TRA services calling at both the origin and
@@ -148,11 +153,17 @@ func resolveRailStationID(ctx context.Context, db railDB, table, s string) strin
 // the marshaled TraTimetables proto plus the number of paired legs. A zero count
 // signals NotFound (ADR-0005); it never fetches from TDX.
 func traTimetablePayload(ctx context.Context, db railDB, start, end string, date time.Time) ([]byte, int, error) {
-	start = resolveRailStationID(ctx, db, "tra_stations", start)
-	end = resolveRailStationID(ctx, db, "tra_stations", end)
-	const combined = `SELECT train_date,trainno, starting_station_id,starting_station_name,ending_station_id,ending_station_name, stopsequence,train_type_id,train_type_code,train_type_name,tripline,stationid,arrivaltime,stationname,mask,note,departuretime FROM tra_timetable WHERE stationid = ANY($1) AND train_date = $2 AND arrivaltime >= $3;`
+	start, err := resolveRailStationID(ctx, db, "tra_stations", start)
+	if err != nil {
+		return nil, 0, err
+	}
+	end, err = resolveRailStationID(ctx, db, "tra_stations", end)
+	if err != nil {
+		return nil, 0, err
+	}
+	const combined = `SELECT train_date,trainno, starting_station_id,starting_station_name,ending_station_id,ending_station_name, stopsequence,train_type_id,train_type_code,train_type_name,tripline,stationid,arrivaltime,stationname,mask,note,departuretime FROM tra_timetable WHERE stationid = ANY($1) AND train_date = $2 AND (stationid <> $3 OR departuretime >= $4) ORDER BY trainno, stopsequence, stationid;`
 	stations := []string{start, end}
-	rows, err := db.Query(ctx, combined, stations, date.Format(time.DateOnly), date.Format(time.TimeOnly))
+	rows, err := db.Query(ctx, combined, stations, date.Format(time.DateOnly), start, date.Format(time.TimeOnly))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -202,7 +213,7 @@ func traTimetablePayload(ctx context.Context, db railDB, start, end string, date
 		t := temp.Arrivaltime
 		duration := t.Sub(w)
 		if duration < 0 {
-			duration = -duration
+			duration += 24 * time.Hour
 		}
 		seed.Ending_Time = t.Format(time.RFC3339)
 		seed.Travel_Time = duration.String()
