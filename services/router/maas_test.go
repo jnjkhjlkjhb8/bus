@@ -121,6 +121,19 @@ type doneObservedContext struct {
 	observed chan struct{}
 }
 
+type pendingDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c pendingDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+type fakeTimeoutError struct{}
+
+func (fakeTimeoutError) Error() string   { return "i/o timeout" }
+func (fakeTimeoutError) Timeout() bool   { return true }
+func (fakeTimeoutError) Temporary() bool { return true }
+
 type commandCompletionHook struct {
 	target string
 	done   chan struct{}
@@ -338,6 +351,18 @@ func TestRedisMaasCachePreservesEffectiveDisabledLegacyTimeouts(t *testing.T) {
 	})
 	if options.ReadTimeout != -1 || options.WriteTimeout != -1 {
 		t.Fatalf("effective disabled v6 timeouts became read=%v write=%v, want -1/-1 in v9", options.ReadTimeout, options.WriteTimeout)
+	}
+}
+
+func TestRedisContextErrorHandlesSocketDeadlineTimerRace(t *testing.T) {
+	timeoutErr := fakeTimeoutError{}
+	pastDeadline := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(-time.Second)}
+	if err := redisContextError(pastDeadline, timeoutErr); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("elapsed context deadline error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	futureDeadline := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(time.Hour)}
+	if err := redisContextError(futureDeadline, timeoutErr); !errors.Is(err, timeoutErr) {
+		t.Fatalf("early Redis timeout error = %v, want original %v", err, timeoutErr)
 	}
 }
 

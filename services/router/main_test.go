@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,33 +60,250 @@ func limiterContext(address string) context.Context {
 	return peer.NewContext(context.Background(), &peer.Peer{Addr: limiterTestAddr(address)})
 }
 
-type failingGRPCServer struct {
-	err    error
-	events *[]string
+type coordinatorEventLog struct {
+	mu     sync.Mutex
+	events []string
 }
 
-func (s failingGRPCServer) Serve(net.Listener) error {
-	*s.events = append(*s.events, "serve")
-	return s.err
+func (l *coordinatorEventLog) add(event string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, event)
 }
 
-func TestRouterRuntimeReturnsServeErrorAfterCleanup(t *testing.T) {
-	wantErr := errors.New("serve failed")
-	events := make([]string, 0, 5)
-	runtime := &routerRuntime{}
-	err := runtime.run(func() error {
-		for _, name := range []string{"sentry", "redis", "database", "maas"} {
-			name := name
-			runtime.addCleanup(func() { events = append(events, "cleanup "+name) })
-		}
-		return serveGRPC(failingGRPCServer{err: wantErr, events: &events}, nil)
-	})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("run error = %v, want wrapped %v", err, wantErr)
+func (l *coordinatorEventLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
+}
+
+type blockingFakeGRPCServer struct {
+	events         *coordinatorEventLog
+	started        chan struct{}
+	serveResult    chan error
+	handlerRelease chan struct{}
+	handlerDone    chan struct{}
+	stopOnce       sync.Once
+	forceStop      chan struct{}
+	forceOnce      sync.Once
+}
+
+func newBlockingFakeGRPCServer(events *coordinatorEventLog) *blockingFakeGRPCServer {
+	server := &blockingFakeGRPCServer{
+		events: events, started: make(chan struct{}), serveResult: make(chan error, 1),
+		handlerRelease: make(chan struct{}), handlerDone: make(chan struct{}),
 	}
-	wantEvents := []string{"serve", "cleanup maas", "cleanup database", "cleanup redis", "cleanup sentry"}
-	if fmt.Sprint(events) != fmt.Sprint(wantEvents) {
-		t.Fatalf("lifecycle events = %v, want %v", events, wantEvents)
+	go func() {
+		<-server.handlerRelease
+		events.add("grpc handler done")
+		close(server.handlerDone)
+	}()
+	return server
+}
+
+func (s *blockingFakeGRPCServer) Serve(net.Listener) error {
+	close(s.started)
+	err := <-s.serveResult
+	s.events.add("grpc serve returned")
+	return err
+}
+
+func (s *blockingFakeGRPCServer) GracefulStop() {
+	s.events.add("grpc stop")
+	if s.forceStop != nil {
+		<-s.forceStop
+		return
+	}
+	s.stopOnce.Do(func() { close(s.handlerRelease) })
+	<-s.handlerDone
+	select {
+	case s.serveResult <- nil:
+	default:
+	}
+}
+
+func (s *blockingFakeGRPCServer) Stop() {
+	s.events.add("grpc force stop")
+	if s.forceStop != nil {
+		s.forceOnce.Do(func() { close(s.forceStop) })
+	}
+	s.stopOnce.Do(func() { close(s.handlerRelease) })
+	<-s.handlerDone
+	select {
+	case s.serveResult <- nil:
+	default:
+	}
+}
+
+type blockingFakeHTTPServer struct {
+	events         *coordinatorEventLog
+	started        chan struct{}
+	serveResult    chan error
+	handlerRelease chan struct{}
+	handlerDone    chan struct{}
+	stopOnce       sync.Once
+	shutdownErr    error
+}
+
+func newBlockingFakeHTTPServer(events *coordinatorEventLog) *blockingFakeHTTPServer {
+	server := &blockingFakeHTTPServer{
+		events: events, started: make(chan struct{}), serveResult: make(chan error, 1),
+		handlerRelease: make(chan struct{}), handlerDone: make(chan struct{}),
+	}
+	go func() {
+		<-server.handlerRelease
+		events.add("http handler done")
+		close(server.handlerDone)
+	}()
+	return server
+}
+
+func (s *blockingFakeHTTPServer) Serve(net.Listener) error {
+	close(s.started)
+	err := <-s.serveResult
+	s.events.add("http serve returned")
+	return err
+}
+
+func (s *blockingFakeHTTPServer) Shutdown(ctx context.Context) error {
+	s.events.add("http stop")
+	if s.shutdownErr != nil {
+		return s.shutdownErr
+	}
+	select {
+	case s.serveResult <- http.ErrServerClosed:
+	default:
+	}
+	s.stopOnce.Do(func() { close(s.handlerRelease) })
+	select {
+	case <-s.handlerDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *blockingFakeHTTPServer) Close() error {
+	s.events.add("http force close")
+	select {
+	case s.serveResult <- http.ErrServerClosed:
+	default:
+	}
+	s.stopOnce.Do(func() { close(s.handlerRelease) })
+	<-s.handlerDone
+	return nil
+}
+
+func eventIndex(events []string, target string) int {
+	for index, event := range events {
+		if event == target {
+			return index
+		}
+	}
+	return -1
+}
+
+func assertEventBefore(t *testing.T, events []string, earlier, later string) {
+	t.Helper()
+	earlierIndex, laterIndex := eventIndex(events, earlier), eventIndex(events, later)
+	if earlierIndex < 0 || laterIndex < 0 || earlierIndex >= laterIndex {
+		t.Fatalf("event order %q before %q not satisfied: %v", earlier, later, events)
+	}
+}
+
+func TestServerCoordinatorStopsHandlersBeforeBackendCleanup(t *testing.T) {
+	for _, failingServer := range []string{"grpc", "http"} {
+		t.Run(failingServer+" failure", func(t *testing.T) {
+			wantErr := errors.New(failingServer + " failed")
+			var capturedErr error
+			events := &coordinatorEventLog{}
+			grpcServer := newBlockingFakeGRPCServer(events)
+			httpServer := newBlockingFakeHTTPServer(events)
+			runtime := &routerRuntime{}
+			err := runtime.run(func() error {
+				runtime.addCleanup(func() { events.add("sentry flush") })
+				runtime.addCleanup(func() { events.add("backend cleanup") })
+				go func() {
+					<-grpcServer.started
+					<-httpServer.started
+					if failingServer == "grpc" {
+						grpcServer.serveResult <- wantErr
+					} else {
+						httpServer.serveResult <- wantErr
+					}
+				}()
+				coordinator := serverCoordinator{
+					grpcServer: grpcServer, httpServer: httpServer,
+					shutdownTimeout: time.Second,
+					capture: func(err error) {
+						capturedErr = err
+						events.add("capture")
+					},
+				}
+				return coordinator.serve(nil, nil)
+			})
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("coordinator error = %v, want wrapped %v", err, wantErr)
+			}
+			if !errors.Is(capturedErr, wantErr) {
+				t.Fatalf("captured error = %v, want wrapped %v", capturedErr, wantErr)
+			}
+			got := events.snapshot()
+			assertEventBefore(t, got, "grpc stop", "grpc handler done")
+			assertEventBefore(t, got, "http stop", "http handler done")
+			assertEventBefore(t, got, "grpc handler done", "backend cleanup")
+			assertEventBefore(t, got, "http handler done", "backend cleanup")
+			assertEventBefore(t, got, "grpc serve returned", "backend cleanup")
+			assertEventBefore(t, got, "http serve returned", "backend cleanup")
+			assertEventBefore(t, got, "capture", "backend cleanup")
+			assertEventBefore(t, got, "backend cleanup", "sentry flush")
+		})
+	}
+}
+
+func TestServerCoordinatorUsesForcedShutdownFallbacks(t *testing.T) {
+	for _, fallback := range []string{"grpc stop", "http close"} {
+		t.Run(fallback, func(t *testing.T) {
+			events := &coordinatorEventLog{}
+			grpcServer := newBlockingFakeGRPCServer(events)
+			httpServer := newBlockingFakeHTTPServer(events)
+			if fallback == "grpc stop" {
+				grpcServer.forceStop = make(chan struct{})
+			} else {
+				httpServer.shutdownErr = errors.New("shutdown timed out")
+			}
+			go func() {
+				<-grpcServer.started
+				<-httpServer.started
+				if fallback == "grpc stop" {
+					httpServer.serveResult <- errors.New("HTTP failed")
+				} else {
+					grpcServer.serveResult <- errors.New("gRPC failed")
+				}
+			}()
+			coordinator := serverCoordinator{
+				grpcServer: grpcServer, httpServer: httpServer,
+				shutdownTimeout: 5 * time.Millisecond,
+			}
+			done := make(chan error, 1)
+			go func() { done <- coordinator.serve(nil, nil) }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("coordinator returned nil after serve failure")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("forced shutdown fallback did not terminate coordinator")
+			}
+			got := events.snapshot()
+			if fallback == "grpc stop" {
+				assertEventBefore(t, got, "grpc stop", "grpc force stop")
+				assertEventBefore(t, got, "grpc force stop", "grpc handler done")
+			} else {
+				assertEventBefore(t, got, "http stop", "http force close")
+				assertEventBefore(t, got, "http force close", "http handler done")
+			}
+		})
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -102,20 +103,30 @@ func newRedisMaasCache(legacy *legacyredis.Options) *redisMaasCache {
 	return &redisMaasCache{client: redisv9.NewClient(redisMaasOptions(legacy))}
 }
 
+func redisContextError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		return contextErr
+	}
+	deadline, hasDeadline := ctx.Deadline()
+	var timeoutError net.Error
+	if hasDeadline && !time.Now().Before(deadline) && errors.As(err, &timeoutError) && timeoutError.Timeout() {
+		// The socket deadline and context deadline are the same instant. The
+		// socket can wake just before the context timer goroutine records Err().
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
 func (c *redisMaasCache) Get(ctx context.Context, key string) ([]byte, error) {
 	value, err := c.client.Get(ctx, key).Bytes()
-	if err != nil && ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-	return value, err
+	return value, redisContextError(ctx, err)
 }
 
 func (c *redisMaasCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	err := c.client.Set(ctx, key, value, ttl).Err()
-	if err != nil && ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return err
+	return redisContextError(ctx, c.client.Set(ctx, key, value, ttl).Err())
 }
 
 func (c *redisMaasCache) Close() error {

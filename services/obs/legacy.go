@@ -9,7 +9,7 @@ import (
 )
 
 // SlogCompat adapts the standard library log.Logger-style interface
-// (Infof/Infoln/Fatal/Fatalf) onto slog, so third-party code expecting that
+// (Infof/Infoln/Errorf/Fatal/Fatalf) onto slog, so third-party code expecting that
 // method set routes through the same structured pipeline. Pass it where a
 // logger with these methods is required rather than replacing call sites.
 type SlogCompat struct{}
@@ -25,6 +25,11 @@ func (SlogCompat) Infof(format string, args ...any) {
 // level is inferred from the parsed content, not fixed at Info.
 func (SlogCompat) Infoln(args ...any) {
 	Logln(args...)
+}
+
+// Errorf logs a formatted message explicitly at Error level without exiting.
+func (SlogCompat) Errorf(format string, args ...any) {
+	slog.Error(fmt.Sprintf(format, args...))
 }
 
 // Fatal logs the args at Error level and exits the process with status 1,

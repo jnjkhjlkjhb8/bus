@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -276,8 +277,90 @@ func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.Un
 	}
 }
 
-type grpcServing interface {
+type coordinatedGRPCServer interface {
 	Serve(net.Listener) error
+	GracefulStop()
+	Stop()
+}
+
+type coordinatedHTTPServer interface {
+	Serve(net.Listener) error
+	Shutdown(context.Context) error
+	Close() error
+}
+
+type serverCoordinator struct {
+	grpcServer       coordinatedGRPCServer
+	httpServer       coordinatedHTTPServer
+	shutdownTimeout  time.Duration
+	waitHTTPHandlers func()
+	capture          func(error)
+}
+
+type serverResult struct {
+	name string
+	err  error
+}
+
+func (c serverCoordinator) serve(grpcListener, httpListener net.Listener) error {
+	results := make(chan serverResult, 2)
+	go func() {
+		results <- serverResult{name: "gRPC", err: c.grpcServer.Serve(grpcListener)}
+	}()
+	go func() {
+		results <- serverResult{name: "HTTP", err: c.httpServer.Serve(httpListener)}
+	}()
+
+	first := <-results
+	serveErr := unexpectedServeError(first)
+	c.stopServers()
+	<-results // Both Serve goroutines must finish before backend cleanup.
+	if c.capture != nil {
+		c.capture(serveErr)
+	}
+	return serveErr
+}
+
+func unexpectedServeError(result serverResult) error {
+	if result.err == nil || (result.name == "HTTP" && errors.Is(result.err, http.ErrServerClosed)) {
+		return fmt.Errorf("%s server stopped unexpectedly", result.name)
+	}
+	return fmt.Errorf("%s server failed: %w", result.name, result.err)
+}
+
+func (c serverCoordinator) stopServers() {
+	timeout := c.shutdownTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	var stopped sync.WaitGroup
+	stopped.Add(2)
+	go func() {
+		defer stopped.Done()
+		gracefulDone := make(chan struct{})
+		go func() {
+			c.grpcServer.GracefulStop()
+			close(gracefulDone)
+		}()
+		select {
+		case <-gracefulDone:
+		case <-time.After(timeout):
+			c.grpcServer.Stop()
+			<-gracefulDone
+		}
+	}()
+	go func() {
+		defer stopped.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		if err := c.httpServer.Shutdown(ctx); err != nil {
+			_ = c.httpServer.Close()
+		}
+		if c.waitHTTPHandlers != nil {
+			c.waitHTTPHandlers()
+		}
+	}()
+	stopped.Wait()
 }
 
 type routerRuntime struct {
@@ -295,13 +378,6 @@ func (r *routerRuntime) run(start func() error) error {
 		}
 	}()
 	return start()
-}
-
-func serveGRPC(server grpcServing, listener net.Listener) error {
-	if err := server.Serve(listener); err != nil {
-		return fmt.Errorf("serve gRPC: %w", err)
-	}
-	return nil
 }
 
 func run() error {
@@ -342,6 +418,11 @@ func run() error {
 			return fmt.Errorf("listen for gRPC: %w", err)
 		}
 		runtime.addCleanup(func() { _ = lis.Close() })
+		httpRuntime, err := prepareHTTPServer(db, live, httpConfig, loadOrGenerateKey, net.Listen)
+		if err != nil {
+			return err
+		}
+		runtime.addCleanup(func() { _ = httpRuntime.listener.Close() })
 		rl := newRateLimiter()
 		tlsCredentials, err := firebaseTLSCredentialsFromEnv()
 		if err != nil {
@@ -352,6 +433,9 @@ func run() error {
 			return fmt.Errorf("Firebase Admin initialization failed: %w", err)
 		}
 		serverOptions := []grpc.ServerOption{
+			// Stop is the bounded GracefulStop fallback. Waiting for handlers here
+			// keeps backend ownership valid until canceled RPC handlers return.
+			grpc.WaitForHandlers(true),
 			grpc.ChainUnaryInterceptor(productionUnaryInterceptors(appCheckVerifier, enforceAppCheck)...),
 			grpc.ChainStreamInterceptor(
 				obs.StreamInterceptor(),
@@ -376,15 +460,24 @@ func run() error {
 		pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
 		pb.RegisterMaasServiceServer(grpcServer, newMaasServerWithCache(maasCache, db, tdx, defaultMaasSharedWorkConfig))
 		pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
-		go startHTTPServer(db, live, httpConfig)
 		log.Infof("gRPC server is running on port %d", 50051)
-		return serveGRPC(grpcServer, lis)
+		log.Infof("[HTTP] server running on 0.0.0.0:8080")
+		coordinator := serverCoordinator{
+			grpcServer:       grpcServer,
+			httpServer:       httpRuntime.server,
+			waitHTTPHandlers: httpRuntime.handlers.stopAndWait,
+			shutdownTimeout:  5 * time.Second,
+			capture: func(err error) {
+				obs.Capture("router-serve", err)
+			},
+		}
+		return coordinator.serve(lis, httpRuntime.listener)
 	})
 }
 
 func main() {
 	if err := run(); err != nil {
-		log.Infof("router exited with error: %v", err)
+		log.Errorf("router exited with error: %v", err)
 		os.Exit(1)
 	}
 }

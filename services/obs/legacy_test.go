@@ -25,6 +25,18 @@ func TestLogfMapsLegacyFields(t *testing.T) {
 	}
 }
 
+func TestSlogCompatErrorfLogsAtErrorLevelWithoutExiting(t *testing.T) {
+	logger, transport := newDiscardLogger(t)
+	slog.SetDefault(logger)
+	SlogCompat{}.Errorf("router stopped: %s", "serve failed")
+	if len(transport.events) != 1 {
+		t.Fatalf("error events = %d, want 1", len(transport.events))
+	}
+	if transport.events[0].Level != sentry.LevelError {
+		t.Fatalf("error level = %v, want %v", transport.events[0].Level, sentry.LevelError)
+	}
+}
+
 func TestLegacyLevel(t *testing.T) {
 	cases := []struct {
 		name string

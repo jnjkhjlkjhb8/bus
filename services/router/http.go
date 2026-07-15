@@ -19,6 +19,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	sentrygin "github.com/getsentry/sentry-go/gin"
@@ -87,18 +88,76 @@ func trustedProxiesFromEnv() ([]netip.Prefix, error) {
 	return proxies, nil
 }
 
-func startHTTPServer(db *pgxpool.Pool, live *liveHub, config httpServerConfig) {
-	key, err := loadOrGenerateKey()
+type trackedHTTPHandler struct {
+	handler  http.Handler
+	mu       sync.Mutex
+	active   int
+	stopping bool
+	done     chan struct{}
+	doneOnce sync.Once
+}
+
+func newTrackedHTTPHandler(handler http.Handler) *trackedHTTPHandler {
+	return &trackedHTTPHandler{handler: handler, done: make(chan struct{})}
+}
+
+func (h *trackedHTTPHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	h.mu.Lock()
+	if h.stopping {
+		h.mu.Unlock()
+		http.Error(writer, "server shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	h.active++
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.active--
+		if h.stopping && h.active == 0 {
+			h.doneOnce.Do(func() { close(h.done) })
+		}
+		h.mu.Unlock()
+	}()
+	h.handler.ServeHTTP(writer, request)
+}
+
+func (h *trackedHTTPHandler) stopAndWait() {
+	h.mu.Lock()
+	h.stopping = true
+	if h.active == 0 {
+		h.doneOnce.Do(func() { close(h.done) })
+	}
+	done := h.done
+	h.mu.Unlock()
+	<-done
+}
+
+type preparedHTTPServer struct {
+	server   *http.Server
+	listener net.Listener
+	handlers *trackedHTTPHandler
+}
+
+func prepareHTTPServer(
+	db *pgxpool.Pool,
+	live *liveHub,
+	config httpServerConfig,
+	loadKey func() (*rsa.PrivateKey, error),
+	listen func(string, string) (net.Listener, error),
+) (preparedHTTPServer, error) {
+	key, err := loadKey()
 	if err != nil {
-		log.Fatalf("[HTTP] failed to load/generate RSA key: %v", err)
+		return preparedHTTPServer{}, fmt.Errorf("prepare HTTP signing key: %w", err)
 	}
 	log.Infof("[HTTP] RS256 key ready")
 	gin.SetMode(gin.ReleaseMode)
-	r := newHTTPRouter(db, live, key, config)
-	log.Infof("[HTTP] server running on 0.0.0.0:8080")
-	if err := r.Run("0.0.0.0:8080"); err != nil {
-		log.Fatalf("[HTTP] server failed: %v", err)
+	handlers := newTrackedHTTPHandler(newHTTPRouter(db, live, key, config))
+	server := &http.Server{Handler: handlers}
+	listener, err := listen("tcp", "0.0.0.0:8080")
+	if err != nil {
+		return preparedHTTPServer{}, fmt.Errorf("listen for HTTP: %w", err)
 	}
+	return preparedHTTPServer{server: server, listener: listener, handlers: handlers}, nil
 }
 
 func newHTTPRouter(db *pgxpool.Pool, live *liveHub, key *rsa.PrivateKey, config httpServerConfig) *gin.Engine {

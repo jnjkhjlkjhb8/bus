@@ -8,7 +8,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -169,6 +171,71 @@ func TestLoadOrGenerateKeyRecoversFromCorruptFile(t *testing.T) {
 	}
 	if key.N.Cmp(reloaded.N) != 0 {
 		t.Fatal("regenerated key was not persisted for the next restart")
+	}
+}
+
+func TestPrepareHTTPServerReturnsKeyAndListenErrorsSynchronously(t *testing.T) {
+	config := httpServerConfig{MetricsCredential: strings.Repeat("m", 32)}
+	keyErr := errors.New("key unavailable")
+	listenCalled := false
+	_, err := prepareHTTPServer(nil, nil, config,
+		func() (*rsa.PrivateKey, error) { return nil, keyErr },
+		func(string, string) (net.Listener, error) {
+			listenCalled = true
+			return nil, nil
+		})
+	if !errors.Is(err, keyErr) {
+		t.Fatalf("key preparation error = %v, want wrapped %v", err, keyErr)
+	}
+	if listenCalled {
+		t.Fatal("HTTP listener was opened after key preparation failed")
+	}
+
+	listenErr := errors.New("address in use")
+	_, err = prepareHTTPServer(nil, nil, config,
+		func() (*rsa.PrivateKey, error) { return testKey(t), nil },
+		func(network, address string) (net.Listener, error) {
+			if network != "tcp" || address != "0.0.0.0:8080" {
+				t.Fatalf("listen target = %s %s", network, address)
+			}
+			return nil, listenErr
+		})
+	if !errors.Is(err, listenErr) {
+		t.Fatalf("HTTP listen error = %v, want wrapped %v", err, listenErr)
+	}
+}
+
+func TestTrackedHTTPHandlerWaitsForActiveHandler(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	handlerDone := make(chan struct{})
+	tracked := newTrackedHTTPHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(started)
+		<-release
+		close(handlerDone)
+	}))
+	go tracked.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/blocked", nil))
+	<-started
+	waitDone := make(chan struct{})
+	go func() {
+		tracked.stopAndWait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+		t.Fatal("handler tracker returned while an active handler was blocked")
+	default:
+	}
+	close(release)
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("blocked HTTP handler did not finish")
+	}
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("handler tracker did not return after handler completion")
 	}
 }
 
