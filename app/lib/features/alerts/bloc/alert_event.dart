@@ -52,14 +52,38 @@ class AlertMarkedRead extends AlertEvent {
 }
 
 class AlertStreamFailed extends AlertEvent {
-  const AlertStreamFailed(this.error);
+  const AlertStreamFailed(this.error, {this.source});
 
   final AppError error;
 
+  /// Which subscription failed, if the caller knows. `null` is a legacy/
+  /// unscoped failure — it is tracked in the health map under a `null` key,
+  /// same as any other source (F32).
+  final AlertSourceId? source;
+
   @override
-  List<Object?> get props => [error];
+  List<Object?> get props => [error, source];
 }
 
 class AlertStreamRecovered extends AlertEvent {
-  const AlertStreamRecovered();
+  const AlertStreamRecovered({this.source});
+
+  /// Which subscription recovered; must match the `source` an earlier
+  /// [AlertStreamFailed] used for this to clear that failure (F32).
+  final AlertSourceId? source;
+
+  @override
+  List<Object?> get props => [source];
+}
+
+/// Fired whenever the injected `alert_sources` config stream emits a new
+/// (or first) value. Carries the raw CSV so the bloc can diff it against
+/// what it last applied and resubscribe only the affected sources (F33).
+class AlertConfigChanged extends AlertEvent {
+  const AlertConfigChanged(this.sourcesCsv);
+
+  final String sourcesCsv;
+
+  @override
+  List<Object?> get props => [sourcesCsv];
 }

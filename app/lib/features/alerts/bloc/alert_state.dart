@@ -7,13 +7,27 @@ class AlertState extends Equatable {
     this.activeAlerts = const [],
     this.dismissedMessages = const {},
     this.readMessages = const {},
-    this.error,
+    this.sourceHealth = const {},
   });
 
   final List<AlertViewModel> activeAlerts;
   final Set<String> dismissedMessages;
   final Set<String> readMessages;
-  final AppError? error;
+
+  /// Per-source subscription failures. A source with no entry is healthy;
+  /// only currently-failed sources appear here. Keyed by `null` for a
+  /// failure whose caller didn't attribute a source (F32) — the UI can read
+  /// this map directly to show which systems are down, or use [error] for
+  /// the existing "is anything down" signal.
+  final Map<AlertSourceId?, AppError> sourceHealth;
+
+  /// Some recorded failure, or null when every tracked source is healthy.
+  /// Existing single-error consumers (OfflineBanner, the notification strip)
+  /// only need to know "is at least one source down", not which — recovering
+  /// one of several failed sources must not clear this until all recover
+  /// (F32).
+  AppError? get error =>
+      sourceHealth.values.isEmpty ? null : sourceHealth.values.first;
 
   /// Only red (severe) alerts that haven't been dismissed.
   List<AlertViewModel> get redAlerts => activeAlerts
@@ -39,13 +53,12 @@ class AlertState extends Equatable {
     List<AlertViewModel>? activeAlerts,
     Set<String>? dismissedMessages,
     Set<String>? readMessages,
-    AppError? error,
-    bool clearError = false,
+    Map<AlertSourceId?, AppError>? sourceHealth,
   }) => AlertState(
     activeAlerts: activeAlerts ?? this.activeAlerts,
     dismissedMessages: dismissedMessages ?? this.dismissedMessages,
     readMessages: readMessages ?? this.readMessages,
-    error: clearError ? null : error ?? this.error,
+    sourceHealth: sourceHealth ?? this.sourceHealth,
   );
 
   @override
@@ -53,6 +66,6 @@ class AlertState extends Equatable {
     activeAlerts,
     dismissedMessages,
     readMessages,
-    error,
+    sourceHealth,
   ];
 }

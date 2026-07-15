@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
@@ -10,6 +12,7 @@ import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 /// Firebase is off or a read fails, so a read is always safe from any layer.
 class AppConfig {
   AppConfig._();
+
   /// Bumped whenever a Realtime Remote Config update is activated, so widgets
   /// reading config (e.g. the maintenance banner) can rebuild without a
   /// relaunch. Listen via a ValueListenableBuilder; the value itself is opaque.
@@ -30,6 +33,22 @@ class AppConfig {
     'alert_sources': 'metro:TRTC,bus:Taipei',
     'nearby_fallback_radius_m': 900,
   };
+
+  /// Bridges [version] into a broadcast [Stream] for consumers that want to
+  /// react to each activated revision instead of polling a
+  /// `ValueListenableBuilder` (e.g. [AlertBloc]'s dynamic `alert_sources`
+  /// subscription). Each event only signals "a revision happened" — read the
+  /// value you care about with a getter afterwards, since Remote Config may
+  /// have activated several keys at once.
+  static Stream<void> revisions() {
+    late final StreamController<void> controller;
+    void listener() => controller.add(null);
+    controller = StreamController<void>.broadcast(
+      onListen: () => version.addListener(listener),
+      onCancel: () => version.removeListener(listener),
+    );
+    return controller.stream;
+  }
 
   static bool getBool(String key) => _read(key, (rc) => rc.getBool(key));
   static String getString(String key) => _read(key, (rc) => rc.getString(key));

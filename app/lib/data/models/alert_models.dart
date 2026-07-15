@@ -19,6 +19,13 @@ class AlertSource extends Equatable {
   List<Object?> get props => [kind, code];
 }
 
+/// Alias for [AlertSource] used where the value identifies which live
+/// subscription a health/failure record belongs to, rather than where a
+/// received message came from. Same type, different reading — kept as an
+/// alias instead of a parallel class so subscription bookkeeping and message
+/// provenance never drift apart.
+typedef AlertSourceId = AlertSource;
+
 class AlertViewModel extends Equatable {
   const AlertViewModel({
     required this.message,
