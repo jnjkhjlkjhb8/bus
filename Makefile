@@ -32,10 +32,13 @@ proto-dart:
 
 # verify runs the full hermetic gate: vet + race tests, fatal-on-error/warning
 # Flutter analysis + tests, the asset/action/permissions/DB-coverage checks in
-# scripts/check-hermetic.sh, the Task 5/6 compose policy checks, and a clean
-# git diff after code generation (proves generation never mutates tracked
-# source). Flutter's asset gate is expected to WARN on a machine without
-# app/assets provisioned (gitignored, user-owned) — see check-hermetic.sh.
+# scripts/check-hermetic.sh, the Task 5/6 compose policy checks, the
+# engineering-contract gates (dependency boundaries, file-size ratchet, buf
+# proto contract, gitleaks, govulncheck, guardrail-test presence — all tools
+# pinned, installed into .tools/bin), and a clean git diff after code
+# generation (proves generation never mutates tracked source). Flutter's
+# asset gate is expected to WARN on a machine without app/assets provisioned
+# (gitignored, user-owned) — see check-hermetic.sh.
 verify: proto-go
 	go vet ./...
 	go test -race ./...
@@ -44,6 +47,12 @@ verify: proto-go
 	./scripts/check-hermetic.sh
 	./scripts/check-compose-isolation.sh
 	./scripts/check-container-hardening.sh
+	./scripts/check-dependency-boundaries.sh
+	./scripts/check-file-budgets.sh
+	./scripts/check-proto-contract.sh
+	./scripts/check-gitleaks.sh
+	./scripts/check-govulncheck.sh
+	./scripts/check-guardrail-tests-present.sh
 	git diff --exit-code
 
 up-test:

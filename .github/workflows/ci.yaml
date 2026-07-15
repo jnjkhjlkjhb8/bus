@@ -60,6 +60,56 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: junit.xml
           flags: go
+      # Engineering-contract gates that need generated stubs and the live
+      # postgres/redis services this job already provides. Tool versions are
+      # pinned inside the scripts (installed into .tools/bin, never @latest).
+      - name: guardrail tests still present and passing
+        run: ./scripts/check-guardrail-tests-present.sh
+      - name: govulncheck (pinned SCA gate)
+        run: ./scripts/check-govulncheck.sh
+
+  contracts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # buf breaking diffs the proto contract against the PR base ref,
+          # which requires history beyond the merge commit.
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - name: dependency boundaries (features / proto confinement / Go layering)
+        run: ./scripts/check-dependency-boundaries.sh
+      - name: dependency-boundary scanner self-test
+        run: ./scripts/check-dependency-boundaries.sh --self-test
+      - name: file-size ratchet
+        run: ./scripts/check-file-budgets.sh
+      - name: file-size ratchet self-test
+        run: ./scripts/check-file-budgets.sh --self-test
+      - name: proto contract (buf build + breaking, pinned)
+        env:
+          # Enforce wire compatibility against the PR base; on branch pushes
+          # HEAD makes the diff a no-op and the gate reduces to `buf build`.
+          PROTO_BASELINE_REF: ${{ github.event.pull_request.base.sha || 'HEAD' }}
+        run: ./scripts/check-proto-contract.sh
+
+  security:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # gitleaks scans commit history, not just the checkout tip.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Repo-root .gitleaks.toml (default rules + reviewed non-secret
+          # allowlists) is auto-detected by gitleaks.
 
   flutter:
     runs-on: ubuntu-latest
