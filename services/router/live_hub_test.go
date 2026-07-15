@@ -275,6 +275,56 @@ func TestLiveHubClosesUpstreamAfterSourceDisconnect(t *testing.T) {
 	}
 }
 
+// TestLiveHubUnsubscribeClearsCloseReasonAfterEviction asserts that
+// closeReasons does not leak when a subscriber's handler exits via its own
+// context (calling the closeStream func returned by subscribe) after the hub
+// already evicted it for overflow. evictSlowSubscriber records the eviction
+// cause keyed by the downstream channel without removing the subscriber from
+// entry.subscribers under unsubscribe's usual path — a caller that never
+// reads the cause through subscriptionCloseCause must still not leave a
+// closeReasons entry behind.
+func TestLiveHubUnsubscribeClearsCloseReasonAfterEviction(t *testing.T) {
+	src := newHubSource()
+	hub := newLiveHubWithQueueSize(src, 10, 1)
+
+	stream, closeStream, err := hub.subscribe("route:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fill the bounded queue past capacity without draining, so the hub
+	// evicts this subscriber (evictSlowSubscriber): it deletes the
+	// subscribers[id] entry, closes the channel, and records the eviction
+	// cause in closeReasons.
+	for i := 0; i < 3; i++ {
+		src.publish("route:1", []byte("frame"))
+	}
+	deadline := time.Now().Add(time.Second)
+	for hub.stats().EvictedSubscribers == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := hub.stats().EvictedSubscribers; got != 1 {
+		t.Fatalf("EvictedSubscribers = %d, want 1", got)
+	}
+	// Drain the channel so it is confirmed closed before we exercise the
+	// caller's own cleanup path.
+	for range stream {
+	}
+
+	// The caller's handler exits via ctx.Done() (or similar) without ever
+	// calling subscriptionCloseCause to read and clear the eviction reason —
+	// it just invokes the closeSubscriber func returned by subscribe, same
+	// as the healthy-unsubscribe path.
+	closeStream()
+
+	hub.mu.Lock()
+	leaked := len(hub.closeReasons)
+	hub.mu.Unlock()
+	if leaked != 0 {
+		t.Fatalf("closeReasons leaked %d entries after unsubscribe following eviction", leaked)
+	}
+}
+
 func TestLiveHubRejectsStreamAboveLimit(t *testing.T) {
 	src := newHubSource()
 	hub := newLiveHub(src, 1)

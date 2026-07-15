@@ -103,26 +103,42 @@ func (h *liveHub) subscribe(channel string) (<-chan []byte, func(), error) {
 	var once sync.Once
 	closeSubscriber := func() {
 		once.Do(func() {
-			h.unsubscribe(channel, entry, id)
+			h.unsubscribe(channel, entry, id, downstream)
 		})
 	}
 	return downstream, closeSubscriber, nil
 }
 
-func (h *liveHub) unsubscribe(channel string, entry *liveHubEntry, id uint64) {
+// unsubscribe removes id's subscription. downstream is the channel handed
+// back by subscribe, passed in directly (rather than re-read from
+// entry.subscribers) so cleanup still finds it after eviction has already
+// removed the subscribers[id] entry.
+func (h *liveHub) unsubscribe(channel string, entry *liveHubEntry, id uint64, downstream chan []byte) {
 	h.mu.Lock()
 	if h.entries[channel] != entry {
+		// The entry is already gone — e.g. forward's eviction path removed
+		// the last subscriber and closeEntryIfEmptyLocked dropped the entry
+		// before this caller's own cleanup ran. downstream may still hold a
+		// closeReasons entry from evictSlowSubscriber; clear it so it does
+		// not leak for the process lifetime.
+		delete(h.closeReasons, downstream)
 		h.mu.Unlock()
 		return
 	}
-	downstream, ok := entry.subscribers[id]
+	current, ok := entry.subscribers[id]
 	if !ok {
+		// Already evicted by evictSlowSubscriber: the subscribers[id] entry
+		// and channel are gone, but closeReasons may still hold this
+		// channel's eviction cause if the caller's handler exited (e.g. via
+		// ctx.Done()) without reading it through subscriptionCloseCause.
+		// Clear it here too, or it leaks for the process lifetime.
+		delete(h.closeReasons, downstream)
 		h.mu.Unlock()
 		return
 	}
 	delete(entry.subscribers, id)
-	delete(h.closeReasons, downstream)
-	close(downstream)
+	delete(h.closeReasons, current)
+	close(current)
 	h.activeStreams--
 	upstreamClose := h.closeEntryIfEmptyLocked(channel, entry)
 	h.mu.Unlock()
