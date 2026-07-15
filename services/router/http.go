@@ -299,10 +299,10 @@ func handleMetrics(live *liveHub) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		stats := live.stats()
 		body := fmt.Sprintf(
-			"router_live_streams %d\nrouter_live_channels %d\nrouter_live_dropped_frames_total %d\nrouter_goroutines %d\n",
+			"router_live_streams %d\nrouter_live_channels %d\nrouter_live_evicted_subscribers_total %d\nrouter_goroutines %d\n",
 			stats.ActiveStreams,
 			stats.ActiveChannels,
-			stats.DroppedFrames,
+			stats.EvictedSubscribers,
 			runtime.NumGoroutine(),
 		)
 		c.Data(200, "text/plain; version=0.0.4; charset=utf-8", []byte(body))

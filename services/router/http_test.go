@@ -255,7 +255,7 @@ func TestHandleMetricsWritesLiveHubCounters(t *testing.T) {
 	for _, metric := range []string{
 		"router_live_streams",
 		"router_live_channels",
-		"router_live_dropped_frames_total",
+		"router_live_evicted_subscribers_total",
 		"router_goroutines",
 	} {
 		if !strings.Contains(body, metric) {

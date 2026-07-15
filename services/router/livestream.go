@@ -33,6 +33,14 @@ type liveStreamSpec struct {
 
 var errLiveSourceClosed = errors.New("live source subscription closed")
 
+// liveSourceCloseCause is implemented by sources that can explain a
+// specific, reconnectable reason a subscription channel closed — e.g. a
+// per-subscriber overflow eviction — distinct from the generic upstream
+// disconnect reported as errLiveSourceClosed.
+type liveSourceCloseCause interface {
+	subscriptionCloseCause(ch <-chan []byte) error
+}
+
 // streamLive runs a live stream to completion: subscribe first (so nothing
 // published during seeding is lost), seed from current values, then forward
 // updates until ctx is done, send fails, or the subscription closes.
@@ -69,6 +77,11 @@ func streamLive(ctx context.Context, src liveSource, spec liveStreamSpec, send f
 			return ctx.Err()
 		case val, ok := <-ch:
 			if !ok {
+				if withCause, hasCause := src.(liveSourceCloseCause); hasCause {
+					if cause := withCause.subscriptionCloseCause(ch); cause != nil {
+						return cause
+					}
+				}
 				log.Infof("[gRPC] action=live_stream event=source_closed channel=%s", spec.channel)
 				return errLiveSourceClosed
 			}

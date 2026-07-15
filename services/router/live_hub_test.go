@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -102,7 +103,11 @@ func TestLiveHubSharesOneUpstreamSubscription(t *testing.T) {
 	closeSecond()
 }
 
-func TestLiveHubReplacesStaleFrameForSlowSubscriber(t *testing.T) {
+// TestLiveHubOrderedDeliveryForHealthySubscriber asserts that a subscriber
+// whose queue never fills receives every distinct frame, in publish order.
+// The old buffer-of-1 drop-old implementation silently discarded all but
+// the newest of these frames.
+func TestLiveHubOrderedDeliveryForHealthySubscriber(t *testing.T) {
 	src := newHubSource()
 	hub := newLiveHub(src, 10)
 
@@ -112,14 +117,124 @@ func TestLiveHubReplacesStaleFrameForSlowSubscriber(t *testing.T) {
 	}
 	defer closeStream()
 
-	src.publish("route:1", []byte("stale"))
-	src.publish("route:1", []byte("latest"))
+	want := []string{"frame-0", "frame-1", "frame-2", "frame-3", "frame-4"}
+	for _, frame := range want {
+		src.publish("route:1", []byte(frame))
+	}
+
+	for i, expect := range want {
+		select {
+		case got := <-stream:
+			if string(got) != expect {
+				t.Fatalf("frame[%d] = %q, want %q", i, got, expect)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for frame[%d] = %q", i, expect)
+		}
+	}
+}
+
+// TestLiveHubEvictsSlowSubscriberOnOverflow asserts that once a subscriber's
+// bounded queue is full, the hub evicts and closes that subscriber instead
+// of silently replacing the oldest unread frame.
+func TestLiveHubEvictsSlowSubscriberOnOverflow(t *testing.T) {
+	src := newHubSource()
+	hub := newLiveHubWithQueueSize(src, 10, 4)
+
+	stream, closeStream, err := hub.subscribe("route:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStream()
+
+	for i := 0; i < 6; i++ {
+		src.publish("route:1", []byte("frame"))
+	}
+
 	deadline := time.Now().Add(time.Second)
-	for hub.stats().DroppedFrames == 0 && time.Now().Before(deadline) {
+	for hub.stats().EvictedSubscribers == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if got := string(<-stream); got != "latest" {
-		t.Fatalf("frame = %q, want latest", got)
+	if got := hub.stats().EvictedSubscribers; got != 1 {
+		t.Fatalf("EvictedSubscribers = %d, want 1", got)
+	}
+
+	deadline = time.Now().Add(time.Second)
+	for {
+		select {
+		case _, ok := <-stream:
+			if !ok {
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatal("stream was not closed after overflow eviction")
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("stream was not closed after overflow eviction")
+		}
+	}
+}
+
+// TestLiveHubOverflowEvictsOnlyTheSlowSubscriber asserts that overflow on
+// one subscriber's queue does not disturb a healthy subscriber reading the
+// same channel: ordered delivery keeps working for it.
+func TestLiveHubOverflowEvictsOnlyTheSlowSubscriber(t *testing.T) {
+	src := newHubSource()
+	hub := newLiveHubWithQueueSize(src, 10, 4)
+
+	slow, closeSlow, err := hub.subscribe("route:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeSlow()
+	healthy, closeHealthy, err := hub.subscribe("route:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeHealthy()
+
+	// The healthy subscriber drains after every publish so its own queue
+	// never approaches the bound; only the never-read slow subscriber's
+	// queue fills and overflows.
+	var received []string
+	for i := 0; i < 6; i++ {
+		src.publish("route:1", []byte(fmt.Sprintf("frame-%d", i)))
+		select {
+		case frame := <-healthy:
+			received = append(received, string(frame))
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for frame %d on healthy subscriber", i)
+		}
+	}
+
+	if len(received) != 6 {
+		t.Fatalf("healthy subscriber received %d frames, want 6: %v", len(received), received)
+	}
+	for i, frame := range received {
+		if want := fmt.Sprintf("frame-%d", i); frame != want {
+			t.Fatalf("received[%d] = %q, want %q", i, frame, want)
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for hub.stats().EvictedSubscribers == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := hub.stats().EvictedSubscribers; got != 1 {
+		t.Fatalf("EvictedSubscribers = %d, want 1", got)
+	}
+	// Draining what remained buffered, the channel must still end up closed:
+	// a slow subscriber never gets a permanently-stuck stream.
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for range slow {
+		}
+	}()
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("slow subscriber stream should have been closed by eviction")
 	}
 }
 

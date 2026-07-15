@@ -395,7 +395,11 @@ func run() error {
 				log.Infof("[REDIS] action=close event=failed error=%v", err)
 			}
 		})
-		live := newLiveHub(redisLiveSource{rc: rc}, int(shared.EnvInt32("ROUTER_MAX_LIVE_STREAMS", 2000)))
+		live := newLiveHubWithQueueSize(
+			redisLiveSource{rc: rc},
+			int(shared.EnvInt32("ROUTER_MAX_LIVE_STREAMS", 2000)),
+			int(shared.EnvInt32("ROUTER_LIVE_SUBSCRIBER_QUEUE", defaultSubscriberQueueSize)),
+		)
 		db := shared.ConnectDB("ROUTER_DB_MAX_CONNS", 20)
 		runtime.addCleanup(db.Close)
 		go logPoolStats(db)

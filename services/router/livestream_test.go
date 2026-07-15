@@ -3,8 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // fakeLiveSource is the in-memory adapter at the liveSource seam. publish
@@ -138,6 +143,56 @@ func TestStreamLiveClosedChannelReturnsError(t *testing.T) {
 	close(src.ch)
 	if err := wait(); !errors.Is(err, errLiveSourceClosed) {
 		t.Fatalf("want errLiveSourceClosed, got %v", err)
+	}
+}
+
+// TestStreamLiveReturnsUnavailableWhenHubEvictsSlowSubscriber runs streamLive
+// against a real liveHub (which implements liveSource) to prove that a
+// subscriber evicted for falling behind surfaces a reconnectable Unavailable
+// error to its stream, rather than the generic errLiveSourceClosed used for
+// an upstream disconnect.
+func TestStreamLiveReturnsUnavailableWhenHubEvictsSlowSubscriber(t *testing.T) {
+	src := newHubSource()
+	hub := newLiveHubWithQueueSize(src, 10, 4)
+
+	firstSendStarted := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+
+	errc := make(chan error, 1)
+	go func() {
+		errc <- streamLive(context.Background(), hub, liveStreamSpec{channel: "route:1"}, func([]byte) error {
+			once.Do(func() { close(firstSendStarted) })
+			<-release
+			return nil
+		})
+	}()
+
+	subscribeDeadline := time.Now().Add(time.Second)
+	for src.subscriptionCount("route:1") == 0 && time.Now().Before(subscribeDeadline) {
+		time.Sleep(time.Millisecond)
+	}
+	src.publish("route:1", []byte("frame-0")) // triggers the first, blocking send
+	<-firstSendStarted                        // consumer is now stuck in send, no longer draining its queue
+
+	for i := 1; i < 6; i++ {
+		src.publish("route:1", []byte(fmt.Sprintf("frame-%d", i)))
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for hub.stats().EvictedSubscribers == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+
+	close(release) // unblock send so streamLive loops back and observes the closed channel
+
+	select {
+	case err := <-errc:
+		if status.Code(err) != codes.Unavailable {
+			t.Fatalf("error = %v, want status code %s", err, codes.Unavailable)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("streamLive did not return after subscriber eviction")
 	}
 }
 
