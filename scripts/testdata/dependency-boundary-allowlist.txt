@@ -6,6 +6,9 @@ app/lib/features/bus/view/bus_route_screen.dart|live_activity
 app/lib/features/bus/view/bus_stop_screen.dart|alerts
 app/lib/features/bus/view/bus_stop_screen.dart|live_activity
 app/lib/features/bus/widgets/stop_board_toggle.dart|live_activity
+# navigation_coordinator.dart adopted as pre-existing code (Task 0); coupling
+# to live_activity predates the ratchet, same seam as go_screen.dart below.
+app/lib/features/go/navigation/navigation_coordinator.dart|live_activity
 app/lib/features/go/view/go_screen.dart|live_activity
 app/lib/features/home/home_screen.dart|alerts
 app/lib/features/home/home_screen.dart|favorites

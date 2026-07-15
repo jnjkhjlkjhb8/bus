@@ -7,3 +7,5 @@ app/lib/features/go/view/go_screen.dart|1175
 services/router/maas_test.go|1170
 app/lib/features/go/widgets/go_planner_widgets.dart|1134
 app/lib/features/go/widgets/go_navigation_widgets.dart|1122
+app/test/features/go/navigation_coordinator_test.dart|1106
+app/lib/features/go/view/place_search_screen.dart|1020
