@@ -17,6 +17,9 @@ import (
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"github.com/pashagolub/pgxmock/v4"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type maasTDXStore struct {
@@ -147,18 +150,34 @@ func TestConvertBatchesIdentityAndFareQueries(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery(`(?s)WITH input AS.*bus_station_stop_map`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(
+			[]int32{0, 2, 3},
+			[]string{"A", "C", "E"},
+			[]string{"B", "D", "F"},
+			[]string{"1", "2", "3"},
+			[]string{"1", "2", "3"},
+			[]string{"", "", ""},
+		).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"section_index", "sub_route_uid", "direction", "departure_stop_uid", "arrival_stop_uid", "match_count",
 		}).
 			AddRow(int32(0), "BUS-1", int32(0), "STOP-A", "STOP-B", int64(1)).
 			AddRow(int32(2), "BUS-2", int32(1), "STOP-C", "STOP-D", int64(2)))
-	db.ExpectQuery(`(?s)WITH input AS.*mrt_journey_matrix`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+	db.ExpectQuery(`(?s)WITH input AS.*destination\.system = origin\.system.*m\.system = origin\.system.*MIN\(fare\).*WHERE fare > 0`).
+		WithArgs(
+			[]int32{1, 4, 5, 6},
+			[]string{"mrt", "tra", "thsr", "subway"},
+			[]string{"台北", "台北", "台北", "西門"},
+			[]string{"西門", "台中", "左營", "龍山寺"},
+		).
 		WillReturnRows(pgxmock.NewRows([]string{"section_index", "fare"}).
 			AddRow(int32(1), int32(25)).
+			AddRow(int32(1), int32(20)).
 			AddRow(int32(4), int32(41)).
+			AddRow(int32(4), int32(41)).
+			AddRow(int32(5), int32(0)).
 			AddRow(int32(5), int32(700)).
+			AddRow(int32(6), int32(-10)).
 			AddRow(int32(6), int32(30)))
 
 	section := func(mode, name, from, to string) tdxSection {
@@ -194,14 +213,138 @@ func TestConvertBatchesIdentityAndFareQueries(t *testing.T) {
 	if sections[3].GetNotificationIdentity().GetSupported() {
 		t.Fatalf("unmatched third bus identity must be unsupported: %v", sections[3].GetNotificationIdentity())
 	}
-	wantFares := map[int]int32{1: 25, 4: 41, 5: 700, 6: 30}
+	wantFares := map[int]int32{1: 20, 4: 41, 5: 700, 6: 30}
 	for index, want := range wantFares {
 		if got := sections[index].GetFare(); got != want {
 			t.Fatalf("section %d fare = %d, want %d", index, got, want)
 		}
 	}
-	if got := out.GetRoutes()[0].GetTotalFare(); got != 796 {
-		t.Fatalf("total fare = %d, want 796", got)
+	if got := out.GetRoutes()[0].GetTotalFare(); got != 791 {
+		t.Fatalf("total fare = %d, want 791", got)
+	}
+}
+
+type cancelAfterAcquireContext struct {
+	context.Context
+	errCalls atomic.Int32
+}
+
+func (c *cancelAfterAcquireContext) Err() error {
+	if c.errCalls.Add(1) >= 2 {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestMaasResourceInterceptorChecksCancellationBeforeAndAfterAcquire(t *testing.T) {
+	info := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}
+	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+
+	t.Run("already canceled does not consume rate quota", func(t *testing.T) {
+		interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
+			RateLimit: 1, RateWindow: time.Minute, MaxConcurrent: 1, Timeout: time.Second,
+		})
+		peerCtx := limiterContext("203.0.113.40:1234")
+		canceled, cancel := context.WithCancel(peerCtx)
+		cancel()
+		if _, err := interceptor(canceled, nil, info, handler); status.Code(err) != codes.Canceled {
+			t.Fatalf("canceled call code = %v", status.Code(err))
+		}
+		if _, err := interceptor(peerCtx, nil, info, handler); err != nil {
+			t.Fatalf("canceled call consumed quota: %v", err)
+		}
+	})
+
+	t.Run("cancellation immediately after acquire skips handler and releases slot", func(t *testing.T) {
+		interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
+			RateLimit: 10, RateWindow: time.Minute, MaxConcurrent: 1, Timeout: time.Second,
+		})
+		ctx := &cancelAfterAcquireContext{Context: limiterContext("203.0.113.41:1234")}
+		called := false
+		_, err := interceptor(ctx, nil, info, func(context.Context, interface{}) (interface{}, error) {
+			called = true
+			return "unexpected", nil
+		})
+		if status.Code(err) != codes.Canceled || called {
+			t.Fatalf("post-acquire cancellation = (code=%v called=%v)", status.Code(err), called)
+		}
+		if _, err := interceptor(limiterContext("203.0.113.42:1234"), nil, info, handler); err != nil {
+			t.Fatalf("post-acquire cancellation leaked slot: %v", err)
+		}
+	})
+}
+
+func TestMaasPlanCanceledSingleflightFollowerReleasesInterceptorSlot(t *testing.T) {
+	upstreamStarted := make(chan struct{})
+	releaseUpstream := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case <-upstreamStarted:
+		default:
+			close(upstreamStarted)
+		}
+		<-releaseUpstream
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"result":"success","data":{"routes":[]}}`)
+	}))
+	defer upstream.Close()
+
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
+	server := newMaasServer(nil, nil, tdx)
+	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
+	interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
+		RateLimit: 100, RateWindow: time.Minute, MaxConcurrent: 2, Timeout: 3 * time.Second,
+	})
+	info := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}
+	req := &pb.MaasPlanRequest{FromLat: 25.0, FromLon: 121.5, ToLat: 25.1, ToLon: 121.6, Date: "2027-01-01", Time: "08:00"}
+	planHandler := func(ctx context.Context, request interface{}) (interface{}, error) {
+		return server.Plan(ctx, request.(*pb.MaasPlanRequest))
+	}
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := interceptor(limiterContext("203.0.113.50:1234"), req, info, planHandler)
+		leaderDone <- err
+	}()
+	<-upstreamStarted
+
+	followerCtx, cancelFollower := context.WithCancel(limiterContext("203.0.113.51:1234"))
+	followerDone := make(chan error, 1)
+	go func() {
+		_, err := interceptor(followerCtx, req, info, planHandler)
+		followerDone <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancelFollower()
+
+	select {
+	case err := <-followerDone:
+		if status.Code(err) != codes.Canceled {
+			close(releaseUpstream)
+			<-leaderDone
+			t.Fatalf("follower code = %v, want %v", status.Code(err), codes.Canceled)
+		}
+	case <-time.After(250 * time.Millisecond):
+		close(releaseUpstream)
+		<-leaderDone
+		<-followerDone
+		t.Fatal("canceled singleflight follower stayed blocked behind leader")
+	}
+
+	if _, err := interceptor(limiterContext("203.0.113.52:1234"), nil, info,
+		func(context.Context, interface{}) (interface{}, error) { return "slot available", nil }); err != nil {
+		close(releaseUpstream)
+		<-leaderDone
+		t.Fatalf("canceled follower did not release interceptor slot: %v", err)
+	}
+	select {
+	case err := <-leaderDone:
+		t.Fatalf("leader finished before upstream release: %v", err)
+	default:
+	}
+	close(releaseUpstream)
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("leader failed: %v", err)
 	}
 }
 

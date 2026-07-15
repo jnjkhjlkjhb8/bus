@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -119,7 +120,7 @@ func TestRateLimiterCleanupHonorsShortestBucketWindow(t *testing.T) {
 	}
 }
 
-func TestRateLimitInterceptorUsesInstallationCallerBehindSharedIP(t *testing.T) {
+func TestRateLimitInterceptorAlwaysUsesPeerIPForFirebasePreAuth(t *testing.T) {
 	rl := newRateLimiter()
 	interceptor := rateLimitInterceptor(rl, 1, time.Minute)
 	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
@@ -133,11 +134,65 @@ func TestRateLimitInterceptorUsesInstallationCallerBehindSharedIP(t *testing.T) 
 	if _, err := interceptor(installContext("install-a"), nil, info, handler); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := interceptor(installContext("install-b"), nil, info, handler); err != nil {
-		t.Fatalf("second installation behind the same IP consumed the first installation quota: %v", err)
+	if _, err := interceptor(installContext("install-b"), nil, info, handler); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("rotated unverified install ID bypassed peer-IP quota: code=%v", status.Code(err))
 	}
-	if _, err := interceptor(installContext("install-a"), nil, info, handler); status.Code(err) != codes.ResourceExhausted {
-		t.Fatalf("second install-a call code = %v, want %v", status.Code(err), codes.ResourceExhausted)
+}
+
+func TestInstallationRateLimitSeparatesVerifiedInstallations(t *testing.T) {
+	interceptor := installationRateLimitInterceptor(newRateLimiter(), 1, time.Minute)
+	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+	info := &grpc.UnaryServerInfo{FullMethod: pb.Firebase_Service_UpsertDevice_FullMethodName}
+	requestContext := func(installID string) context.Context {
+		return metadata.NewIncomingContext(context.Background(), metadata.Pairs(installIDMetadataKey, installID))
+	}
+	if _, err := interceptor(requestContext("install-a"), nil, info, handler); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := interceptor(requestContext("install-b"), nil, info, handler); err != nil {
+		t.Fatalf("verified installation fairness bucket leaked across IDs: %v", err)
+	}
+	if _, err := interceptor(requestContext("install-a"), nil, info, handler); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("second install-a call code = %v", status.Code(err))
+	}
+}
+
+func invokeUnaryChain(interceptors []grpc.UnaryServerInterceptor, ctx context.Context, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	chained := handler
+	for index := len(interceptors) - 1; index >= 0; index-- {
+		current := interceptors[index]
+		next := chained
+		chained = func(ctx context.Context, req interface{}) (interface{}, error) {
+			return current(ctx, req, info, next)
+		}
+	}
+	return chained(ctx, nil)
+}
+
+func TestProductionFirebaseUnaryChainBoundsRotatingInstallIDsByPeer(t *testing.T) {
+	interceptors := productionUnaryInterceptors(fakeAppCheckVerifier{}, true)
+	info := &grpc.UnaryServerInfo{FullMethod: pb.Firebase_Service_UpsertDevice_FullMethodName}
+	handlerCalls := 0
+	handler := func(context.Context, interface{}) (interface{}, error) {
+		handlerCalls++
+		return "ok", nil
+	}
+	for requestNumber := 1; requestNumber <= 31; requestNumber++ {
+		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+			appCheckMetadataKey, "valid",
+			installIDMetadataKey, fmt.Sprintf("rotated-%d", requestNumber),
+		))
+		ctx = peer.NewContext(ctx, &peer.Peer{Addr: limiterTestAddr(net.JoinHostPort("203.0.113.25", "1234"))})
+		_, err := invokeUnaryChain(interceptors, ctx, info, handler)
+		if requestNumber <= 30 && err != nil {
+			t.Fatalf("request %d failed early: %v", requestNumber, err)
+		}
+		if requestNumber == 31 && status.Code(err) != codes.ResourceExhausted {
+			t.Fatalf("rotating IDs request 31 code = %v, want %v", status.Code(err), codes.ResourceExhausted)
+		}
+	}
+	if handlerCalls != 30 {
+		t.Fatalf("handler calls = %d, want 30", handlerCalls)
 	}
 }
 

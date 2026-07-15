@@ -125,26 +125,35 @@ type tdxAPIResponse struct {
 
 func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
 	cacheKey := maasKey(req)
-	if cached, err := s.rc.Get(cacheKey).Bytes(); err == nil {
+	if s.rc != nil {
+		cached, err := s.rc.Get(cacheKey).Bytes()
 		var resp pb.MaasPlanResponse
-		if err := proto.Unmarshal(cached, &resp); err == nil {
-			return &resp, nil
+		if err == nil {
+			if err := proto.Unmarshal(cached, &resp); err == nil {
+				return &resp, nil
+			}
 		}
 	}
-	raw, err, _ := s.sfGroup.Do(cacheKey, func() (any, error) {
+	result := s.sfGroup.DoChan(cacheKey, func() (any, error) {
 		return s.get(ctx, req)
 	})
-	if err != nil {
-		log.Infof("[MAAS] plan error: %v", err)
-		return nil, status.Errorf(codes.Unavailable, "route planning unavailable: %v", err)
+	select {
+	case <-ctx.Done():
+		return nil, status.FromContextError(ctx.Err()).Err()
+	case completed := <-result:
+		if completed.Err != nil {
+			log.Infof("[MAAS] plan error: %v", completed.Err)
+			return nil, status.Errorf(codes.Unavailable, "route planning unavailable: %v", completed.Err)
+		}
+		raw := completed.Val
+		resp := raw.(*pb.MaasPlanResponse)
+		if s.rc != nil {
+			if bytes, err := proto.Marshal(resp); err == nil {
+				s.rc.Set(cacheKey, bytes, 90*time.Second)
+			}
+		}
+		return resp, nil
 	}
-
-	resp := raw.(*pb.MaasPlanResponse)
-	if bytes, err := proto.Marshal(resp); err == nil {
-		s.rc.Set(cacheKey, bytes, 90*time.Second)
-	}
-
-	return resp, nil
 }
 
 // maasTimeParam builds the TDX routing time query params. Despite the docs
@@ -446,15 +455,23 @@ func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
 		return
 	}
 	defer rows.Close()
+	fares := make(map[int32]int32, len(byIndex))
 	for rows.Next() {
 		var index, fare int32
 		if rows.Scan(&index, &fare) != nil {
 			return
 		}
-		if ref, ok := byIndex[index]; ok {
-			ref.target.Fare = fare
-			ref.route.TotalFare += fare
+		if _, ok := byIndex[index]; !ok || fare <= 0 {
+			continue
 		}
+		if current, ok := fares[index]; !ok || fare < current {
+			fares[index] = fare
+		}
+	}
+	for index, fare := range fares {
+		ref := byIndex[index]
+		ref.target.Fare = fare
+		ref.route.TotalFare += fare
 	}
 }
 

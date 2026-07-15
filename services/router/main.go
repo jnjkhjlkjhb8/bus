@@ -208,11 +208,6 @@ func rateLimitStreamInterceptor(rl *rateLimiter, limit int, window time.Duration
 	}
 }
 func allowRequest(ctx context.Context, rl *rateLimiter, scope string, limit int, window time.Duration) bool {
-	if strings.HasPrefix(scope, "/Firebase_Service/") {
-		if installID, ok := installationCallerID(ctx); ok {
-			return rl.allow(scope, "install:"+installID, limit, window)
-		}
-	}
 	peerInfo, ok := peer.FromContext(ctx)
 	if !ok || peerInfo.Addr == nil {
 		return true
@@ -223,6 +218,29 @@ func allowRequest(ctx context.Context, rl *rateLimiter, scope string, limit int,
 		host = addr
 	}
 	return rl.allow(scope, host, limit, window)
+}
+
+func installationRateLimitInterceptor(rl *rateLimiter, limit int, window time.Duration) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		if !strings.HasPrefix(info.FullMethod, "/Firebase_Service/") {
+			return handler(ctx, req)
+		}
+		installID, ok := installationCallerID(ctx)
+		if ok && !rl.allow(info.FullMethod, "install:"+installID, limit, window) {
+			return nil, status.Error(codes.ResourceExhausted, "installation rate limit exceeded")
+		}
+		return handler(ctx, req)
+	}
+}
+
+func productionUnaryInterceptors(appCheckVerifier appCheckVerifier, enforceAppCheck bool) []grpc.UnaryServerInterceptor {
+	return []grpc.UnaryServerInterceptor{
+		obs.UnaryInterceptor(),
+		rateLimitInterceptor(newRateLimiter(), 30, time.Second),
+		maasResourceInterceptor(newRateLimiter(), defaultMaasResourceConfig),
+		appCheckUnaryInterceptor(appCheckVerifier, enforceAppCheck),
+		installationRateLimitInterceptor(newRateLimiter(), 30, time.Second),
+	}
 }
 
 type maasResourceConfig struct {
@@ -248,6 +266,9 @@ func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.Un
 		if info.FullMethod != pb.MaasService_Plan_FullMethodName {
 			return handler(ctx, req)
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, status.FromContextError(err).Err()
+		}
 		if !allowRequest(ctx, rl, info.FullMethod, config.RateLimit, config.RateWindow) {
 			return nil, status.Error(codes.ResourceExhausted, "MaaS rate limit exceeded")
 		}
@@ -258,6 +279,9 @@ func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.Un
 			return nil, status.FromContextError(ctx.Err()).Err()
 		default:
 			return nil, status.Error(codes.ResourceExhausted, "MaaS concurrency limit exceeded")
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, status.FromContextError(err).Err()
 		}
 
 		limitedCtx, cancel := context.WithTimeout(ctx, config.Timeout)
@@ -272,6 +296,10 @@ func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.Un
 
 func main() {
 	defer obs.Init("router")()
+	httpConfig, err := httpServerConfigFromEnv()
+	if err != nil {
+		log.Fatalf("[HTTP] configuration failed before startup: %v", err)
+	}
 	rc := shared.ConnectRedis()
 	live := newLiveHub(redisLiveSource{rc: rc}, int(shared.EnvInt32("ROUTER_MAX_LIVE_STREAMS", 2000)))
 	db := shared.ConnectDB("ROUTER_DB_MAX_CONNS", 20)
@@ -306,12 +334,7 @@ func main() {
 		log.Fatalf("Firebase Admin initialization failed: %v", err)
 	}
 	serverOptions := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(
-			obs.UnaryInterceptor(),
-			rateLimitInterceptor(rl, 30, time.Second),
-			maasResourceInterceptor(newRateLimiter(), defaultMaasResourceConfig),
-			appCheckUnaryInterceptor(appCheckVerifier, enforceAppCheck),
-		),
+		grpc.ChainUnaryInterceptor(productionUnaryInterceptors(appCheckVerifier, enforceAppCheck)...),
 		grpc.ChainStreamInterceptor(
 			obs.StreamInterceptor(),
 			rateLimitStreamInterceptor(rl, 30, time.Second),
@@ -335,7 +358,7 @@ func main() {
 	pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
 	pb.RegisterMaasServiceServer(grpcServer, newMaasServer(rc, db, tdx))
 	pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
-	go startHTTPServer(db, live)
+	go startHTTPServer(db, live, httpConfig)
 	log.Infof("gRPC server is running on port %d", 50051)
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)

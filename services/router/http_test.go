@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto"
 	cryptorand "crypto/rand"
 	"crypto/rsa"
@@ -10,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"strings"
 	"testing"
@@ -195,7 +197,7 @@ func TestHandleMetricsWritesLiveHubCounters(t *testing.T) {
 
 func TestHTTPRoutesUseIndependentRateBuckets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), strings.Repeat("m", 32))
+	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: strings.Repeat("m", 32)})
 
 	for requestNumber := 1; requestNumber <= httpTokenRateLimit+1; requestNumber++ {
 		response := httptest.NewRecorder()
@@ -235,7 +237,7 @@ func TestMetricsRequiresConfiguredCredential(t *testing.T) {
 	}
 
 	gin.SetMode(gin.TestMode)
-	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), loaded)
+	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: loaded})
 	for _, test := range []struct {
 		name          string
 		authorization string
@@ -259,5 +261,163 @@ func TestMetricsRequiresConfiguredCredential(t *testing.T) {
 				t.Fatal("unauthorized response disclosed metrics")
 			}
 		})
+	}
+}
+
+func TestHTTPServerConfigFromEnvValidatesBeforeStartup(t *testing.T) {
+	t.Setenv(metricsCredentialEnv, strings.Repeat("s", 32))
+	t.Setenv(trustedProxiesEnv, "10.0.0.0/8, 192.0.2.10")
+
+	config, err := httpServerConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MetricsCredential != strings.Repeat("s", 32) {
+		t.Fatalf("metrics credential = %q", config.MetricsCredential)
+	}
+	want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.0.2.10/32")}
+	if len(config.TrustedProxies) != len(want) {
+		t.Fatalf("trusted proxies = %v, want %v", config.TrustedProxies, want)
+	}
+	for i := range want {
+		if config.TrustedProxies[i] != want[i] {
+			t.Fatalf("trusted proxy %d = %v, want %v", i, config.TrustedProxies[i], want[i])
+		}
+	}
+
+	t.Setenv(metricsCredentialEnv, "short")
+	if _, err := httpServerConfigFromEnv(); err == nil {
+		t.Fatal("short metrics token was accepted")
+	}
+	t.Setenv(metricsCredentialEnv, strings.Repeat("s", 32))
+	t.Setenv(trustedProxiesEnv, "not-an-ip")
+	if _, err := httpServerConfigFromEnv(); err == nil {
+		t.Fatal("invalid trusted proxy was accepted")
+	}
+}
+
+func TestHTTPRateLimitUsesSocketPeerUnlessProxyIsTrusted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	credential := strings.Repeat("m", 32)
+	testCases := []struct {
+		name            string
+		trustedProxies  []netip.Prefix
+		firstForwarded  string
+		secondForwarded string
+		wantSecond      int
+	}{
+		{name: "untrusted proxy header ignored", firstForwarded: "198.51.100.1", secondForwarded: "198.51.100.2", wantSecond: http.StatusTooManyRequests},
+		{name: "trusted proxy separates clients", trustedProxies: []netip.Prefix{netip.MustParsePrefix("192.0.2.10/32")}, firstForwarded: "198.51.100.1", secondForwarded: "198.51.100.2", wantSecond: http.StatusOK},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{
+				MetricsCredential: credential,
+				TrustedProxies:    tc.trustedProxies,
+				TokenRateLimit:    1,
+			})
+			request := func(forwarded string) *httptest.ResponseRecorder {
+				response := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, "/api/token/powersync", nil)
+				req.RemoteAddr = "192.0.2.10:4321"
+				req.Header.Set("X-Forwarded-For", forwarded)
+				router.ServeHTTP(response, req)
+				return response
+			}
+			if got := request(tc.firstForwarded).Code; got != http.StatusOK {
+				t.Fatalf("first status = %d", got)
+			}
+			if got := request(tc.secondForwarded).Code; got != tc.wantSecond {
+				t.Fatalf("second status = %d, want %d", got, tc.wantSecond)
+			}
+		})
+	}
+}
+
+func TestMetricsAuthenticationPrecedesPrincipalRateLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	credential := strings.Repeat("m", 32)
+	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{
+		MetricsCredential: credential,
+		MetricsRateLimit:  1,
+	})
+
+	for range 3 {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		request.Header.Set("Authorization", "Bearer wrong")
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthorized status = %d", response.Code)
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	request.Header.Set("Authorization", "bEaReR\t"+credential)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("authorized status after failures = %d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("second authorized status = %d, want 429", response.Code)
+	}
+}
+
+func TestMetricsBearerParsingAndSecurityHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	credential := strings.Repeat("m", 32)
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   int
+	}{
+		{name: "case insensitive with spaces", header: "bEaReR   " + credential, want: http.StatusOK},
+		{name: "tab separator", header: "Bearer\t" + credential, want: http.StatusOK},
+		{name: "empty", header: "Bearer ", want: http.StatusUnauthorized},
+		{name: "extra token", header: "Bearer " + credential + " extra", want: http.StatusUnauthorized},
+		{name: "leading whitespace", header: " Bearer " + credential, want: http.StatusUnauthorized},
+		{name: "trailing whitespace", header: "Bearer " + credential + " ", want: http.StatusUnauthorized},
+		{name: "query credential rejected", header: "", want: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: credential})
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/metrics?token="+credential, nil)
+			if tc.header != "" {
+				request.Header.Set("Authorization", tc.header)
+			}
+			router.ServeHTTP(response, request)
+			if response.Code != tc.want {
+				t.Fatalf("status = %d, want %d", response.Code, tc.want)
+			}
+			if got := response.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q", got)
+			}
+			if tc.want == http.StatusUnauthorized && response.Header().Get("WWW-Authenticate") != "Bearer" {
+				t.Fatalf("WWW-Authenticate = %q", response.Header().Get("WWW-Authenticate"))
+			}
+		})
+	}
+}
+
+func TestSafeAccessLoggerNeverLogsRawQuery(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var output bytes.Buffer
+	router := gin.New()
+	router.Use(safeAccessLogger(&output))
+	router.GET("/probe", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	secret := "credential-that-must-not-be-logged"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/probe?token="+secret, nil))
+	if strings.Contains(output.String(), secret) || strings.Contains(output.String(), "token=") {
+		t.Fatalf("safe logger exposed query: %q", output.String())
+	}
+	for _, want := range []string{"GET", "/probe", "204"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("safe logger output %q missing %q", output.String(), want)
+		}
 	}
 }
