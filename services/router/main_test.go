@@ -217,7 +217,7 @@ func TestRateLimitInterceptorIgnoresInstallationMetadataOutsideFirebase(t *testi
 
 func TestMaasResourceInterceptorHasDedicatedRateLimit(t *testing.T) {
 	interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
-		RateLimit: 1, RateWindow: time.Minute, MaxConcurrent: 1, Timeout: time.Second,
+		RateLimit: 1, RateWindow: time.Minute,
 	})
 	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
 	ctx := limiterContext(net.JoinHostPort("203.0.113.30", "1234"))
@@ -234,58 +234,5 @@ func TestMaasResourceInterceptorHasDedicatedRateLimit(t *testing.T) {
 	}
 	if _, err := interceptor(ctx, nil, maas, handler); status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("second MaaS request code = %v, want %v", status.Code(err), codes.ResourceExhausted)
-	}
-}
-
-func TestMaasResourceInterceptorBoundsConcurrency(t *testing.T) {
-	interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
-		RateLimit: 10, RateWindow: time.Minute, MaxConcurrent: 1, Timeout: time.Second,
-	})
-	info := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}
-	started := make(chan struct{})
-	release := make(chan struct{})
-	firstDone := make(chan error, 1)
-	go func() {
-		_, err := interceptor(limiterContext(net.JoinHostPort("203.0.113.31", "1234")), nil, info,
-			func(context.Context, interface{}) (interface{}, error) {
-				close(started)
-				<-release
-				return "ok", nil
-			})
-		firstDone <- err
-	}()
-	<-started
-
-	called := false
-	_, err := interceptor(limiterContext(net.JoinHostPort("203.0.113.32", "1234")), nil, info,
-		func(context.Context, interface{}) (interface{}, error) {
-			called = true
-			return "ok", nil
-		})
-	if status.Code(err) != codes.ResourceExhausted || called {
-		t.Fatalf("concurrent MaaS request = (called=%v, code=%v), want rejected", called, status.Code(err))
-	}
-	close(release)
-	if err := <-firstDone; err != nil {
-		t.Fatalf("first MaaS request failed: %v", err)
-	}
-}
-
-func TestMaasResourceInterceptorEnforcesDeadline(t *testing.T) {
-	interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
-		RateLimit: 10, RateWindow: time.Minute, MaxConcurrent: 1, Timeout: 20 * time.Millisecond,
-	})
-	info := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}
-	started := time.Now()
-	_, err := interceptor(limiterContext(net.JoinHostPort("203.0.113.33", "1234")), nil, info,
-		func(ctx context.Context, _ interface{}) (interface{}, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
-		})
-	if status.Code(err) != codes.DeadlineExceeded {
-		t.Fatalf("deadline code = %v, want %v (error=%v)", status.Code(err), codes.DeadlineExceeded, err)
-	}
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("MaaS deadline took %v", elapsed)
 	}
 }

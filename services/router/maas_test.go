@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 type maasTDXStore struct {
@@ -39,6 +41,85 @@ func (s *maasTDXStore) Get(string) (string, error) {
 func (*maasTDXStore) Set(string, string, time.Duration) error { return nil }
 func (*maasTDXStore) Del(...string) error                     { return nil }
 
+var errMaasCacheMiss = errors.New("cache miss")
+
+type controlledMaasCache struct {
+	mu sync.Mutex
+
+	data map[string][]byte
+
+	getCalls  atomic.Int32
+	setCalls  atomic.Int32
+	getOnce   sync.Once
+	setOnce   sync.Once
+	getStart  chan struct{}
+	setStart  chan struct{}
+	getBlock  <-chan struct{}
+	setBlock  <-chan struct{}
+	getCtxEnd chan struct{}
+	setCtxEnd chan struct{}
+}
+
+func newControlledMaasCache() *controlledMaasCache {
+	return &controlledMaasCache{data: make(map[string][]byte)}
+}
+
+func (c *controlledMaasCache) Get(ctx context.Context, key string) ([]byte, error) {
+	c.getCalls.Add(1)
+	if c.getStart != nil {
+		c.getOnce.Do(func() { close(c.getStart) })
+	}
+	if c.getBlock != nil {
+		select {
+		case <-c.getBlock:
+		case <-ctx.Done():
+			if c.getCtxEnd != nil {
+				close(c.getCtxEnd)
+			}
+			return nil, ctx.Err()
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	value, ok := c.data[key]
+	if !ok {
+		return nil, errMaasCacheMiss
+	}
+	return append([]byte(nil), value...), nil
+}
+
+func (c *controlledMaasCache) Set(ctx context.Context, key string, value []byte, _ time.Duration) error {
+	c.setCalls.Add(1)
+	if c.setStart != nil {
+		c.setOnce.Do(func() { close(c.setStart) })
+	}
+	if c.setBlock != nil {
+		select {
+		case <-c.setBlock:
+		case <-ctx.Done():
+			if c.setCtxEnd != nil {
+				close(c.setCtxEnd)
+			}
+			return ctx.Err()
+		}
+	}
+	c.mu.Lock()
+	c.data[key] = append([]byte(nil), value...)
+	c.mu.Unlock()
+	return nil
+}
+
+type doneObservedContext struct {
+	context.Context
+	once     sync.Once
+	observed chan struct{}
+}
+
+func (c *doneObservedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
+}
+
 func TestMaasCanceledRequestDoesNotRetryOrReachUpstream(t *testing.T) {
 	var hits int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -49,7 +130,7 @@ func TestMaasCanceledRequestDoesNotRetryOrReachUpstream(t *testing.T) {
 
 	store := &maasTDXStore{token: "tok"}
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: store, IMSKey: shared.TDXLegacyIMSKey})
-	client := newMaasServer(nil, nil, tdx).maasClient.SetBaseURL(upstream.URL)
+	client := newMaasServerWithCache(newControlledMaasCache(), nil, tdx, defaultMaasSharedWorkConfig).maasClient.SetBaseURL(upstream.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	started := time.Now()
@@ -76,7 +157,7 @@ func TestMaasAuthCacheErrorIsNotRetried(t *testing.T) {
 	cacheErr := errors.New("token cache unavailable")
 	store := &maasTDXStore{getErr: cacheErr}
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: store, IMSKey: shared.TDXLegacyIMSKey})
-	client := newMaasServer(nil, nil, tdx).maasClient.
+	client := newMaasServerWithCache(newControlledMaasCache(), nil, tdx, defaultMaasSharedWorkConfig).maasClient.
 		SetBaseURL(upstream.URL).
 		SetRetryWaitTime(time.Nanosecond).
 		SetRetryMaxWaitTime(time.Nanosecond)
@@ -224,25 +305,25 @@ func TestConvertBatchesIdentityAndFareQueries(t *testing.T) {
 	}
 }
 
-type cancelAfterAcquireContext struct {
+type cancelAfterRateContext struct {
 	context.Context
 	errCalls atomic.Int32
 }
 
-func (c *cancelAfterAcquireContext) Err() error {
+func (c *cancelAfterRateContext) Err() error {
 	if c.errCalls.Add(1) >= 2 {
 		return context.Canceled
 	}
 	return nil
 }
 
-func TestMaasResourceInterceptorChecksCancellationBeforeAndAfterAcquire(t *testing.T) {
+func TestMaasResourceInterceptorChecksCancellationBeforeAndAfterRateAccounting(t *testing.T) {
 	info := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}
 	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
 
 	t.Run("already canceled does not consume rate quota", func(t *testing.T) {
 		interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
-			RateLimit: 1, RateWindow: time.Minute, MaxConcurrent: 1, Timeout: time.Second,
+			RateLimit: 1, RateWindow: time.Minute,
 		})
 		peerCtx := limiterContext("203.0.113.40:1234")
 		canceled, cancel := context.WithCancel(peerCtx)
@@ -255,29 +336,36 @@ func TestMaasResourceInterceptorChecksCancellationBeforeAndAfterAcquire(t *testi
 		}
 	})
 
-	t.Run("cancellation immediately after acquire skips handler and releases slot", func(t *testing.T) {
+	t.Run("cancellation immediately after rate accounting skips handler", func(t *testing.T) {
 		interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
-			RateLimit: 10, RateWindow: time.Minute, MaxConcurrent: 1, Timeout: time.Second,
+			RateLimit: 10, RateWindow: time.Minute,
 		})
-		ctx := &cancelAfterAcquireContext{Context: limiterContext("203.0.113.41:1234")}
+		ctx := &cancelAfterRateContext{Context: limiterContext("203.0.113.41:1234")}
 		called := false
 		_, err := interceptor(ctx, nil, info, func(context.Context, interface{}) (interface{}, error) {
 			called = true
 			return "unexpected", nil
 		})
 		if status.Code(err) != codes.Canceled || called {
-			t.Fatalf("post-acquire cancellation = (code=%v called=%v)", status.Code(err), called)
-		}
-		if _, err := interceptor(limiterContext("203.0.113.42:1234"), nil, info, handler); err != nil {
-			t.Fatalf("post-acquire cancellation leaked slot: %v", err)
+			t.Fatalf("post-rate cancellation = (code=%v called=%v)", status.Code(err), called)
 		}
 	})
 }
 
-func TestMaasPlanCanceledSingleflightFollowerReleasesInterceptorSlot(t *testing.T) {
+func TestMaasSharedFlightSurvivesLeaderCancellationAndOwnsPermit(t *testing.T) {
 	upstreamStarted := make(chan struct{})
 	releaseUpstream := make(chan struct{})
+	var hits, active, peak atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			observed := peak.Load()
+			if current <= observed || peak.CompareAndSwap(observed, current) {
+				break
+			}
+		}
 		select {
 		case <-upstreamStarted:
 		default:
@@ -290,10 +378,11 @@ func TestMaasPlanCanceledSingleflightFollowerReleasesInterceptorSlot(t *testing.
 	defer upstream.Close()
 
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
-	server := newMaasServer(nil, nil, tdx)
+	cache := newControlledMaasCache()
+	server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 2 * time.Second})
 	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
 	interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
-		RateLimit: 100, RateWindow: time.Minute, MaxConcurrent: 2, Timeout: 3 * time.Second,
+		RateLimit: 100, RateWindow: time.Minute,
 	})
 	info := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}
 	req := &pb.MaasPlanRequest{FromLat: 25.0, FromLon: 121.5, ToLat: 25.1, ToLon: 121.6, Date: "2027-01-01", Time: "08:00"}
@@ -301,51 +390,143 @@ func TestMaasPlanCanceledSingleflightFollowerReleasesInterceptorSlot(t *testing.
 		return server.Plan(ctx, request.(*pb.MaasPlanRequest))
 	}
 
+	leaderCtx, cancelLeader := context.WithCancel(limiterContext("203.0.113.50:1234"))
 	leaderDone := make(chan error, 1)
 	go func() {
-		_, err := interceptor(limiterContext("203.0.113.50:1234"), req, info, planHandler)
+		_, err := interceptor(leaderCtx, req, info, planHandler)
 		leaderDone <- err
 	}()
 	<-upstreamStarted
 
-	followerCtx, cancelFollower := context.WithCancel(limiterContext("203.0.113.51:1234"))
+	followerJoined := make(chan struct{})
+	followerCtx := &doneObservedContext{
+		Context:  limiterContext("203.0.113.51:1234"),
+		observed: followerJoined,
+	}
 	followerDone := make(chan error, 1)
 	go func() {
 		_, err := interceptor(followerCtx, req, info, planHandler)
 		followerDone <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
-	cancelFollower()
+	<-followerJoined
+	cancelLeader()
 
 	select {
-	case err := <-followerDone:
+	case err := <-leaderDone:
 		if status.Code(err) != codes.Canceled {
 			close(releaseUpstream)
-			<-leaderDone
-			t.Fatalf("follower code = %v, want %v", status.Code(err), codes.Canceled)
+			t.Fatalf("leader code = %v, want %v", status.Code(err), codes.Canceled)
 		}
 	case <-time.After(250 * time.Millisecond):
 		close(releaseUpstream)
-		<-leaderDone
-		<-followerDone
-		t.Fatal("canceled singleflight follower stayed blocked behind leader")
+		t.Fatal("canceled leader did not return promptly")
 	}
 
-	if _, err := interceptor(limiterContext("203.0.113.52:1234"), nil, info,
-		func(context.Context, interface{}) (interface{}, error) { return "slot available", nil }); err != nil {
+	otherReq := proto.Clone(req).(*pb.MaasPlanRequest)
+	otherReq.ToLat += 0.01
+	if _, err := interceptor(limiterContext("203.0.113.52:1234"), otherReq, info, planHandler); status.Code(err) != codes.ResourceExhausted {
 		close(releaseUpstream)
-		<-leaderDone
-		t.Fatalf("canceled follower did not release interceptor slot: %v", err)
+		t.Fatalf("leader cancellation released active shared-work permit: code=%v error=%v", status.Code(err), err)
 	}
+
 	select {
-	case err := <-leaderDone:
-		t.Fatalf("leader finished before upstream release: %v", err)
+	case err := <-followerDone:
+		close(releaseUpstream)
+		t.Fatalf("follower finished before shared work release: %v", err)
 	default:
 	}
 	close(releaseUpstream)
-	if err := <-leaderDone; err != nil {
-		t.Fatalf("leader failed: %v", err)
+	if err := <-followerDone; err != nil {
+		t.Fatalf("valid follower failed after leader cancellation: %v", err)
 	}
+	if got := cache.getCalls.Load(); got != 1 {
+		t.Fatalf("same-key callers performed %d cache Gets, want one shared Get", got)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("same-key callers performed %d upstream requests, want one", got)
+	}
+	if got := peak.Load(); got != 1 {
+		t.Fatalf("peak upstream concurrency = %d, want 1", got)
+	}
+
+	thirdReq := proto.Clone(req).(*pb.MaasPlanRequest)
+	thirdReq.ToLat += 0.02
+	if _, err := interceptor(limiterContext("203.0.113.53:1234"), thirdReq, info, planHandler); err != nil {
+		t.Fatalf("shared-work permit leaked after completion: %v", err)
+	}
+	if got := peak.Load(); got != 1 {
+		t.Fatalf("shared-work cap was exceeded: peak=%d", got)
+	}
+}
+
+func TestMaasSharedCacheGetAndSetHonorContexts(t *testing.T) {
+	request := &pb.MaasPlanRequest{FromLat: 25.0, FromLon: 121.5, ToLat: 25.1, ToLon: 121.6, Date: "2027-01-01", Time: "08:00"}
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
+
+	t.Run("caller cancellation returns while shared Get remains bounded", func(t *testing.T) {
+		getStarted := make(chan struct{})
+		getRelease := make(chan struct{})
+		getCtxEnd := make(chan struct{})
+		cache := newControlledMaasCache()
+		cache.getStart, cache.getBlock, cache.getCtxEnd = getStarted, getRelease, getCtxEnd
+		server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 40 * time.Millisecond})
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := server.Plan(ctx, request)
+			done <- err
+		}()
+		<-getStarted
+		cancel()
+		select {
+		case err := <-done:
+			if status.Code(err) != codes.Canceled {
+				t.Fatalf("cache Get caller cancellation code = %v", status.Code(err))
+			}
+		case <-time.After(250 * time.Millisecond):
+			t.Fatal("caller cancellation stayed blocked in cache Get")
+		}
+		select {
+		case <-getCtxEnd:
+		case <-time.After(250 * time.Millisecond):
+			t.Fatal("shared cache Get outlived its bounded context")
+		}
+	})
+
+	t.Run("shared Set timeout returns DeadlineExceeded and releases permit", func(t *testing.T) {
+		setStarted := make(chan struct{})
+		setRelease := make(chan struct{})
+		setCtxEnd := make(chan struct{})
+		cache := newControlledMaasCache()
+		cache.setStart, cache.setBlock, cache.setCtxEnd = setStarted, setRelease, setCtxEnd
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"result":"success","data":{"routes":[]}}`)
+		}))
+		defer upstream.Close()
+		server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 40 * time.Millisecond})
+		server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
+		done := make(chan error, 1)
+		go func() {
+			_, err := server.Plan(context.Background(), request)
+			done <- err
+		}()
+		<-setStarted
+		select {
+		case <-setCtxEnd:
+		case <-time.After(250 * time.Millisecond):
+			t.Fatal("cache Set outlived the shared timeout")
+		}
+		if err := <-done; status.Code(err) != codes.DeadlineExceeded {
+			t.Fatalf("cache Set timeout code = %v, want %v (error=%v)", status.Code(err), codes.DeadlineExceeded, err)
+		}
+		close(setRelease)
+		other := proto.Clone(request).(*pb.MaasPlanRequest)
+		other.ToLat += 0.01
+		if _, err := server.Plan(context.Background(), other); err != nil {
+			t.Fatalf("shared-work permit leaked after Set timeout: %v", err)
+		}
+	})
 }
 
 func TestWalkRouteFallsBackWithoutOSRM(t *testing.T) {

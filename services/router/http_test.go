@@ -17,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/gin-gonic/gin"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 )
 
 func testKey(t *testing.T) *rsa.PrivateKey {
@@ -294,6 +296,37 @@ func TestHTTPServerConfigFromEnvValidatesBeforeStartup(t *testing.T) {
 	if _, err := httpServerConfigFromEnv(); err == nil {
 		t.Fatal("invalid trusted proxy was accepted")
 	}
+
+	for _, unsafe := range []string{"0.0.0.0/0", "::/0", "0.0.0.0", "::"} {
+		t.Run("reject unsafe proxy "+unsafe, func(t *testing.T) {
+			t.Setenv(trustedProxiesEnv, unsafe)
+			if _, err := httpServerConfigFromEnv(); err == nil {
+				t.Fatalf("unsafe trusted proxy %q was accepted", unsafe)
+			}
+		})
+	}
+}
+
+func TestDirectHTTPClientCannotRotateRateBucketWithForwardedFor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{
+		MetricsCredential: strings.Repeat("m", 32),
+		TokenRateLimit:    1,
+	})
+	for requestNumber, forwarded := range []string{"198.51.100.1", "198.51.100.2"} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/token/powersync", nil)
+		request.RemoteAddr = "192.0.2.44:4321"
+		request.Header.Set("X-Forwarded-For", forwarded)
+		router.ServeHTTP(response, request)
+		want := http.StatusOK
+		if requestNumber == 1 {
+			want = http.StatusTooManyRequests
+		}
+		if response.Code != want {
+			t.Fatalf("request %d rotating X-Forwarded-For status = %d, want %d", requestNumber+1, response.Code, want)
+		}
+	}
 }
 
 func TestHTTPRateLimitUsesSocketPeerUnlessProxyIsTrusted(t *testing.T) {
@@ -419,5 +452,64 @@ func TestSafeAccessLoggerNeverLogsRawQuery(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("safe logger output %q missing %q", output.String(), want)
 		}
+	}
+}
+
+func TestProductionSentryMiddlewareScrubsMetricsQueryFromEventsAndTransactions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousClient := sentry.CurrentHub().Client()
+	t.Setenv("SENTRY_DSN", "https://key@example.com/1")
+	t.Setenv("SENTRY_TRACES_SAMPLE_RATE", "1")
+	flush := obs.Init("router-test")
+	defer func() {
+		flush()
+		sentry.CurrentHub().BindClient(previousClient)
+	}()
+
+	options := sentry.CurrentHub().Client().Options()
+	transport := &sentry.MockTransport{}
+	options.Transport = transport
+	client, err := sentry.NewClient(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentry.CurrentHub().BindClient(client)
+
+	credential := strings.Repeat("m", 32)
+	router := newHTTPRouter(nil, nil, testKey(t), httpServerConfig{MetricsCredential: credential})
+	secret := "query-secret-must-never-reach-sentry"
+	request := httptest.NewRequest(http.MethodGet, "/metrics?token="+secret, nil)
+	request.Header.Set("Authorization", "Bearer "+credential)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("panic probe status = %d, want 500", response.Code)
+	}
+
+	var sawError, sawTransaction bool
+	for _, event := range transport.Events() {
+		serialized, err := json.Marshal(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(serialized), secret) {
+			t.Fatalf("Sentry payload exposed query credential: %s", serialized)
+		}
+		if event.Type == "transaction" {
+			sawTransaction = true
+		} else {
+			sawError = true
+		}
+		if event.Request != nil {
+			if event.Request.Method != http.MethodGet || !strings.HasSuffix(event.Request.URL, "/metrics") {
+				t.Fatalf("request path/method not preserved: %+v", event.Request)
+			}
+			if event.Request.QueryString != "" {
+				t.Fatalf("Sentry query string = %q", event.Request.QueryString)
+			}
+		}
+	}
+	if !sawError || !sawTransaction {
+		t.Fatalf("captured event types: error=%v transaction=%v events=%d", sawError, sawTransaction, len(transport.Events()))
 	}
 }

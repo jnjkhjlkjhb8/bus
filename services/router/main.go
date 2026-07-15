@@ -244,24 +244,19 @@ func productionUnaryInterceptors(appCheckVerifier appCheckVerifier, enforceAppCh
 }
 
 type maasResourceConfig struct {
-	RateLimit     int
-	RateWindow    time.Duration
-	MaxConcurrent int
-	Timeout       time.Duration
+	RateLimit  int
+	RateWindow time.Duration
 }
 
 var defaultMaasResourceConfig = maasResourceConfig{
-	RateLimit:     5,
-	RateWindow:    time.Minute,
-	MaxConcurrent: 4,
-	Timeout:       20 * time.Second,
+	RateLimit:  5,
+	RateWindow: time.Minute,
 }
 
-// maasResourceInterceptor contains the external TDX quota proxy independently
-// from unrelated gRPC methods. It rejects excess concurrent work immediately
-// and applies a server deadline even when the caller did not set one.
+// maasResourceInterceptor contains the per-caller TDX quota independently from
+// unrelated gRPC methods. Shared-work concurrency and deadlines belong to
+// MaasServer so singleflight work retains them after an individual caller exits.
 func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.UnaryServerInterceptor {
-	concurrent := make(chan struct{}, config.MaxConcurrent)
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 		if info.FullMethod != pb.MaasService_Plan_FullMethodName {
 			return handler(ctx, req)
@@ -272,25 +267,10 @@ func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.Un
 		if !allowRequest(ctx, rl, info.FullMethod, config.RateLimit, config.RateWindow) {
 			return nil, status.Error(codes.ResourceExhausted, "MaaS rate limit exceeded")
 		}
-		select {
-		case concurrent <- struct{}{}:
-			defer func() { <-concurrent }()
-		case <-ctx.Done():
-			return nil, status.FromContextError(ctx.Err()).Err()
-		default:
-			return nil, status.Error(codes.ResourceExhausted, "MaaS concurrency limit exceeded")
-		}
 		if err := ctx.Err(); err != nil {
 			return nil, status.FromContextError(err).Err()
 		}
-
-		limitedCtx, cancel := context.WithTimeout(ctx, config.Timeout)
-		defer cancel()
-		response, err := handler(limitedCtx, req)
-		if limitedCtx.Err() != nil {
-			return nil, status.FromContextError(limitedCtx.Err()).Err()
-		}
-		return response, err
+		return handler(ctx, req)
 	}
 }
 

@@ -7,6 +7,7 @@ package obs
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -37,11 +38,13 @@ func Init(service string) func() {
 		}
 	}
 	err := sentry.Init(sentry.ClientOptions{
-		Dsn:              dsn,
-		Environment:      os.Getenv("SENTRY_ENVIRONMENT"),
-		ServerName:       service,
-		EnableTracing:    tracesRate > 0,
-		TracesSampleRate: tracesRate,
+		Dsn:                   dsn,
+		Environment:           os.Getenv("SENTRY_ENVIRONMENT"),
+		ServerName:            service,
+		EnableTracing:         tracesRate > 0,
+		TracesSampleRate:      tracesRate,
+		BeforeSend:            scrubSentryEventQuery,
+		BeforeSendTransaction: scrubSentryEventQuery,
 	})
 	if err != nil {
 		slog.Error("sentry init failed", "err", err)
@@ -52,6 +55,21 @@ func Init(service string) func() {
 	})
 	slog.Info("sentry enabled", "traces", tracesRate)
 	return func() { sentry.Flush(2 * time.Second) }
+}
+
+// scrubSentryEventQuery removes credentials and other query parameters from
+// both error and transaction events while retaining the request path and method.
+func scrubSentryEventQuery(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
+	if event == nil || event.Request == nil {
+		return event
+	}
+	event.Request.QueryString = ""
+	if parsed, err := url.Parse(event.Request.URL); err == nil {
+		parsed.RawQuery = ""
+		parsed.ForceQuery = false
+		event.Request.URL = parsed.String()
+	}
+	return event
 }
 
 // Recover is a deferred panic handler that reports the panic to Sentry tagged

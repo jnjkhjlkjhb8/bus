@@ -72,6 +72,9 @@ func trustedProxiesFromEnv() ([]netip.Prefix, error) {
 			}
 			prefix = netip.PrefixFrom(addr, addr.BitLen())
 		}
+		if prefix.Bits() == 0 || prefix.Addr().IsUnspecified() {
+			return nil, fmt.Errorf("%s contains unsafe catch-all or unspecified proxy %q", trustedProxiesEnv, value)
+		}
 		proxies = append(proxies, prefix.Masked())
 	}
 	return proxies, nil

@@ -29,15 +29,42 @@ import (
 // in db.
 type MaasServer struct {
 	pb.UnimplementedMaasServiceServer
-	rc         *redis.Client
-	db         maasDB
-	maasClient *resty.Client
-	osrmClient *resty.Client
-	sfGroup    singleflight.Group
+	cache       maasCache
+	db          maasDB
+	maasClient  *resty.Client
+	osrmClient  *resty.Client
+	sfGroup     singleflight.Group
+	workSlots   chan struct{}
+	workTimeout time.Duration
 }
 
 type maasDB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+type maasCache interface {
+	Get(context.Context, string) ([]byte, error)
+	Set(context.Context, string, []byte, time.Duration) error
+}
+
+type redisMaasCache struct{ client *redis.Client }
+
+func (c redisMaasCache) Get(ctx context.Context, key string) ([]byte, error) {
+	return c.client.WithContext(ctx).Get(key).Bytes()
+}
+
+func (c redisMaasCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	return c.client.WithContext(ctx).Set(key, value, ttl).Err()
+}
+
+type maasSharedWorkConfig struct {
+	MaxConcurrent int
+	Timeout       time.Duration
+}
+
+var defaultMaasSharedWorkConfig = maasSharedWorkConfig{
+	MaxConcurrent: 4,
+	Timeout:       20 * time.Second,
 }
 
 const maasOSRMConcurrency = 4
@@ -52,6 +79,10 @@ func shouldRetryMaas(resp *resty.Response, err error) bool {
 }
 
 func newMaasServer(rc *redis.Client, db maasDB, tdx *shared.TDXClient) *MaasServer {
+	return newMaasServerWithCache(redisMaasCache{client: rc}, db, tdx, defaultMaasSharedWorkConfig)
+}
+
+func newMaasServerWithCache(cache maasCache, db maasDB, tdx *shared.TDXClient, workConfig maasSharedWorkConfig) *MaasServer {
 	// The MaaS API family has a different base URL and retry policy than the
 	// basic conditional-GET client, so it gets its own resty client — but the
 	// bearer-token auth flows through the shared TDX client (NewAuthedClient) so
@@ -61,7 +92,16 @@ func newMaasServer(rc *redis.Client, db maasDB, tdx *shared.TDXClient) *MaasServ
 		SetRetryCount(3).
 		SetRetryWaitTime(500 * time.Millisecond).
 		AddRetryCondition(shouldRetryMaas)
-	return &MaasServer{rc: rc, db: db, maasClient: c, osrmClient: resty.New().SetTimeout(5 * time.Second)}
+	if workConfig.MaxConcurrent <= 0 {
+		workConfig.MaxConcurrent = defaultMaasSharedWorkConfig.MaxConcurrent
+	}
+	if workConfig.Timeout <= 0 {
+		workConfig.Timeout = defaultMaasSharedWorkConfig.Timeout
+	}
+	return &MaasServer{
+		cache: cache, db: db, maasClient: c, osrmClient: resty.New().SetTimeout(5 * time.Second),
+		workSlots: make(chan struct{}, workConfig.MaxConcurrent), workTimeout: workConfig.Timeout,
+	}
 }
 
 type tdxRoute struct {
@@ -125,17 +165,8 @@ type tdxAPIResponse struct {
 
 func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
 	cacheKey := maasKey(req)
-	if s.rc != nil {
-		cached, err := s.rc.Get(cacheKey).Bytes()
-		var resp pb.MaasPlanResponse
-		if err == nil {
-			if err := proto.Unmarshal(cached, &resp); err == nil {
-				return &resp, nil
-			}
-		}
-	}
 	result := s.sfGroup.DoChan(cacheKey, func() (any, error) {
-		return s.get(ctx, req)
+		return s.runSharedPlan(cacheKey, req)
 	})
 	select {
 	case <-ctx.Done():
@@ -143,17 +174,54 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 	case completed := <-result:
 		if completed.Err != nil {
 			log.Infof("[MAAS] plan error: %v", completed.Err)
+			if errors.Is(completed.Err, context.Canceled) || errors.Is(completed.Err, context.DeadlineExceeded) {
+				return nil, status.FromContextError(completed.Err).Err()
+			}
+			if status.Code(completed.Err) != codes.Unknown {
+				return nil, completed.Err
+			}
 			return nil, status.Errorf(codes.Unavailable, "route planning unavailable: %v", completed.Err)
 		}
-		raw := completed.Val
-		resp := raw.(*pb.MaasPlanResponse)
-		if s.rc != nil {
-			if bytes, err := proto.Marshal(resp); err == nil {
-				s.rc.Set(cacheKey, bytes, 90*time.Second)
-			}
-		}
-		return resp, nil
+		return completed.Val.(*pb.MaasPlanResponse), nil
 	}
+}
+
+func (s *MaasServer) runSharedPlan(cacheKey string, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
+	workCtx, cancel := context.WithTimeout(context.Background(), s.workTimeout)
+	defer cancel()
+	select {
+	case s.workSlots <- struct{}{}:
+		defer func() { <-s.workSlots }()
+	default:
+		return nil, status.Error(codes.ResourceExhausted, "MaaS concurrency limit exceeded")
+	}
+
+	cached, err := s.cache.Get(workCtx, cacheKey)
+	if err == nil {
+		var response pb.MaasPlanResponse
+		if err := proto.Unmarshal(cached, &response); err == nil {
+			return &response, nil
+		}
+	}
+	if err := workCtx.Err(); err != nil {
+		return nil, err
+	}
+
+	response, err := s.get(workCtx, req)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := proto.Marshal(response)
+	if err != nil {
+		return response, nil
+	}
+	if err := s.cache.Set(workCtx, cacheKey, encoded, 90*time.Second); err != nil {
+		if contextErr := workCtx.Err(); contextErr != nil {
+			return nil, contextErr
+		}
+		log.Infof("[MAAS] cache set failed: %v", err)
+	}
+	return response, nil
 }
 
 // maasTimeParam builds the TDX routing time query params. Despite the docs
