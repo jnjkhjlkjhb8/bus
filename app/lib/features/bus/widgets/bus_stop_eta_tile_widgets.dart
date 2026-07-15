@@ -27,7 +27,7 @@ class _EtaChevronTile extends StatelessWidget {
               final target = arrival.subRouteUid.isNotEmpty
                   ? arrival.subRouteUid
                   : arrival.display.label;
-              unawaited(context.push('/bus/route/$target'));
+              unawaited(context.push(AppRoutes.busRoute(target)));
             },
           ),
         ),

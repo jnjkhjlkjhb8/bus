@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:material_symbols_icons/symbols.dart';
+import 'package:wheres_the_car/app/router/app_routes.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
@@ -45,7 +47,7 @@ class _SettingsView extends StatelessWidget {
     Appearance current,
   ) async {
     final result = await context.push<String>(
-      '/settings/appearance',
+      AppRoutes.settingsAppearance,
       extra: {
         'options': Appearance.values.map((e) => e.label).toList(),
         'selected': current.label,
@@ -62,7 +64,7 @@ class _SettingsView extends StatelessWidget {
 
   Future<void> _pickLanguage(BuildContext context, Language current) async {
     final result = await context.push<String>(
-      '/settings/language',
+      AppRoutes.settingsLanguage,
       extra: {
         'options': Language.values.map((e) => e.label).toList(),
         'selected': current.label,
@@ -211,7 +213,9 @@ class _SettingsView extends StatelessWidget {
               ),
             ],
           ),
-          if (state.devMode) ...[
+          // UI Kit routes exist only in debug builds, so the unlock
+          // affordance is compiled out of release builds with them.
+          if (kDebugMode && state.devMode) ...[
             const SizedBox(height: 16),
             _SettingsSection(
               title: '開發者',
@@ -222,7 +226,7 @@ class _SettingsView extends StatelessWidget {
                   hasChevron: 1,
                   onTap: () {
                     unawaited(HapticService.instance.lightTap());
-                    unawaited(context.push('/ui-kit'));
+                    unawaited(context.push(AppRoutes.uiKit));
                   },
                 ),
               ],

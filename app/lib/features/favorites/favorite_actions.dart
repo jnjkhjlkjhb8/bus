@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
+import 'package:wheres_the_car/app/router/app_routes.dart';
 import 'package:wheres_the_car/data/models/favorite.dart';
 import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
 
@@ -47,24 +48,23 @@ void openFavorite(BuildContext context, Favorite fav) {
       // stop screen surfaces an empty state when the id is not a group_uid).
       unawaited(
         context.push(
-          '/bus/stop',
-          extra: {
-            'stopName': fav.title,
-            'stopId': fav.refId,
-            'city': fav.subtitle,
-          },
+          AppRoutes.busStopLocation(
+            stopName: fav.title,
+            stopId: fav.refId,
+            city: fav.subtitle,
+          ),
         ),
       );
     case FavoriteType.busRoute:
-      unawaited(context.push('/bus/route/${fav.refId}'));
+      unawaited(context.push(AppRoutes.busRoute(fav.refId)));
     case FavoriteType.metroStation:
-      unawaited(context.push('/metro'));
+      unawaited(context.push(AppRoutes.metro));
     case FavoriteType.railStation:
     case FavoriteType.railTrain:
-      unawaited(context.push('/rail'));
+      unawaited(context.push(AppRoutes.rail));
     case FavoriteType.bikeStation:
       unawaited(
-        context.push('/bike/station', extra: {'stationUid': fav.refId}),
+        context.push(AppRoutes.bikeStationLocation(stationUid: fav.refId)),
       );
   }
 }

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:wheres_the_car/app/router/app_routes.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
@@ -38,24 +39,23 @@ void _navigateToResult(BuildContext context, SearchResult result) {
   context.read<SearchBloc>().add(SearchResultSelected(result));
   switch (result.type) {
     case SearchResultType.busRoute:
-      unawaited(context.push('/bus/route/${result.uid}'));
+      unawaited(context.push(AppRoutes.busRoute(result.uid)));
     case SearchResultType.busStation:
       unawaited(
         context.push(
-          '/bus/stop',
-          extra: {
-            'stopName': result.name,
-            'stopId': result.uid,
-            'city': result.city,
-          },
+          AppRoutes.busStopLocation(
+            stopName: result.name,
+            stopId: result.uid,
+            city: result.city,
+          ),
         ),
       );
     case SearchResultType.bikeStation:
       unawaited(
-        context.push('/bike/station', extra: {'stationUid': result.uid}),
+        context.push(AppRoutes.bikeStationLocation(stationUid: result.uid)),
       );
     case SearchResultType.mrtStation:
-      unawaited(context.push('/metro'));
+      unawaited(context.push(AppRoutes.metro));
     case SearchResultType.traTrain:
     case SearchResultType.thsrTrain:
       unawaited(
@@ -122,8 +122,10 @@ class _SearchViewState extends State<_SearchView> {
   }
 
   Future<void> _openGenUi() async {
-    final result =
-        await showGenUiSheet(context, initialQuery: _controller.text);
+    final result = await showGenUiSheet(
+      context,
+      initialQuery: _controller.text,
+    );
     if (!mounted || result == null) return;
     switch (result) {
       case GenUiSheetOpen(:final result):
