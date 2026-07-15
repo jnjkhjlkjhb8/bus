@@ -13,6 +13,8 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
       super(const BikeStationState()) {
     on<BikeStationStarted>(_onStarted);
     on<BikeStationEtaUpdated>(_onEta);
+    on<BikeStationEtaFailed>(_onEtaFailed);
+    on<BikeStationEtaRecovered>(_onEtaRecovered);
     add(const BikeStationStarted());
   }
 
@@ -30,26 +32,44 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
   ) async {
     try {
       final info = await _repository.stationStatic(stationUid);
-      emit(state.copyWith(
-        name: info.name,
-        capacity: info.capacity,
-        loading: false,
-      ));
-      _sub = ArrivalFeed.passthrough(
-        source: () => _repository.stationEta(stationUid),
-      ).listen(
-        (a) => add(
-          BikeStationEtaUpdated(
-            available: a.available,
-            returnDocks: a.returnDocks,
-            generalBikes: a.generalBikes,
-            electricBikes: a.electricBikes,
-          ),
+      emit(
+        state.copyWith(
+          name: info.name,
+          capacity: info.capacity,
+          loading: false,
+          clearError: true,
         ),
       );
     } on Object catch (e) {
       emit(state.copyWith(loading: false, error: e.toString()));
     }
+    // Subscribed regardless of the static fetch outcome: the live counts are
+    // independent of the station's name/capacity, and a static failure must
+    // not also silently drop the live feed. Only await a cancel when there is
+    // a prior subscription to replace — an unconditional `await` here would
+    // introduce a yield point between the loading:false emission above and
+    // this assignment, letting a close() that races right behind the state
+    // update land before `_sub` exists.
+    if (_sub != null) await _sub!.cancel();
+    _sub =
+        ArrivalFeed.passthrough(
+          source: () => _repository.stationEta(stationUid),
+          // Wired through to state.liveError, kept separate from the static
+          // `error` above: a station-info success can't paper over a live stream
+          // that never came up, so `available == 0` while `liveError` is set
+          // reads as stale, not a confirmed empty station (F27).
+          onFailure: (e) => add(BikeStationEtaFailed(e.title)),
+          onRecovered: () => add(const BikeStationEtaRecovered()),
+        ).listen(
+          (a) => add(
+            BikeStationEtaUpdated(
+              available: a.available,
+              returnDocks: a.returnDocks,
+              generalBikes: a.generalBikes,
+              electricBikes: a.electricBikes,
+            ),
+          ),
+        );
   }
 
   void _onEta(BikeStationEtaUpdated e, Emitter<BikeStationState> emit) {
@@ -59,13 +79,26 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
         returnDocks: e.returnDocks,
         generalBikes: e.generalBikes,
         electricBikes: e.electricBikes,
+        hasLiveData: true,
+        clearLiveError: true,
       ),
     );
   }
 
+  void _onEtaFailed(BikeStationEtaFailed e, Emitter<BikeStationState> emit) {
+    emit(state.copyWith(liveError: e.message));
+  }
+
+  void _onEtaRecovered(
+    BikeStationEtaRecovered e,
+    Emitter<BikeStationState> emit,
+  ) {
+    emit(state.copyWith(clearLiveError: true));
+  }
+
   @override
-  Future<void> close() {
-    unawaited(_sub?.cancel());
+  Future<void> close() async {
+    await _sub?.cancel();
     return super.close();
   }
 }

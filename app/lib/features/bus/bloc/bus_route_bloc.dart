@@ -47,7 +47,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   final _feed = ArrivalFeed<BusStopEtaViewModel>.replace(
     decay: (e, now) => e.decayed(now),
   );
-  StreamSubscription<List<BusStopEtaViewModel>>? _etaSub;
+  StreamSubscription<ArrivalFeedEmission<BusStopEtaViewModel>>? _etaSub;
 
   static String etaKey(BusStopEtaViewModel eta) => eta.sequence > 0
       ? 'seq:${eta.direction}:${eta.sequence}'
@@ -84,9 +84,12 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
             onRecovered: () => add(const BusRouteStreamRecovered()),
           )
           .listen(
-            (etaList) => add(
+            // Decay re-emissions carry the same shape as source frames here;
+            // the route bloc has no freshness timestamp to protect, so it
+            // forwards every emission regardless of kind.
+            (emission) => add(
               BusRouteEtaUpdated({
-                for (final e in etaList) etaKey(e): e,
+                for (final e in emission.arrivals) etaKey(e): e,
               }),
             ),
           );
@@ -154,21 +157,22 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
   // bus wiring adds the local mirror (RemindersRepository) and telemetry that
   // rail omits.
   late final ReminderToggle _reminderToggle = ReminderToggle(
-    createReminder: ({
-      required stopKey,
-      required direction,
-      required expiresAt,
-    }) async {
-      final reminder = await _firebase.createArrivalReminder(
-        routeType: 'bus',
-        routeKey: subRouteUid,
-        stopKey: stopKey,
-        direction: direction,
-        leadMinutes: _leadMinutes,
-        expiresAt: expiresAt,
-      );
-      return reminder.reminderId;
-    },
+    createReminder:
+        ({
+          required stopKey,
+          required direction,
+          required expiresAt,
+        }) async {
+          final reminder = await _firebase.createArrivalReminder(
+            routeType: 'bus',
+            routeKey: subRouteUid,
+            stopKey: stopKey,
+            direction: direction,
+            leadMinutes: _leadMinutes,
+            expiresAt: expiresAt,
+          );
+          return reminder.reminderId;
+        },
     cancelReminder: _firebase.cancelArrivalReminder,
     persistArm: (stopKey, reminderId, expiresAt) =>
         _reminders.put(subRouteUid, stopKey, reminderId, expiresAt),

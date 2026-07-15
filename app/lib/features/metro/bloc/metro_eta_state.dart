@@ -38,6 +38,12 @@ class MetroEtaState extends Equatable {
   final List<MetroArrival> arrivals;
   final List<MetroSchedule> schedule;
   final bool loading;
+
+  /// Live-stream health: set when the underlying ResilientSubscription gives
+  /// up (the feed exhausted its reconnect attempts) and cleared only when it
+  /// recovers. `arrivals` can go stale while this is set — the feed keeps
+  /// showing the last-known list rather than blanking it, so this field is
+  /// what lets the UI distinguish "current" from "silently stale" (F28).
   final String? error;
 
   MetroEtaState copyWith({
@@ -45,11 +51,12 @@ class MetroEtaState extends Equatable {
     List<MetroSchedule>? schedule,
     bool? loading,
     String? error,
+    bool clearError = false,
   }) => MetroEtaState(
     arrivals: arrivals ?? this.arrivals,
     schedule: schedule ?? this.schedule,
     loading: loading ?? this.loading,
-    error: error,
+    error: clearError ? null : (error ?? this.error),
   );
 
   @override

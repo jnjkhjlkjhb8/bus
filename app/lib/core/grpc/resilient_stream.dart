@@ -49,7 +49,19 @@ class ResilientSubscription<T> {
 
   void _listen() {
     if (_closed) return;
-    _sub = _source().listen(
+    // A source factory can fail synchronously (e.g. a gRPC client that
+    // validates arguments before opening the channel) instead of returning a
+    // stream that later emits an error. Both must be handled identically —
+    // reported, counted, retried with the same backoff — so a bad factory
+    // call doesn't silently stop reconnecting.
+    final Stream<T> stream;
+    try {
+      stream = _source();
+    } on Object catch (e, s) {
+      _handleError(e, s);
+      return;
+    }
+    _sub = stream.listen(
       (data) {
         if (_failures > 0 || _notified) {
           _failures = 0;
@@ -59,21 +71,7 @@ class ResilientSubscription<T> {
         _cleanCloses = 0;
         _onData(data);
       },
-      onError: (Object e, StackTrace s) {
-        _reportError(e, s);
-        final terminal = _isTerminal(e);
-        _failures = terminal ? _maxFailures : _failures + 1;
-        if (_failures >= _maxFailures && !_notified) {
-          _notified = true;
-          _onFailure(AppError.from(e));
-        }
-        if (terminal) {
-          unawaited(_sub?.cancel() ?? Future<void>.value());
-          _sub = null;
-          return;
-        }
-        _scheduleRetry();
-      },
+      onError: _handleError,
       onDone: () {
         if (_closed) return;
         _sub = null;
@@ -87,6 +85,22 @@ class ResilientSubscription<T> {
         _timer = Timer(_retryDelay(delay), _listen);
       },
     );
+  }
+
+  void _handleError(Object e, StackTrace s) {
+    _reportError(e, s);
+    final terminal = _isTerminal(e);
+    _failures = terminal ? _maxFailures : _failures + 1;
+    if (_failures >= _maxFailures && !_notified) {
+      _notified = true;
+      _onFailure(AppError.from(e));
+    }
+    if (terminal) {
+      unawaited(_sub?.cancel() ?? Future<void>.value());
+      _sub = null;
+      return;
+    }
+    _scheduleRetry();
   }
 
   static bool _isTerminal(Object e) {

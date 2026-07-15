@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/data/live/arrival_feed.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
@@ -32,7 +33,7 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
   final _feed = ArrivalFeed<BusStopArrival>.replace(
     decay: (a, now) => a.decayed(now),
   );
-  StreamSubscription<List<BusStopArrival>>? _sub;
+  StreamSubscription<ArrivalFeedEmission<BusStopArrival>>? _sub;
 
   Future<void> _onStarted(BusStopEvent _, Emitter<BusStopState> emit) async {
     final id = stopId ?? '';
@@ -49,13 +50,28 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
       }
     } on Object catch (e, s) {
       CrashReporter.record(e, s);
+      // The station-group fetch is the only thing that can move the sheet out
+      // of `loading` before the first ETA frame arrives. If it fails and the
+      // ETA stream stays silent (no data, no terminal error — see
+      // ResilientSubscription's clean-close backoff), nothing else ever
+      // settles the state, so the sheet spins forever (F31). Settling here
+      // immediately, rather than waiting on a timer, means a later ETA frame
+      // can still recover the view the normal way (a source frame clears
+      // `error` and flips status to loaded).
+      emit(
+        state.copyWith(status: BusStopStatus.error, error: AppError.from(e)),
+      );
     }
     _sub = _feed
         .watch(
           source: () => _repository.stationEta(city ?? '', id),
           onFailure: (e) => add(BusStopFailed(e)),
         )
-        .listen((arrivals) => add(BusStopArrivalsUpdated(arrivals)));
+        .listen(
+          (emission) => add(
+            BusStopArrivalsUpdated(emission.arrivals, kind: emission.kind),
+          ),
+        );
   }
 
   void _onStationSelected(
@@ -70,6 +86,32 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
   }
 
   void _onUpdated(BusStopArrivalsUpdated event, Emitter<BusStopState> emit) {
+    final arrivalsChanged = !listEquals(event.arrivals, state.arrivals);
+    final isSource = event.kind == ArrivalFeedEmissionKind.source;
+
+    // A decay re-emission only re-derives already-known countdowns locally —
+    // it learned nothing new from the network. It may refresh the displayed
+    // values, but must never move `status` out of an error/loading state,
+    // touch `updatedAt`, or clear `error`: only a real source frame proves
+    // the feed is alive (F29, F30).
+    if (!isSource) {
+      if (!arrivalsChanged) return;
+      final displays = [for (final a in event.arrivals) BusStopArrivalItem(a)]
+        ..sort((a, b) => a.rank.compareTo(b.rank));
+      final byStation = <String, List<BusStopArrivalItem>>{};
+      for (final item in displays) {
+        byStation.putIfAbsent(item.stationId, () => []).add(item);
+      }
+      emit(
+        state.copyWith(
+          arrivals: event.arrivals,
+          displays: displays,
+          arrivalsByStation: byStation,
+        ),
+      );
+      return;
+    }
+
     // The feed applies the empty-frame guard and decay upstream; the bloc keeps
     // the status decision (empty only when no arrivals and no member stops).
     final status = event.arrivals.isEmpty && state.members.isEmpty
@@ -78,7 +120,6 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     // An unchanged re-push (same values, new list instance) must leave the
     // derived view-model and freshness time untouched so the state stays equal
     // and the sheet does not rebuild. copyWith keeps the old values.
-    final arrivalsChanged = !listEquals(event.arrivals, state.arrivals);
     if (!arrivalsChanged) {
       emit(state.copyWith(status: status, clearError: true));
       return;

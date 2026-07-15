@@ -94,12 +94,30 @@ class _StationDetailSheet extends StatelessWidget {
                   children: [ShimmerRow(), ShimmerRow(), ShimmerRow()],
                 );
               }
+              // The feed keeps showing the last-known list even after its
+              // ResilientSubscription gives up (state.error set) — that list
+              // can go stale, so the banner is what tells the difference from
+              // a genuinely current one instead of presenting it silently
+              // (F28).
+              final staleBanner = state.error != null
+                  ? Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _MetroLiveErrorNotice(message: state.error!),
+                    )
+                  : null;
               if (arrivals.isEmpty) {
-                return MetroArrivalsEmpty(schedule: state.schedule);
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ?staleBanner,
+                    MetroArrivalsEmpty(schedule: state.schedule),
+                  ],
+                );
               }
               return Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  ?staleBanner,
                   for (final (i, a) in arrivals.indexed) ...[
                     StaggerItem(
                       // Stable identity (feed upsert key) so a re-sort keeps
@@ -537,6 +555,32 @@ class MetroArrivalsEmpty extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// Compact inline notice shown above the arrivals list (or the empty state)
+/// when the live ETA stream has failed — small on purpose, since whatever
+/// arrivals are still displayed underneath it are last-known, not blanked.
+class _MetroLiveErrorNotice extends StatelessWidget {
+  const _MetroLiveErrorNotice({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Icon(Icons.cloud_off_rounded, size: 16, color: cs.error),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            message,
+            style: AppTextStyles.bodySmall.copyWith(color: cs.error),
+          ),
+        ),
+      ],
     );
   }
 }

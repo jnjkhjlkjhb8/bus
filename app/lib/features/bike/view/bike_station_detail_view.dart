@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
@@ -58,7 +57,20 @@ class _StationSheet extends StatelessWidget {
               SizedBox(height: 16),
               ShimmerRow(),
               ShimmerRow(),
+            ] else if (state.error != null) ...[
+              // Static station-info fetch failed outright: no name/capacity,
+              // nothing meaningful to show under it.
+              ErrorStateCard(message: state.error!),
             ] else ...[
+              // A confirmed zero (state.hasLiveData) reads differently from a
+              // stream that never came up (liveError set, hasLiveData still
+              // false) — the banner is what makes that distinction visible
+              // instead of a bare "0" looking the same either way (F27).
+              if (state.liveError != null && !state.hasLiveData)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: _LiveDataNotice(message: state.liveError!),
+                ),
               AvailabilityGauge(
                 available: state.available,
                 docks: state.returnDocks,
@@ -123,6 +135,32 @@ class _StationSheet extends StatelessWidget {
           ],
         );
       },
+    );
+  }
+}
+
+/// Compact inline notice for a live availability stream that never came up —
+/// deliberately smaller than [ErrorStateCard] since the station's static info
+/// and (stale) counts are still shown underneath it.
+class _LiveDataNotice extends StatelessWidget {
+  const _LiveDataNotice({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Icon(Icons.cloud_off_rounded, size: 16, color: cs.error),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            message,
+            style: AppTextStyles.bodySmall.copyWith(color: cs.error),
+          ),
+        ),
+      ],
     );
   }
 }

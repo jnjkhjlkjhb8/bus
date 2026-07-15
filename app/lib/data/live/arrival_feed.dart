@@ -8,6 +8,27 @@ import 'package:wheres_the_car/core/grpc/resilient_stream.dart';
 /// skips the emission (e.g. an empty replace frame while entries exist).
 typedef _Merge<T> = List<T> Function(List<T> current, List<T> frame);
 
+/// Distinguishes a fresh network frame from a local decay re-emission.
+/// Consumers (blocs) use this to decide what an emission is allowed to touch:
+/// only `source` frames represent new information from the server and may
+/// refresh network-freshness timestamps or clear an offline error; `decay`
+/// re-emissions only re-derive already-known values (e.g. a countdown ticking
+/// down) and must leave freshness/error state untouched (F29, F30).
+enum ArrivalFeedEmissionKind { source, decay }
+
+/// One [watch] emission: the merged/decayed arrival list plus which kind of
+/// event produced it. See [ArrivalFeedEmissionKind] for what each kind means
+/// to a consumer.
+class ArrivalFeedEmission<T> {
+  const ArrivalFeedEmission(this.arrivals, this.kind);
+
+  final List<T> arrivals;
+  final ArrivalFeedEmissionKind kind;
+
+  bool get isSource => kind == ArrivalFeedEmissionKind.source;
+  bool get isDecay => kind == ArrivalFeedEmissionKind.decay;
+}
+
 /// The deep live-arrival module (CONTEXT.md: "arrival feed"). One interface,
 /// [watch], turns a raw server stream of arrival frames into a merged, decayed,
 /// sorted stream of arrival lists. It hides four concerns every live-arrival
@@ -142,19 +163,21 @@ class ArrivalFeed<T> {
   /// [onRecovered] fires when it recovers after a failure notification. Cancel
   /// the returned subscription (or the wrapping bloc's own cancel) to stop the
   /// source, the decay timer, and all emission.
-  Stream<List<T>> watch({
+  Stream<ArrivalFeedEmission<T>> watch({
     required Stream<List<T>> Function() source,
     void Function(AppError error)? onFailure,
     void Function()? onRecovered,
   }) {
-    final controller = StreamController<List<T>>();
+    final controller = StreamController<ArrivalFeedEmission<T>>();
     var current = <T>[];
     ResilientSubscription<List<T>>? sub;
     Timer? decayTimer;
 
-    void emit(List<T> next) {
+    void emit(List<T> next, ArrivalFeedEmissionKind kind) {
       current = next;
-      if (!controller.isClosed) controller.add(current);
+      if (!controller.isClosed) {
+        controller.add(ArrivalFeedEmission<T>(current, kind));
+      }
     }
 
     controller
@@ -166,7 +189,7 @@ class ArrivalFeed<T> {
             // A no-op merge (e.g. an empty replace frame) must not emit, so the
             // last good list stays put and downstream equality checks hold.
             if (identical(merged, current)) return;
-            emit(merged);
+            emit(merged, ArrivalFeedEmissionKind.source);
           },
           onFailure: (e) => onFailure?.call(e),
           onRecovered: onRecovered,
@@ -192,7 +215,10 @@ class ArrivalFeed<T> {
               }
             }
             if (!changed) return;
-            emit(next);
+            // A decay tick re-derives already-known values locally; it never
+            // learned anything new from the network, so it is tagged `decay`
+            // (not `source`) — consumers must not treat it as fresh (F29, F30).
+            emit(next, ArrivalFeedEmissionKind.decay);
           });
         }
       }

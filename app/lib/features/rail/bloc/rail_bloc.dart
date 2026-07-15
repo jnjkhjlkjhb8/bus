@@ -96,6 +96,15 @@ class RailBloc extends Bloc<RailEvent, RailState> {
       ),
     );
 
+    // A TRA delay subscription must not outlive its request: only the TRA
+    // branch below starts a new one, so any request — TRA or THSR — first
+    // cancels whatever the previous request left running. Without this, a
+    // TRA request followed by a THSR request left the old TRA delay stream
+    // subscribed, and a later TRA delay frame would apply onto the THSR
+    // state through _onDelaysUpdated (F21).
+    await _delaySub?.cancel();
+    _delaySub = null;
+
     try {
       final originId = await _stationId(system, event.origin);
       final destId = await _stationId(system, event.destination);
@@ -121,7 +130,6 @@ class RailBloc extends Bloc<RailEvent, RailState> {
             ),
           ),
         );
-        await _delaySub?.cancel();
         _delaySub = ArrivalFeed.passthrough(
           source: () => _traRepository.delay(
             event.date,
@@ -179,6 +187,11 @@ class RailBloc extends Bloc<RailEvent, RailState> {
   void _onDelaysUpdated(RailDelaysUpdated event, Emitter<RailState> emit) {
     final current = state;
     if (current is! RailTimetableLoaded) return;
+    // Delays are TRA-only (THSR carries its own delayMinutes per item, no
+    // separate stream). A frame from a delay subscription that outlived its
+    // request — the cancel above is async and can't preempt a frame already
+    // in flight — must not land on a THSR-loaded state (F21).
+    if (current.system != RailSystem.tra) return;
     emit(current.copyWith(delays: event.delays));
   }
 

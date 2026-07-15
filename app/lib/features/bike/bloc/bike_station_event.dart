@@ -22,6 +22,26 @@ final class BikeStationEtaUpdated extends BikeStationEvent {
   final int generalBikes;
   final int electricBikes;
   @override
-  List<Object?> get props =>
-      [available, returnDocks, generalBikes, electricBikes];
+  List<Object?> get props => [
+    available,
+    returnDocks,
+    generalBikes,
+    electricBikes,
+  ];
+}
+
+/// Emitted when the live availability stream's ResilientSubscription gives up
+/// reconnecting. The last-known counts stay in state (the passthrough never
+/// clears them), so this is what lets the UI tell a confirmed zero from a
+/// silently stale one (F27).
+final class BikeStationEtaFailed extends BikeStationEvent {
+  const BikeStationEtaFailed(this.message);
+  final String message;
+  @override
+  List<Object?> get props => [message];
+}
+
+/// Emitted when the live availability stream recovers after a prior failure.
+final class BikeStationEtaRecovered extends BikeStationEvent {
+  const BikeStationEtaRecovered();
 }

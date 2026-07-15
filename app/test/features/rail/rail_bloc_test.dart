@@ -260,6 +260,70 @@ void main() {
     expect((await delayed as RailTimetableLoaded).delays, const {'110': 3});
   });
 
+  test(
+    'switching TRA -> THSR cancels the old TRA delay subscription — a '
+    'lingering TRA delay must not land on the THSR state (F21)',
+    () async {
+      final delays = StreamController<Map<String, int>>.broadcast();
+      addTearDown(delays.close);
+      final tra = _FakeTraRepository(delayStream: delays.stream);
+      final thsr = _FakeThsrRepository(
+        timetableResult: const [
+          ThsrTimetableItem(
+            trainNo: '101',
+            departureTime: '08:00',
+            arrivalTime: '09:30',
+            travelMinutes: 90,
+            delayMinutes: 0,
+            remark: '',
+          ),
+        ],
+      );
+      final bloc = RailBloc(traRepository: tra, thsrRepository: thsr);
+      addTearDown(bloc.close);
+
+      bloc.add(
+        const RailTimetableRequested(
+          system: RailSystem.tra,
+          origin: RailStationSelection(name: '台北', id: '1000'),
+          destination: RailStationSelection(name: '花蓮', id: '7000'),
+          date: '2026-07-10',
+        ),
+      );
+      await bloc.stream.firstWhere((state) => state is RailTimetableLoaded);
+      while (tra.delayCalls.isEmpty) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      bloc.add(
+        const RailTimetableRequested(
+          system: RailSystem.thsr,
+          origin: RailStationSelection(name: '南港', id: '0990'),
+          destination: RailStationSelection(name: '左營', id: '1070'),
+          date: '2026-07-10',
+        ),
+      );
+      final thsrLoaded =
+          await bloc.stream.firstWhere(
+                (state) =>
+                    state is RailTimetableLoaded &&
+                    state.system == RailSystem.thsr,
+              )
+              as RailTimetableLoaded;
+      expect(thsrLoaded.delays, isEmpty);
+
+      // A delay frame from the now-stale TRA stream must not reach the
+      // THSR-loaded state, whether the subscription is truly cancelled or the
+      // handler's own system check rejects it.
+      delays.add(const {'110': 3});
+      await pumpEventQueue();
+
+      expect(bloc.state, isA<RailTimetableLoaded>());
+      expect((bloc.state as RailTimetableLoaded).system, RailSystem.thsr);
+      expect((bloc.state as RailTimetableLoaded).delays, isEmpty);
+    },
+  );
+
   test('repeat THSR requests remain on the THSR adapter', () async {
     final thsr = _FakeThsrRepository();
     final tra = _FakeTraRepository();

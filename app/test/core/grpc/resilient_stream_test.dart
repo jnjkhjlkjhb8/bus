@@ -125,6 +125,91 @@ void main() {
     await sub.cancel();
   });
 
+  test('a synchronous throw from the source factory is handled like an '
+      'async stream error: reported, retried with backoff', () async {
+    var subscribeCount = 0;
+    final sub = ResilientSubscription<int>(
+      source: () {
+        subscribeCount++;
+        // No stream is ever returned — the factory itself throws, e.g. a
+        // gRPC client that validates arguments before opening the channel.
+        throw const GrpcError.unavailable();
+      },
+      onData: (_) {},
+      onFailure: (_) {},
+      baseDelay: const Duration(milliseconds: 1),
+      maxDelay: const Duration(milliseconds: 4),
+      reportError: (_, _) {},
+    );
+
+    await eventually(() => subscribeCount >= 3);
+    expect(subscribeCount, greaterThanOrEqualTo(3));
+    await sub.cancel();
+  });
+
+  test(
+    'onFailure fires once at threshold for a synchronous factory throw, '
+    'same as an async error',
+    () async {
+      final failures = <AppError>[];
+      final sub = ResilientSubscription<int>(
+        source: () => throw const GrpcError.unavailable(),
+        onData: (_) {},
+        onFailure: failures.add,
+        maxFailures: 2,
+        baseDelay: const Duration(milliseconds: 1),
+        maxDelay: const Duration(milliseconds: 1),
+        reportError: (_, _) {},
+      );
+
+      await eventually(() => failures.isNotEmpty);
+      expect(failures.length, 1);
+      expect(failures.single, isA<OfflineError>());
+      await sub.cancel();
+    },
+  );
+
+  test(
+    'a terminal synchronous factory throw does not hot-loop retrying',
+    () async {
+      var subscribeCount = 0;
+      final sub = ResilientSubscription<int>(
+        source: () {
+          subscribeCount++;
+          throw const GrpcError.unauthenticated();
+        },
+        onData: (_) {},
+        onFailure: (_) {},
+        reportError: (_, _) {},
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(subscribeCount, 1);
+      await sub.cancel();
+    },
+  );
+
+  test('cancel stops retrying after a synchronous factory throw', () async {
+    var subscribeCount = 0;
+    final sub = ResilientSubscription<int>(
+      source: () {
+        subscribeCount++;
+        throw const GrpcError.unavailable();
+      },
+      onData: (_) {},
+      onFailure: (_) {},
+      baseDelay: const Duration(milliseconds: 1),
+      reportError: (_, _) {},
+    );
+
+    await Future<void>.delayed(Duration.zero);
+    await sub.cancel();
+    final countAfterCancel = subscribeCount;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(subscribeCount, countAfterCancel);
+  });
+
   test('uses the injected retry delay', () async {
     Duration? observed;
     final sub = ResilientSubscription<int>(
