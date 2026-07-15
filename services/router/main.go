@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -458,7 +459,12 @@ func run() error {
 		nearbyRouter := newOSRMWalkingRouter(resty.New().SetTimeout(5*time.Second), "http://osrm:5000")
 		pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{discovery: newNearbyDiscovery(newPostgresNearbyStore(db), nearbyRouter)})
 		pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
-		pb.RegisterMaasServiceServer(grpcServer, newMaasServerWithCache(maasCache, db, tdx, defaultMaasSharedWorkConfig))
+		maasServer := newMaasServerWithCache(maasCache, db, tdx, defaultMaasSharedWorkConfig)
+		// Registered after rc/db/maasCache's cleanups above, so in cleanup's
+		// LIFO order MaasServer.Close runs first: every shared singleflight
+		// flight is canceled and joined before those backends close under it.
+		runtime.addCleanup(maasServer.Close)
+		pb.RegisterMaasServiceServer(grpcServer, maasServer)
 		pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
 		log.Infof("gRPC server is running on port %d", 50051)
 		log.Infof("[HTTP] server running on 0.0.0.0:8080")
@@ -475,9 +481,19 @@ func run() error {
 	})
 }
 
+// reportProcessFailure writes the final process-failure message directly to
+// w, bypassing the slog default logger. By the time run() returns, obs.Init's
+// deferred cleanup has already flushed Sentry (it runs last among run's
+// cleanups), so logging this line through log.Errorf/slog would route it
+// through the Sentry-forwarding handler and silently enqueue an event nothing
+// ever flushes.
+func reportProcessFailure(w io.Writer, err error) {
+	fmt.Fprintf(w, "router exited with error: %v\n", err)
+}
+
 func main() {
 	if err := run(); err != nil {
-		log.Errorf("router exited with error: %v", err)
+		reportProcessFailure(os.Stderr, err)
 		os.Exit(1)
 	}
 }

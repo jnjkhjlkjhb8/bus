@@ -835,6 +835,116 @@ func TestMaasSharedCacheGetAndSetHonorContexts(t *testing.T) {
 	})
 }
 
+// TestMaasServerCloseJoinsFlightAfterCallerCancels covers the case where the
+// RPC caller cancels and Plan returns while the shared singleflight closure
+// is still active in a cache/upstream call. Shutdown (Close) must cancel that
+// flight's lifecycle context so it unblocks promptly, and must join it before
+// returning — otherwise backend cleanup (cache/DB/legacy Redis Close) can run
+// concurrently with the still-active flight.
+func TestMaasServerCloseJoinsFlightAfterCallerCancels(t *testing.T) {
+	getStarted := make(chan struct{})
+	getRelease := make(chan struct{}) // deliberately never closed by the test
+	getCtxEnd := make(chan struct{})
+	cache := newControlledMaasCache()
+	cache.getStart, cache.getBlock, cache.getCtxEnd = getStarted, getRelease, getCtxEnd
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
+	server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 5 * time.Second})
+
+	request := &pb.MaasPlanRequest{FromLat: 25, FromLon: 121.5, ToLat: 25.1, ToLon: 121.6, Date: "2027-01-01", Time: "08:00"}
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	planDone := make(chan error, 1)
+	go func() {
+		_, err := server.Plan(callerCtx, request)
+		planDone <- err
+	}()
+	<-getStarted
+	cancelCaller()
+	select {
+	case err := <-planDone:
+		if status.Code(err) != codes.Canceled {
+			t.Fatalf("caller cancellation code = %v", status.Code(err))
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("caller cancellation did not return promptly")
+	}
+
+	// The RPC caller is gone, but the shared flight is still blocked in the
+	// cache Get (that is the point of singleflight). Shutdown must cancel and
+	// join it before returning.
+	closeDone := make(chan struct{})
+	go func() {
+		server.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-getCtxEnd:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Close did not cancel the active shared flight's lifecycle context")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Close did not join the shared flight before returning")
+	}
+}
+
+// TestMaasServerCloseVersusPlanRaceLeavesNoLeakedPermitOrCacheCommand races
+// concurrent Plan calls against Close. Every call must either complete
+// normally (it started registering before Close observed it) or fail
+// immediately with the closing sentinel (it observed Close first) — starting
+// a new singleflight closure must never race Close's wait. No shared-work
+// permit may leak, and calls made after Close returns must never reach the
+// cache.
+func TestMaasServerCloseVersusPlanRaceLeavesNoLeakedPermitOrCacheCommand(t *testing.T) {
+	cache := newControlledMaasCache()
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"result":"success","data":{"routes":[]}}`)
+	}))
+	defer upstream.Close()
+	// MaxConcurrent covers every attempt so the shared-work permit never runs
+	// out; the only rejection this test exercises is the closing gate.
+	const attempts = 50
+	server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: attempts, Timeout: time.Second})
+	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
+
+	var wg sync.WaitGroup
+	errs := make([]error, attempts)
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := &pb.MaasPlanRequest{
+				FromLat: 25, FromLon: 121.5, ToLat: 25.1, ToLon: 121.6 + float64(i)*0.001,
+				Date: "2027-01-01", Time: "08:00",
+			}
+			_, errs[i] = server.Plan(context.Background(), req)
+		}(i)
+	}
+	server.Close()
+	wg.Wait()
+
+	for i, err := range errs {
+		code := status.Code(err)
+		if err != nil && code != codes.Unavailable && code != codes.Canceled && code != codes.DeadlineExceeded {
+			t.Fatalf("attempt %d unexpected error: %v", i, err)
+		}
+	}
+	if got := len(server.workSlots); got != 0 {
+		t.Fatalf("shared-work permit leaked after Close/Plan race: %d", got)
+	}
+
+	getCallsAfterRace := cache.getCalls.Load()
+	postCloseReq := &pb.MaasPlanRequest{FromLat: 1, FromLon: 1, ToLat: 2, ToLon: 2, Date: "2027-01-01", Time: "08:00"}
+	if _, err := server.Plan(context.Background(), postCloseReq); status.Code(err) != codes.Unavailable {
+		t.Fatalf("post-close Plan code = %v, want %v", status.Code(err), codes.Unavailable)
+	}
+	if got := cache.getCalls.Load(); got != getCallsAfterRace {
+		t.Fatalf("post-close Plan reached the cache: calls %d -> %d", getCallsAfterRace, got)
+	}
+}
+
 func TestWalkRouteFallsBackWithoutOSRM(t *testing.T) {
 	// A nil client or zero coordinates must report ok=false so the caller keeps
 	// the fixed TDX walk estimate and leaves the path and steps empty.

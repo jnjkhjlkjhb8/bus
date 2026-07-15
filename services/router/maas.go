@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	legacyredis "github.com/go-redis/redis"
@@ -38,7 +39,25 @@ type MaasServer struct {
 	sfGroup     singleflight.Group
 	workSlots   chan struct{}
 	workTimeout time.Duration
+
+	// lifecycleCtx is the parent of every shared singleflight closure's
+	// bounded work context. Close cancels it so in-flight cache/upstream I/O
+	// unblocks promptly instead of running out its full workTimeout.
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+
+	// mu guards closing and gates sharedWork.Add so a new closure can never
+	// start registering after Close has begun waiting for the ones already
+	// registered (the standard Add-before-Wait race).
+	mu         sync.Mutex
+	closing    bool
+	sharedWork sync.WaitGroup
 }
+
+// errMaasServerClosing is returned by a singleflight closure that observed
+// the server closing before starting any cache or upstream work, so new work
+// fails promptly instead of racing shutdown.
+var errMaasServerClosing = status.Error(codes.Unavailable, "MaaS server is shutting down")
 
 type maasDB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
@@ -170,10 +189,49 @@ func newMaasServerWithCache(cache maasCache, db maasDB, tdx *shared.TDXClient, w
 	if workConfig.Timeout <= 0 {
 		workConfig.Timeout = defaultMaasSharedWorkConfig.Timeout
 	}
+	lifecycleCtx, cancel := context.WithCancel(context.Background())
 	return &MaasServer{
 		cache: cache, db: db, maasClient: c, osrmClient: resty.New().SetTimeout(5 * time.Second),
 		workSlots: make(chan struct{}, workConfig.MaxConcurrent), workTimeout: workConfig.Timeout,
+		lifecycleCtx: lifecycleCtx, lifecycleCancel: cancel,
 	}
+}
+
+// beginSharedFlight atomically checks closing and registers a new singleflight
+// closure with sharedWork in the same critical section Close uses to flip
+// closing, so a closure can never start after Close has begun (or will begin)
+// waiting — the standard fix for the WaitGroup Add/Wait race.
+func (s *MaasServer) beginSharedFlight() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.sharedWork.Add(1)
+	return true
+}
+
+func (s *MaasServer) endSharedFlight() {
+	s.sharedWork.Done()
+}
+
+// Close marks the server closing so no new singleflight closure can start,
+// cancels the shared lifecycle context so any closure still in flight
+// unblocks from cache/upstream I/O promptly, and waits for every registered
+// flight to finish. Callers must invoke Close before tearing down the cache,
+// DB, or legacy Redis clients shared work depends on — otherwise a flight
+// still in progress can use one of those clients after it closes. Close is
+// idempotent.
+func (s *MaasServer) Close() {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return
+	}
+	s.closing = true
+	s.mu.Unlock()
+	s.lifecycleCancel()
+	s.sharedWork.Wait()
 }
 
 type tdxRoute struct {
@@ -238,6 +296,10 @@ type tdxAPIResponse struct {
 func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
 	cacheKey := maasKey(req)
 	result := s.sfGroup.DoChan(cacheKey, func() (any, error) {
+		if !s.beginSharedFlight() {
+			return nil, errMaasServerClosing
+		}
+		defer s.endSharedFlight()
 		return s.runSharedPlan(cacheKey, req)
 	})
 	select {
@@ -259,7 +321,10 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 }
 
 func (s *MaasServer) runSharedPlan(cacheKey string, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
-	workCtx, cancel := context.WithTimeout(context.Background(), s.workTimeout)
+	// Deriving from lifecycleCtx (rather than context.Background) means Close
+	// cancels this work immediately instead of leaving it to run out its full
+	// workTimeout while shutdown waits on sharedWork.
+	workCtx, cancel := context.WithTimeout(s.lifecycleCtx, s.workTimeout)
 	defer cancel()
 	select {
 	case s.workSlots <- struct{}{}:

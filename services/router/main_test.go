@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/getsentry/sentry-go"
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
@@ -483,5 +486,46 @@ func TestMaasResourceInterceptorHasDedicatedRateLimit(t *testing.T) {
 	}
 	if _, err := interceptor(ctx, nil, maas, handler); status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("second MaaS request code = %v, want %v", status.Code(err), codes.ResourceExhausted)
+	}
+}
+
+// TestReportProcessFailureBypassesSentryAfterFlush covers the final line
+// main() prints when run() fails. By that point Init's deferred cleanup has
+// already flushed the Sentry client (obs.Init's cleanup, which flushes
+// Sentry, runs last among runtime.run's cleanups — see
+// TestServerCoordinatorStopsHandlersBeforeBackendCleanup for the ordering),
+// so routing this message through log.Errorf/slog would silently enqueue an
+// event nothing ever flushes. reportProcessFailure must write directly to
+// the given writer and never touch Sentry.
+func TestReportProcessFailureBypassesSentryAfterFlush(t *testing.T) {
+	previousClient := sentry.CurrentHub().Client()
+	t.Setenv("SENTRY_DSN", "https://key@example.com/1")
+	flush := obs.Init("router-test")
+	defer func() {
+		flush()
+		sentry.CurrentHub().BindClient(previousClient)
+	}()
+
+	options := sentry.CurrentHub().Client().Options()
+	transport := &sentry.MockTransport{}
+	options.Transport = transport
+	client, err := sentry.NewClient(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentry.CurrentHub().BindClient(client)
+
+	// Simulate run() returning after Sentry has already been flushed.
+	flush()
+
+	var buf bytes.Buffer
+	serveErr := errors.New("gRPC server failed: listen closed")
+	reportProcessFailure(&buf, serveErr)
+
+	if got := buf.String(); !strings.Contains(got, serveErr.Error()) {
+		t.Fatalf("process-failure output = %q, want it to contain %q", got, serveErr.Error())
+	}
+	if got := len(transport.Events()); got != 0 {
+		t.Fatalf("reportProcessFailure enqueued %d Sentry event(s) after flush, want 0", got)
 	}
 }
