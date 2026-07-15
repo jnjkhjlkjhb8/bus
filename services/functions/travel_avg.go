@@ -2,32 +2,162 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 )
 
-// cleanupBusHistory deletes bus_eta_history rows older than 30 days (the
-// retention window) and, piggybacking on the same job, the prediction-error rows
-// past the same window. A failure is wrapped as transient so runDaily retries.
-func cleanupBusHistory(ctx context.Context, db *pgxpool.Pool) error {
-	tag, err := db.Exec(ctx, `DELETE FROM bus_eta_history WHERE recorded_at < NOW() - INTERVAL '30 days'`)
-	if err != nil {
-		log.Errorf("[ETA_HISTORY] cleanup error: %v", err)
-		return obs.Transient(fmt.Errorf("cleanup bus history: %w", err))
-	}
-	log.Infof("[ETA_HISTORY] cleanup deleted %d rows", tag.RowsAffected())
+// travelAvgDB is the narrow query/exec seam computeTravelAvg and
+// cleanupBusHistory need. *pgxpool.Pool satisfies it structurally; unit tests
+// drive both functions through a pgxmock pool instead of a live database.
+type travelAvgDB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
 
-	perrTag, err := db.Exec(ctx, `DELETE FROM bus_eta_prediction_error WHERE predicted_at < NOW() - INTERVAL '30 days'`)
-	if err != nil {
-		log.Errorf("[ETA_ERROR] cleanup error: %v", err)
-		return obs.Transient(fmt.Errorf("cleanup prediction error: %w", err))
+// depKey identifies one origin-departure lookup: a sub-route, direction, and
+// day of week. computeTravelAvg looks up departures per key, not per
+// crossing, since many crossings share the same key.
+type depKey struct {
+	subRouteUID string
+	direction   int16
+	dayOfWeek   int16
+}
+
+// batchDepartureTimes resolves origin-stop departure times for every key in
+// one round trip instead of one query per key. keys is deduplicated by the
+// caller; an empty slice short-circuits without issuing a query. The keys are
+// sent as parallel arrays and joined against bus_schedule with unnest, so N
+// distinct (sub_route_uid, direction, day_of_week) tuples cost exactly one
+// query regardless of N.
+//
+// Per key: origin-stop departures of each timetable trip that runs on that
+// day of week. type=false rows are the per-stop timetable; the origin is the
+// lowest stopsequence per trip (DISTINCT ON tripid). Frequency rows
+// (type=true, stopsequence=-1) are windows, not observed trips, so they are
+// excluded. service_day is a Mon..Sun bitmask (Monday=bit0); day_of_week
+// follows time.Weekday (Sunday=0), hence 1 << ((dow+6)%7).
+func batchDepartureTimes(ctx context.Context, db travelAvgDB, keys []depKey) (map[depKey][]time.Time, error) {
+	result := make(map[depKey][]time.Time, len(keys))
+	if len(keys) == 0 {
+		return result, nil
 	}
-	log.Infof("[ETA_ERROR] cleanup deleted %d rows", perrTag.RowsAffected())
-	return nil
+
+	subRouteUIDs := make([]string, len(keys))
+	directions := make([]int16, len(keys))
+	daysOfWeek := make([]int16, len(keys))
+	masks := make([]int16, len(keys))
+	for i, k := range keys {
+		subRouteUIDs[i] = k.subRouteUID
+		directions[i] = k.direction
+		daysOfWeek[i] = k.dayOfWeek
+		masks[i] = int16(1) << uint16((k.dayOfWeek+6)%7)
+	}
+
+	rows, err := db.Query(ctx, `
+		SELECT k.sub_route_uid, k.direction, k.day_of_week, dep.dep
+		FROM unnest($1::text[], $2::smallint[], $3::smallint[], $4::smallint[])
+		       AS k(sub_route_uid, direction, day_of_week, mask)
+		JOIN LATERAL (
+			SELECT DISTINCT ON (tripid) "arrival_time/StartTime" AS dep
+			FROM bus_schedule
+			WHERE sub_route_uid = k.sub_route_uid AND direction = k.direction
+			  AND type = false AND service_day & k.mask <> 0
+			ORDER BY tripid, stopsequence
+		) dep ON true
+		ORDER BY k.sub_route_uid, k.direction, k.day_of_week, dep.dep`,
+		subRouteUIDs, directions, daysOfWeek, masks)
+	if err != nil {
+		return nil, fmt.Errorf("query travel departures: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var key depKey
+		var dep time.Time
+		if err := rows.Scan(&key.subRouteUID, &key.direction, &key.dayOfWeek, &dep); err != nil {
+			log.Errorf("[TRAVEL_AVG] dep batch scan error: %v", err)
+			continue
+		}
+		result[key] = append(result[key], dep)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan travel departures: %w", err)
+	}
+	return result, nil
+}
+
+// cleanupBatchSize bounds each retention DELETE so cleanup never holds a
+// single very-large transaction/lock against a live table. It repeats until a
+// batch comes back under this size (nothing left to delete) or ctx is
+// canceled.
+const cleanupBatchSize = 5000
+
+// batchDeleteOlderThan repeatedly deletes up to cleanupBatchSize rows from
+// table matching cutoffColumn < NOW() - retention, checking ctx before every
+// batch so a canceled run stops between batches instead of racing to finish
+// or blocking a single oversized DELETE. ctid selection (rather than an id
+// column) works regardless of the table's primary key shape. Returns the
+// total rows deleted so far even when it returns an error, since prior
+// batches already committed.
+func batchDeleteOlderThan(ctx context.Context, db travelAvgDB, table, cutoffColumn, retention string) (int64, error) {
+	sql := fmt.Sprintf(`
+		WITH victims AS (
+			SELECT ctid FROM %s WHERE %s < NOW() - INTERVAL '%s' LIMIT $1
+		)
+		DELETE FROM %s WHERE ctid IN (SELECT ctid FROM victims)`,
+		table, cutoffColumn, retention, table)
+
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		tag, err := db.Exec(ctx, sql, cleanupBatchSize)
+		if err != nil {
+			return total, err
+		}
+		total += tag.RowsAffected()
+		if tag.RowsAffected() < cleanupBatchSize {
+			return total, nil
+		}
+	}
+}
+
+// cleanupBusHistory deletes bus_eta_history rows older than 30 days (the
+// retention window) and, piggybacking on the same job, the prediction-error
+// rows past the same window, in capped batches rather than one unbounded
+// DELETE. The two targets are independent: a failure on one does not skip the
+// other, and both failures are joined (not swallowed) so the caller's
+// completion marker only advances once both retention targets fully succeed.
+func cleanupBusHistory(ctx context.Context, db travelAvgDB) error {
+	var errs []error
+
+	historyDeleted, err := batchDeleteOlderThan(ctx, db, "bus_eta_history", "recorded_at", "30 days")
+	if err != nil {
+		log.Errorf("[ETA_HISTORY] cleanup error deleted=%d: %v", historyDeleted, err)
+		errs = append(errs, fmt.Errorf("cleanup bus history: %w", err))
+	} else {
+		log.Infof("[ETA_HISTORY] cleanup deleted %d rows", historyDeleted)
+	}
+
+	perrDeleted, err := batchDeleteOlderThan(ctx, db, "bus_eta_prediction_error", "predicted_at", "30 days")
+	if err != nil {
+		log.Errorf("[ETA_ERROR] cleanup error deleted=%d: %v", perrDeleted, err)
+		errs = append(errs, fmt.Errorf("cleanup prediction error: %w", err))
+	} else {
+		log.Infof("[ETA_ERROR] cleanup deleted %d rows", perrDeleted)
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return obs.Transient(errors.Join(errs...))
 }
 
 // computeTravelAvg rebuilds bus_travel_avg from the last 7 days of ETA history.
@@ -39,7 +169,7 @@ func cleanupBusHistory(ctx context.Context, db *pgxpool.Pool) error {
 // direction, stop, hour, day-of-week) bucket with at least 10 samples, it upserts
 // the median, and only overwrites an existing average when this run has more
 // samples. Query/upsert failures are wrapped transient so runDaily retries.
-func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
+func computeTravelAvg(ctx context.Context, db travelAvgDB) error {
 	log.Infof("[TRAVEL_AVG] start")
 
 	type crossingRow struct {
@@ -89,54 +219,20 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 	}
 	rows.Close()
 	log.Infof("[TRAVEL_AVG] detected %d arrival events", len(crossings))
-	type depKey struct {
-		subRouteUID string
-		direction   int16
-		dayOfWeek   int16
+
+	seenDepKeys := make(map[depKey]bool)
+	var depKeys []depKey
+	for _, c := range crossings {
+		dkey := depKey{subRouteUID: c.subRouteUID, direction: c.direction, dayOfWeek: c.dayOfWeek}
+		if !seenDepKeys[dkey] {
+			seenDepKeys[dkey] = true
+			depKeys = append(depKeys, dkey)
+		}
 	}
-	depCache := make(map[depKey][]time.Time)
-	getDepTimes := func(key depKey) []time.Time {
-		if cached, ok := depCache[key]; ok {
-			return cached
-		}
-		// Origin-stop departures of each timetable trip that runs on this
-		// day of week. type=false rows are the per-stop timetable; the origin
-		// is the lowest stopsequence per trip (DISTINCT ON tripid). Frequency
-		// rows (type=true, stopsequence=-1) are windows, not observed trips, so
-		// they are excluded from travel-average computation. service_day is a
-		// Mon..Sun bitmask (Monday=bit0); day_of_week follows time.Weekday
-		// (Sunday=0), hence 1 << ((dow+6)%7).
-		mask := int16(1) << uint16((key.dayOfWeek+6)%7)
-		drows, err := db.Query(ctx, `
-			SELECT dep FROM (
-				SELECT DISTINCT ON (tripid) "arrival_time/StartTime" AS dep
-				FROM bus_schedule
-				WHERE sub_route_uid = $1 AND direction = $2
-				  AND type = false AND service_day & $3 <> 0
-				ORDER BY tripid, stopsequence
-			) t
-			ORDER BY dep`,
-			key.subRouteUID, key.direction, mask)
-		if err != nil {
-			log.Errorf("[TRAVEL_AVG] dep query error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
-			depCache[key] = []time.Time{}
-			return nil
-		}
-		defer drows.Close()
-		var times []time.Time
-		for drows.Next() {
-			var t time.Time
-			if drows.Scan(&t) == nil {
-				times = append(times, t)
-			}
-		}
-		if err := drows.Err(); err != nil {
-			log.Errorf("[TRAVEL_AVG] dep rows error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
-			depCache[key] = []time.Time{}
-			return nil
-		}
-		depCache[key] = times
-		return times
+	depTimesByKey, err := batchDepartureTimes(ctx, db, depKeys)
+	if err != nil {
+		log.Errorf("[TRAVEL_AVG] dep batch query error keys=%d: %v", len(depKeys), err)
+		return obs.Transient(fmt.Errorf("query travel departures: %w", err))
 	}
 
 	type aggKey struct {
@@ -150,7 +246,7 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 
 	for _, c := range crossings {
 		dkey := depKey{subRouteUID: c.subRouteUID, direction: c.direction, dayOfWeek: c.dayOfWeek}
-		depTimes := getDepTimes(dkey)
+		depTimes := depTimesByKey[dkey]
 		if len(depTimes) == 0 {
 			continue
 		}
