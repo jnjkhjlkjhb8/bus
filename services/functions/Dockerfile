@@ -1,7 +1,7 @@
 # Build context: ./docker-compose.yaml
 # docker build -f services/functions/Dockerfile -t wheres_the_car-functions .
 
-FROM golang:1.26.3-alpine3.23@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS builder
+FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS builder
 RUN apk add --no-cache git protobuf-dev
 WORKDIR /app
 COPY go.mod go.sum ./
