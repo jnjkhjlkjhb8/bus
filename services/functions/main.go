@@ -433,7 +433,7 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	// startup delay finite while avoiding a detached refresh goroutine.
 	weatherCtx, weatherCancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
 	if err := weatherSync(weatherCtx, rc); err != nil {
-		log.Errorf("[WEATHER] initial sync failed; keeping last good Redis snapshot: %v", err)
+		log.Warnf("[WEATHER] initial sync failed; keeping last good Redis snapshot: %v", err)
 	}
 	weatherCancel()
 	// The legacy direct-fetch static jobs are gone: the ingestor lands raw_tdx at
@@ -452,14 +452,14 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		ctx, cancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
 		defer cancel()
 		if err := weatherSync(ctx, rc); err != nil {
-			log.Errorf("[WEATHER] sync failed; keeping last good Redis snapshot: %v", err)
+			log.Warnf("[WEATHER] sync failed; keeping last good Redis snapshot: %v", err)
 		}
 	})
 	_, _ = r.AddFunc("@every 24h", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
 		defer cancel()
 		if err := loadHolidays(ctx); err != nil {
-			log.Errorf("[HOLIDAY] refresh failed; keeping last good snapshot: %v", err)
+			log.Warnf("[HOLIDAY] refresh failed; keeping last good snapshot: %v", err)
 		}
 	})
 	_, _ = r.AddFunc("0 0 4 * * *", func() {
