@@ -33,6 +33,12 @@ func (d *deadlineSearchDB) Query(ctx context.Context, _ string, _ ...any) (pgx.R
 	return nil, errors.New("stop after context inspection")
 }
 
+// textSearchColumns mirrors the columns textSearchSQL projects: the
+// searchResult fields plus the rank/similarity columns used to dedupe and
+// order candidates that reach the same row through multiple UNION ALL
+// branches.
+var textSearchColumns = []string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon", "rank", "sim"}
+
 func performSearchRequest(t *testing.T, db searchDB, query string) *httptest.ResponseRecorder {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -53,8 +59,8 @@ func TestHandleSearchLimitsQueryByUnicodeRunes(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
-		WithArgs(strings.Repeat("界", 128), 20).
-		WillReturnRows(pgxmock.NewRows([]string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon"}))
+		WithArgs(strings.Repeat("界", 128), textSearchBranchLimit(20)).
+		WillReturnRows(pgxmock.NewRows(textSearchColumns))
 
 	if got := performSearchRequest(t, db, strings.Repeat("界", 128)); got.Code != http.StatusOK {
 		t.Fatalf("128-rune status = %d, body = %s, want 200", got.Code, got.Body.String())
@@ -145,9 +151,9 @@ func TestTextSearchReturnsScanError(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
-		WithArgs("台北", 20).
-		WillReturnRows(pgxmock.NewRows([]string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon"}).
-			AddRow(struct{}{}, "uid", "name", "city", "depart", "destin", nil, nil))
+		WithArgs("台北", textSearchBranchLimit(20)).
+		WillReturnRows(pgxmock.NewRows(textSearchColumns).
+			AddRow(struct{}{}, "uid", "name", "city", "depart", "destin", nil, nil, 0, 1.0))
 
 	results, err := textSearch(context.Background(), "台北", 20, db)
 	if err == nil {
@@ -198,8 +204,8 @@ func TestHandleSearchFailsOnVectorScanError(t *testing.T) {
 	}
 	defer db.Close()
 	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
-		WithArgs("台北", 20).
-		WillReturnRows(pgxmock.NewRows([]string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon"}))
+		WithArgs("台北", textSearchBranchLimit(20)).
+		WillReturnRows(pgxmock.NewRows(textSearchColumns))
 	db.ExpectQuery(`(?s)FROM search_vector.*ORDER BY embedding`).
 		WithArgs("[1,2]", 20).
 		WillReturnRows(pgxmock.NewRows([]string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon"}).
@@ -271,9 +277,9 @@ func TestHandleSearchFailsWhenRouteExpansionFails(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
-		WithArgs("台北車站", 20).
-		WillReturnRows(pgxmock.NewRows([]string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon"}).
-			AddRow("bus_station", "G-1", "台北車站", "Taipei", "", "", nil, nil))
+		WithArgs("台北車站", textSearchBranchLimit(20)).
+		WillReturnRows(pgxmock.NewRows(textSearchColumns).
+			AddRow("bus_station", "G-1", "台北車站", "Taipei", "", "", nil, nil, 0, 1.0))
 	db.ExpectQuery(`(?s)FROM bus_station_group_members`).
 		WithArgs([]string{"G-1"}).
 		WillReturnError(errors.New("route expansion failed"))
@@ -365,6 +371,131 @@ func TestMergeSearchResultsDedupesInPriorityOrder(t *testing.T) {
 	}
 	if got[0].Name != "1234" || got[1].Name != "307" || got[2].Name != "台北車站" {
 		t.Fatalf("unexpected order: %#v", got)
+	}
+}
+
+// textSearchWhereClauses splits textSearchSQL into its WHERE clause bodies
+// (one per branch), in source order, so tests can assert on each branch's
+// predicate shape without depending on exact whitespace.
+func textSearchWhereClauses(t *testing.T) []string {
+	t.Helper()
+	parts := strings.Split(textSearchSQL, "WHERE")
+	if len(parts) < 2 {
+		t.Fatalf("textSearchSQL has no WHERE clauses: %s", textSearchSQL)
+	}
+	var clauses []string
+	for _, part := range parts[1:] {
+		if idx := strings.Index(part, "LIMIT"); idx >= 0 {
+			part = part[:idx]
+		}
+		clauses = append(clauses, strings.TrimSpace(part))
+	}
+	return clauses
+}
+
+func TestTextSearchExactUIDBranchIsIndexable(t *testing.T) {
+	clauses := textSearchWhereClauses(t)
+	if len(clauses) == 0 {
+		t.Fatal("no WHERE clauses found")
+	}
+	exact := clauses[0]
+	if exact != "uid = $1" {
+		t.Fatalf("exact branch WHERE = %q, want a bare uid = $1 equality so it stays indexable", exact)
+	}
+}
+
+func TestTextSearchBranchesAreCappedIndependently(t *testing.T) {
+	clauses := textSearchWhereClauses(t)
+	if len(clauses) != 3 {
+		t.Fatalf("branch count = %d, want 3 (exact, prefix/trigram, contains): %#v", len(clauses), clauses)
+	}
+	if got := strings.Count(textSearchSQL, "LIMIT $2"); got != 3 {
+		t.Fatalf("LIMIT $2 occurrences = %d, want 3 (one per branch)", got)
+	}
+}
+
+func TestTextSearchHasNoSingleAllFieldsOrPredicate(t *testing.T) {
+	clauses := textSearchWhereClauses(t)
+	for i, clause := range clauses {
+		fields := 0
+		for _, f := range []string{"uid", "name", "depart", "destin"} {
+			if strings.Contains(clause, f) {
+				fields++
+			}
+		}
+		if fields >= 4 {
+			t.Fatalf("branch %d WHERE %q touches all %d fields via OR, want it split across branches", i, clause, fields)
+		}
+		if strings.Contains(clause, "uid") && (strings.Contains(clause, "depart") || strings.Contains(clause, "destin")) {
+			t.Fatalf("branch %d WHERE %q ORs the indexable uid equality with the ILIKE columns, defeating index use", i, clause)
+		}
+	}
+}
+
+func TestTextSearchBranchLimitScalesWithoutExceedingCap(t *testing.T) {
+	tests := []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{name: "zero limit", limit: 0, want: 0},
+		{name: "negative limit", limit: -1, want: 0},
+		{name: "small limit scales", limit: 20, want: 100},
+		{name: "large limit clamps to cap", limit: 50, want: textSearchBranchCap},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := textSearchBranchLimit(tt.limit); got != tt.want {
+				t.Fatalf("textSearchBranchLimit(%d) = %d, want %d", tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTextSearchDedupesDuplicateBranchHitsDeterministically(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Simulate the same station reached through two branches: once via the
+	// exact-uid branch (best rank 0) and once via the contains branch
+	// (worse rank 5), plus an unrelated second result.
+	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
+		WithArgs("台北", textSearchBranchLimit(10)).
+		WillReturnRows(pgxmock.NewRows(textSearchColumns).
+			AddRow("bus_station", "S-1", "台北車站", "Taipei", "", "", nil, nil, 5, 0.4).
+			AddRow("bus_station", "S-1", "台北車站", "Taipei", "", "", nil, nil, 0, 1.0).
+			AddRow("bus_route", "R-2", "307", "Taipei", "A", "B", nil, nil, 4, 0.2))
+
+	results, err := textSearch(context.Background(), "台北", 10, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results = %#v, want 2 deduped entries", results)
+	}
+	if results[0].UID != "S-1" || results[1].UID != "R-2" {
+		t.Fatalf("results = %#v, want S-1 (best rank) before R-2", results)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDedupeTextSearchCandidatesAppliesOneFinalCap(t *testing.T) {
+	candidates := []textSearchCandidate{
+		{result: searchResult{Type: "bus_route", UID: "1"}, rank: 0, sim: 1},
+		{result: searchResult{Type: "bus_route", UID: "2"}, rank: 1, sim: 1},
+		{result: searchResult{Type: "bus_route", UID: "3"}, rank: 2, sim: 1},
+	}
+	got := dedupeTextSearchCandidates(candidates, 2)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (final cap applied once): %#v", len(got), got)
+	}
+	if got[0].UID != "1" || got[1].UID != "2" {
+		t.Fatalf("unexpected order after cap: %#v", got)
 	}
 }
 

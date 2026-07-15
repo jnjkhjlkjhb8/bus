@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +20,69 @@ import (
 const (
 	maxSearchQueryRunes  = 128
 	searchRequestTimeout = 5 * time.Second
+
+	// textSearchBranchCap bounds how many rows each UNION ALL branch in
+	// textSearchSQL may return before ranking/dedup, independent of the
+	// caller's requested result limit. This keeps every branch a capped,
+	// indexable scan instead of one unbounded all-fields OR predicate.
+	textSearchBranchCap = 200
+
+	// textSearchBranchScale sizes the per-branch cap relative to the
+	// caller's limit so small requests don't pull textSearchBranchCap rows
+	// per branch; it's clamped to textSearchBranchCap either way.
+	textSearchBranchScale = 5
 )
+
+// textSearchSQL splits exact, prefix/trigram, and contains matching into
+// separate capped UNION ALL branches instead of one all-fields OR predicate.
+// The exact branch (uid = $1) stays a single indexable equality predicate.
+// Ranking (CASE) and trigram similarity are computed once over the unioned
+// candidates; textSearch deduplicates by (type, uid) and applies the final
+// result cap in Go so exactly one place enforces it.
+const textSearchSQL = `
+SELECT type, uid, name, city, depart, destin, ST_Y(geom), ST_X(geom),
+       CASE
+         WHEN uid = $1 THEN 0
+         WHEN name = $1 THEN 1
+         WHEN name ILIKE $1 || '%' THEN 2
+         WHEN name % $1 THEN 3
+         WHEN depart ILIKE '%' || $1 || '%'
+           OR destin ILIKE '%' || $1 || '%' THEN 4
+         ELSE 5
+       END AS rank,
+       similarity(name, $1) AS sim
+FROM (
+    SELECT type, uid, name, city, depart, destin, geom
+    FROM search_vector
+    WHERE uid = $1
+    LIMIT $2
+  UNION ALL
+    SELECT type, uid, name, city, depart, destin, geom
+    FROM search_vector
+    WHERE name ILIKE $1 || '%' OR name % $1
+    LIMIT $2
+  UNION ALL
+    SELECT type, uid, name, city, depart, destin, geom
+    FROM search_vector
+    WHERE name ILIKE '%' || $1 || '%'
+       OR depart ILIKE '%' || $1 || '%'
+       OR destin ILIKE '%' || $1 || '%'
+    LIMIT $2
+) candidates
+ORDER BY rank, sim DESC, name ASC`
+
+// textSearchBranchLimit bounds the per-branch row cap in textSearchSQL. It
+// scales with the caller's requested limit so small requests scan less, but
+// never exceeds textSearchBranchCap regardless of the requested limit.
+func textSearchBranchLimit(limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	if scaled := limit * textSearchBranchScale; scaled > 0 && scaled < textSearchBranchCap {
+		return scaled
+	}
+	return textSearchBranchCap
+}
 
 type searchDB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
@@ -115,48 +178,70 @@ func vectorSearch(ctx context.Context, q string, limit int, db searchDB) ([]sear
 	return results, nil
 }
 
+// textSearchCandidate pairs a scanned row with the rank/similarity the
+// database computed for it, so textSearch can dedupe and order candidates
+// that the same row may have reached through more than one SQL branch.
+type textSearchCandidate struct {
+	result searchResult
+	rank   int
+	sim    float64
+}
+
 func textSearch(ctx context.Context, q string, limit int, db searchDB) ([]searchResult, error) {
-	rows, err := db.Query(ctx, `
-		SELECT type, uid, name, city, depart, destin,
-		       ST_Y(geom), ST_X(geom)
-		FROM search_vector
-		WHERE uid = $1
-		   OR name ILIKE $1 || '%'
-		   OR name % $1
-		   OR name ILIKE '%' || $1 || '%'
-		   OR depart ILIKE '%' || $1 || '%'
-		   OR destin ILIKE '%' || $1 || '%'
-		ORDER BY
-		  CASE
-		    WHEN uid = $1 THEN 0
-		    WHEN name = $1 THEN 1
-		    WHEN name ILIKE $1 || '%' THEN 2
-		    WHEN name % $1 THEN 3
-		    WHEN depart ILIKE '%' || $1 || '%'
-		      OR destin ILIKE '%' || $1 || '%' THEN 4
-		    ELSE 5
-		  END,
-		  similarity(name, $1) DESC,
-		  name ASC
-		LIMIT $2`,
-		q, limit,
-	)
+	rows, err := db.Query(ctx, textSearchSQL, q, textSearchBranchLimit(limit))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var results []searchResult
+	var candidates []textSearchCandidate
 	for rows.Next() {
-		var r searchResult
-		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err != nil {
+		var c textSearchCandidate
+		if err := rows.Scan(
+			&c.result.Type, &c.result.UID, &c.result.Name, &c.result.City,
+			&c.result.Depart, &c.result.Destin, &c.result.Lat, &c.result.Lon,
+			&c.rank, &c.sim,
+		); err != nil {
 			return nil, err
 		}
-		results = append(results, r)
+		candidates = append(candidates, c)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return results, nil
+	return dedupeTextSearchCandidates(candidates, limit), nil
+}
+
+// dedupeTextSearchCandidates orders candidates by rank, then similarity, then
+// name — matching the original single-query ORDER BY — before collapsing
+// duplicate (type, uid) hits from separate UNION ALL branches to their
+// best-ranked occurrence and applying the one final result cap.
+func dedupeTextSearchCandidates(candidates []textSearchCandidate, limit int) []searchResult {
+	if limit <= 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].rank != candidates[j].rank {
+			return candidates[i].rank < candidates[j].rank
+		}
+		if candidates[i].sim != candidates[j].sim {
+			return candidates[i].sim > candidates[j].sim
+		}
+		return candidates[i].result.Name < candidates[j].result.Name
+	})
+	seen := make(map[string]bool, len(candidates))
+	results := make([]searchResult, 0, limit)
+	for _, c := range candidates {
+		key := searchResultKey(c.result)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		results = append(results, c.result)
+		if len(results) >= limit {
+			break
+		}
+	}
+	return results
 }
 
 func searchResultKey(r searchResult) string {
