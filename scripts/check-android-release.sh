@@ -86,10 +86,13 @@ gradle_succeeds() {
 
 note "F05/P0-09: release signing fails closed without key.properties/env vars"
 rm -f "$key_properties"
+# Valid dart-defines are supplied so the earlier APP_ENV/Maps-key gates
+# pass and the failure isolates to the missing signing config.
+signing_probe_defines="$(encode_dart_defines 'APP_ENV=production' 'GOOGLE_MAPS_API_KEY=AIzaFAKEKEYFORVERIFICATIONONLY1234')"
 gradle_fails_with \
   "assembleRelease with no signing config configured" \
   "Refusing to fall back to debug signing" \
-  -- :app:assembleRelease
+  -- :app:assembleRelease "-Pdart-defines=$signing_probe_defines"
 
 note "F05/P0-09: signingReport never resolves release to the debug keystore"
 out="$(gradle :app:signingReport --console=plain 2>&1)" || {
@@ -125,6 +128,21 @@ else
   printf '%s\n' "$release_signing_block" | sed 's/^/       /'
   bad "release variant did not pick up key.properties"
 fi
+
+note "F06: release build without any dart-defines fails (no silent test-flavor default)"
+# Signing is present here (key.properties written above), so the only gate
+# left is the dart-defines one: forgetting --dart-define-from-file must not
+# default APP_ENV to 'test' and ship a signed release with the sentinel key.
+gradle_fails_with \
+  "assembleRelease --dry-run, signing present, no -Pdart-defines" \
+  "Release builds require Flutter dart-defines with an explicit APP_ENV" \
+  -- :app:assembleRelease --dry-run
+
+note "F06: release build with explicit APP_ENV=test dart-define is still allowed"
+test_release_defines="$(encode_dart_defines 'APP_ENV=test')"
+gradle_succeeds \
+  "assembleRelease --dry-run, explicit APP_ENV=test + real signing" \
+  -- :app:assembleRelease --dry-run "-Pdart-defines=$test_release_defines"
 
 note "F06: release build fails closed on a missing Maps key for a non-test flavor"
 prod_defines="$(encode_dart_defines 'APP_ENV=production')"

@@ -181,6 +181,18 @@ gradle.taskGraph.whenReady { taskGraph ->
     if (!buildingRelease) {
         return
     }
+    // A release build must state its flavor explicitly. Without this,
+    // forgetting --dart-define-from-file would default APP_ENV to 'test'
+    // and silently ship a signed release carrying the test-only Maps key
+    // sentinel. Using the sentinel on a release build therefore requires
+    // an explicit APP_ENV=test dart-define.
+    if (!dartDefines.get('APP_ENV')) {
+        throw new GradleException(
+            "Release builds require Flutter dart-defines with an explicit APP_ENV. " +
+            "Build with flutter build ... --dart-define-from-file=env/<flavor>.json " +
+            "(see app/env/*.json.example); refusing to assume the test flavor for a release build."
+        )
+    }
     if (!googleMapsApiKey && !isTestFlavor) {
         throw new GradleException(
             "GOOGLE_MAPS_API_KEY is missing for a release build (APP_ENV=${appEnv}). " +
