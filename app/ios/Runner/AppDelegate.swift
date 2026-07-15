@@ -8,8 +8,12 @@ import GoogleMaps
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    if let googleMapsApiKey = Bundle.main.object(forInfoDictionaryKey: "GOOGLE_MAPS_API_KEY") as? String {
-      GMSServices.provideAPIKey(googleMapsApiKey)
+    let mapsAPIKey = DartDefines.mapsAPIKey(
+      from: Bundle.main.infoDictionary,
+      failClosed: DartDefines.isFailClosed()
+    )
+    if !mapsAPIKey.isEmpty {
+      GMSServices.provideAPIKey(mapsAPIKey)
     }
     GeneratedPluginRegistrant.register(with: self)
     LiveActivityPlugin.register(with: registrar(forPlugin: "LiveActivityPlugin")!)
