@@ -461,8 +461,9 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			stime = eta.SrcUpdateTime
 		}
 		// Resolved in the status==0 branch below (a live bus is only matched
-		// to the stop when one is en route); reused at the dispatch site so
-		// the arrival reminder can pin to this plate.
+		// to the stop when one is en route). This nearest-GPS plate is retained
+		// only for history/telemetry; dispatch uses the selected ETA row's
+		// eta.PlateNumb so the plate and estimate always describe one vehicle.
 		var plateNumb *string
 		if status == 0 {
 			ts := totalStops[uid]
