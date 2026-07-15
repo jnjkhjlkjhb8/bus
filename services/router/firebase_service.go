@@ -318,13 +318,24 @@ func firebaseEnabledFromEnv() bool {
 	return strings.EqualFold(os.Getenv("FIREBASE_ENABLED"), "true") && !strings.EqualFold(os.Getenv("APP_ENV"), "dev")
 }
 
-func firebaseTLSCredentialsFromEnv() (credentials.TransportCredentials, error) {
-	if !firebaseEnabledFromEnv() {
+// grpcTLSEnabledFromEnv reports whether the gRPC server should terminate
+// TLS. This is independent of Firebase/App Check: staging and prod both
+// terminate TLS at the router regardless of whether App Check enforcement
+// is on, so the two concerns must not share one flag.
+func grpcTLSEnabledFromEnv() bool {
+	return strings.EqualFold(os.Getenv("GRPC_TLS"), "true")
+}
+
+// grpcTLSCredentialsFromEnv builds server TLS credentials when GRPC_TLS is
+// enabled. It fails closed: GRPC_TLS=true without both cert and key paths
+// is a startup error rather than a silent fall-back to plaintext.
+func grpcTLSCredentialsFromEnv() (credentials.TransportCredentials, error) {
+	if !grpcTLSEnabledFromEnv() {
 		return nil, nil
 	}
 	certFile, keyFile := os.Getenv("GRPC_TLS_CERT_FILE"), os.Getenv("GRPC_TLS_KEY_FILE")
 	if certFile == "" || keyFile == "" {
-		return nil, errors.New("GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE are required when Firebase is enabled")
+		return nil, errors.New("GRPC_TLS_CERT_FILE and GRPC_TLS_KEY_FILE are required when GRPC_TLS is enabled")
 	}
 	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {

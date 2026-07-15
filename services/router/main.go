@@ -452,7 +452,7 @@ func run() error {
 		}
 		runtime.addCleanup(func() { _ = httpRuntime.listener.Close() })
 		rl := newRateLimiter()
-		tlsCredentials, err := firebaseTLSCredentialsFromEnv()
+		tlsCredentials, err := grpcTLSCredentialsFromEnv()
 		if err != nil {
 			return fmt.Errorf("gRPC TLS initialization failed: %w", err)
 		}

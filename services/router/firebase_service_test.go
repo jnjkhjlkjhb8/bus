@@ -2,8 +2,15 @@ package main
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -372,38 +379,97 @@ func TestFirebaseEnabledFromEnv(t *testing.T) {
 	}
 }
 
-func TestFirebaseTLSCredentialsFromEnv(t *testing.T) {
-	t.Run("disabled bypass", func(t *testing.T) {
+func TestGRPCTLSCredentialsFromEnv(t *testing.T) {
+	t.Run("disabled bypass regardless of Firebase", func(t *testing.T) {
+		t.Setenv("GRPC_TLS", "false")
+		t.Setenv("FIREBASE_ENABLED", "true")
+		t.Setenv("APP_ENV", "prod")
+		t.Setenv("GRPC_TLS_CERT_FILE", "")
+		t.Setenv("GRPC_TLS_KEY_FILE", "")
+		credentials, err := grpcTLSCredentialsFromEnv()
+		if err != nil || credentials != nil {
+			t.Fatalf("credentials = %v, error = %v", credentials, err)
+		}
+	})
+
+	t.Run("enabled without Firebase still requires certificate and key", func(t *testing.T) {
+		t.Setenv("GRPC_TLS", "true")
 		t.Setenv("FIREBASE_ENABLED", "false")
-		t.Setenv("APP_ENV", "prod")
+		t.Setenv("APP_ENV", "staging")
 		t.Setenv("GRPC_TLS_CERT_FILE", "")
 		t.Setenv("GRPC_TLS_KEY_FILE", "")
-		credentials, err := firebaseTLSCredentialsFromEnv()
-		if err != nil || credentials != nil {
-			t.Fatalf("credentials = %v, error = %v", credentials, err)
+		if _, err := grpcTLSCredentialsFromEnv(); err == nil {
+			t.Fatal("grpcTLSCredentialsFromEnv() error = nil, want fail-closed error")
 		}
 	})
 
-	t.Run("development bypass", func(t *testing.T) {
-		t.Setenv("FIREBASE_ENABLED", "true")
-		t.Setenv("APP_ENV", "dev")
-		t.Setenv("GRPC_TLS_CERT_FILE", "")
-		t.Setenv("GRPC_TLS_KEY_FILE", "")
-		credentials, err := firebaseTLSCredentialsFromEnv()
-		if err != nil || credentials != nil {
-			t.Fatalf("credentials = %v, error = %v", credentials, err)
+	t.Run("enabled loads a valid certificate and key", func(t *testing.T) {
+		certFile, keyFile := writeSelfSignedCertPair(t)
+		t.Setenv("GRPC_TLS", "true")
+		t.Setenv("FIREBASE_ENABLED", "false")
+		t.Setenv("APP_ENV", "staging")
+		t.Setenv("GRPC_TLS_CERT_FILE", certFile)
+		t.Setenv("GRPC_TLS_KEY_FILE", keyFile)
+		credentials, err := grpcTLSCredentialsFromEnv()
+		if err != nil {
+			t.Fatalf("grpcTLSCredentialsFromEnv() error = %v", err)
+		}
+		if credentials == nil {
+			t.Fatal("grpcTLSCredentialsFromEnv() credentials = nil, want non-nil")
 		}
 	})
 
-	t.Run("production requires certificate and key", func(t *testing.T) {
-		t.Setenv("FIREBASE_ENABLED", "true")
-		t.Setenv("APP_ENV", "prod")
-		t.Setenv("GRPC_TLS_CERT_FILE", "")
-		t.Setenv("GRPC_TLS_KEY_FILE", "")
-		if _, err := firebaseTLSCredentialsFromEnv(); err == nil {
-			t.Fatal("firebaseTLSCredentialsFromEnv() error = nil")
+	t.Run("invalid certificate path fails closed", func(t *testing.T) {
+		t.Setenv("GRPC_TLS", "true")
+		t.Setenv("FIREBASE_ENABLED", "false")
+		t.Setenv("APP_ENV", "staging")
+		t.Setenv("GRPC_TLS_CERT_FILE", "/nonexistent/grpc.crt")
+		t.Setenv("GRPC_TLS_KEY_FILE", "/nonexistent/grpc.key")
+		if _, err := grpcTLSCredentialsFromEnv(); err == nil {
+			t.Fatal("grpcTLSCredentialsFromEnv() error = nil, want load failure")
 		}
 	})
+}
+
+// writeSelfSignedCertPair generates a throwaway self-signed certificate and
+// key pair for exercising tls.LoadX509KeyPair, and returns their file paths.
+func writeSelfSignedCertPair(t *testing.T) (certFile, keyFile string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(cryptorand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "router-test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+	}
+	derBytes, err := x509.CreateCertificate(cryptorand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	dir := t.TempDir()
+	certFile = dir + "/grpc.crt"
+	keyFile = dir + "/grpc.key"
+	certOut, err := os.Create(certFile)
+	if err != nil {
+		t.Fatalf("create cert file: %v", err)
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		t.Fatalf("encode certificate: %v", err)
+	}
+	keyOut, err := os.Create(keyFile)
+	if err != nil {
+		t.Fatalf("create key file: %v", err)
+	}
+	defer keyOut.Close()
+	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}); err != nil {
+		t.Fatalf("encode key: %v", err)
+	}
+	return certFile, keyFile
 }
 
 type testServerStream struct {

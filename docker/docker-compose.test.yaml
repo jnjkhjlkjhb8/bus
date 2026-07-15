@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: bus
       POSTGRES_PASSWORD: bus
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_test_data:/var/lib/postgresql/data
     healthcheck:

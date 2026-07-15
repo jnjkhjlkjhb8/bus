@@ -1,4 +1,3 @@
-name: wheres_the_car
 services:
   ollama:
     build:
@@ -29,7 +28,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
@@ -50,8 +49,8 @@ services:
       dockerfile: services/router/Dockerfile
     image: bus-router
     ports:
-      - "50051:50051"
-      - "8080:8080"
+      - "${BIND_HOST:-127.0.0.1}:${GRPC_PORT:-50051}:50051"
+      - "${BIND_HOST:-127.0.0.1}:${ROUTER_HTTP_PORT:-8080}:8080"
     env_file: ${BUS_ENV_FILE:-./.env}
     environment:
       TZ: Asia/Taipei
@@ -134,7 +133,7 @@ services:
   powersync:
     image: journeyapps/powersync-service:latest
     ports:
-      - "8081:8080"
+      - "${BIND_HOST:-127.0.0.1}:${POWERSYNC_PORT:-8081}:8080"
     volumes:
       - ./powersync/config.yaml:/config/config.yaml:ro
       - ./powersync/sync-rules.yaml:/config/sync-rules.yaml:ro
@@ -191,7 +190,7 @@ services:
       osrm-init:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:5000:5000"
+      - "127.0.0.1:${OSRM_PORT:-5000}:5000"
     volumes:
       - ./osrm-data:/data:ro
     command: >
