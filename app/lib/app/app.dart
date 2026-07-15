@@ -17,7 +17,7 @@ import 'package:wheres_the_car/features/alerts/view/notification_toast.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_cubit.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/view/journey_pip_card.dart';
 
 class App extends StatefulWidget {
@@ -61,7 +61,7 @@ class _AppState extends State<App> {
 
   @override
   Widget build(BuildContext context) {
-    // Shared across JourneySessionBloc and StopBoardCubit: only one Live
+    // Shared across JourneySessionBloc and StopBoardBloc: only one Live
     // Activity can exist, so both drivers must target the same channel.
     final liveActivityChannel = LiveActivityChannel();
     return MultiBlocProvider(
@@ -78,7 +78,7 @@ class _AppState extends State<App> {
           ),
         ),
         BlocProvider(
-          create: (context) => StopBoardCubit(
+          create: (context) => StopBoardBloc(
             channel: liveActivityChannel,
             session: context.read<JourneySessionBloc>(),
           ),

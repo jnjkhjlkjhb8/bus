@@ -1,10 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_car/features/bus/widgets/stop_board_toggle.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_cubit.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_state.dart';
 
 void main() {
   test(
-    'inactive cubit state → not active for any stop',
+    'inactive state → not active for any stop',
     () => expect(
       isStopBoardActive(const StopBoardState(), '大安森林公園站'),
       isFalse,
@@ -23,7 +23,7 @@ void main() {
   );
 
   test(
-    'active state for a different stop → not active here (shared cubit '
+    'active state for a different stop → not active here (shared bloc '
     'is broadcasting elsewhere)',
     () => expect(
       isStopBoardActive(

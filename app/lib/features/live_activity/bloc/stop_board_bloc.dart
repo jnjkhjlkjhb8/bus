@@ -1,34 +1,28 @@
 import 'dart:async';
 
-import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/repositories/bus_repository.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_event.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_state.dart';
 
 /// Routes shown on the stop-board Live Activity, ranked soonest-first.
 const _maxBoardRows = 4;
-
-class StopBoardState extends Equatable {
-  const StopBoardState({this.active = false, this.stopName});
-
-  final bool active;
-  final String? stopName;
-
-  @override
-  List<Object?> get props => [active, stopName];
-}
 
 /// Drives the stop-board Live Activity (every route serving one stop, ranked
 /// by soonest ETA) from [BusRepository.stationEta].
 ///
 /// Shares the single [LiveActivityChannel] with [JourneySessionBloc]'s
 /// journey/track card — only one Live Activity can exist at a time, so
-/// [start] cancels any live journey session first (mutual exclusion).
-class StopBoardCubit extends Cubit<StopBoardState> {
-  StopBoardCubit({
+/// [StopBoardStarted] cancels any live journey session first (mutual
+/// exclusion). Each owner holds its own lease on the channel (see
+/// [LiveActivityChannel] class doc), so a delayed command from whichever
+/// side lost the race is a no-op rather than clobbering the winner.
+class StopBoardBloc extends Bloc<StopBoardEvent, StopBoardState> {
+  StopBoardBloc({
     required LiveActivityChannel channel,
     required JourneySessionBloc session,
     Stream<List<BusStopArrival>> Function(String city, String stopKey)?
@@ -36,7 +30,11 @@ class StopBoardCubit extends Cubit<StopBoardState> {
   }) : _channel = channel,
        _session = session,
        _etaSource = etaSource ?? BusRepository.instance.stationEta,
-       super(const StopBoardState());
+       super(const StopBoardState()) {
+    on<StopBoardStarted>(_onStarted);
+    on<StopBoardStopped>(_onStopped);
+    on<BoardArrivalsReceived>(_onArrivals);
+  }
 
   final LiveActivityChannel _channel;
   final JourneySessionBloc _session;
@@ -44,24 +42,33 @@ class StopBoardCubit extends Cubit<StopBoardState> {
   _etaSource;
 
   StreamSubscription<List<BusStopArrival>>? _sub;
-  bool _boardStarted = false;
+  int? _lease;
 
-  void start(String city, String stopKey, String stopName) {
+  void _onStarted(StopBoardStarted event, Emitter<StopBoardState> emit) {
     // Only one Live Activity can exist; a board supersedes any in-flight
     // journey/track card the same way starting a new journey would.
     _session.add(const JourneyCancelled());
     unawaited(_sub?.cancel());
-    _boardStarted = false;
-    emit(StopBoardState(active: true, stopName: stopName));
-    _sub = _etaSource(city, stopKey).listen((arrivals) {
-      final rows = _rows(arrivals);
-      if (!_boardStarted) {
-        _boardStarted = true;
-        unawaited(_channel.startBoard(stopName, rows));
-      } else {
-        unawaited(_channel.updateBoard(stopName, rows));
-      }
-    });
+    _lease = null;
+    emit(StopBoardState(active: true, stopName: event.stopName));
+    _sub = _etaSource(
+      event.city,
+      event.stopKey,
+    ).listen((arrivals) => add(BoardArrivalsReceived(arrivals)));
+  }
+
+  Future<void> _onArrivals(
+    BoardArrivalsReceived event,
+    Emitter<StopBoardState> emit,
+  ) async {
+    final rows = _rows(event.arrivals);
+    final stopName = state.stopName ?? '';
+    final lease = _lease;
+    if (lease == null) {
+      _lease = await _channel.startBoard(stopName, rows);
+    } else {
+      unawaited(_channel.updateBoard(lease, stopName, rows));
+    }
   }
 
   List<StopBoardRow> _rows(List<BusStopArrival> arrivals) {
@@ -77,11 +84,12 @@ class StopBoardCubit extends Cubit<StopBoardState> {
     ];
   }
 
-  void stop() {
+  void _onStopped(StopBoardStopped _, Emitter<StopBoardState> emit) {
     unawaited(_sub?.cancel());
     _sub = null;
-    _boardStarted = false;
-    unawaited(_channel.stop());
+    final lease = _lease;
+    _lease = null;
+    if (lease != null) unawaited(_channel.stop(lease));
     emit(const StopBoardState());
   }
 

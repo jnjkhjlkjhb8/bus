@@ -43,15 +43,15 @@ void main() {
 
   test('updateBoard after startBoard, stop clears', () async {
     final la = LiveActivityChannel();
-    await la.startBoard('大安森林公園站', rows);
-    await la.updateBoard('大安森林公園站', rows);
-    await la.stop();
+    final lease = await la.startBoard('大安森林公園站', rows);
+    await la.updateBoard(lease, '大安森林公園站', rows);
+    await la.stop(lease);
     expect(calls.map((c) => c.method), ['start', 'update', 'stop']);
   });
 
-  test('updateBoard without prior start is a no-op', () async {
+  test('updateBoard under a lease that never started is a no-op', () async {
     final la = LiveActivityChannel();
-    await la.updateBoard('大安森林公園站', rows); // must not throw, no call sent
+    await la.updateBoard(1, '大安森林公園站', rows); // must not throw, no call sent
     expect(calls, isEmpty);
   });
 
@@ -61,7 +61,7 @@ void main() {
           throw PlatformException(code: 'LA_START_FAILED');
         });
     final la = LiveActivityChannel();
-    await la.startBoard('大安森林公園站', rows); // must not throw
-    await la.stop();
+    final lease = await la.startBoard('大安森林公園站', rows); // must not throw
+    await la.stop(lease);
   });
 }

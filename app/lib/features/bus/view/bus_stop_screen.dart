@@ -17,7 +17,9 @@ import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
 import 'package:wheres_the_car/features/bus/view/bus_stop_detail_view.dart';
 import 'package:wheres_the_car/features/bus/widgets/stop_board_toggle.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_cubit.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_bloc.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_event.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_state.dart';
 import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
@@ -124,17 +126,23 @@ class _BusStopScreenState extends State<BusStopScreen> {
   }
 
   /// Toggles the 站牌看板 Live Activity for this stop. [isActive] reflects
-  /// whether the shared [StopBoardCubit] is currently broadcasting *this*
-  /// stop (matched by name — the cubit is a single app-wide instance shared
+  /// whether the shared [StopBoardBloc] is currently broadcasting *this*
+  /// stop (matched by name — the bloc is a single app-wide instance shared
   /// with the journey/track card, so any other active board reads as off
   /// here and a tap takes over as this stop's board).
   void _toggleBoard(bool isActive) {
     unawaited(HapticService.instance.lightTap());
-    final cubit = context.read<StopBoardCubit>();
+    final bloc = context.read<StopBoardBloc>();
     if (isActive) {
-      cubit.stop();
+      bloc.add(const StopBoardStopped());
     } else {
-      cubit.start(widget.city ?? '', widget.stopId ?? '', widget.stopName);
+      bloc.add(
+        StopBoardStarted(
+          widget.city ?? '',
+          widget.stopId ?? '',
+          widget.stopName,
+        ),
+      );
     }
   }
 
@@ -216,7 +224,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
                         const Spacer(),
                         if (SettingsRepository.instance.liveActivityEnabled &&
                             (widget.stopId?.isNotEmpty ?? false))
-                          BlocBuilder<StopBoardCubit, StopBoardState>(
+                          BlocBuilder<StopBoardBloc, StopBoardState>(
                             builder: (context, state) {
                               final isActive = isStopBoardActive(
                                 state,

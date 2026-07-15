@@ -71,71 +71,120 @@ class StopBoardRow {
 
 /// Thin wrapper over the platform live-activity channel. All platform errors
 /// are swallowed: a broken lock-screen card must never break navigation.
+///
+/// Only one Live Activity can exist at a time, shared across the journey
+/// session bloc and the stop-board driver, so [start]/[startBoard] hand
+/// back a lease number that identifies "this call's" activity. Callers
+/// must pass that lease back into [update]/[updateBoard]/[stop]; a command
+/// carrying a lease that is no longer the active one is a silent no-op. This
+/// is what stops a delayed command from a superseded owner (e.g. an old
+/// journey's `stop()`, dispatched before a new journey or a stop-board took
+/// over) from clobbering whatever started after it.
+///
+/// Every command additionally funnels through an internal queue so the
+/// underlying `MethodChannel.invokeMethod` calls always reach the platform
+/// side in the same order callers issued them — without that, two
+/// in-flight calls (e.g. a stale `stop` and a fresh `start`) could race and
+/// land out of order even though the lease on the stale one was already
+/// stale by the time it was queued.
 class LiveActivityChannel {
   static const _channel = MethodChannel('com.wheres.bus/live_activity');
-  bool _active = false;
 
-  Future<void> start(LiveActivityContent content) async {
-    try {
-      await _channel.invokeMethod<String>('start', content.toArgs());
-      _active = true;
-    } on PlatformException {
-      _active = false;
-    } on MissingPluginException {
-      _active = false;
-    }
+  int _nextLease = 0;
+  int? _activeLease;
+  Future<void> _queue = Future<void>.value();
+
+  Future<int> start(LiveActivityContent content) {
+    final lease = ++_nextLease;
+    return _enqueue(() async {
+      _activeLease = lease;
+      try {
+        await _channel.invokeMethod<String>('start', content.toArgs());
+      } on PlatformException {
+        _releaseIfCurrent(lease);
+      } on MissingPluginException {
+        _releaseIfCurrent(lease);
+      }
+    }).then((_) => lease);
   }
 
-  Future<void> update(LiveActivityContent content) async {
-    if (!_active) return;
-    try {
-      await _channel.invokeMethod<void>('update', content.toArgs());
-    } on PlatformException {
-      // keep session alive; next update retries
-    } on MissingPluginException {
-      _active = false;
-    }
+  Future<void> update(int lease, LiveActivityContent content) {
+    return _enqueue(() async {
+      if (!_isActive(lease)) return; // stale: superseded before this ran
+      try {
+        await _channel.invokeMethod<void>('update', content.toArgs());
+      } on PlatformException {
+        // keep session alive; next update retries
+      } on MissingPluginException {
+        _releaseIfCurrent(lease);
+      }
+    });
   }
 
-  Future<void> startBoard(String stopName, List<StopBoardRow> rows) async {
-    try {
-      await _channel.invokeMethod<String>('start', {
-        'mode': 'board',
-        'stopName': stopName,
-        'routes': [for (final row in rows) row.toArgs()],
-      });
-      _active = true;
-    } on PlatformException {
-      _active = false;
-    } on MissingPluginException {
-      _active = false;
-    }
+  Future<int> startBoard(String stopName, List<StopBoardRow> rows) {
+    final lease = ++_nextLease;
+    return _enqueue(() async {
+      _activeLease = lease;
+      try {
+        await _channel.invokeMethod<String>('start', {
+          'mode': 'board',
+          'stopName': stopName,
+          'routes': [for (final row in rows) row.toArgs()],
+        });
+      } on PlatformException {
+        _releaseIfCurrent(lease);
+      } on MissingPluginException {
+        _releaseIfCurrent(lease);
+      }
+    }).then((_) => lease);
   }
 
-  Future<void> updateBoard(String stopName, List<StopBoardRow> rows) async {
-    if (!_active) return;
-    try {
-      await _channel.invokeMethod<void>('update', {
-        'mode': 'board',
-        'stopName': stopName,
-        'routes': [for (final row in rows) row.toArgs()],
-      });
-    } on PlatformException {
-      // keep session alive; next update retries
-    } on MissingPluginException {
-      _active = false;
-    }
+  Future<void> updateBoard(
+    int lease,
+    String stopName,
+    List<StopBoardRow> rows,
+  ) {
+    return _enqueue(() async {
+      if (!_isActive(lease)) return; // stale: superseded before this ran
+      try {
+        await _channel.invokeMethod<void>('update', {
+          'mode': 'board',
+          'stopName': stopName,
+          'routes': [for (final row in rows) row.toArgs()],
+        });
+      } on PlatformException {
+        // keep session alive; next update retries
+      } on MissingPluginException {
+        _releaseIfCurrent(lease);
+      }
+    });
   }
 
-  Future<void> stop() async {
-    if (!_active) return;
-    _active = false;
-    try {
-      await _channel.invokeMethod<void>('stop');
-    } on PlatformException {
-      // already gone — nothing to clean up
-    } on MissingPluginException {
-      // no-op
-    }
+  Future<void> stop(int lease) {
+    return _enqueue(() async {
+      if (!_isActive(lease)) return; // stale: already superseded
+      _activeLease = null;
+      try {
+        await _channel.invokeMethod<void>('stop');
+      } on PlatformException {
+        // already gone — nothing to clean up
+      } on MissingPluginException {
+        // no-op
+      }
+    });
+  }
+
+  bool _isActive(int lease) => _activeLease == lease;
+
+  void _releaseIfCurrent(int lease) {
+    if (_activeLease == lease) _activeLease = null;
+  }
+
+  /// Chains [op] onto the tail of the command queue so platform calls fire
+  /// in call order regardless of how their individual futures interleave.
+  Future<T> _enqueue<T>(Future<T> Function() op) {
+    final result = _queue.then((_) => op());
+    _queue = result.then((_) {}, onError: (_) {});
+    return result;
   }
 }

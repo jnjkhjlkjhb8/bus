@@ -9,6 +9,16 @@ import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state
 import 'package:wheres_the_car/features/live_activity/data/leg_eta_source.dart';
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 
+/// Drives a journey/track Live Activity through [JourneySessionState].
+///
+/// Every [JourneyStarted] bumps [_generation]. The internal tick events
+/// ([EtaTicked], [ProgressTicked], [PinnedStopsUpdated]) carry the
+/// generation their source subscription was created under; handlers drop
+/// anything that doesn't match the current generation. This matters because
+/// cancelling a stream subscription is asynchronous — an event already
+/// in flight from journey A's subscription can still land after journey B
+/// has started, and without the generation check it would silently mix
+/// into B's state (both journeys' waiting phase looks identical).
 class JourneySessionBloc
     extends Bloc<JourneySessionEvent, JourneySessionState> {
   JourneySessionBloc({
@@ -51,6 +61,13 @@ class JourneySessionBloc
   Timer? _linger;
   bool _trackedArrived = false;
 
+  /// Bumped on every [JourneyStarted]; see class doc.
+  int _generation = 0;
+
+  /// Lease on the shared [LiveActivityChannel]'s current activity, handed
+  /// back by `start`/`startBoard`. Null until this journey has one.
+  int? _lease;
+
   Future<void> _onStarted(
     JourneyStarted event,
     Emitter<JourneySessionState> emit,
@@ -60,6 +77,7 @@ class JourneySessionBloc
     _timeout = Timer(sessionTimeout, () => add(const JourneyCancelled()));
     _linger?.cancel();
     _trackedArrived = false;
+    final generation = ++_generation;
     emit(
       JourneySessionState(
         phase: JourneyPhase.waiting,
@@ -68,9 +86,14 @@ class JourneySessionBloc
         plate: event.plate,
       ),
     );
-    _subscribeEta(event.legs.first);
-    _subscribeRouteEta(event.legs.first, event.trackOnly, event.plate);
-    await _channel?.start(_content(state));
+    _subscribeEta(event.legs.first, generation);
+    _subscribeRouteEta(
+      event.legs.first,
+      event.trackOnly,
+      event.plate,
+      generation,
+    );
+    _lease = await _channel?.start(_content(state));
   }
 
   void _onBoarded(BoardConfirmed _, Emitter<JourneySessionState> emit) {
@@ -85,7 +108,7 @@ class JourneySessionBloc
       ),
     );
     _subscribePositions();
-    unawaited(_channel?.update(_content(state)));
+    _pushUpdate();
   }
 
   void _onAlighted(AlightConfirmed _, Emitter<JourneySessionState> emit) {
@@ -105,8 +128,8 @@ class JourneySessionBloc
         suggestBoarding: false,
       ),
     );
-    _subscribeEta(state.legs[next]);
-    unawaited(_channel?.update(_content(state)));
+    _subscribeEta(state.legs[next], _generation);
+    _pushUpdate();
   }
 
   void _onCancelled(JourneyCancelled _, Emitter<JourneySessionState> emit) {
@@ -115,6 +138,7 @@ class JourneySessionBloc
   }
 
   void _onEta(EtaTicked event, Emitter<JourneySessionState> emit) {
+    if (event.generation != _generation) return; // stale journey
     if (state.phase != JourneyPhase.waiting) return;
     final arrived = event.eta != null && event.eta! <= Duration.zero;
     // trackOnly never rides, so 進站中 is the terminal display, not a
@@ -125,7 +149,7 @@ class JourneySessionBloc
         suggestBoarding: arrived && !state.trackOnly,
       ),
     );
-    unawaited(_channel?.update(_content(state)));
+    _pushUpdate();
     if (!state.trackOnly) return;
     if (arrived && !_trackedArrived) {
       _trackedArrived = true;
@@ -140,23 +164,25 @@ class JourneySessionBloc
   }
 
   void _onProgress(ProgressTicked event, Emitter<JourneySessionState> emit) {
+    if (event.generation != _generation) return; // stale journey
     if (state.phase != JourneyPhase.riding) return;
     if (event.nextStopIndex <= state.nextStopIndex) return;
     emit(state.copyWith(nextStopIndex: event.nextStopIndex));
-    unawaited(_channel?.update(_content(state)));
+    _pushUpdate();
   }
 
   void _onPinnedStopsUpdated(
     PinnedStopsUpdated event,
     Emitter<JourneySessionState> emit,
   ) {
+    if (event.generation != _generation) return; // stale journey
     if (state.phase != JourneyPhase.waiting) return;
     // A frame that can't resolve the target stop or the pinned plate (bus
     // momentarily between stops) leaves the prior stops-remaining in place
     // rather than blanking the Live Activity's 還剩 N 站 back to null.
     if (event.stopsRemaining == null) return;
     emit(state.copyWith(pinnedStopsRemaining: event.stopsRemaining));
-    unawaited(_channel?.update(_content(state)));
+    _pushUpdate();
   }
 
   void _end(Emitter<JourneySessionState> emit) {
@@ -166,19 +192,29 @@ class JourneySessionBloc
     _timeout?.cancel();
     _linger?.cancel();
     emit(state.copyWith(phase: JourneyPhase.done, suggestBoarding: false));
-    unawaited(_channel?.stop());
+    final lease = _lease;
+    _lease = null;
+    if (lease != null) unawaited(_channel?.stop(lease));
   }
 
-  void _subscribeEta(JourneyLeg leg) {
+  /// Pushes [_content] through the shared channel under this journey's
+  /// current lease; a no-op once another owner has superseded it.
+  void _pushUpdate() {
+    final lease = _lease;
+    if (lease != null) unawaited(_channel?.update(lease, _content(state)));
+  }
+
+  void _subscribeEta(JourneyLeg leg, int generation) {
     unawaited(_etaSub?.cancel());
     // Stream error (gRPC drop) → fall back to the scheduled countdown, per
     // spec: never blank the card mid-journey.
     _etaSub = _etaStream(leg).listen(
-      (eta) => add(EtaTicked(eta)),
+      (eta) => add(EtaTicked(eta, generation: generation)),
       onError: (Object _) {
         unawaited(_etaSub?.cancel());
-        _etaSub = scheduledCountdown(leg.scheduledDeparture)
-            .listen((eta) => add(EtaTicked(eta)));
+        _etaSub = scheduledCountdown(leg.scheduledDeparture).listen(
+          (eta) => add(EtaTicked(eta, generation: generation)),
+        );
       },
     );
   }
@@ -186,7 +222,12 @@ class JourneySessionBloc
   /// A pinned (plate-tracked) trackOnly session additionally tracks the
   /// pinned vehicle's live stop-distance from the alight stop. Unpinned and
   /// MaaS (non-trackOnly) sessions never subscribe here.
-  void _subscribeRouteEta(JourneyLeg leg, bool trackOnly, String? plate) {
+  void _subscribeRouteEta(
+    JourneyLeg leg,
+    bool trackOnly,
+    String? plate,
+    int generation,
+  ) {
     unawaited(_routeEtaSub?.cancel());
     _routeEtaSub = null;
     if (!trackOnly || plate == null) return;
@@ -195,8 +236,12 @@ class JourneySessionBloc
     // Stream error (gRPC drop) → stopsRemaining simply stops updating; the
     // card keeps its last-known value rather than going blank.
     _routeEtaSub = _routeEtaStream(routeKey).listen(
-      (etas) =>
-          add(PinnedStopsUpdated(_pinnedStopsRemaining(etas, leg, plate))),
+      (etas) => add(
+        PinnedStopsUpdated(
+          _pinnedStopsRemaining(etas, leg, plate),
+          generation: generation,
+        ),
+      ),
       onError: (Object _) {},
     );
   }
@@ -248,14 +293,19 @@ class JourneySessionBloc
     for (var i = state.nextStopIndex; i < leg.stopLocations.length; i++) {
       final p = leg.stopLocations[i];
       final d = Geolocator.distanceBetween(
-        pos.latitude, pos.longitude, p.lat, p.lng,
+        pos.latitude,
+        pos.longitude,
+        p.lat,
+        p.lng,
       );
       if (d < bestDist) {
         bestDist = d;
         best = i;
       }
     }
-    if (best != state.nextStopIndex) add(ProgressTicked(best));
+    if (best != state.nextStopIndex) {
+      add(ProgressTicked(best, generation: _generation));
+    }
   }
 
   LiveActivityContent _content(JourneySessionState s) {
@@ -276,16 +326,13 @@ class JourneySessionBloc
       remainingStops: s.plate != null
           ? s.pinnedStopsRemaining
           : (s.phase == JourneyPhase.riding ? total - s.nextStopIndex : null),
-      progressPercent:
-          s.phase == JourneyPhase.riding && total > 0
-              ? s.nextStopIndex / total
-              : 0.0,
+      progressPercent: s.phase == JourneyPhase.riding && total > 0
+          ? s.nextStopIndex / total
+          : 0.0,
       etaMs: s.eta == null
           ? null
           : DateTime.now().add(s.eta!).millisecondsSinceEpoch,
-      walkMinutes: s.phase == JourneyPhase.waiting
-          ? leg.leadingWalkMinutes
-          : 0,
+      walkMinutes: s.phase == JourneyPhase.waiting ? leg.leadingWalkMinutes : 0,
       plate: s.plate,
       routeNumber: leg.routeLabel.split(' 往').first.trim(),
     );

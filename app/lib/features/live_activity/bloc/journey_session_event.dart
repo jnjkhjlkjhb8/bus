@@ -35,20 +35,32 @@ class JourneyCancelled extends JourneySessionEvent {
 }
 
 /// Internal: new ETA value for the current waiting leg (null = unknown).
+///
+/// [generation] is the journey generation this event was produced under
+/// (see the journey session bloc's class doc). A stream subscription
+/// belonging to a cancelled or superseded journey can still have an event
+/// in flight when the next journey starts; the bloc compares [generation]
+/// against its current one and drops anything that doesn't match, so a
+/// late event never mixes into a different journey's state.
 class EtaTicked extends JourneySessionEvent {
-  const EtaTicked(this.eta);
+  const EtaTicked(this.eta, {required this.generation});
   final Duration? eta;
+  final int generation;
 }
 
-/// Internal: riding-mode progress advanced to [nextStopIndex].
+/// Internal: riding-mode progress advanced to [nextStopIndex]. See
+/// [EtaTicked.generation].
 class ProgressTicked extends JourneySessionEvent {
-  const ProgressTicked(this.nextStopIndex);
+  const ProgressTicked(this.nextStopIndex, {required this.generation});
   final int nextStopIndex;
+  final int generation;
 }
 
 /// Internal: the pinned vehicle's live stop-distance from the alight stop,
-/// recomputed from a fresh route-ETA frame (null = not yet resolvable).
+/// recomputed from a fresh route-ETA frame (null = not yet resolvable). See
+/// [EtaTicked.generation].
 class PinnedStopsUpdated extends JourneySessionEvent {
-  const PinnedStopsUpdated(this.stopsRemaining);
+  const PinnedStopsUpdated(this.stopsRemaining, {required this.generation});
   final int? stopsRemaining;
+  final int generation;
 }

@@ -51,7 +51,19 @@ android {
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
     }
+    testOptions {
+        // Kotlin classes under src/test that happen to touch Android SDK
+        // stubs (indirectly, via a class under test) get harmless defaults
+        // instead of "not mocked" exceptions; unrelated to the tests today,
+        // which are pure-Kotlin, but keeps the next Android-facing unit test
+        // from being a surprise.
+        unitTests.returnDefaultValues = true
+    }
 }
 flutter {
     source = "../.."
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
 }

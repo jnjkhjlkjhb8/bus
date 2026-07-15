@@ -13,15 +13,21 @@ import 'package:wheres_the_car/features/live_activity/model/journey_models.dart'
 /// can assert on `_content()`'s output without the method channel firing.
 class _CapturingChannel extends LiveActivityChannel {
   LiveActivityContent? last;
+  int _lease = 0;
 
   @override
-  Future<void> start(LiveActivityContent content) async => last = content;
+  Future<int> start(LiveActivityContent content) async {
+    last = content;
+    return ++_lease;
+  }
 
   @override
-  Future<void> update(LiveActivityContent content) async => last = content;
+  Future<void> update(int lease, LiveActivityContent content) async {
+    last = content;
+  }
 
   @override
-  Future<void> stop() async {}
+  Future<void> stop(int lease) async {}
 }
 
 JourneyLeg _leg() => const JourneyLeg(

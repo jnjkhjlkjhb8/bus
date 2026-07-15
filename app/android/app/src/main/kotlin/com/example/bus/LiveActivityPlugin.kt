@@ -1,26 +1,24 @@
 package com.example.bus
 
-import android.Manifest
-import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
 import android.os.Build
-import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import androidx.core.content.ContextCompat
 import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodChannel
 import kotlin.math.ceil
 import kotlin.math.max
 
-class LiveActivityPlugin(private val context: Context) {
+class LiveActivityPlugin(
+    private val context: Context,
+    private val notificationPermission: NotificationPermissionCoordinator,
+) {
 
     companion object {
         private const val CHANNEL_NAME = "com.wheres.bus/live_activity"
@@ -35,9 +33,21 @@ class LiveActivityPlugin(private val context: Context) {
             when (call.method) {
                 "start" -> {
                     ensureChannel()
-                    ensurePermission()
-                    showNotification(data)
-                    result.success("$NOTIF_ID")
+                    // Android 13+ POST_NOTIFICATIONS is a runtime permission
+                    // whose grant/deny decision only reaches the app
+                    // asynchronously, through onRequestPermissionsResult (see
+                    // MainActivity), so `start` must not report completion to
+                    // Dart until that callback has fired (whether it resolves
+                    // immediately — already granted, or pre-13 — or after the
+                    // user responds to the system prompt).
+                    notificationPermission.request { _ ->
+                        // Post regardless of the outcome: a denial makes
+                        // NotificationManagerCompat.notify a silent no-op on the
+                        // platform side, and the Live Activity card must never
+                        // block navigation on the user's notification choice.
+                        showNotification(data)
+                        result.success("$NOTIF_ID")
+                    }
                 }
                 "update" -> {
                     showNotification(data)
@@ -48,19 +58,6 @@ class LiveActivityPlugin(private val context: Context) {
                     result.success(null)
                 }
                 else -> result.notImplemented()
-            }
-        }
-    }
-
-    private fun ensurePermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(
-                    context as Activity,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    NOTIF_ID,
-                )
             }
         }
     }
