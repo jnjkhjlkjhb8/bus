@@ -1,20 +1,50 @@
 COMPOSE ?= docker compose --project-directory .
 MIGRATE ?= migrate
 
-.PHONY: up-test up-staging up-prod up-ollama migrate-up-test migrate-up-staging migrate-up-prod migrate-force-staging run-test run-staging build-prod test test-go test-flutter proto-dart
+# Pinned protoc plugin versions. protoc-gen-go tracks the google.golang.org/protobuf
+# version in go.mod; protoc-gen-go-grpc is versioned independently. Bump both
+# deliberately, never via @latest, so `make proto-go` is reproducible from a
+# clean checkout.
+PROTOC_GEN_GO_VERSION := v1.36.11
+PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
+TOOLS_BIN := $(CURDIR)/.tools/bin
+
+.PHONY: up-test up-staging up-prod up-ollama migrate-up-test migrate-up-staging migrate-up-prod migrate-force-staging run-test run-staging build-prod test test-go test-flutter proto-go proto-dart verify
 
 test: test-go test-flutter
 
-test-go:
+test-go: proto-go
 	go vet ./...
 	go test ./...
 
 test-flutter: proto-dart
 	cd app && flutter analyze --no-fatal-infos && flutter test
 
+proto-go:
+	mkdir -p $(TOOLS_BIN)
+	GOBIN=$(TOOLS_BIN) go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	GOBIN=$(TOOLS_BIN) go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+	PATH="$(TOOLS_BIN):$$PATH" protoc --go_out=paths=source_relative:models --go-grpc_out=paths=source_relative:models -I models models/*.proto
+
 proto-dart:
 	mkdir -p app/lib/data/generated
 	PATH="$$PATH:$$HOME/.pub-cache/bin" protoc --dart_out=grpc:app/lib/data/generated -I models models/*.proto
+
+# verify runs the full hermetic gate: vet + race tests, fatal-on-error/warning
+# Flutter analysis + tests, the asset/action/permissions/DB-coverage checks in
+# scripts/check-hermetic.sh, the Task 5/6 compose policy checks, and a clean
+# git diff after code generation (proves generation never mutates tracked
+# source). Flutter's asset gate is expected to WARN on a machine without
+# app/assets provisioned (gitignored, user-owned) — see check-hermetic.sh.
+verify: proto-go
+	go vet ./...
+	go test -race ./...
+	cd app && PATH="$$PATH:$$HOME/.pub-cache/bin" flutter analyze --no-fatal-infos
+	cd app && flutter test
+	./scripts/check-hermetic.sh
+	./scripts/check-compose-isolation.sh
+	./scripts/check-container-hardening.sh
+	git diff --exit-code
 
 up-test:
 	BUS_ENV_FILE=env/test.env $(COMPOSE) -p bus-test --env-file ./env/test.env -f docker/docker-compose.yaml -f docker/docker-compose.test.yaml up -d --build postgres redis router functions

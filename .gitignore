@@ -58,7 +58,6 @@ ios/Runner/AppDelegate.swift
 token.env
 .vscode/launch.json
 android/app/build.gradle.kts
-.gitignore
 android/app/src/main/AndroidManifest.xml
 services/router/server.go
 docs/requirements.md
@@ -92,6 +91,7 @@ dump.rdb
 *.hive
 *.lock
 !pubspec.lock
+!Podfile.lock
 .firebaserc
 app/build/
 temp/
@@ -101,3 +101,4 @@ temp/
 .github/skills/
 .tmp-gocache/
 app/android/build/
+/.tools/
