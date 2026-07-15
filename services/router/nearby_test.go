@@ -5,11 +5,37 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 )
 
 type fakeNearbyStore struct {
 	rows map[nearbyMode][]nearbyCandidate
 	err  map[nearbyMode]error
+}
+
+type failFastNearbyStore struct {
+	blockedStarted  chan struct{}
+	blockedCanceled chan struct{}
+	release         chan struct{}
+}
+
+func (f *failFastNearbyStore) Find(ctx context.Context, mode nearbyMode, _ nearbyQuery) ([]nearbyCandidate, error) {
+	switch mode {
+	case nearbyBike:
+		close(f.blockedStarted)
+		select {
+		case <-ctx.Done():
+			close(f.blockedCanceled)
+			return nil, ctx.Err()
+		case <-f.release:
+			return nil, errors.New("test released blocked query")
+		}
+	case nearbyBus:
+		<-f.blockedStarted
+		return nil, errors.New("bus query failed")
+	default:
+		return nil, nil
+	}
 }
 
 func (f fakeNearbyStore) Find(_ context.Context, mode nearbyMode, _ nearbyQuery) ([]nearbyCandidate, error) {
@@ -153,6 +179,40 @@ func TestNearbyDiscoveryRejectsPartialResponseWhenOneModeFails(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("response = %+v, want nil to prevent partial results", got)
+	}
+}
+
+func TestNearbyDiscoveryFailsFastAndCancelsSiblingQueries(t *testing.T) {
+	store := &failFastNearbyStore{
+		blockedStarted:  make(chan struct{}),
+		blockedCanceled: make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	t.Cleanup(func() { close(store.release) })
+
+	result := make(chan error, 1)
+	go func() {
+		response, err := newNearbyDiscovery(store, nil).Discover(context.Background(), nearbyQuery{})
+		if response != nil {
+			result <- errors.New("discovery returned a partial response")
+			return
+		}
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrNearbyUnavailable) {
+			t.Fatalf("err = %v, want ErrNearbyUnavailable", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("discovery did not fail promptly")
+	}
+
+	select {
+	case <-store.blockedCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("blocked sibling query did not observe cancellation")
 	}
 }
 

@@ -107,39 +107,48 @@ func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.
 	if err != nil {
 		return nil, err
 	}
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	results := make(chan nearbyModeResult, len(allNearbyModes))
+	sendResult := func(result nearbyModeResult) {
+		select {
+		case results <- result:
+		case <-workerCtx.Done():
+		}
+	}
 	for _, mode := range allNearbyModes {
 		go func() {
-			candidates, err := d.store.Find(ctx, mode, query)
+			candidates, err := d.store.Find(workerCtx, mode, query)
 			if err != nil {
-				results <- nearbyModeResult{mode: mode, queryError: err}
+				sendResult(nearbyModeResult{mode: mode, queryError: err})
 				return
 			}
-			stations, err := d.enrich(ctx, query.Origin, candidates)
-			results <- nearbyModeResult{mode: mode, stations: stations, error: err}
+			stations, err := d.enrich(workerCtx, query.Origin, candidates)
+			sendResult(nearbyModeResult{mode: mode, stations: stations, error: err})
 		}()
 	}
 
 	response := &pb.RespNear{NearBusStations: make(map[string]*pb.ArrayNear)}
-	queryFailures := 0
 	for range allNearbyModes {
-		result := <-results
+		var result nearbyModeResult
+		select {
+		case result = <-results:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		if result.queryError != nil {
 			if isContextError(result.queryError) {
 				return nil, result.queryError
 			}
-			queryFailures++
 			log.Infof("[NEAR] action=query mode=%d event=failed error=%v", result.mode, result.queryError)
-			continue
+			cancel()
+			return nil, ErrNearbyUnavailable
 		}
 		if result.error != nil {
 			return nil, result.error
 		}
 		appendNearbyResult(response, result.mode, result.stations)
-	}
-	if queryFailures > 0 {
-		return nil, ErrNearbyUnavailable
 	}
 	return response, nil
 }

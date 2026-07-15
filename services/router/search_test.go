@@ -170,7 +170,7 @@ func TestExpandStationRoutesReturnsRowsErrorWithoutPartialResults(t *testing.T) 
 		WithArgs([]string{"G-1"}).
 		WillReturnRows(pgxmock.NewRows([]string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon"}).
 			AddRow("bus_route", "R-1", "307", "Taipei", "A", "B", nil, nil).
-			RowError(0, wantErr))
+			CloseError(wantErr))
 
 	results, err := expandStationRoutes(context.Background(), []searchResult{{Type: "bus_station", UID: "G-1"}}, db)
 	if !errors.Is(err, wantErr) {
@@ -215,6 +215,7 @@ func TestHandleSearchFailsOnVectorScanError(t *testing.T) {
 }
 
 func TestTrainNumberSearchRejectsPartialRows(t *testing.T) {
+	rowsErr := errors.New("train rows failed")
 	tests := []struct {
 		name string
 		rows *pgxmock.Rows
@@ -230,8 +231,8 @@ func TestTrainNumberSearchRejectsPartialRows(t *testing.T) {
 			name: "rows error",
 			rows: pgxmock.NewRows([]string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon"}).
 				AddRow("tra_train", "1234", "1234", "", "A", "B", nil, nil).
-				RowError(0, errors.New("train rows failed")),
-			err: errors.New("train rows failed"),
+				CloseError(rowsErr),
+			err: rowsErr,
 		},
 	}
 
@@ -248,7 +249,7 @@ func TestTrainNumberSearchRejectsPartialRows(t *testing.T) {
 			if err == nil {
 				t.Fatalf("results = %#v, want error", results)
 			}
-			if tt.err != nil && err.Error() != tt.err.Error() {
+			if tt.err != nil && !errors.Is(err, tt.err) {
 				t.Fatalf("err = %v, want %v", err, tt.err)
 			}
 			if results != nil {
