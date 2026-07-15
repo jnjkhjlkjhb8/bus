@@ -36,7 +36,7 @@ class AppConfig {
 
   /// Bridges [version] into a broadcast [Stream] for consumers that want to
   /// react to each activated revision instead of polling a
-  /// `ValueListenableBuilder` (e.g. [AlertBloc]'s dynamic `alert_sources`
+  /// `ValueListenableBuilder` (e.g. `AlertBloc`'s dynamic `alert_sources`
   /// subscription). Each event only signals "a revision happened" — read the
   /// value you care about with a getter afterwards, since Remote Config may
   /// have activated several keys at once.
