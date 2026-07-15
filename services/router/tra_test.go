@@ -326,6 +326,33 @@ func TestTraTimetablePayloadResolvesStationNames(t *testing.T) {
 	}
 }
 
+func TestTraTimetablePayloadPropagatesOriginResolverErrorImmediately(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	wantErr := errors.New("TRA station lookup unavailable")
+	// This is the only expected query. A destination resolver or timetable query
+	// would be unexpected and prevent the sentinel from being returned unchanged.
+	db.ExpectQuery("SELECT station_id FROM tra_stations").
+		WithArgs("台北").
+		WillReturnError(wantErr)
+
+	date := time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)
+	payload, n, err := traTimetablePayload(context.Background(), db, "台北", "花蓮", date)
+	if err != wantErr {
+		t.Fatalf("error = %v, want same sentinel %v", err, wantErr)
+	}
+	if payload != nil || n != 0 {
+		t.Fatalf("payload = %v, leg count = %d, want nil and 0", payload, n)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestResolveRailStationID(t *testing.T) {
 	queryErr := errors.New("station query unavailable")
 	rowsErr := errors.New("station rows interrupted")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"testing"
 	"time"
@@ -233,6 +234,33 @@ func TestThsrTimetablePayloadQueryHasDeterministicOrder(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("paired legs = %d, want 0", n)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestThsrTimetablePayloadPropagatesOriginResolverErrorImmediately(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	wantErr := errors.New("THSR station lookup unavailable")
+	// This is the only expected query. A destination resolver or timetable query
+	// would be unexpected and prevent the sentinel from being returned unchanged.
+	db.ExpectQuery("SELECT station_id FROM thsr_stations").
+		WithArgs("南港").
+		WillReturnError(wantErr)
+
+	date := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+	payload, n, err := thsrTimetablePayload(context.Background(), db, "南港", "左營", date)
+	if err != wantErr {
+		t.Fatalf("error = %v, want same sentinel %v", err, wantErr)
+	}
+	if payload != nil || n != 0 {
+		t.Fatalf("payload = %v, leg count = %d, want nil and 0", payload, n)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
