@@ -385,6 +385,9 @@ func textSearchWhereClauses(t *testing.T) []string {
 	}
 	var clauses []string
 	for _, part := range parts[1:] {
+		if idx := strings.Index(part, "ORDER BY"); idx >= 0 {
+			part = part[:idx]
+		}
 		if idx := strings.Index(part, "LIMIT"); idx >= 0 {
 			part = part[:idx]
 		}
@@ -411,6 +414,38 @@ func TestTextSearchBranchesAreCappedIndependently(t *testing.T) {
 	}
 	if got := strings.Count(textSearchSQL, "LIMIT $2"); got != 3 {
 		t.Fatalf("LIMIT $2 occurrences = %d, want 3 (one per branch)", got)
+	}
+}
+
+// TestTextSearchBranchesOrderBeforeCapping guards against arbitrary
+// truncation: a branch LIMIT without an ORDER BY lets the planner cut rows
+// in heap/index scan order, which can drop the highest-similarity match
+// before the outer ranking ever sees it. Every branch must therefore sort
+// its candidates before applying its cap.
+func TestTextSearchBranchesOrderBeforeCapping(t *testing.T) {
+	// Each WHERE clause body must be followed by an ORDER BY before the
+	// branch's LIMIT. Walk the SQL branch by branch: every "LIMIT $2" must
+	// be preceded (within its branch, i.e. after the branch's WHERE) by an
+	// "ORDER BY".
+	rest := textSearchSQL
+	for branch := 0; ; branch++ {
+		whereIdx := strings.Index(rest, "WHERE")
+		if whereIdx < 0 {
+			if branch != 3 {
+				t.Fatalf("found %d branches, want 3", branch)
+			}
+			return
+		}
+		rest = rest[whereIdx+len("WHERE"):]
+		limitIdx := strings.Index(rest, "LIMIT $2")
+		if limitIdx < 0 {
+			t.Fatalf("branch %d has no LIMIT $2 after its WHERE", branch)
+		}
+		branchBody := rest[:limitIdx]
+		if !strings.Contains(branchBody, "ORDER BY") {
+			t.Fatalf("branch %d applies LIMIT $2 without an ORDER BY, so the cap truncates in arbitrary scan order: %q", branch, strings.TrimSpace(branchBody))
+		}
+		rest = rest[limitIdx+len("LIMIT $2"):]
 	}
 }
 

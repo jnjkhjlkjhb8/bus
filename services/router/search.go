@@ -36,9 +36,12 @@ const (
 // textSearchSQL splits exact, prefix/trigram, and contains matching into
 // separate capped UNION ALL branches instead of one all-fields OR predicate.
 // The exact branch (uid = $1) stays a single indexable equality predicate.
-// Ranking (CASE) and trigram similarity are computed once over the unioned
-// candidates; textSearch deduplicates by (type, uid) and applies the final
-// result cap in Go so exactly one place enforces it.
+// Each branch orders its candidates by the same relevance signal the outer
+// sort uses (trigram similarity with stable tiebreakers) before applying
+// its cap, so the LIMIT keeps the best candidates rather than truncating in
+// arbitrary scan order. Ranking (CASE) and similarity are then computed
+// once over the unioned candidates; textSearch deduplicates by (type, uid)
+// and applies the final result cap in Go so exactly one place enforces it.
 const textSearchSQL = `
 SELECT type, uid, name, city, depart, destin, ST_Y(geom), ST_X(geom),
        CASE
@@ -52,22 +55,25 @@ SELECT type, uid, name, city, depart, destin, ST_Y(geom), ST_X(geom),
        END AS rank,
        similarity(name, $1) AS sim
 FROM (
-    SELECT type, uid, name, city, depart, destin, geom
-    FROM search_vector
-    WHERE uid = $1
-    LIMIT $2
+    (SELECT type, uid, name, city, depart, destin, geom
+     FROM search_vector
+     WHERE uid = $1
+     ORDER BY uid ASC
+     LIMIT $2)
   UNION ALL
-    SELECT type, uid, name, city, depart, destin, geom
-    FROM search_vector
-    WHERE name ILIKE $1 || '%' OR name % $1
-    LIMIT $2
+    (SELECT type, uid, name, city, depart, destin, geom
+     FROM search_vector
+     WHERE name ILIKE $1 || '%' OR name % $1
+     ORDER BY similarity(name, $1) DESC, name ASC, uid ASC
+     LIMIT $2)
   UNION ALL
-    SELECT type, uid, name, city, depart, destin, geom
-    FROM search_vector
-    WHERE name ILIKE '%' || $1 || '%'
-       OR depart ILIKE '%' || $1 || '%'
-       OR destin ILIKE '%' || $1 || '%'
-    LIMIT $2
+    (SELECT type, uid, name, city, depart, destin, geom
+     FROM search_vector
+     WHERE name ILIKE '%' || $1 || '%'
+        OR depart ILIKE '%' || $1 || '%'
+        OR destin ILIKE '%' || $1 || '%'
+     ORDER BY similarity(name, $1) DESC, name ASC, uid ASC
+     LIMIT $2)
 ) candidates
 ORDER BY rank, sim DESC, name ASC`
 
