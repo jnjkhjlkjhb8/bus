@@ -6,19 +6,101 @@ plugins {
     id("com.google.firebase.firebase-perf")
 }
 
-def googleMapsApiKey = project.hasProperty('GOOGLE_MAPS_API_KEY') ? GOOGLE_MAPS_API_KEY : ''
+import java.util.Base64
+
+// Decodes the Flutter tool's `-Pdart-defines=<base64,...>` Gradle property
+// (comma-separated, base64-encoded `KEY=VALUE` pairs, same encoding as the
+// iOS `DART_DEFINES` env var consumed by `ios/Flutter/extract_dart_defines.sh`)
+// so native Android config can read values from the flavor JSON the
+// documented build command passes via
+// `--dart-define-from-file=env/<flavor>.json`. Entries whose key starts with
+// `flutter` (Flutter's own internal defines) are dropped, mirroring the iOS
+// script.
+static def decodeDartDefines(String raw) {
+    def result = [:]
+    if (raw == null || raw.trim().isEmpty()) {
+        return result
+    }
+    raw.split(',').each { encoded ->
+        if (encoded == null || encoded.trim().isEmpty()) {
+            return
+        }
+        String decoded
+        try {
+            decoded = new String(Base64.decoder.decode(encoded.trim()), 'UTF-8')
+        } catch (IllegalArgumentException ignored) {
+            // Malformed entry: skip rather than fail the whole decode.
+            return
+        }
+        int idx = decoded.indexOf('=')
+        if (idx <= 0) {
+            return
+        }
+        String key = decoded.substring(0, idx)
+        if (key.toLowerCase(Locale.ROOT).startsWith('flutter')) {
+            return
+        }
+        result[key] = decoded.substring(idx + 1)
+    }
+    return result
+}
+
+def dartDefines = decodeDartDefines(project.findProperty('dart-defines')?.toString())
+
+// GOOGLE_MAPS_API_KEY resolution order: Flutter dart-defines (the
+// documented `--dart-define-from-file=env/<flavor>.json` path) > an
+// explicit `-PGOOGLE_MAPS_API_KEY` Gradle property > local.properties
+// (developer-machine convenience, gitignored). Deliberately `null` (not
+// `""`) when nothing supplied a value, so "missing" and "configured but
+// blank" stay distinguishable for the fail-closed check below.
+def googleMapsApiKey = dartDefines.get('GOOGLE_MAPS_API_KEY')
+if (!googleMapsApiKey) {
+    googleMapsApiKey = project.hasProperty('GOOGLE_MAPS_API_KEY') ? GOOGLE_MAPS_API_KEY : null
+}
 def localPropertiesFile = rootProject.file('local.properties')
 if (!googleMapsApiKey && localPropertiesFile.exists()) {
     localPropertiesFile.eachLine { line ->
         if (line.startsWith('GOOGLE_MAPS_API_KEY=')) {
-            googleMapsApiKey = line.substring('GOOGLE_MAPS_API_KEY='.length()).trim()
+            def value = line.substring('GOOGLE_MAPS_API_KEY='.length()).trim()
+            if (!value.isEmpty()) {
+                googleMapsApiKey = value
+            }
         }
     }
 }
 
+def appEnv = dartDefines.get('APP_ENV') ?: 'test'
+def isTestFlavor = appEnv == 'test'
+// Explicit sentinel used only for the test flavor when no key was
+// supplied at all, so a missing key never silently resolves to an empty
+// string (F06 fail-closed, matching the iOS bridge's debug-only escape
+// hatch).
+def TEST_ONLY_MAPS_KEY = 'TEST_ONLY_MAPS_KEY_NOT_FOR_PRODUCTION'
+
+def resolvedGoogleMapsApiKey = googleMapsApiKey
+if (!resolvedGoogleMapsApiKey && isTestFlavor) {
+    resolvedGoogleMapsApiKey = TEST_ONLY_MAPS_KEY
+}
+
 def dartEnvironmentVariables = [
-    GOOGLE_MAPS_API_KEY: googleMapsApiKey,
+    GOOGLE_MAPS_API_KEY: resolvedGoogleMapsApiKey ?: '',
 ]
+
+// Release signing: read only from a gitignored key.properties file
+// (app/android/key.properties) or environment variables — never hardcoded
+// and never falling back to the debug keystore. Presence is resolved here,
+// at configuration time, so it is available both to declare the signing
+// config below and to the fail-closed task-graph check further down.
+def keystorePropertiesFile = rootProject.file('key.properties')
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+def releaseStoreFile = keystoreProperties.getProperty('storeFile') ?: System.getenv('ANDROID_RELEASE_STORE_FILE')
+def releaseStorePassword = keystoreProperties.getProperty('storePassword') ?: System.getenv('ANDROID_RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = keystoreProperties.getProperty('keyAlias') ?: System.getenv('ANDROID_RELEASE_KEY_ALIAS')
+def releaseKeyPassword = keystoreProperties.getProperty('keyPassword') ?: System.getenv('ANDROID_RELEASE_KEY_PASSWORD')
+def hasReleaseSigningConfig = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
 
 android {
     namespace = "com.example.bus"
@@ -36,16 +118,29 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        resValue("string", "google_maps_api_key", dartEnvironmentVariables.GOOGLE_MAPS_API_KEY ?: "")
+        resValue("string", "google_maps_api_key", dartEnvironmentVariables.GOOGLE_MAPS_API_KEY)
     }
     kotlinOptions {
         jvmTarget = "17"
     }
+    signingConfigs {
+        if (hasReleaseSigningConfig) {
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Only signed when key.properties/env vars are present; the
+            // task-graph check below hard-fails a release build before
+            // this would otherwise produce an unsigned artifact.
+            if (hasReleaseSigningConfig) {
+                signingConfig = signingConfigs.release
+            }
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
@@ -66,4 +161,47 @@ flutter {
 
 dependencies {
     testImplementation "junit:junit:4.13.2"
+}
+
+// Fail closed before any release task executes: neither a missing/blank
+// Maps key for a non-test flavor, nor a missing release signing config, may
+// silently produce a blank-keyed or debug-signed release artifact.
+// `taskGraph.whenReady` runs after the task graph is assembled but before
+// any task action executes, so this check (and its GradleException) fires
+// ahead of unrelated task-execution-time failures such as a missing
+// google-services.json.
+gradle.taskGraph.whenReady { taskGraph ->
+    def buildingRelease = taskGraph.allTasks.any { task ->
+        def path = task.path
+        path.endsWith(':assembleRelease') ||
+            path.endsWith(':bundleRelease') ||
+            path.contains('PackageRelease') ||
+            path.endsWith(':lintVitalRelease')
+    }
+    if (!buildingRelease) {
+        return
+    }
+    if (!googleMapsApiKey && !isTestFlavor) {
+        throw new GradleException(
+            "GOOGLE_MAPS_API_KEY is missing for a release build (APP_ENV=${appEnv}). " +
+            "Build with --dart-define-from-file=env/<flavor>.json (see app/env/*.json.example) " +
+            "so the real key reaches Gradle through the dart-defines bridge; an empty key is " +
+            "not acceptable for a release build."
+        )
+    }
+    if (!isTestFlavor && resolvedGoogleMapsApiKey == TEST_ONLY_MAPS_KEY) {
+        throw new GradleException(
+            "The test-only Maps key placeholder cannot be used for a release build with " +
+            "APP_ENV=${appEnv}. Supply a real GOOGLE_MAPS_API_KEY via dart-defines."
+        )
+    }
+    if (!hasReleaseSigningConfig) {
+        throw new GradleException(
+            "Release signing config is missing. Create app/android/key.properties (gitignored) " +
+            "with storeFile/storePassword/keyAlias/keyPassword, or set the " +
+            "ANDROID_RELEASE_STORE_FILE / ANDROID_RELEASE_STORE_PASSWORD / " +
+            "ANDROID_RELEASE_KEY_ALIAS / ANDROID_RELEASE_KEY_PASSWORD environment variables. " +
+            "Refusing to fall back to debug signing for a release build."
+        )
+    }
 }
