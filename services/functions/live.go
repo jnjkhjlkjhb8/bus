@@ -530,7 +530,9 @@ func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db
 	// is disabled.
 	_, _ = r.AddFunc("@every 30s", func() {
 		withTimeout(liveJobTimeout, func(ctx context.Context) {
-			dispatcher.FireScheduled(ctx)
+			if err := dispatcher.FireScheduled(ctx); err != nil {
+				log.Errorf("[LIVE] action=run event=error job=scheduled_reminders error=%v", err)
+			}
 		})
 	})
 }

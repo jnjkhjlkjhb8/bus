@@ -30,6 +30,9 @@ type fakeNotificationStore struct {
 	finalizationDeadlines                                   []time.Duration
 	missingFinalizationDeadline                             bool
 	invalidateErr                                           error
+	claimErr                                                error
+	claimErrIDs                                             map[string]bool
+	dueErr                                                  error
 	wantRouteType, wantRouteKey, wantStopKey, wantDirection string
 }
 
@@ -63,6 +66,9 @@ func (s *fakeNotificationStore) activeRemindersForArrivals(_ context.Context, ev
 }
 
 func (s *fakeNotificationStore) dueScheduledReminders(context.Context, time.Time) ([]arrivalReminder, error) {
+	if s.dueErr != nil {
+		return nil, s.dueErr
+	}
 	return s.due, nil
 }
 
@@ -76,6 +82,9 @@ func (s *fakeNotificationStore) claim(ctx context.Context, id string, _ time.Tim
 	s.claimIDs = append(s.claimIDs, id)
 	if s.rejectCanceledTransitions && ctx.Err() != nil {
 		return false, ctx.Err()
+	}
+	if s.claimErr != nil && (s.claimErrIDs == nil || s.claimErrIDs[id]) {
+		return false, s.claimErr
 	}
 	if s.claimed[id] || s.finalized[id] {
 		return false, nil
@@ -355,7 +364,9 @@ func TestFireScheduledClaimsSendsAndFires(t *testing.T) {
 	}
 	sender := &fakeFCM{}
 	d := NewDispatcher(store, sender)
-	d.FireScheduled(context.Background())
+	if err := d.FireScheduled(context.Background()); err != nil {
+		t.Fatalf("FireScheduled() error = %v", err)
+	}
 	if len(sender.messages) != 1 || len(store.firedIDs) != 1 {
 		t.Fatalf("sent=%d fired=%v", len(sender.messages), store.firedIDs)
 	}
@@ -365,9 +376,86 @@ func TestFireScheduledClaimsSendsAndFires(t *testing.T) {
 	}
 	// A later tick that still sees the (unremoved) reminder must not resend it:
 	// the claim guard prevents duplicate pushes across ticks.
-	d.FireScheduled(context.Background())
+	if err := d.FireScheduled(context.Background()); err != nil {
+		t.Fatalf("FireScheduled() second call error = %v", err)
+	}
 	if len(sender.messages) != 1 {
 		t.Fatalf("resent claimed reminder: sent=%d", len(sender.messages))
+	}
+}
+
+func TestFireScheduledSurfacesClaimError(t *testing.T) {
+	claimErr := errors.New("claim db unavailable")
+	store := &fakeNotificationStore{
+		claimed:  map[string]bool{},
+		due:      []arrivalReminder{{id: "r1", token: "t", routeType: "tra", routeKey: "1120", stopKey: "南港", direction: "0", leadMinutes: 3}},
+		claimErr: claimErr,
+	}
+	sender := &fakeFCM{}
+	d := NewDispatcher(store, sender)
+	err := d.FireScheduled(context.Background())
+	if !errors.Is(err, claimErr) {
+		t.Fatalf("FireScheduled() error = %v, want wrapped %v", err, claimErr)
+	}
+	if len(sender.messages) != 0 {
+		t.Fatalf("sent reminder despite claim error: sent=%d", len(sender.messages))
+	}
+}
+
+func TestFireScheduledSurfacesDueQueryError(t *testing.T) {
+	dueErr := errors.New("query timeout")
+	store := &fakeNotificationStore{claimed: map[string]bool{}, dueErr: dueErr}
+	d := NewDispatcher(store, &fakeFCM{})
+	err := d.FireScheduled(context.Background())
+	if !errors.Is(err, dueErr) {
+		t.Fatalf("FireScheduled() error = %v, want wrapped %v", err, dueErr)
+	}
+}
+
+func TestFireScheduledReleaseFailureSurfacedAndReminderStaysStuck(t *testing.T) {
+	sendErr := errors.New("temporary FCM outage")
+	releaseErr := errors.New("release db unavailable")
+	store := &fakeNotificationStore{
+		claimed:    map[string]bool{},
+		due:        []arrivalReminder{{id: "r1", token: "t", routeType: "tra", routeKey: "1120", stopKey: "南港", direction: "0", leadMinutes: 3}},
+		releaseErr: releaseErr,
+	}
+	sender := &fakeFCM{err: sendErr}
+	d := NewDispatcher(store, sender)
+	err := d.FireScheduled(context.Background())
+	if !errors.Is(err, releaseErr) {
+		t.Fatalf("FireScheduled() error = %v, want wrapped %v", err, releaseErr)
+	}
+	if !errors.Is(err, sendErr) {
+		t.Fatalf("FireScheduled() error = %v, want also wrapped %v", err, sendErr)
+	}
+	if len(store.releasedIDs) != 1 || store.releasedIDs[0] != "r1" {
+		t.Fatalf("release attempts = %v, want [r1]", store.releasedIDs)
+	}
+	// Release failed, so the reminder must remain claimed (stuck in
+	// 'sending') rather than silently freed for the next tick to skip.
+	if !store.claimed["r1"] {
+		t.Fatal("reminder was freed despite a failed release — would resend or silently drop")
+	}
+}
+
+func TestFireScheduledTransientSendFailureReleasesClaim(t *testing.T) {
+	sendErr := errors.New("temporary FCM outage")
+	store := &fakeNotificationStore{
+		claimed: map[string]bool{},
+		due:     []arrivalReminder{{id: "r1", token: "t", routeType: "tra", routeKey: "1120", stopKey: "南港", direction: "0", leadMinutes: 3}},
+	}
+	sender := &fakeFCM{err: sendErr}
+	d := NewDispatcher(store, sender)
+	err := d.FireScheduled(context.Background())
+	if !errors.Is(err, sendErr) {
+		t.Fatalf("FireScheduled() error = %v, want wrapped %v", err, sendErr)
+	}
+	if len(store.releasedIDs) != 1 || store.releasedIDs[0] != "r1" {
+		t.Fatalf("released reminders = %v, want [r1]", store.releasedIDs)
+	}
+	if store.claimed["r1"] {
+		t.Fatal("reminder stayed claimed after a successful release — next tick can't retry it")
 	}
 }
 

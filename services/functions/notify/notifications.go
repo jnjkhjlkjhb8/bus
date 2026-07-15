@@ -83,7 +83,7 @@ func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body s
 	}
 	tokens, err := d.store.subscribedTokens(ctx, routeType, routeKey)
 	if err != nil {
-		log.Infof("[FCM] route subscriptions: %v", err)
+		log.Errorf("[FCM] action=route_alert event=subscriptions_query_failed route_type=%s route_key=%s error=%v", routeType, routeKey, err)
 		return
 	}
 	seen := map[string]struct{}{}
@@ -96,7 +96,7 @@ func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body s
 		if isInvalidFCMToken(err) {
 			_ = d.store.invalidate(ctx, v.token)
 		} else if err != nil {
-			log.Infof("[FCM] route alert send: %v", err)
+			log.Warnf("[FCM] action=route_alert event=send_failed route_type=%s route_key=%s error=%v", routeType, routeKey, err)
 		}
 	}
 }
@@ -186,38 +186,72 @@ func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error 
 	return dispatchErr
 }
 
-// fireScheduled sends arrival reminders whose scheduled fire time has arrived —
+// FireScheduled sends arrival reminders whose scheduled fire time has arrived —
 // the rail path, where the arrival time is known so fire_at was set at creation
 // (arrival − lead) rather than derived from a live ETA. It claims each reminder
 // before sending to avoid duplicate pushes across ticks, marks it fired on
 // success, releases it to retry on a transient failure, and invalidates the
-// token when FCM reports it unregistered. No-op for a nil dispatcher.
-func (d *Dispatcher) FireScheduled(ctx context.Context) {
+// token when FCM reports it unregistered. No-op for a nil dispatcher. Mirrors
+// the Arrivals contract: claim, send, and final-state errors are joined so no
+// failed transition — including a release failure that would otherwise strand
+// a reminder in 'sending' forever — is hidden from the cron runner.
+func (d *Dispatcher) FireScheduled(ctx context.Context) error {
 	if d == nil {
-		return
+		return nil
 	}
 	now := d.now()
 	reminders, err := d.store.dueScheduledReminders(ctx, now)
 	if err != nil {
-		log.Infof("[FCM] scheduled reminders: %v", err)
-		return
+		return fmt.Errorf("load scheduled reminders: %w", err)
 	}
+	var dispatchErr error
 	for _, r := range reminders {
-		claimed, err := d.store.claim(ctx, r.id, now)
-		if err != nil || !claimed {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			dispatchErr = errors.Join(dispatchErr, ctxErr)
+			break
+		}
+		claimed, claimErr := d.store.claim(ctx, r.id, now)
+		if claimErr != nil {
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("claim scheduled reminder %s: %w", r.id, claimErr))
+			continue
+		}
+		if !claimed {
 			continue
 		}
 		msg := notificationMessage(r.token, "即將到站", fmt.Sprintf("預計 %d 分鐘後到站", r.leadMinutes), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
-		if err = d.sender.Send(ctx, msg); err != nil {
-			if isInvalidFCMToken(err) {
-				_ = d.store.invalidate(ctx, r.token)
-			} else {
-				_, _ = d.store.release(ctx, r.id)
+		sendErr := d.sender.Send(ctx, msg)
+		finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
+		if sendErr != nil {
+			if isInvalidFCMToken(sendErr) {
+				if invalidateErr := d.store.invalidate(finalizationCtx, r.token); invalidateErr != nil {
+					dispatchErr = errors.Join(dispatchErr, fmt.Errorf("invalidate scheduled reminder token: %w", invalidateErr))
+				}
+			}
+			released, releaseErr := d.store.release(finalizationCtx, r.id)
+			if releaseErr != nil {
+				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release scheduled reminder %s: %w", r.id, releaseErr))
+			} else if !released {
+				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release scheduled reminder %s changed no rows", r.id))
+			}
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("send scheduled reminder %s: %w", r.id, sendErr))
+			cancelFinalization()
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				dispatchErr = errors.Join(dispatchErr, ctxErr)
+				break
 			}
 			continue
 		}
-		if _, err = d.store.fired(ctx, r.id, now); err != nil {
-			log.Infof("[FCM] mark scheduled reminder fired: %v", err)
+		fired, firedErr := d.store.fired(finalizationCtx, r.id, now)
+		cancelFinalization()
+		if firedErr != nil {
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark scheduled reminder %s fired: %w", r.id, firedErr))
+		} else if !fired {
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark scheduled reminder %s fired changed no rows", r.id))
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			dispatchErr = errors.Join(dispatchErr, ctxErr)
+			break
 		}
 	}
+	return dispatchErr
 }
