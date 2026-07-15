@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,10 +19,17 @@ type fakeNotificationStore struct {
 	batchErr                                                error
 	due                                                     []arrivalReminder
 	claimed                                                 map[string]bool
+	finalized                                               map[string]bool
+	claimIDs                                                []string
 	firedIDs                                                []string
 	releasedIDs                                             []string
 	releaseErr                                              error
+	releaseChanged                                          *bool
 	invalidated                                             []string
+	rejectCanceledTransitions                               bool
+	finalizationDeadlines                                   []time.Duration
+	missingFinalizationDeadline                             bool
+	invalidateErr                                           error
 	wantRouteType, wantRouteKey, wantStopKey, wantDirection string
 }
 
@@ -64,34 +72,77 @@ func (s *fakeNotificationStore) subscribedTokens(_ context.Context, routeType, r
 	}
 	return s.tokens, nil
 }
-func (s *fakeNotificationStore) claim(_ context.Context, id string, _ time.Time) (bool, error) {
-	if s.claimed[id] {
+func (s *fakeNotificationStore) claim(ctx context.Context, id string, _ time.Time) (bool, error) {
+	s.claimIDs = append(s.claimIDs, id)
+	if s.rejectCanceledTransitions && ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if s.claimed[id] || s.finalized[id] {
 		return false, nil
 	}
 	s.claimed[id] = true
 	return true, nil
 }
-func (s *fakeNotificationStore) release(_ context.Context, id string) (bool, error) {
-	s.releasedIDs = append(s.releasedIDs, id)
-	return s.releaseErr == nil, s.releaseErr
+func (s *fakeNotificationStore) recordFinalizationDeadline(ctx context.Context) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		s.missingFinalizationDeadline = true
+		return
+	}
+	s.finalizationDeadlines = append(s.finalizationDeadlines, time.Until(deadline))
 }
-func (s *fakeNotificationStore) fired(_ context.Context, id string, _ time.Time) (bool, error) {
+func (s *fakeNotificationStore) release(ctx context.Context, id string) (bool, error) {
+	s.releasedIDs = append(s.releasedIDs, id)
+	s.recordFinalizationDeadline(ctx)
+	if s.rejectCanceledTransitions && ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if s.releaseErr != nil {
+		return false, s.releaseErr
+	}
+	changed := true
+	if s.releaseChanged != nil {
+		changed = *s.releaseChanged
+	}
+	if changed {
+		s.claimed[id] = false
+	}
+	return changed, nil
+}
+func (s *fakeNotificationStore) fired(ctx context.Context, id string, _ time.Time) (bool, error) {
+	s.recordFinalizationDeadline(ctx)
+	if s.rejectCanceledTransitions && ctx.Err() != nil {
+		return false, ctx.Err()
+	}
 	s.firedIDs = append(s.firedIDs, id)
+	s.claimed[id] = false
+	if s.finalized == nil {
+		s.finalized = make(map[string]bool)
+	}
+	s.finalized[id] = true
 	return true, nil
 }
-func (s *fakeNotificationStore) invalidate(_ context.Context, token string) error {
+func (s *fakeNotificationStore) invalidate(ctx context.Context, token string) error {
+	s.recordFinalizationDeadline(ctx)
+	if s.rejectCanceledTransitions && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	s.invalidated = append(s.invalidated, token)
-	return nil
+	return s.invalidateErr
 }
 
 type fakeFCM struct {
 	messages []*messaging.Message
 	err      error
 	errs     map[string]error
+	send     func(context.Context, *messaging.Message) error
 }
 
-func (f *fakeFCM) Send(_ context.Context, m *messaging.Message) error {
+func (f *fakeFCM) Send(ctx context.Context, m *messaging.Message) error {
 	f.messages = append(f.messages, m)
+	if f.send != nil {
+		return f.send(ctx, m)
+	}
 	if err, ok := f.errs[m.Token]; ok {
 		return err
 	}
@@ -388,6 +439,95 @@ func TestArrivalTransientSendFailureReleasesClaim(t *testing.T) {
 	}
 }
 
+func TestArrivalsReleasesWithDetachedContextAndStopsAfterParentCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	first := ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S1", Direction: "0", ETASeconds: 60}
+	second := ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S2", Direction: "0", ETASeconds: 120}
+	store := &fakeNotificationStore{
+		claimed:                   map[string]bool{},
+		rejectCanceledTransitions: true,
+		matches: []arrivalMatch{
+			{reminder: arrivalReminder{id: "r1", token: "first", routeType: "bus", routeKey: "R", stopKey: "S1", direction: "0", leadMinutes: 5}, arrival: first},
+			{reminder: arrivalReminder{id: "r2", token: "second", routeType: "bus", routeKey: "R", stopKey: "S2", direction: "0", leadMinutes: 5}, arrival: second},
+		},
+	}
+	sender := &fakeFCM{send: func(ctx context.Context, _ *messaging.Message) error {
+		cancel()
+		return ctx.Err()
+	}}
+
+	err := NewDispatcher(store, sender).Arrivals(ctx, []ArrivalEvent{first, second})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Arrivals() error = %v, want context canceled", err)
+	}
+	if store.claimed["r1"] || len(store.releasedIDs) != 1 || store.releasedIDs[0] != "r1" {
+		t.Fatalf("first reminder remained claimed: claimed=%v released=%v", store.claimed, store.releasedIDs)
+	}
+	if len(store.claimIDs) != 1 || store.claimIDs[0] != "r1" || len(sender.messages) != 1 {
+		t.Fatalf("processed new reminder after cancellation: claims=%v sends=%d", store.claimIDs, len(sender.messages))
+	}
+	if store.missingFinalizationDeadline || len(store.finalizationDeadlines) != 1 || store.finalizationDeadlines[0] <= 0 || store.finalizationDeadlines[0] > arrivalFinalizationTimeout {
+		t.Fatalf("release finalization deadlines = %v missing=%v, want one bounded deadline", store.finalizationDeadlines, store.missingFinalizationDeadline)
+	}
+}
+
+func TestArrivalsStartsFinalizationDeadlineAfterSendReturns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	event := ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 60}
+	store := &fakeNotificationStore{
+		claimed: map[string]bool{}, rejectCanceledTransitions: true,
+		matches: []arrivalMatch{{
+			reminder: arrivalReminder{id: "r1", token: "token", routeType: "bus", routeKey: "R", stopKey: "S", direction: "0", leadMinutes: 5},
+			arrival:  event,
+		}},
+	}
+	timeout := 5 * time.Millisecond
+	sender := &fakeFCM{send: func(ctx context.Context, _ *messaging.Message) error {
+		time.Sleep(2 * timeout)
+		cancel()
+		return ctx.Err()
+	}}
+	dispatcher := NewDispatcher(store, sender)
+	dispatcher.finalizationTimeout = timeout
+
+	err := dispatcher.Arrivals(ctx, []ArrivalEvent{event})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Arrivals() error = %v, want context canceled", err)
+	}
+	if store.claimed["r1"] || len(store.releasedIDs) != 1 {
+		t.Fatalf("reminder remained claimed after slow send: claimed=%v released=%v", store.claimed, store.releasedIDs)
+	}
+	if store.missingFinalizationDeadline || len(store.finalizationDeadlines) != 1 || store.finalizationDeadlines[0] <= 0 {
+		t.Fatalf("release finalization deadlines = %v missing=%v, want deadline starting after send", store.finalizationDeadlines, store.missingFinalizationDeadline)
+	}
+}
+
+func TestArrivalsMarksFiredWithDetachedContextAfterParentCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	first := ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S1", Direction: "0", ETASeconds: 60}
+	second := ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S2", Direction: "0", ETASeconds: 120}
+	store := &fakeNotificationStore{
+		claimed:                   map[string]bool{},
+		rejectCanceledTransitions: true,
+		matches: []arrivalMatch{
+			{reminder: arrivalReminder{id: "r1", token: "first", routeType: "bus", routeKey: "R", stopKey: "S1", direction: "0", leadMinutes: 5}, arrival: first},
+			{reminder: arrivalReminder{id: "r2", token: "second", routeType: "bus", routeKey: "R", stopKey: "S2", direction: "0", leadMinutes: 5}, arrival: second},
+		},
+	}
+	sender := &fakeFCM{send: func(context.Context, *messaging.Message) error {
+		cancel()
+		return nil
+	}}
+
+	err := NewDispatcher(store, sender).Arrivals(ctx, []ArrivalEvent{first, second})
+	if !errors.Is(err, context.Canceled) || len(store.firedIDs) != 1 || store.firedIDs[0] != "r1" || store.claimed["r1"] {
+		t.Fatalf("error=%v fired=%v claimed=%v, want canceled with r1 finalized", err, store.firedIDs, store.claimed)
+	}
+	if len(store.claimIDs) != 1 || len(sender.messages) != 1 {
+		t.Fatalf("processed new reminder after cancellation: claims=%v sends=%d", store.claimIDs, len(sender.messages))
+	}
+}
+
 func TestArrivalsReturnsTransientSendAndReleaseFailures(t *testing.T) {
 	sendErr := errors.New("temporary FCM outage")
 	releaseErr := errors.New("release update failed")
@@ -437,8 +577,86 @@ func TestInvalidTokenCleanupAndAtMostOnce(t *testing.T) {
 	t.Cleanup(func() { isInvalidFCMToken = old })
 	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "bad", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
 	sender := &fakeFCM{err: sendErr}
-	mustDispatchArrival(t, NewDispatcher(store, sender), ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1})
-	if len(store.invalidated) != 1 || len(store.firedIDs) != 0 || !store.claimed["r1"] {
-		t.Fatalf("invalidated=%v fired=%v claimed=%v", store.invalidated, store.firedIDs, store.claimed)
+	err := NewDispatcher(store, sender).Arrivals(context.Background(), []ArrivalEvent{{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1}})
+	if !errors.Is(err, sendErr) {
+		t.Fatalf("Arrivals() error = %v, want invalid-token send error %v", err, sendErr)
+	}
+	if len(store.invalidated) != 1 || len(store.releasedIDs) != 1 || len(store.firedIDs) != 0 || store.claimed["r1"] {
+		t.Fatalf("invalidated=%v released=%v fired=%v claimed=%v", store.invalidated, store.releasedIDs, store.firedIDs, store.claimed)
+	}
+}
+
+func TestInvalidTokenFinalizesWithDetachedContextAfterParentCancel(t *testing.T) {
+	sendErr := errors.New("invalid token")
+	old := isInvalidFCMToken
+	isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
+	t.Cleanup(func() { isInvalidFCMToken = old })
+	ctx, cancel := context.WithCancel(context.Background())
+	first := ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S1", Direction: "0", ETASeconds: 60}
+	second := ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S2", Direction: "0", ETASeconds: 120}
+	store := &fakeNotificationStore{
+		claimed: map[string]bool{}, rejectCanceledTransitions: true,
+		matches: []arrivalMatch{
+			{reminder: arrivalReminder{id: "r1", token: "bad", routeType: "bus", routeKey: "R", stopKey: "S1", direction: "0", leadMinutes: 5}, arrival: first},
+			{reminder: arrivalReminder{id: "r2", token: "good", routeType: "bus", routeKey: "R", stopKey: "S2", direction: "0", leadMinutes: 5}, arrival: second},
+		},
+	}
+	sender := &fakeFCM{send: func(context.Context, *messaging.Message) error {
+		cancel()
+		return sendErr
+	}}
+
+	err := NewDispatcher(store, sender).Arrivals(ctx, []ArrivalEvent{first, second})
+	if !errors.Is(err, sendErr) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Arrivals() error = %v, want invalid token and context canceled", err)
+	}
+	if len(store.invalidated) != 1 || len(store.releasedIDs) != 1 || store.claimed["r1"] {
+		t.Fatalf("invalidated=%v released=%v claimed=%v", store.invalidated, store.releasedIDs, store.claimed)
+	}
+	if len(store.claimIDs) != 1 || len(sender.messages) != 1 {
+		t.Fatalf("processed new reminder after cancellation: claims=%v sends=%d", store.claimIDs, len(sender.messages))
+	}
+	if store.missingFinalizationDeadline || len(store.finalizationDeadlines) != 2 {
+		t.Fatalf("invalid-token finalization deadlines = %v missing=%v", store.finalizationDeadlines, store.missingFinalizationDeadline)
+	}
+	for _, remaining := range store.finalizationDeadlines {
+		if remaining <= 0 || remaining > arrivalFinalizationTimeout {
+			t.Fatalf("invalid-token finalization deadline remaining = %v, want (0, %v]", remaining, arrivalFinalizationTimeout)
+		}
+	}
+}
+
+func TestInvalidTokenReturnsInvalidateAndReleaseFailures(t *testing.T) {
+	sendErr := errors.New("invalid token")
+	invalidateErr := errors.New("invalidate failed")
+	releaseErr := errors.New("release failed")
+	old := isInvalidFCMToken
+	isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
+	t.Cleanup(func() { isInvalidFCMToken = old })
+	store := &fakeNotificationStore{
+		claimed: map[string]bool{}, invalidateErr: invalidateErr, releaseErr: releaseErr,
+		reminders:     []arrivalReminder{{id: "r1", token: "bad", leadMinutes: 5}},
+		wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0",
+	}
+	err := NewDispatcher(store, &fakeFCM{err: sendErr}).Arrivals(context.Background(), []ArrivalEvent{{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1}})
+	if !errors.Is(err, sendErr) || !errors.Is(err, invalidateErr) || !errors.Is(err, releaseErr) {
+		t.Fatalf("Arrivals() error = %v, want send/invalidate/release failures", err)
+	}
+}
+
+func TestInvalidTokenReturnsZeroRowReleaseFailure(t *testing.T) {
+	sendErr := errors.New("invalid token")
+	changed := false
+	old := isInvalidFCMToken
+	isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
+	t.Cleanup(func() { isInvalidFCMToken = old })
+	store := &fakeNotificationStore{
+		claimed: map[string]bool{}, releaseChanged: &changed,
+		reminders:     []arrivalReminder{{id: "r1", token: "bad", leadMinutes: 5}},
+		wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0",
+	}
+	err := NewDispatcher(store, &fakeFCM{err: sendErr}).Arrivals(context.Background(), []ArrivalEvent{{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1}})
+	if !errors.Is(err, sendErr) || !strings.Contains(err.Error(), "release arrival reminder r1 changed no rows") {
+		t.Fatalf("Arrivals() error = %v, want send and zero-row release failures", err)
 	}
 }

@@ -40,15 +40,18 @@ type notificationStorage interface {
 // Dispatcher sends route-alert and arrival-reminder pushes. now is a
 // clock seam for tests.
 type Dispatcher struct {
-	store  notificationStorage
-	sender Sender
-	now    func() time.Time
+	store               notificationStorage
+	sender              Sender
+	now                 func() time.Time
+	finalizationTimeout time.Duration
 }
 
 // isInvalidFCMToken reports whether an FCM send error means the token is no
 // longer registered and should be invalidated. It is a package var so tests can
 // substitute the check.
 var isInvalidFCMToken = messaging.IsUnregistered
+
+const arrivalFinalizationTimeout = 2 * time.Second
 
 // NewDispatcher builds a dispatcher, or returns nil when sender is
 // nil (push disabled). Callers must treat a nil dispatcher as "notifications off"
@@ -57,7 +60,7 @@ func NewDispatcher(store notificationStorage, sender Sender) *Dispatcher {
 	if sender == nil {
 		return nil
 	}
-	return &Dispatcher{store: store, sender: sender, now: time.Now}
+	return &Dispatcher{store: store, sender: sender, now: time.Now, finalizationTimeout: arrivalFinalizationTimeout}
 }
 
 // notificationMessage builds an FCM message with both a notification and a data
@@ -126,6 +129,10 @@ func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error 
 	}
 	var dispatchErr error
 	for _, match := range matches {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			dispatchErr = errors.Join(dispatchErr, ctxErr)
+			break
+		}
 		r, event := match.reminder, match.arrival
 		if !sameArrivalIdentity(event, ArrivalEvent{
 			RouteType: r.routeType, RouteKey: r.routeKey, StopKey: r.stopKey, Direction: r.direction,
@@ -143,27 +150,37 @@ func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error 
 		}
 		msg := notificationMessage(r.token, "即將到站", fmt.Sprintf("預計 %d 分鐘後到站", (event.ETASeconds+59)/60), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
 		sendErr := d.sender.Send(ctx, msg)
+		finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
 		if sendErr != nil {
 			if isInvalidFCMToken(sendErr) {
-				if invalidateErr := d.store.invalidate(ctx, r.token); invalidateErr != nil {
+				if invalidateErr := d.store.invalidate(finalizationCtx, r.token); invalidateErr != nil {
 					dispatchErr = errors.Join(dispatchErr, fmt.Errorf("invalidate arrival reminder token: %w", invalidateErr))
 				}
-			} else {
-				released, releaseErr := d.store.release(ctx, r.id)
-				if releaseErr != nil {
-					dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release arrival reminder %s: %w", r.id, releaseErr))
-				} else if !released {
-					dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release arrival reminder %s changed no rows", r.id))
-				}
-				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("send arrival reminder %s: %w", r.id, sendErr))
+			}
+			released, releaseErr := d.store.release(finalizationCtx, r.id)
+			if releaseErr != nil {
+				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release arrival reminder %s: %w", r.id, releaseErr))
+			} else if !released {
+				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release arrival reminder %s changed no rows", r.id))
+			}
+			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("send arrival reminder %s: %w", r.id, sendErr))
+			cancelFinalization()
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				dispatchErr = errors.Join(dispatchErr, ctxErr)
+				break
 			}
 			continue
 		}
-		fired, firedErr := d.store.fired(ctx, r.id, now)
+		fired, firedErr := d.store.fired(finalizationCtx, r.id, now)
+		cancelFinalization()
 		if firedErr != nil {
 			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark arrival reminder %s fired: %w", r.id, firedErr))
 		} else if !fired {
 			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark arrival reminder %s fired changed no rows", r.id))
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			dispatchErr = errors.Join(dispatchErr, ctxErr)
+			break
 		}
 	}
 	return dispatchErr

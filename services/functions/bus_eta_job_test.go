@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -100,6 +103,52 @@ func TestBusArrivalBatchFlushesOncePerTick(t *testing.T) {
 	}
 }
 
+func TestRunBusEtaCitiesFlushesOnlySuccessfulCityArrivalsOnce(t *testing.T) {
+	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, taipei)
+	for _, city := range []string{"Taipei", "NewTaipei"} {
+		prefix := citymap[city]
+		busStaticMapCache.Delete(prefix)
+		storeBusStaticMapIn(&busStaticMapCache, prefix, []busStationmap{{
+			StationUID: "STATION1", StationName: "站牌一", GroupUID: "GROUP1", GroupName: "群組一",
+			SubRouteUID: prefix + "1", SubRouteName: "一路", Direction: 0, StopUID: "STOP1", StopSequence: 1,
+		}}, "", now)
+		t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	}
+
+	cityErr := errors.New("new taipei ETA unavailable")
+	fetch := func(_ context.Context, _ string, name string) (*shared.TDXFetch, error) {
+		if name == "bus_EstimatedTimeOfArrivalNewTaipei" {
+			return nil, cityErr
+		}
+		body := []byte(`[]`)
+		if name == "bus_EstimatedTimeOfArrivalTaipei" {
+			body = []byte(`[{"PlateNumb":"ETA-A","StopUID":"STOP1","SubRouteUID":"TPE1","Direction":0,"EstimateTime":60,"StopStatus":0}]`)
+		}
+		return &shared.TDXFetch{
+			Decoder: json.NewDecoder(bytes.NewReader(body)), Modified: true,
+			Ack: func() error { return nil }, Close: func() error { return nil },
+			Invalidate: func() error { return nil },
+		}, nil
+	}
+	target := &captureBusArrivalNotifier{}
+	job := busLiveJob{
+		fetch: fetch, sink: &captureLiveSink{}, store: &fakeBusEtaStore{},
+		now: func() time.Time { return now },
+	}
+
+	err := runBusEtaCities(context.Background(), []string{"Taipei", "NewTaipei"}, &job, target)
+	if !errors.Is(err, cityErr) {
+		t.Fatalf("runBusEtaCities() error = %v, want %v", err, cityErr)
+	}
+	if target.batches != 1 || len(target.calls) != 1 {
+		t.Fatalf("notification batches/calls = %d/%+v, want one successful-city batch", target.batches, target.calls)
+	}
+	want := busArrivalCall{routeKey: "TPE1", stopKey: "STOP1", direction: "0", seconds: 60, plate: "ETA-A"}
+	if target.calls[0] != want {
+		t.Fatalf("notification call = %+v, want %+v", target.calls[0], want)
+	}
+}
+
 func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 	prefix := citymap["InterCity"]
 	busStaticMapCache.Delete(prefix)
@@ -108,7 +157,7 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, taipei)
 	src := &fakeLiveSource{fixtures: map[string][]byte{
 		"bus_EstimatedTimeOfArrivalInterCity": []byte(`[{"PlateNumb":"KKA-1234","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":9,"EstimateTime":120,"StopStatus":0,"SrcUpdateTime":"2026-07-10T09:00:00+08:00"}]`),
-		"bus_RealTimeByFrequencyInterCity":    []byte(`[{"PlateNumb":"KKA-1234","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":9,"BusPosition":{"PositionLon":121.5,"PositionLat":25.05},"Azimuth":90,"Speed":30}]`),
+		"bus_RealTimeByFrequencyInterCity":    []byte(`[{"PlateNumb":"GPS-9999","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":9,"BusPosition":{"PositionLon":121.5,"PositionLat":25.05},"Azimuth":90,"Speed":30}]`),
 	}}
 	sink := &captureLiveSink{}
 	store := &fakeBusEtaStore{stops: []busStationmap{{
@@ -143,7 +192,7 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 	if stop.SubRouteUid != "THB9023" || stop.Direction != 0 || stop.Estimate != 120 || stop.ArrivalUnix != now.Add(120*time.Second).Unix() {
 		t.Fatalf("canonical station estimate = %+v", stop)
 	}
-	if len(stop.Buses) != 1 || stop.Buses[0].PlateNumb != "KKA-1234" {
+	if len(stop.Buses) != 1 || stop.Buses[0].PlateNumb != "GPS-9999" {
 		t.Fatalf("station buses = %+v", stop.Buses)
 	}
 

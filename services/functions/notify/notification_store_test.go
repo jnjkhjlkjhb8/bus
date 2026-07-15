@@ -2,12 +2,53 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"regexp"
 	"testing"
 	"time"
 
 	"github.com/pashagolub/pgxmock/v4"
 )
+
+type arrivalEventsJSONMatcher struct {
+	want []ArrivalEvent
+}
+
+func (m arrivalEventsJSONMatcher) Match(value any) bool {
+	var payload []byte
+	switch value := value.(type) {
+	case string:
+		payload = []byte(value)
+	case []byte:
+		payload = value
+	default:
+		return false
+	}
+	var got []ArrivalEvent
+	if err := json.Unmarshal(payload, &got); err != nil || len(got) != len(m.want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != m.want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestArrivalEventsJSONMatcherRejectsWrongPayload(t *testing.T) {
+	want := []ArrivalEvent{
+		{RouteType: "bus", RouteKey: "R1", StopKey: "S1", Direction: "0", ETASeconds: 60, ArrivingPlate: "BUS-1"},
+		{RouteType: "bus", RouteKey: "R2", StopKey: "S2", Direction: "1", ETASeconds: 120, ArrivingPlate: "BUS-2"},
+	}
+	wrong, err := json.Marshal([]ArrivalEvent{want[1], want[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (arrivalEventsJSONMatcher{want: want}).Match(string(wrong)) {
+		t.Fatal("matcher accepted arrival events in the wrong order")
+	}
+}
 
 func TestNotificationStoreActiveRemindersUsesOneCompositeBatchQuery(t *testing.T) {
 	db, err := pgxmock.NewPool()
@@ -25,7 +66,7 @@ func TestNotificationStoreActiveRemindersUsesOneCompositeBatchQuery(t *testing.T
 		".*r\\.stop_key=a\\.stop_key AND r\\.direction=a\\.direction"+
 		".*a\\.eta_seconds<=r\\.lead_minutes\\*60"+
 		".*r\\.plate='' OR r\\.plate=a\\.arriving_plate").
-		WithArgs(pgxmock.AnyArg(), now).
+		WithArgs(arrivalEventsJSONMatcher{want: events}, now).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"reminder_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes", "plate",
 			"arrival_route_type", "arrival_route_key", "arrival_stop_key", "arrival_direction", "eta_seconds", "arriving_plate",

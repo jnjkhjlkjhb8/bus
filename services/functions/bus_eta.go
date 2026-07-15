@@ -8,6 +8,7 @@ import (
 	"io"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,10 @@ type etaKey struct {
 
 func busPositionIdentity(subRouteUID string, direction uint8) string {
 	return fmt.Sprintf("%s\x00%d", subRouteUID, direction)
+}
+
+func normalizeArrivalPlate(plate string) string {
+	return strings.ToUpper(strings.TrimSpace(plate))
 }
 
 func buildDirectionAwareBusPositionMap(city string, positions []rawBusPosition) map[string][]*models.BusPosition {
@@ -175,18 +180,24 @@ func busEta(
 	dispatcher *notify.Dispatcher,
 ) error {
 	log.Infof("[BUS_ETA] action=Bus_eta event=start")
-	arrivalBatch := &busArrivalBatch{target: dispatcher}
 	job := busLiveJob{
-		fetch:    fetch,
-		sink:     sink,
-		store:    pgBusEtaStore{db: db},
-		notifier: arrivalBatch,
-		now:      time.Now,
+		fetch: fetch,
+		sink:  sink,
+		store: pgBusEtaStore{db: db},
+		now:   time.Now,
 	}
+	jobErr := runBusEtaCities(ctx, cities, &job, dispatcher)
+	log.Infof("[BUS_ETA] action=Bus_eta event=complete")
+	return jobErr
+}
+
+func runBusEtaCities(ctx context.Context, cityNames []string, job *busLiveJob, target busArrivalNotifier) error {
+	arrivalBatch := &busArrivalBatch{target: target}
+	job.notifier = arrivalBatch
 	sem := make(chan struct{}, 4)
-	errCh := make(chan error, len(cities))
+	errCh := make(chan error, len(cityNames))
 	var wg sync.WaitGroup
-	for _, city := range cities {
+	for _, city := range cityNames {
 		if city == "ChanghuaCounty" || city == "NantouCounty" {
 			continue
 		}
@@ -209,7 +220,6 @@ func busEta(
 	if err := arrivalBatch.flush(ctx); err != nil {
 		jobErr = errors.Join(jobErr, fmt.Errorf("dispatch bus arrival reminders: %w", err))
 	}
-	log.Infof("[BUS_ETA] action=Bus_eta event=complete")
 	return jobErr
 }
 
@@ -579,13 +589,10 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			ArrivalUnix:   arrivalUnix,
 		})
 		if shouldDispatchBusArrival(ok, status, est) {
-			plate := ""
-			if plateNumb != nil {
-				plate = *plateNumb
-			}
 			arrivalEvents = append(arrivalEvents, notify.ArrivalEvent{
 				RouteType: "bus", RouteKey: uid, StopKey: b.StopUID,
-				Direction: strconv.Itoa(int(dir)), ETASeconds: est, ArrivingPlate: plate,
+				Direction: strconv.Itoa(int(dir)), ETASeconds: est,
+				ArrivingPlate: normalizeArrivalPlate(eta.PlateNumb),
 			})
 		}
 		if _, ok = routes[uid]; !ok {
