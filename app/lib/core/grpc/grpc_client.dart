@@ -22,21 +22,26 @@ class GrpcClient {
   );
   static const _port = int.fromEnvironment('GRPC_PORT', defaultValue: 50051);
   static const _tls = bool.fromEnvironment('GRPC_TLS');
-  static const _appEnv = String.fromEnvironment('APP_ENV', defaultValue: 'dev');
+  // No defaultValue on purpose: an unset APP_ENV must land in the strict
+  // branch of validateConfig below, not silently masquerade as 'dev'.
+  static const _appEnv = String.fromEnvironment('APP_ENV');
   static Uint8List? _caBytes;
 
   /// Rejects a channel config that would silently fall back to loopback or
-  /// unencrypted transport in a deployed environment (F43). Dev/test builds
-  /// are allowed to run insecure against localhost; `staging`/`production`
-  /// must have a real host and TLS enabled, or this throws — there is no
-  /// silent fallback.
+  /// unencrypted transport in a deployed environment (F43). Strict unless
+  /// the build explicitly opts into a local flavor: only the exact values
+  /// `dev` and `test` relax the guard. Everything else — `staging`,
+  /// `production`, an unset APP_ENV, or a misspelling like `prod` /
+  /// `Production` — must have a real host and TLS enabled, or this throws.
+  /// Fail closed: a typo in the flavor file can tighten validation but
+  /// never bypass it.
   static void validateConfig({
     required String appEnv,
     required String host,
     required bool tls,
   }) {
-    final isDeployedEnv = appEnv == 'staging' || appEnv == 'production';
-    if (!isDeployedEnv) return;
+    final isLocalEnv = appEnv == 'dev' || appEnv == 'test';
+    if (isLocalEnv) return;
     if (host.isEmpty || host == 'localhost' || host == '127.0.0.1') {
       throw StateError(
         'GRPC_HOST must be a non-loopback host in the "$appEnv" environment',
