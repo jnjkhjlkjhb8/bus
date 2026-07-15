@@ -195,7 +195,10 @@ func TestTraTimetablePayloadPairsOriginDestination(t *testing.T) {
 	}
 }
 
-func TestTraTimetablePayloadAddsDayForOvernightLeg(t *testing.T) {
+// TestTraTimetablePayloadPairsCrossMidnightRows supplies already-selected mock
+// rows and covers only Go origin/destination pairing plus duration calculation.
+// pgxmock does not execute the timetable SQL predicate.
+func TestTraTimetablePayloadPairsCrossMidnightRows(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -236,7 +239,10 @@ func TestTraTimetablePayloadAddsDayForOvernightLeg(t *testing.T) {
 	}
 }
 
-func TestTraTimetablePayloadFiltersTimeAtOriginOnly(t *testing.T) {
+// TestTraTimetablePayloadQueryFiltersTimeAtOriginOnly is a SQL contract test:
+// it locks the predicate and bound arguments. pgxmock matches SQL but does not
+// execute the WHERE clause.
+func TestTraTimetablePayloadQueryFiltersTimeAtOriginOnly(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -244,34 +250,17 @@ func TestTraTimetablePayloadFiltersTimeAtOriginOnly(t *testing.T) {
 	defer db.Close()
 
 	date := time.Date(2026, 7, 4, 23, 0, 0, 0, time.UTC)
-	originDeparture := time.Date(2000, 1, 1, 23, 50, 0, 0, time.UTC)
-	destinationArrival := time.Date(2000, 1, 1, 0, 10, 0, 0, time.UTC)
-	cols := []string{
-		"train_date", "trainno", "starting_station_id", "starting_station_name",
-		"ending_station_id", "ending_station_name", "stopsequence", "train_type_id",
-		"train_type_code", "train_type_name", "tripline", "stationid", "arrivaltime",
-		"stationname", "mask", "note", "departuretime",
-	}
 	wantQuery := `FROM tra_timetable WHERE stationid = ANY($1) AND train_date = $2 AND (stationid <> $3 OR departuretime >= $4)`
 	db.ExpectQuery(regexp.QuoteMeta(wantQuery)).
 		WithArgs([]string{"1000", "1040"}, "2026-07-04", "1000", "23:00:00").
-		WillReturnRows(pgxmock.NewRows(cols).
-			AddRow(date, "1234", "1000", "台北", "1040", "台中", 1, "1", "1", "自強", int32(0), "1000", originDeparture, "台北", int32(0), "", originDeparture).
-			AddRow(date, "1234", "1000", "台北", "1040", "台中", 5, "1", "1", "自強", int32(0), "1040", destinationArrival, "台中", int32(0), "", destinationArrival))
+		WillReturnRows(pgxmock.NewRows([]string{"station_id"}))
 
-	payload, n, err := traTimetablePayload(context.Background(), db, "1000", "1040", date)
+	_, n, err := traTimetablePayload(context.Background(), db, "1000", "1040", date)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("leg count = %d, want 1", n)
-	}
-	var tt models.TraTimetables
-	if err := proto.Unmarshal(payload, &tt); err != nil {
-		t.Fatal(err)
-	}
-	if got := tt.Items[0].Travel_Time; got != "20m0s" {
-		t.Fatalf("Travel_Time = %q, want 20m0s", got)
+	if n != 0 {
+		t.Fatalf("leg count = %d, want 0 from empty mock rows", n)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -337,24 +326,97 @@ func TestTraTimetablePayloadResolvesStationNames(t *testing.T) {
 	}
 }
 
-func TestTraTimetablePayloadPropagatesStationResolverError(t *testing.T) {
-	db, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+func TestResolveRailStationID(t *testing.T) {
+	queryErr := errors.New("station query unavailable")
+	rowsErr := errors.New("station rows interrupted")
+	const lookupQuery = `SELECT station_id FROM tra_stations WHERE replace(name, '臺', '台') = replace($1, '臺', '台') ORDER BY station_id LIMIT 1`
 
-	wantErr := errors.New("station lookup unavailable")
-	db.ExpectQuery("SELECT station_id FROM tra_stations").
-		WithArgs("台北").
-		WillReturnError(wantErr)
-
-	date := time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)
-	_, _, err = traTimetablePayload(context.Background(), db, "台北", "花蓮", date)
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("error = %v, want resolver error %v", err, wantErr)
+	tests := []struct {
+		name       string
+		input      string
+		setup      func(pgxmock.PgxPoolIface)
+		wantID     string
+		wantErr    error
+		wantAnyErr bool
+	}{
+		{
+			name:  "query error",
+			input: "台北",
+			setup: func(db pgxmock.PgxPoolIface) {
+				db.ExpectQuery(regexp.QuoteMeta(lookupQuery)).WithArgs("台北").WillReturnError(queryErr)
+			},
+			wantErr: queryErr,
+		},
+		{
+			name:  "scan error",
+			input: "台北",
+			setup: func(db pgxmock.PgxPoolIface) {
+				db.ExpectQuery(regexp.QuoteMeta(lookupQuery)).WithArgs("台北").
+					WillReturnRows(pgxmock.NewRows([]string{"station_id"}).AddRow(struct{}{}))
+			},
+			wantAnyErr: true,
+		},
+		{
+			name:  "rows error after iteration",
+			input: "台北",
+			setup: func(db pgxmock.PgxPoolIface) {
+				db.ExpectQuery(regexp.QuoteMeta(lookupQuery)).WithArgs("台北").
+					WillReturnRows(pgxmock.NewRows([]string{"station_id"}).CloseError(rowsErr))
+			},
+			wantErr: rowsErr,
+		},
+		{
+			name:  "empty result returns original input",
+			input: "不存在",
+			setup: func(db pgxmock.PgxPoolIface) {
+				db.ExpectQuery(regexp.QuoteMeta(lookupQuery)).WithArgs("不存在").
+					WillReturnRows(pgxmock.NewRows([]string{"station_id"}))
+			},
+			wantID: "不存在",
+		},
+		{
+			name:   "numeric id bypasses query",
+			input:  "1000",
+			setup:  func(pgxmock.PgxPoolIface) {},
+			wantID: "1000",
+		},
+		{
+			name:  "duplicate names select lowest station id deterministically",
+			input: "台北",
+			setup: func(db pgxmock.PgxPoolIface) {
+				// The exact query contract selects the lowest duplicate-name ID;
+				// this mock row represents that database result.
+				db.ExpectQuery(regexp.QuoteMeta(lookupQuery)).WithArgs("台北").
+					WillReturnRows(pgxmock.NewRows([]string{"station_id"}).AddRow("1000"))
+			},
+			wantID: "1000",
+		},
 	}
-	if err := db.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			tt.setup(db)
+
+			got, err := resolveRailStationID(context.Background(), db, "tra_stations", tt.input)
+			switch {
+			case tt.wantErr != nil && !errors.Is(err, tt.wantErr):
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			case tt.wantAnyErr && err == nil:
+				t.Fatal("error = nil, want scan error")
+			case tt.wantErr == nil && !tt.wantAnyErr && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantID {
+				t.Fatalf("station id = %q, want %q", got, tt.wantID)
+			}
+			if err := db.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

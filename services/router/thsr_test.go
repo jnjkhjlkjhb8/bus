@@ -156,41 +156,61 @@ func TestThsrTimetablePayloadUsesOriginDeparture(t *testing.T) {
 	}
 }
 
-func TestThsrTimetablePayloadAddsDayForNegativeDuration(t *testing.T) {
-	db, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
+func TestThsrTimetablePayloadDurationDependsOnClockOrderNotOvernightFlag(t *testing.T) {
+	tests := []struct {
+		name         string
+		departure    string
+		arrival      string
+		overnight    bool
+		wantDuration string
+	}{
+		{name: "positive duration flag false", departure: "06:30:00", arrival: "08:00:00", overnight: false, wantDuration: "1h30m0s"},
+		{name: "positive duration flag true", departure: "06:30:00", arrival: "08:00:00", overnight: true, wantDuration: "1h30m0s"},
+		{name: "negative duration flag false", departure: "23:50:00", arrival: "00:10:00", overnight: false, wantDuration: "20m0s"},
+		{name: "negative duration flag true", departure: "23:50:00", arrival: "00:10:00", overnight: true, wantDuration: "20m0s"},
 	}
-	defer db.Close()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
 
-	cols := []string{
-		"trainno", "starting_station_id", "starting_station_name",
-		"ending_station_id", "ending_station_name", "arrivaltime",
-		"departuretime", "note", "overnight", "stationid", "stopsequence",
-	}
-	db.ExpectQuery("FROM thsr_timetable WHERE stationid").
-		WithArgs([]string{"0990", "1070"}, "2026-07-10").
-		WillReturnRows(pgxmock.NewRows(cols).
-			AddRow("0801", "0990", "南港", "1070", "左營", "23:48:00", "23:50:00", "", false, "0990", 1).
-			AddRow("0801", "0990", "南港", "1070", "左營", "00:10:00", "00:12:00", "", false, "1070", 12))
+			cols := []string{
+				"trainno", "starting_station_id", "starting_station_name",
+				"ending_station_id", "ending_station_name", "arrivaltime",
+				"departuretime", "note", "overnight", "stationid", "stopsequence",
+			}
+			db.ExpectQuery("FROM thsr_timetable WHERE stationid").
+				WithArgs([]string{"0990", "1070"}, "2026-07-10").
+				WillReturnRows(pgxmock.NewRows(cols).
+					AddRow("0801", "0990", "南港", "1070", "左營", tt.departure, tt.departure, "", tt.overnight, "0990", 1).
+					AddRow("0801", "0990", "南港", "1070", "左營", tt.arrival, tt.arrival, "", tt.overnight, "1070", 12))
 
-	date := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
-	payload, n, err := thsrTimetablePayload(context.Background(), db, "0990", "1070", date)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("paired legs = %d, want 1", n)
-	}
-	var tt models.ThsrTimetables
-	if err := proto.Unmarshal(payload, &tt); err != nil {
-		t.Fatal(err)
-	}
-	if got := tt.Items[0].Travel_Time; got != "20m0s" {
-		t.Fatalf("Travel_Time = %q, want 20m0s", got)
-	}
-	if err := db.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
+			date := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
+			payload, n, err := thsrTimetablePayload(context.Background(), db, "0990", "1070", date)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != 1 {
+				t.Fatalf("paired legs = %d, want 1", n)
+			}
+			var timetables models.ThsrTimetables
+			if err := proto.Unmarshal(payload, &timetables); err != nil {
+				t.Fatal(err)
+			}
+			got := timetables.Items[0]
+			if got.Travel_Time != tt.wantDuration {
+				t.Fatalf("Travel_Time = %q, want %q", got.Travel_Time, tt.wantDuration)
+			}
+			if got.Overnight != tt.overnight {
+				t.Fatalf("Overnight = %v, want %v", got.Overnight, tt.overnight)
+			}
+			if err := db.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
