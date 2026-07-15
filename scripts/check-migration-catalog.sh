@@ -28,6 +28,13 @@
 # same PGOPTIONS search_path pattern documented in migrations/README.md),
 # and reapplies the three migrations a second time to prove idempotence.
 #
+# Two extra scenarios exercise the HNSW dedupe migration's edge cases in a
+# second fixture schema:
+#   4. THREE identical HNSW indexes: a typo'd -v survivor_index must fail
+#      loudly before anything is dropped; then a plain run drops exactly
+#      one duplicate, exits 0 and emits a rerun NOTICE; a rerun drops the
+#      next one, leaving exactly one.
+#
 # Requires: docker.
 #
 # Usage: scripts/check-migration-catalog.sh
@@ -293,4 +300,102 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo
-echo "check-migration-catalog: PASS (RED reproduced the audit findings; GREEN holds after apply and after an idempotent rerun)"
+echo "== scenario: HNSW dedupe with THREE identical indexes + typo'd survivor =="
+
+SCHEMA2=catalogtest_hnsw3
+
+# psql wrapper scoped to the second fixture schema; extra args (e.g. -v
+# survivor_index=...) pass through.
+psql2() {
+  docker exec -i -e PGOPTIONS="-c search_path=$SCHEMA2,public" "$CONTAINER" \
+    env PGPASSWORD="$PASS" psql -X -v ON_ERROR_STOP=1 -U "$USER" -d "$DB" "$@"
+}
+scalar2() { psql2 -A -t -c "$1"; }
+
+docker exec -i "$CONTAINER" env PGPASSWORD="$PASS" \
+  psql -X -v ON_ERROR_STOP=1 -U "$USER" -d "$DB" \
+  -c "CREATE SCHEMA IF NOT EXISTS $SCHEMA2;" >/dev/null
+
+psql2 <<SQL >/dev/null
+CREATE TABLE search_vector (
+    id text PRIMARY KEY,
+    embedding vector(3)
+);
+INSERT INTO search_vector (id, embedding) VALUES ('a', '[0.1,0.2,0.3]');
+CREATE INDEX idx_search_vector_embedding_hnsw
+    ON search_vector USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX idx_search_vector_embedding_hnsw_legacy1
+    ON search_vector USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX idx_search_vector_embedding_hnsw_legacy2
+    ON search_vector USING hnsw (embedding vector_cosine_ops);
+SQL
+
+hnsw3_query="SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE i.indrelid = '${SCHEMA2}.search_vector'::regclass AND am.amname = 'hnsw' AND i.indisvalid;"
+
+hnsw3_pre="$(scalar2 "$hnsw3_query")"
+echo "  fixture HNSW index count (expect 3) : $hnsw3_pre"
+[ "$hnsw3_pre" = "3" ] || { echo "  SCENARIO-CHECK FAIL: 3-duplicate fixture not seeded"; fail=1; }
+
+echo "  -- typo'd survivor_index must fail before dropping anything --"
+set +e
+typo_out="$(psql2 -v survivor_index=idx_search_vector_embedding_hnsw_typo \
+  < migrations/2026-07-16-search-vector-hnsw-dedupe.sql 2>&1)"
+typo_rc=$?
+set -e
+echo "  exit code (want non-zero) : $typo_rc"
+if [ "$typo_rc" -eq 0 ]; then
+  echo "  SCENARIO-CHECK FAIL: typo'd survivor_index was silently accepted"
+  fail=1
+fi
+if ! echo "$typo_out" | grep -q 'does not name a valid HNSW index'; then
+  echo "  SCENARIO-CHECK FAIL: typo'd survivor_index error message missing"
+  echo "$typo_out" | sed 's/^/            /'
+  fail=1
+fi
+hnsw3_after_typo="$(scalar2 "$hnsw3_query")"
+echo "  HNSW index count after failed typo run (want 3, nothing dropped) : $hnsw3_after_typo"
+[ "$hnsw3_after_typo" = "3" ] || { echo "  SCENARIO-CHECK FAIL: typo run dropped an index"; fail=1; }
+
+echo "  -- run 1 (no survivor override): drops one duplicate, NOTICEs about rerun --"
+set +e
+run1_out="$(psql2 < migrations/2026-07-16-search-vector-hnsw-dedupe.sql 2>&1)"
+run1_rc=$?
+set -e
+echo "  exit code (want 0) : $run1_rc"
+[ "$run1_rc" -eq 0 ] || { echo "  SCENARIO-CHECK FAIL: run 1 errored with duplicates remaining"; echo "$run1_out" | sed 's/^/            /'; fail=1; }
+if ! echo "$run1_out" | grep -q 'rerun this migration to drop the next duplicate'; then
+  echo "  SCENARIO-CHECK FAIL: run 1 did not emit the rerun NOTICE"
+  echo "$run1_out" | sed 's/^/            /'
+  fail=1
+fi
+hnsw3_run1="$(scalar2 "$hnsw3_query")"
+echo "  HNSW index count after run 1 (want 2) : $hnsw3_run1"
+[ "$hnsw3_run1" = "2" ] || { echo "  SCENARIO-CHECK FAIL: run 1 did not drop exactly one duplicate"; fail=1; }
+
+echo "  -- run 2: drops the remaining duplicate, no rerun NOTICE --"
+set +e
+run2_out="$(psql2 < migrations/2026-07-16-search-vector-hnsw-dedupe.sql 2>&1)"
+run2_rc=$?
+set -e
+echo "  exit code (want 0) : $run2_rc"
+[ "$run2_rc" -eq 0 ] || { echo "  SCENARIO-CHECK FAIL: run 2 errored"; echo "$run2_out" | sed 's/^/            /'; fail=1; }
+if echo "$run2_out" | grep -q 'rerun this migration to drop the next duplicate'; then
+  echo "  SCENARIO-CHECK FAIL: run 2 still emitted the rerun NOTICE"
+  fail=1
+fi
+hnsw3_run2="$(scalar2 "$hnsw3_query")"
+echo "  HNSW index count after run 2 (want 1) : $hnsw3_run2"
+[ "$hnsw3_run2" = "1" ] || { echo "  SCENARIO-CHECK FAIL: run 2 did not converge to one index"; fail=1; }
+
+hnsw3_survivor="$(scalar2 "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am am ON am.oid = c.relam WHERE i.indrelid = '${SCHEMA2}.search_vector'::regclass AND am.amname = 'hnsw' AND i.indisvalid;")"
+echo "  survivor (want idx_search_vector_embedding_hnsw) : $hnsw3_survivor"
+[ "$hnsw3_survivor" = "idx_search_vector_embedding_hnsw" ] || { echo "  SCENARIO-CHECK FAIL: default rule kept the wrong survivor"; fail=1; }
+
+if [ "$fail" -ne 0 ]; then
+  echo
+  echo "check-migration-catalog: FAIL (3-duplicate / typo'd-survivor scenario did not hold)"
+  exit 1
+fi
+
+echo
+echo "check-migration-catalog: PASS (RED reproduced the audit findings; GREEN holds after apply, after an idempotent rerun, and across the 3-duplicate + typo'd-survivor scenarios)"

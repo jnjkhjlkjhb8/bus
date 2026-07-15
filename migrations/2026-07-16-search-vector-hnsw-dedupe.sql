@@ -13,15 +13,27 @@
 -- indcollation, indoption, indpred) plus the access method, so it can never
 -- mistake two HNSW indexes with different key definitions (e.g. a future
 -- second HNSW index on a different column) for duplicates. It only ever
--- considers a single exact-duplicate pair on search_vector; if the audit's
--- finding turns out to involve more than one duplicate pair, rerunning
--- this file after a first cleanup handles the rest (idempotent).
+-- drops ONE duplicate per run; with three or more identical indexes the
+-- final verification emits a NOTICE (not an error) telling the operator to
+-- rerun, and each rerun removes the next duplicate until one remains.
+--
+-- The equivalence predicate deliberately ignores pg_class.reloptions
+-- (HNSW build parameters: WITH (m = ..., ef_construction = ...)). Two
+-- indexes that differ only in build parameters still index the same key
+-- with the same opclass — the planner treats them interchangeably and one
+-- is redundant, so they should still be deduplicated. Today this is moot:
+-- the tracked index (2026-07-13-search-vector-hnsw.sql) was created with
+-- defaults. If build parameters ever matter, pick the survivor explicitly
+-- via survivor_index below instead of tightening the predicate.
 --
 -- Survivor selection: the caller may force a specific survivor with
 --   psql -v survivor_index=<name> -f migrations/2026-07-16-search-vector-hnsw-dedupe.sql
--- Absent an override, the safe default keeps idx_search_vector_embedding_hnsw
--- (the migration-tracked, documented index) when it is part of the pair;
--- otherwise it keeps the first-created member (lowest oid).
+-- A survivor_index that names no valid HNSW index on search_vector is an
+-- error (fails before anything is dropped), so a typo cannot silently fall
+-- back to the default rule. Absent an override, the safe default keeps
+-- idx_search_vector_embedding_hnsw (the migration-tracked, documented
+-- index) when it is part of the pair; otherwise it keeps the
+-- first-created member (lowest oid).
 --
 -- Must run via psql, NOT wrapped in an explicit transaction:
 -- DROP INDEX CONCURRENTLY cannot execute inside BEGIN/COMMIT or inside a
@@ -46,6 +58,37 @@ $schema_check$;
     \set survivor_index _none_
 \endif
 
+-- Validate an explicit survivor_index before touching anything: a typo'd
+-- name must fail loudly, not silently fall back to the default rule.
+-- psql does not interpolate :variables inside dollar-quoted DO bodies, so
+-- the value is passed through a session GUC instead.
+SELECT set_config('migration.survivor_index', :'survivor_index', false) AS survivor_index_requested;
+
+DO $survivor_check$
+DECLARE
+    survivor text := current_setting('migration.survivor_index', true);
+    candidates text[];
+BEGIN
+    IF survivor IS NULL OR survivor = '_none_' THEN
+        RETURN;
+    END IF;
+
+    SELECT array_agg(c.relname ORDER BY c.oid) INTO candidates
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+      JOIN pg_am am ON am.oid = c.relam
+     WHERE i.indrelid = 'search_vector'::regclass
+       AND am.amname = 'hnsw'
+       AND i.indisvalid;
+
+    IF candidates IS NULL OR NOT survivor = ANY (candidates) THEN
+        RAISE EXCEPTION
+            'survivor_index "%" does not name a valid HNSW index on search_vector; valid candidates: %',
+            survivor, coalesce(candidates::text, '(none)');
+    END IF;
+END
+$survivor_check$;
+
 WITH dupes AS (
     SELECT
         c1.relname AS name_a,
@@ -66,6 +109,9 @@ WITH dupes AS (
       AND i1.indcollation = i2.indcollation
       AND i1.indoption = i2.indoption
       AND coalesce(i1.indpred::text, '') = coalesce(i2.indpred::text, '')
+      -- pg_class.reloptions (WITH m/ef_construction) intentionally not
+      -- compared — see the header comment for why build-parameter-only
+      -- differences still count as duplicates.
       AND i1.indisvalid
       AND i2.indisvalid
 )
@@ -103,7 +149,11 @@ LEFT JOIN (
     \echo No semantically duplicate HNSW index pair found on search_vector; nothing to do.
 \endif
 
--- Verify: exactly one valid HNSW index remains on search_vector.
+-- Verify: at least one valid HNSW index remains on search_vector (the
+-- semantic-search read path in services/router/search.go depends on it).
+-- More than one remaining is NOT an error — each run drops a single
+-- duplicate, so with 3+ identical indexes the operator reruns this file
+-- until one remains; a NOTICE says so.
 DO $verify$
 DECLARE
     remaining int;
@@ -116,8 +166,10 @@ BEGIN
        AND am.amname = 'hnsw'
        AND i.indisvalid;
 
-    IF remaining <> 1 THEN
-        RAISE EXCEPTION 'expected exactly one valid HNSW index on search_vector, found %', remaining;
+    IF remaining < 1 THEN
+        RAISE EXCEPTION 'no valid HNSW index remains on search_vector; expected at least one';
+    ELSIF remaining > 1 THEN
+        RAISE NOTICE '% valid HNSW indexes still remain on search_vector; rerun this migration to drop the next duplicate', remaining;
     END IF;
 END
 $verify$;
