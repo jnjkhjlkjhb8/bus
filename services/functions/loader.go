@@ -107,18 +107,18 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 		for _, part := range parts {
 			body, fetchedAt, err := src.datasetJSON(ctx, spec.table, spec.partCol, part)
 			if err != nil {
-				log.Infof("[LOAD] action=read event=error dataset=%s partition=%s error=%v", spec.key, part, err)
+				log.Errorf("[LOAD] action=read event=error dataset=%s partition=%s error=%v", spec.key, part, err)
 				failures = append(failures, fmt.Errorf("load dataset %s partition %s: read: %w", spec.key, part, err))
 				continue
 			}
 			if fetchedAt.IsZero() || (!spec.staleOK && isStale(fetchedAt)) {
-				log.Infof("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s reason=%v", spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale)
+				log.Warnf("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s reason=%v", spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale)
 				failures = append(failures, fmt.Errorf("load dataset %s partition %s: %w", spec.key, part, errLoadStale))
 				continue
 			}
 			dec := json.NewDecoder(bytes.NewReader(body))
 			if err := spec.load(ctx, dec, sink, part); err != nil {
-				log.Infof("[LOAD] action=transform event=error dataset=%s partition=%s error=%v", spec.key, part, err)
+				log.Errorf("[LOAD] action=transform event=error dataset=%s partition=%s error=%v", spec.key, part, err)
 				failures = append(failures, fmt.Errorf("load dataset %s partition %s: transform: %w", spec.key, part, err))
 				continue
 			}
@@ -155,7 +155,7 @@ func reportQuality(ctx context.Context, db *pgxpool.Pool, spec loadSpec) {
 			dest[i] = &vals[i]
 		}
 		if err := db.QueryRow(ctx, q).Scan(dest...); err != nil {
-			log.Infof("[LOAD] action=quality_report event=query_error dataset=%s table=%s error=%v", spec.key, t.table, err)
+			log.Errorf("[LOAD] action=quality_report event=query_error dataset=%s table=%s error=%v", spec.key, t.table, err)
 			continue
 		}
 		rows := vals[0]

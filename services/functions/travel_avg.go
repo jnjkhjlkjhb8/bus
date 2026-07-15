@@ -16,14 +16,14 @@ import (
 func cleanupBusHistory(ctx context.Context, db *pgxpool.Pool) error {
 	tag, err := db.Exec(ctx, `DELETE FROM bus_eta_history WHERE recorded_at < NOW() - INTERVAL '30 days'`)
 	if err != nil {
-		log.Infof("[ETA_HISTORY] cleanup error: %v", err)
+		log.Errorf("[ETA_HISTORY] cleanup error: %v", err)
 		return obs.Transient(fmt.Errorf("cleanup bus history: %w", err))
 	}
 	log.Infof("[ETA_HISTORY] cleanup deleted %d rows", tag.RowsAffected())
 
 	perrTag, err := db.Exec(ctx, `DELETE FROM bus_eta_prediction_error WHERE predicted_at < NOW() - INTERVAL '30 days'`)
 	if err != nil {
-		log.Infof("[ETA_ERROR] cleanup error: %v", err)
+		log.Errorf("[ETA_ERROR] cleanup error: %v", err)
 		return obs.Transient(fmt.Errorf("cleanup prediction error: %w", err))
 	}
 	log.Infof("[ETA_ERROR] cleanup deleted %d rows", perrTag.RowsAffected())
@@ -69,7 +69,7 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 		WHERE prev_est > 0 AND estimate <= 0
 		  AND EXTRACT(EPOCH FROM recorded_at - prev_at) < 300`)
 	if err != nil {
-		log.Infof("[TRAVEL_AVG] crossing query error: %v", err)
+		log.Errorf("[TRAVEL_AVG] crossing query error: %v", err)
 		return obs.Transient(fmt.Errorf("query travel crossings: %w", err))
 	}
 
@@ -78,7 +78,7 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 		var c crossingRow
 		if err := rows.Scan(&c.subRouteUID, &c.direction, &c.stopUID,
 			&c.hour, &c.dayOfWeek, &c.crossingAt); err != nil {
-			log.Infof("[TRAVEL_AVG] scan error: %v", err)
+			log.Errorf("[TRAVEL_AVG] scan error: %v", err)
 		} else {
 			crossings = append(crossings, c)
 		}
@@ -118,7 +118,7 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 			ORDER BY dep`,
 			key.subRouteUID, key.direction, mask)
 		if err != nil {
-			log.Infof("[TRAVEL_AVG] dep query error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
+			log.Errorf("[TRAVEL_AVG] dep query error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
 			depCache[key] = []time.Time{}
 			return nil
 		}
@@ -131,7 +131,7 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 			}
 		}
 		if err := drows.Err(); err != nil {
-			log.Infof("[TRAVEL_AVG] dep rows error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
+			log.Errorf("[TRAVEL_AVG] dep rows error sub=%s dir=%d: %v", key.subRouteUID, key.direction, err)
 			depCache[key] = []time.Time{}
 			return nil
 		}
@@ -197,7 +197,7 @@ func computeTravelAvg(ctx context.Context, db *pgxpool.Pool) error {
 			key.subRouteUID, key.direction, key.stopUID,
 			key.hour, key.dayOfWeek, median, len(vals))
 		if err != nil {
-			log.Infof("[TRAVEL_AVG] upsert error: %v", err)
+			log.Errorf("[TRAVEL_AVG] upsert error: %v", err)
 			return obs.Transient(fmt.Errorf("upsert travel average: %w", err))
 		} else {
 			upserted++

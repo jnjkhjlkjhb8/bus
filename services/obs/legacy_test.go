@@ -1,6 +1,7 @@
 package obs
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -36,6 +37,74 @@ func TestSlogCompatErrorfLogsAtErrorLevelWithoutExiting(t *testing.T) {
 		t.Fatalf("error level = %v, want %v", transport.events[0].Level, sentry.LevelError)
 	}
 }
+
+// Warnf/Warn/Error pin their slog level explicitly instead of inferring it
+// from message prose, unlike Logf/Infof. A call site that already knows a
+// condition is a handled skip (Warnf) or a real failure (Error) must not have
+// that severity second-guessed by keyword matching over the formatted text.
+func TestSlogCompatWarnfLogsAtWarnLevelRegardlessOfMessageText(t *testing.T) {
+	captured := &captureHandler{}
+	slog.SetDefault(slog.New(captured))
+	// The message text itself reads like a hard failure ("event=failed"), but
+	// the call site chose Warnf, so the emitted level must be Warn, not the
+	// Error a prose scan of "failed" would infer.
+	SlogCompat{}.Warnf("[TDX] action=fetch event=failed reason=%s", "rate_limited")
+	if len(captured.records) != 1 {
+		t.Fatalf("records = %d, want 1", len(captured.records))
+	}
+	if captured.records[0].Level != slog.LevelWarn {
+		t.Fatalf("level = %v, want %v", captured.records[0].Level, slog.LevelWarn)
+	}
+}
+
+func TestSlogCompatWarnLogsAtWarnLevel(t *testing.T) {
+	logger, transport := newDiscardLogger(t)
+	slog.SetDefault(logger)
+	SlogCompat{}.Warn("connection lost, auto-reconnecting")
+	if len(transport.events) != 0 {
+		t.Fatalf("Warn-level logs must not raise a Sentry error event, got %d", len(transport.events))
+	}
+}
+
+func TestSlogCompatErrorLogsAtErrorLevelWithoutExiting(t *testing.T) {
+	logger, transport := newDiscardLogger(t)
+	slog.SetDefault(logger)
+	SlogCompat{}.Error("router stopped", "reason", "serve failed")
+	if len(transport.events) != 1 {
+		t.Fatalf("error events = %d, want 1", len(transport.events))
+	}
+	if transport.events[0].Level != sentry.LevelError {
+		t.Fatalf("error level = %v, want %v", transport.events[0].Level, sentry.LevelError)
+	}
+}
+
+// Errorf must not skip Sentry reporting for a call site that includes the
+// legacy "[TAG] key=value" shape: parsing into attrs and pinning the level
+// explicitly are independent — explicit level selection must not silently
+// drop the structured tags call sites already rely on for triage.
+func TestSlogCompatErrorfParsesStructuredAttrsAtExplicitLevel(t *testing.T) {
+	logger, transport := newDiscardLogger(t)
+	slog.SetDefault(logger)
+	SlogCompat{}.Errorf("[MQTT] action=subscribe topic=%s err=%v", "bus/eta", errors.New("dial refused"))
+	if len(transport.events) != 1 {
+		t.Fatalf("expected 1 sentry event, got %d", len(transport.events))
+	}
+	if transport.events[0].Tags["service"] != "mqtt" || transport.events[0].Tags["topic"] != "bus/eta" {
+		t.Fatalf("unexpected tags %v", transport.events[0].Tags)
+	}
+}
+
+type captureHandler struct {
+	records []slog.Record
+}
+
+func (h *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	h.records = append(h.records, r)
+	return nil
+}
+func (h *captureHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *captureHandler) WithGroup(name string) slog.Handler       { return h }
 
 func TestLegacyLevel(t *testing.T) {
 	cases := []struct {

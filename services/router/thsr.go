@@ -155,12 +155,12 @@ func thsrTimetablePayload(ctx context.Context, db railDB, start, end string, dat
 		}
 		w, err := time.Parse(time.TimeOnly, seed.Starting_Time)
 		if err != nil {
-			log.Infof("parse time error: %v", err)
+			log.Errorf("parse time error: %v", err)
 			continue
 		}
 		t, err := time.Parse(time.TimeOnly, temp.Arrivaltime)
 		if err != nil {
-			log.Infof("parse time error: %v", err)
+			log.Errorf("parse time error: %v", err)
 			continue
 		}
 		duration := t.Sub(w)

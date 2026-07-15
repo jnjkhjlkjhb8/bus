@@ -56,7 +56,7 @@ func saveBikeAvailabilityHistory(ctx context.Context, db *pgxpool.Pool, rows [][
 	cols := []string{"station_uid", "available_rent", "available_return", "recorded_at"}
 	_, err := db.CopyFrom(ctx, pgx.Identifier{"bike_availability_history"}, cols, pgx.CopyFromRows(rows))
 	if err != nil {
-		log.Infof("[BIKE_HISTORY] copy error: %v rows=%d", err, len(rows))
+		log.Errorf("[BIKE_HISTORY] copy error: %v rows=%d", err, len(rows))
 	} else {
 		log.Infof("[BIKE_HISTORY] inserted %d rows", len(rows))
 	}
@@ -68,7 +68,7 @@ func saveBikeAvailabilityHistory(ctx context.Context, db *pgxpool.Pool, rows [][
 func cleanupBikeHistory(ctx context.Context, db *pgxpool.Pool) error {
 	tag, err := db.Exec(ctx, `DELETE FROM bike_availability_history WHERE recorded_at < NOW() - INTERVAL '30 days'`)
 	if err != nil {
-		log.Infof("[BIKE_HISTORY] cleanup error: %v", err)
+		log.Errorf("[BIKE_HISTORY] cleanup error: %v", err)
 		return obs.Transient(fmt.Errorf("cleanup bike history: %w", err))
 	}
 	log.Infof("[BIKE_HISTORY] cleanup deleted %d rows", tag.RowsAffected())

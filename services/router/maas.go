@@ -307,7 +307,7 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 		return nil, status.FromContextError(ctx.Err()).Err()
 	case completed := <-result:
 		if completed.Err != nil {
-			log.Infof("[MAAS] plan error: %v", completed.Err)
+			log.Errorf("[MAAS] plan error: %v", completed.Err)
 			if errors.Is(completed.Err, context.Canceled) || errors.Is(completed.Err, context.DeadlineExceeded) {
 				return nil, status.FromContextError(completed.Err).Err()
 			}
@@ -356,7 +356,7 @@ func (s *MaasServer) runSharedPlan(cacheKey string, req *pb.MaasPlanRequest) (*p
 		if contextErr := workCtx.Err(); contextErr != nil {
 			return nil, contextErr
 		}
-		log.Infof("[MAAS] cache set failed: %v", err)
+		log.Errorf("[MAAS] cache set failed: %v", err)
 	}
 	return response, nil
 }

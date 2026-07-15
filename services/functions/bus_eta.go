@@ -246,7 +246,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=city_start", city)
 	prefix := citymap[city]
 	if prefix == "" {
-		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_prefix", city)
+		log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_prefix", city)
 		return nil
 	}
 	generation, generationErr := j.sink.getString(ctx, shared.BusStaticGenerationKey(city))
@@ -260,13 +260,13 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 		var err error
 		mp, err = j.store.staticStops(ctx, prefix)
 		if err != nil || len(mp) <= 0 {
-			log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
+			log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
 			return err
 		}
 		storeBusStaticMapIn(&busStaticMapCache, prefix, mp, generation, j.now())
 	}
 	if len(mp) <= 0 {
-		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
+		log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
 		return nil
 	}
 	var etaURL string
@@ -277,7 +277,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	}
 	etaFetch, err := j.fetch(ctx, etaURL, "bus_EstimatedTimeOfArrival"+city)
 	if err != nil {
-		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_eta error=%v", city, err)
+		log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_eta error=%v", city, err)
 		return err
 	}
 	var eat []rawBusEsimated
@@ -309,7 +309,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	}
 	positionFetch, err := j.fetch(ctx, positionURL, "bus_RealTimeByFrequency"+city)
 	if err != nil {
-		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)
+		log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_position error=%v", city, err)
 		return err
 	}
 	var positionRaw []byte
@@ -634,7 +634,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	}
 	err = pipe.Exec()
 	if err != nil {
-		log.Infof("[BUS_ETA] action=Bus_eta city=%s event=redis_error error=%v station_count=%d route_count=%d eat_count=%d posit_count=%d", city, err, len(stations), len(routes), len(eat), len(posit))
+		log.Errorf("[BUS_ETA] action=Bus_eta city=%s event=redis_error error=%v station_count=%d route_count=%d eat_count=%d posit_count=%d", city, err, len(stations), len(routes), len(eat), len(posit))
 		return fmt.Errorf("publish bus realtime snapshot for %s: %w", city, err)
 	}
 	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=redis_success station_count=%d route_count=%d eat_count=%d posit_count=%d", city, len(stations), len(routes), len(eat), len(posit))

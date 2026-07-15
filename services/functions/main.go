@@ -61,7 +61,7 @@ func main() {
 	ingestDB = db
 	defer func(rc *redis.Client) {
 		if cerr := rc.Close(); cerr != nil {
-			log.Infof("[REDIS] action=close event=failed error=%v", cerr)
+			log.Errorf("[REDIS] action=close event=failed error=%v", cerr)
 		}
 	}(rc)
 	defer db.Close()
@@ -182,7 +182,7 @@ func runDailyWithRetry(parent context.Context, d, backoff time.Duration, job fun
 func runDaily(name string, d time.Duration, job func(context.Context) error) {
 	err := runDailyWithRetry(context.Background(), d, time.Minute, job)
 	if err != nil {
-		log.Infof("[crontab] action=%s event=failed error=%v", name, err)
+		log.Errorf("[crontab] action=%s event=failed error=%v", name, err)
 	}
 }
 
@@ -419,11 +419,11 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	if err := runBootBusDailyTimetable(
 		context.Background(), bootLoadRunner, rawTDXSource{pool: rawPool}, db, rc,
 	); err != nil {
-		log.Infof("[bus] action=bus_dailyroute event=error error=%v", err)
+		log.Errorf("[bus] action=bus_dailyroute event=error error=%v", err)
 	}
 	holidayCtx, holidayCancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
 	if err := loadHolidays(holidayCtx); err != nil {
-		log.Infof("[HOLIDAY] initial refresh failed; weekend/last-good fallback active: %v", err)
+		log.Warnf("[HOLIDAY] initial refresh failed; weekend/last-good fallback active: %v", err)
 	}
 	holidayCancel()
 	loadModel()
@@ -433,7 +433,7 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	// startup delay finite while avoiding a detached refresh goroutine.
 	weatherCtx, weatherCancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
 	if err := weatherSync(weatherCtx, rc); err != nil {
-		log.Infof("[WEATHER] initial sync failed; keeping last good Redis snapshot: %v", err)
+		log.Errorf("[WEATHER] initial sync failed; keeping last good Redis snapshot: %v", err)
 	}
 	weatherCancel()
 	// The legacy direct-fetch static jobs are gone: the ingestor lands raw_tdx at
@@ -452,14 +452,14 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		ctx, cancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
 		defer cancel()
 		if err := weatherSync(ctx, rc); err != nil {
-			log.Infof("[WEATHER] sync failed; keeping last good Redis snapshot: %v", err)
+			log.Errorf("[WEATHER] sync failed; keeping last good Redis snapshot: %v", err)
 		}
 	})
 	_, _ = r.AddFunc("@every 24h", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
 		defer cancel()
 		if err := loadHolidays(ctx); err != nil {
-			log.Infof("[HOLIDAY] refresh failed; keeping last good snapshot: %v", err)
+			log.Errorf("[HOLIDAY] refresh failed; keeping last good snapshot: %v", err)
 		}
 	})
 	_, _ = r.AddFunc("0 0 4 * * *", func() {
@@ -522,7 +522,7 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 			&temp.GroupName, &temp.SubRouteUID, &temp.RouteUID, &temp.SubRouteName, &temp.Destination, &temp.Direction, &temp.StopUID, &temp.StopSequence,
 			&temp.Lat, &temp.Lon)
 		if err != nil {
-			log.Infof("[BUS_STATIC] action=station_map event=scan_error error=%v", err)
+			log.Errorf("[BUS_STATIC] action=station_map event=scan_error error=%v", err)
 			continue
 		}
 		list = append(list, temp)

@@ -150,12 +150,12 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 		log.Infof("[BIKE_ETA] action=bike_eta city=%s event=city_start", city)
 		result, err := fetch(ctx, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
 		if err != nil {
-			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=api_error,error=%s", city, err)
+			log.Warnf("[BIKE_ETA] action=bike_eta city=%s event=skip reason=api_error,error=%s", city, err)
 			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s fetch: %w", city, err))
 			continue
 		}
 		if !result.Modified {
-			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=no updated", city)
+			log.Warnf("[BIKE_ETA] action=bike_eta city=%s event=skip reason=no updated", city)
 			continue
 		}
 		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
@@ -199,7 +199,7 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)
 			return nil
 		}); err != nil {
-			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=process_error error=%v", city, err)
+			log.Errorf("[BIKE_ETA] action=bike_eta city=%s event=process_error error=%v", city, err)
 			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s process: %w", city, err))
 		}
 	}

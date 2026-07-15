@@ -505,7 +505,7 @@ func processVectorDataset(
 // cutoff only after all queries, scans, embeddings, and batch writes succeed.
 func changeToVector(ctx context.Context, rc vectorRedis, db vectorDB, embedder embeddingClient) error {
 	if embedder == nil {
-		log.Infof("[vector] action=vector event=skip reason=embedding_disabled")
+		log.Warnf("[vector] action=vector event=skip reason=embedding_disabled")
 		return nil
 	}
 

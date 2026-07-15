@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -34,6 +35,14 @@ const (
 	httpJWKSRateLimit    = 120
 	httpSearchRateLimit  = 30
 	httpMetricsRateLimit = 60
+
+	// Bound every phase of an HTTP request/connection so a slow or hostile
+	// client (or a stalled network path) cannot hold a connection open
+	// indefinitely and exhaust the router's file descriptors or goroutines.
+	httpReadHeaderTimeout = 5 * time.Second
+	httpReadTimeout       = 10 * time.Second
+	httpWriteTimeout      = 15 * time.Second
+	httpIdleTimeout       = 60 * time.Second
 )
 
 type httpServerConfig struct {
@@ -152,7 +161,13 @@ func prepareHTTPServer(
 	log.Infof("[HTTP] RS256 key ready")
 	gin.SetMode(gin.ReleaseMode)
 	handlers := newTrackedHTTPHandler(newHTTPRouter(db, live, key, config))
-	server := &http.Server{Handler: handlers}
+	server := &http.Server{
+		Handler:           handlers,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
 	listener, err := listen("tcp", "0.0.0.0:8080")
 	if err != nil {
 		return preparedHTTPServer{}, fmt.Errorf("listen for HTTP: %w", err)
@@ -381,7 +396,51 @@ func loadOrGenerateKeyAt(keyFile string) (*rsa.PrivateKey, error) {
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
-	_ = os.WriteFile(keyFile, data, 0600)
+	if err := persistKeyAtomically(keyFile, data); err != nil {
+		return nil, fmt.Errorf("persist RSA key: %w", err)
+	}
 	log.Infof("[HTTP] generated new RSA key and persisted to %s", keyFile)
 	return key, nil
+}
+
+// persistKeyAtomically writes data to a temp file in keyFile's own directory,
+// fsyncs it, restricts it to owner-only 0600, and renames it into place.
+// Writing through a same-directory temp file plus rename means a concurrent
+// reader (or a crash mid-write) never observes a partial key; Sync forces the
+// bytes to durable storage before the rename makes them visible under
+// keyFile, and every step's error is returned rather than swallowed so a
+// failed persist regenerates loudly instead of silently invalidating every
+// client's PowerSync token on the next restart.
+func persistKeyAtomically(keyFile string, data []byte) error {
+	dir := filepath.Dir(keyFile)
+	tmp, err := os.CreateTemp(dir, filepath.Base(keyFile)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp key file: %w", err)
+	}
+	tmpName := tmp.Name()
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temp key file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temp key file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp key file: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0600); err != nil {
+		return fmt.Errorf("chmod temp key file: %w", err)
+	}
+	if err := os.Rename(tmpName, keyFile); err != nil {
+		return fmt.Errorf("rename temp key file into place: %w", err)
+	}
+	renamed = true
+	return nil
 }

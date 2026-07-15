@@ -773,12 +773,12 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 	log.Infof("[TRA_ETA] action=tra_eta event=start")
 	result, err := fetch(ctx, "/v2/Rail/TRA/LiveTrainDelay", "tra_delay")
 	if err != nil {
-		log.Infof("[TRA_ETA] action=tra_eta event=skip_delay reason=api_error error=%v", err)
+		log.Warnf("[TRA_ETA] action=tra_eta event=skip_delay reason=api_error error=%v", err)
 		return err
 	}
 	if !result.Modified {
 		// On a 304, boundFetch has already re-armed the delay keys' TTL.
-		log.Infof("[TRA_ETA] action=tra_eta event=skip_delay reason=no_update")
+		log.Warnf("[TRA_ETA] action=tra_eta event=skip_delay reason=no_update")
 		return nil
 	}
 	err = commitTDXFetch(result, func(dec *json.Decoder) error {
@@ -817,7 +817,7 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 		return nil
 	})
 	if err != nil {
-		log.Infof("[TRA_ETA] action=tra_eta event=process_error error=%v", err)
+		log.Errorf("[TRA_ETA] action=tra_eta event=process_error error=%v", err)
 		return err
 	}
 	log.Infof("[TRA_ETA] action=tra_eta event=complete")

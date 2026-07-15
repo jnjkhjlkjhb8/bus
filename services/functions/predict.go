@@ -87,7 +87,7 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 		GROUP BY b.sub_route_uid, b.direction`,
 		uids, dirs, todTime, dayBit)
 	if err != nil {
-		log.Infof("[MODEL] batchNextDepartures error: %v", err)
+		log.Errorf("[MODEL] batchNextDepartures error: %v", err)
 		return out
 	}
 	defer rows.Close()
@@ -110,7 +110,7 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Infof("[MODEL] batchNextDepartures rows error: %v", err)
+		log.Errorf("[MODEL] batchNextDepartures rows error: %v", err)
 	}
 	for k, v := range best {
 		out[k] = v.dep
@@ -134,7 +134,7 @@ func batchTravelAvg(ctx context.Context, db *pgxpool.Pool, uids []string, hour, 
 		  AND sub_route_uid = ANY($1::text[])`,
 		uids, hour, dayOfWeek)
 	if err != nil {
-		log.Infof("[MODEL] batchTravelAvg error: %v", err)
+		log.Errorf("[MODEL] batchTravelAvg error: %v", err)
 		return out
 	}
 	defer rows.Close()
@@ -147,7 +147,7 @@ func batchTravelAvg(ctx context.Context, db *pgxpool.Pool, uids []string, hour, 
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Infof("[MODEL] batchTravelAvg rows error: %v", err)
+		log.Errorf("[MODEL] batchTravelAvg rows error: %v", err)
 	}
 	return out
 }

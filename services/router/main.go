@@ -392,7 +392,7 @@ func run() error {
 		rc := shared.ConnectRedis()
 		runtime.addCleanup(func() {
 			if err := rc.Close(); err != nil {
-				log.Infof("[REDIS] action=close event=failed error=%v", err)
+				log.Errorf("[REDIS] action=close event=failed error=%v", err)
 			}
 		})
 		live := newLiveHubWithQueueSize(
@@ -415,7 +415,7 @@ func run() error {
 		maasCache := newRedisMaasCache(rc.Options())
 		runtime.addCleanup(func() {
 			if err := maasCache.Close(); err != nil {
-				log.Infof("[MAAS] action=cache_close event=failed error=%v", err)
+				log.Errorf("[MAAS] action=cache_close event=failed error=%v", err)
 			}
 		})
 		lis, err := net.Listen("tcp", "0.0.0.0:50051")

@@ -36,7 +36,7 @@ func saveBusEtaHistory(ctx context.Context, db *pgxpool.Pool, rows [][]interface
 	}
 	_, err := db.CopyFrom(ctx, pgx.Identifier{"bus_eta_history"}, cols, pgx.CopyFromRows(rows))
 	if err != nil {
-		log.Infof("[ETA_HISTORY] copy error: %v rows=%d", err, len(rows))
+		log.Errorf("[ETA_HISTORY] copy error: %v rows=%d", err, len(rows))
 	} else {
 		log.Infof("[ETA_HISTORY] inserted %d rows", len(rows))
 	}

@@ -215,13 +215,13 @@ func runLive(ctx context.Context, src liveSource, sink liveSink, specs []liveSpe
 func runLiveSpec(ctx context.Context, src liveSource, sink liveSink, spec liveSpec) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Infof("[LIVE] action=run event=panic job=%s recovered=%v", spec.key, r)
+			log.Errorf("[LIVE] action=run event=panic job=%s recovered=%v", spec.key, r)
 		}
 	}()
 	log.Infof("[LIVE] action=run event=start job=%s", spec.key)
 	fetch := bindFetch(src, sink, spec)
 	if err := spec.run(ctx, fetch, sink); err != nil {
-		log.Infof("[LIVE] action=run event=error job=%s error=%v", spec.key, err)
+		log.Errorf("[LIVE] action=run event=error job=%s error=%v", spec.key, err)
 		return
 	}
 	log.Infof("[LIVE] action=run event=complete job=%s", spec.key)
@@ -281,7 +281,7 @@ func (s redisLiveSink) refreshTTL(ctx context.Context, patterns []ttlPattern) er
 		for {
 			keys, next, err := rc.Scan(cursor, p.pattern, 500).Result()
 			if err != nil {
-				log.Infof("[LIVE] action=ttl_refresh event=scan_error pattern=%s error=%v", p.pattern, err)
+				log.Errorf("[LIVE] action=ttl_refresh event=scan_error pattern=%s error=%v", p.pattern, err)
 				refreshErr = errors.Join(refreshErr, fmt.Errorf("scan TTL pattern %s: %w", p.pattern, err))
 				break
 			}
@@ -291,7 +291,7 @@ func (s redisLiveSink) refreshTTL(ctx context.Context, patterns []ttlPattern) er
 					pipe.Expire(k, p.ttl)
 				}
 				if _, err := pipe.Exec(); err != nil {
-					log.Infof("[LIVE] action=ttl_refresh event=expire_error pattern=%s error=%v", p.pattern, err)
+					log.Errorf("[LIVE] action=ttl_refresh event=expire_error pattern=%s error=%v", p.pattern, err)
 					refreshErr = errors.Join(refreshErr, fmt.Errorf("expire TTL pattern %s: %w", p.pattern, err))
 					break
 				}

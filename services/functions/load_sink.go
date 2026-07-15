@@ -203,7 +203,7 @@ func runCopyUpsert(ctx context.Context, db loadTxBeginner, spec copyUpsertSpec, 
 	}
 	b, err := db.BeginLoadTx(ctx)
 	if err != nil {
-		log.Infof("[LOAD] action=copy_upsert dataset=%s event=begin_error error=%v", spec.key, err)
+		log.Errorf("[LOAD] action=copy_upsert dataset=%s event=begin_error error=%v", spec.key, err)
 		return fmt.Errorf("copy-upsert %s begin: %w", spec.key, err)
 	}
 	committed := false
@@ -219,24 +219,24 @@ func runCopyUpsert(ctx context.Context, db loadTxBeginner, spec copyUpsertSpec, 
 	}()
 	for index, st := range spec.preExec {
 		if _, err := b.Exec(ctx, st.sql, st.args...); err != nil {
-			log.Infof("[LOAD] action=copy_upsert dataset=%s event=pre_exec_error error=%v", spec.key, err)
+			log.Errorf("[LOAD] action=copy_upsert dataset=%s event=pre_exec_error error=%v", spec.key, err)
 			return fmt.Errorf("copy-upsert %s pre-exec %d: %w", spec.key, index, err)
 		}
 	}
 	if _, err := b.Exec(ctx, spec.createSQL); err != nil {
-		log.Infof("[LOAD] action=copy_upsert dataset=%s event=create_temp_error error=%v", spec.key, err)
+		log.Errorf("[LOAD] action=copy_upsert dataset=%s event=create_temp_error error=%v", spec.key, err)
 		return fmt.Errorf("copy-upsert %s create temp: %w", spec.key, err)
 	}
 	if _, err := b.CopyFrom(ctx, pgx.Identifier{spec.tempTable}, spec.copyCols, pgx.CopyFromRows(rows)); err != nil {
-		log.Infof("[LOAD] action=copy_upsert dataset=%s event=copyfrom_error error=%v", spec.key, err)
+		log.Errorf("[LOAD] action=copy_upsert dataset=%s event=copyfrom_error error=%v", spec.key, err)
 		return fmt.Errorf("copy-upsert %s COPY %s: %w", spec.key, spec.tempTable, err)
 	}
 	if _, err := b.Exec(ctx, spec.insertSQL); err != nil {
-		log.Infof("[LOAD] action=copy_upsert dataset=%s event=exec_error error=%v", spec.key, err)
+		log.Errorf("[LOAD] action=copy_upsert dataset=%s event=exec_error error=%v", spec.key, err)
 		return fmt.Errorf("copy-upsert %s final exec: %w", spec.key, err)
 	}
 	if err := b.Commit(ctx); err != nil {
-		log.Infof("[LOAD] action=copy_upsert dataset=%s event=commit_error error=%v", spec.key, err)
+		log.Errorf("[LOAD] action=copy_upsert dataset=%s event=commit_error error=%v", spec.key, err)
 		return fmt.Errorf("copy-upsert %s commit: %w", spec.key, err)
 	}
 	committed = true

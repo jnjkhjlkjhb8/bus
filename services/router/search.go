@@ -294,14 +294,14 @@ func handleSearch(db searchDB) gin.HandlerFunc {
 			var err error
 			trainResults, err = trainNumberSearch(ctx, q, db)
 			if err != nil {
-				log.Infof("[SEARCH] train number search failed: %v", err)
+				log.Errorf("[SEARCH] train number search failed: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
 				return
 			}
 		}
 		textResults, err := textSearch(ctx, q, limit, db)
 		if err != nil {
-			log.Infof("[SEARCH] error: %v", err)
+			log.Errorf("[SEARCH] error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
 			return
 		}
@@ -312,7 +312,7 @@ func handleSearch(db searchDB) gin.HandlerFunc {
 		if len(results) == 0 && shouldUseVector(q) {
 			vectorResults, err := vectorSearch(ctx, q, limit, db)
 			if err != nil {
-				log.Infof("[SEARCH] vector search failed: %v", err)
+				log.Errorf("[SEARCH] vector search failed: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
 				return
 			}
@@ -320,7 +320,7 @@ func handleSearch(db searchDB) gin.HandlerFunc {
 		}
 		expandedResults, err := expandStationRoutes(ctx, results, db)
 		if err != nil {
-			log.Infof("[SEARCH] route expansion failed: %v", err)
+			log.Errorf("[SEARCH] route expansion failed: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
 			return
 		}

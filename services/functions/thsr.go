@@ -41,12 +41,12 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 	log.Infof("[THSR_SEATS] action=thsr_seats event=start date=%s", date)
 	result, err := fetch(ctx, fmt.Sprintf("/v2/Rail/THSR/AvailableSeatStatus/Train/OD/TrainDate/%s", date), "thsr_availableseats")
 	if err != nil {
-		log.Infof("[THSR_SEATS] action=thsr_seats event=skip reason=api_error error=%v", err)
+		log.Warnf("[THSR_SEATS] action=thsr_seats event=skip reason=api_error error=%v", err)
 		return err
 	}
 	if !result.Modified {
 		// A 304 has already re-armed the cached snapshots' TTL via boundFetch.
-		log.Infof("[THSR_SEATS] action=thsr_seats event=skip reason=no_update")
+		log.Warnf("[THSR_SEATS] action=thsr_seats event=skip reason=no_update")
 		return nil
 	}
 	err = commitTDXFetch(result, func(dec *json.Decoder) error {
@@ -90,7 +90,7 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 		return nil
 	})
 	if err != nil {
-		log.Infof("[THSR_SEATS] action=thsr_seats event=process_error error=%v", err)
+		log.Errorf("[THSR_SEATS] action=thsr_seats event=process_error error=%v", err)
 		return err
 	}
 	return nil

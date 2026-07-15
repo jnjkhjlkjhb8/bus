@@ -294,7 +294,7 @@ func mrtServiceWindows(ctx context.Context, db *pgxpool.Pool) map[string][]mrtSe
 	}
 	rows, err := db.Query(ctx, `SELECT system, station_id, lineid, destinationstaionid, firsttraintime, lasttraintime FROM mrt_schedule`)
 	if err != nil {
-		log.Infof("[MRT_ETA] action=mrt_windows event=query_error error=%v", err)
+		log.Errorf("[MRT_ETA] action=mrt_windows event=query_error error=%v", err)
 		return mrtWindowCache.byKey // stale beats none; nil on first failure
 	}
 	defer rows.Close()
@@ -316,7 +316,7 @@ func mrtServiceWindows(ctx context.Context, db *pgxpool.Pool) map[string][]mrtSe
 		byKey[k] = append(byKey[k], mrtServiceWindow{first: first, last: last})
 	}
 	if err := rows.Err(); err != nil {
-		log.Infof("[MRT_ETA] action=mrt_windows event=scan_error error=%v", err)
+		log.Errorf("[MRT_ETA] action=mrt_windows event=scan_error error=%v", err)
 		return mrtWindowCache.byKey
 	}
 	mrtWindowCache.byKey = byKey
@@ -364,13 +364,13 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 		log.Infof("[MRT_ETA] action=mrt_eta system=%s event=system_start", system)
 		result, err := fetch(ctx, fmt.Sprintf("/v2/Rail/Metro/LiveBoard/%s", system), "mrt_LiveBoard"+system)
 		if err != nil {
-			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=skip reason=api_error", system)
+			log.Warnf("[MRT_ETA] action=mrt_eta system=%s event=skip reason=api_error", system)
 			jobErr = errors.Join(jobErr, fmt.Errorf("mrt %s fetch: %w", system, err))
 			continue
 		}
 		if !result.Modified {
 			// A 304 has already refreshed the cached arrivals' TTL via boundFetch.
-			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=skip reason=no updated", system)
+			log.Warnf("[MRT_ETA] action=mrt_eta system=%s event=skip reason=no updated", system)
 			continue
 		}
 		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
@@ -409,7 +409,7 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 			}
 			return nil
 		}); err != nil {
-			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=process_error error=%v", system, err)
+			log.Errorf("[MRT_ETA] action=mrt_eta system=%s event=process_error error=%v", system, err)
 			jobErr = errors.Join(jobErr, fmt.Errorf("mrt %s process: %w", system, err))
 		}
 		if filtered > 0 {

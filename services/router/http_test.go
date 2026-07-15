@@ -174,6 +174,75 @@ func TestLoadOrGenerateKeyRecoversFromCorruptFile(t *testing.T) {
 	}
 }
 
+// An http.Server with no timeouts lets a slow or hostile client hold a
+// connection open indefinitely (Slowloris-style resource exhaustion). The
+// server the router actually starts must bound every phase of a request.
+func TestPrepareHTTPServerSetsRequestTimeouts(t *testing.T) {
+	config := httpServerConfig{MetricsCredential: strings.Repeat("m", 32)}
+	runtime, err := prepareHTTPServer(nil, nil, config,
+		func() (*rsa.PrivateKey, error) { return testKey(t), nil },
+		func(string, string) (net.Listener, error) { return &fakeListener{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.server.ReadHeaderTimeout <= 0 {
+		t.Fatal("ReadHeaderTimeout must be positive")
+	}
+	if runtime.server.ReadTimeout <= 0 {
+		t.Fatal("ReadTimeout must be positive")
+	}
+	if runtime.server.WriteTimeout <= 0 {
+		t.Fatal("WriteTimeout must be positive")
+	}
+	if runtime.server.IdleTimeout <= 0 {
+		t.Fatal("IdleTimeout must be positive")
+	}
+}
+
+type fakeListener struct{}
+
+func (fakeListener) Accept() (net.Conn, error) { return nil, errors.New("not implemented") }
+func (fakeListener) Close() error              { return nil }
+func (fakeListener) Addr() net.Addr            { return &net.TCPAddr{} }
+
+// A key file whose parent directory disappears mid-run means the atomic
+// temp-write-rename cannot land; that failure must surface to the caller
+// instead of being swallowed, since a silently-unpersisted key regenerates on
+// every restart and invalidates every client's PowerSync token.
+func TestLoadOrGenerateKeyPropagatesPersistenceError(t *testing.T) {
+	keyFile := t.TempDir() + "/missing-dir/powersync_key.pem"
+	_, err := loadOrGenerateKeyAt(keyFile)
+	if err == nil {
+		t.Fatal("expected an error when the key directory does not exist")
+	}
+}
+
+// The persisted key file must land via the same-directory temp file, fsync,
+// chmod 0600, rename sequence: no stray temp file left behind, and 0600
+// permissions on the final file so the private key is never group/world
+// readable.
+func TestLoadOrGenerateKeyPersistsAtomicallyWithOwnerOnlyPermissions(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := dir + "/powersync_key.pem"
+	if _, err := loadOrGenerateKeyAt(keyFile); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Fatalf("key file permissions = %o, want 0600", perm)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("directory has %d entries, want exactly the persisted key file: %v", len(entries), entries)
+	}
+}
+
 func TestPrepareHTTPServerReturnsKeyAndListenErrorsSynchronously(t *testing.T) {
 	config := httpServerConfig{MetricsCredential: strings.Repeat("m", 32)}
 	keyErr := errors.New("key unavailable")

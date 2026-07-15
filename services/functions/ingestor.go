@@ -71,11 +71,11 @@ func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool
 			if err := runner.Run(context.Background(), func(ctx context.Context) error {
 				return ingestRaw(ctx, tdx)
 			}); err != nil {
-				log.Infof("[INGEST] action=boot event=failed error=%v", err)
+				log.Errorf("[INGEST] action=boot event=failed error=%v", err)
 			}
 		}()
 	} else {
-		log.Infoln("[INGEST] INGEST_ON_BOOT not set — boot run skipped, daily cron only")
+		log.Warn("[INGEST] INGEST_ON_BOOT not set — boot run skipped, daily cron only")
 	}
 }
 
@@ -173,9 +173,9 @@ func fetchRawWithVerifier(
 		})
 		if err != nil {
 			if errors.Is(err, errRawDump) {
-				log.Infof("[INGEST] url=%s event=raw_dump_error error=%v", url, err)
+				log.Errorf("[INGEST] url=%s event=raw_dump_error error=%v", url, err)
 			} else {
-				log.Infof("[INGEST] url=%s event=fetch_error error=%v", url, err)
+				log.Errorf("[INGEST] url=%s event=fetch_error error=%v", url, err)
 			}
 			return fmt.Errorf("fetch raw %s: %w", url, err)
 		}
@@ -183,17 +183,17 @@ func fetchRawWithVerifier(
 			return nil
 		}
 		if !mapped {
-			log.Infof("[INGEST] url=%s event=skip reason=not_modified", url)
+			log.Warnf("[INGEST] url=%s event=skip reason=not_modified", url)
 			return nil
 		}
 
 		err = verify(ctx, table, partCol, partVal, result.Marker, landingCycle)
 		if err == nil {
-			log.Infof("[INGEST] url=%s event=skip reason=not_modified", url)
+			log.Warnf("[INGEST] url=%s event=skip reason=not_modified", url)
 			return nil
 		}
 		if !errors.Is(err, errRawLandingStateMismatch) {
-			log.Infof("[INGEST] url=%s event=state_verify_error error=%v", url, err)
+			log.Errorf("[INGEST] url=%s event=state_verify_error error=%v", url, err)
 			return fmt.Errorf("verify raw %s: %w", url, err)
 		}
 		if attempt == 1 {

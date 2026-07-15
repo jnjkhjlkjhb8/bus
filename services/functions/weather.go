@@ -41,7 +41,7 @@ var countyToCity = map[string]string{
 func weatherSync(ctx context.Context, rc *redis.Client) error {
 	apiKey := os.Getenv("CWA_API_KEY")
 	if apiKey == "" {
-		log.Infof("[WEATHER] CWA_API_KEY not set, skipping")
+		log.Warnf("[WEATHER] CWA_API_KEY not set, skipping")
 		return nil
 	}
 	if rc == nil {

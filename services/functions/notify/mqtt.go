@@ -44,7 +44,7 @@ func StartMQTT(rc *redis.Client, dispatcher *Dispatcher) mqtt.Client {
 	username := os.Getenv("MQTT_USERNAME")
 	password := os.Getenv("MQTT_PASSWORD")
 	if clientID == "" || username == "" || password == "" {
-		log.Infoln("[MQTT] credentials not set — skipping MQTT subscriber")
+		log.Warn("[MQTT] credentials not set — skipping MQTT subscriber")
 		return nil
 	}
 	opts := mqtt.NewClientOptions().
@@ -62,13 +62,13 @@ func StartMQTT(rc *redis.Client, dispatcher *Dispatcher) mqtt.Client {
 			mqttsubscribeall(c, rc, dispatcher)
 		}).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
-			log.Infof("[MQTT] connection lost: %v", err)
+			log.Warnf("[MQTT] connection lost: %v", err)
 		})
 	c := mqtt.NewClient(opts)
 	tok := c.Connect()
 	tok.Wait()
 	if err := tok.Error(); err != nil {
-		log.Infof("[MQTT] initial connect failed: %v — will auto-retry", err)
+		log.Errorf("[MQTT] initial connect failed: %v — will auto-retry", err)
 	}
 	return c
 }
@@ -85,7 +85,7 @@ func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *Dispatcher) {
 		})
 		tok.Wait()
 		if err := tok.Error(); err != nil {
-			log.Infof("[MQTT] subscribe failed topic=%s err=%v", pattern, err)
+			log.Errorf("[MQTT] subscribe failed topic=%s err=%v", pattern, err)
 		} else {
 			log.Infof("[MQTT] subscribed topic=%s", pattern)
 		}
@@ -100,11 +100,11 @@ func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatche
 	key := shared.MQTTChannel(msg.Topic())
 	payload := canonicalInterCityBusPayload(msg.Topic(), msg.Payload())
 	if err := rc.Set(key, payload, ttl).Err(); err != nil {
-		log.Infof("[MQTT] redis set failed key=%s err=%v", key, err)
+		log.Errorf("[MQTT] redis set failed key=%s err=%v", key, err)
 		return
 	}
 	if err := rc.Publish(key, payload).Err(); err != nil {
-		log.Infof("[MQTT] redis publish failed key=%s err=%v", key, err)
+		log.Errorf("[MQTT] redis publish failed key=%s err=%v", key, err)
 	}
 	dispatchRouteAlerts(context.Background(), routeAlerts(msg.Topic(), msg.Payload()), func(key string, ttl time.Duration) bool {
 		ok, err := rc.SetNX("fcm:alert:"+key, "1", ttl).Result()

@@ -207,7 +207,7 @@ func traTimetablePayload(ctx context.Context, db railDB, start, end string, date
 		}
 		w, err := time.Parse(time.RFC3339, seed.Starting_Time)
 		if err != nil {
-			log.Infof("parse time error: %v", err)
+			log.Errorf("parse time error: %v", err)
 			continue
 		}
 		t := temp.Arrivaltime

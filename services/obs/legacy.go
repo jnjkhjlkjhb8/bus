@@ -27,9 +27,31 @@ func (SlogCompat) Infoln(args ...any) {
 	Logln(args...)
 }
 
-// Errorf logs a formatted message explicitly at Error level without exiting.
+// Errorf formats a legacy-shaped line, parses it into structured attributes
+// (the same "[TAG] key=value" parsing Logf uses), and logs it explicitly at
+// Error level. Unlike Logf the level is not inferred from message text — the
+// call site has already decided this is a failure.
 func (SlogCompat) Errorf(format string, args ...any) {
-	slog.Error(fmt.Sprintf(format, args...))
+	emitLegacyLogAt(slog.LevelError, fmt.Sprintf(format, args...))
+}
+
+// Error is the space-joined counterpart to Errorf, for call sites that build
+// their message from discrete values rather than a format string.
+func (SlogCompat) Error(args ...any) {
+	emitLegacyLogAt(slog.LevelError, strings.TrimSpace(fmt.Sprintln(args...)))
+}
+
+// Warnf formats a legacy-shaped line and logs it explicitly at Warn level. It
+// exists for call sites reporting a handled condition (a skip, fallback, or
+// retryable failure) that should stay out of Sentry's error stream without
+// depending on Logf's prose-based inference to land at the right level.
+func (SlogCompat) Warnf(format string, args ...any) {
+	emitLegacyLogAt(slog.LevelWarn, fmt.Sprintf(format, args...))
+}
+
+// Warn is the space-joined counterpart to Warnf.
+func (SlogCompat) Warn(args ...any) {
+	emitLegacyLogAt(slog.LevelWarn, strings.TrimSpace(fmt.Sprintln(args...)))
 }
 
 // Fatal logs the args at Error level and exits the process with status 1,
@@ -62,6 +84,16 @@ func Logln(args ...any) {
 func emitLegacyLog(line string) {
 	msg, attrs := legacyAttrs(line)
 	slog.Log(context.Background(), legacyLevel(attrs), msg, attrs...)
+}
+
+// emitLegacyLogAt parses line the same way emitLegacyLog does but logs at the
+// caller-supplied level instead of inferring one from message text. Explicit
+// severity methods (Warnf/Warn/Errorf/Error) route through this so call sites
+// that already know a condition's severity are not second-guessed by
+// legacyLevel's prose-pattern matching.
+func emitLegacyLogAt(level slog.Level, line string) {
+	msg, attrs := legacyAttrs(line)
+	slog.Log(context.Background(), level, msg, attrs...)
 }
 
 // transientErr reports whether an error string describes a self-healing

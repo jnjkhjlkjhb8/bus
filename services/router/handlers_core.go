@@ -54,7 +54,7 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 	}
 	data, err := busStaticPayload(ctx, s.db, route)
 	if err != nil {
-		log.Infof("[gRPC] action=bus_static event=query_failed error=%v", err)
+		log.Errorf("[gRPC] action=bus_static event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "route not found")
 	}
 	if s.cache != nil {
@@ -132,7 +132,7 @@ func (s *BusRouteserver) BusDailytable(in *pb.Bus_Ask_Route) (*pb.Resp_BusDailyT
 	route := in.SubRouteUID
 	val, err := s.rc.Get(shared.BusDailyTimetableKey(route)).Result()
 	if err != nil {
-		log.Infof("[gRPC] action=bus_dailytable event=query_failed error=%v", err)
+		log.Errorf("[gRPC] action=bus_dailytable event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "timetable not found")
 	}
 	tt, err := decodePayload([]byte(val), &pb.Bus_DailyTimetables{})
@@ -158,7 +158,7 @@ func (s *BusStationserver) Group(ctx context.Context, in *pb.Bus_Ask_StationGrou
 	}
 	header, err := busStationGroupHeader(ctx, s.db, groupUID)
 	if err != nil {
-		log.Infof("[gRPC] action=bus_station_group event=query_failed error=%v", err)
+		log.Errorf("[gRPC] action=bus_station_group event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "station group not found")
 	}
 	members, err := busStationGroupMembers(ctx, s.db, groupUID)
@@ -201,7 +201,7 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 	}
 	row, err := bikeStaticData(ctx, s.db, in.StationUID)
 	if err != nil {
-		log.Infof("[gRPC] action=bike_static event=query_failed error=%v", err)
+		log.Errorf("[gRPC] action=bike_static event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "bike station not found")
 	}
 	resp := &pb.BikeStatic{
@@ -500,7 +500,7 @@ func (s *Near_Server) FindNear(stream pb.Near_Station_Service_NearServer) error 
 			Origin: geoPoint{Lon: lon, Lat: lat}, RadiusMeters: int(r),
 		})
 		if err != nil {
-			log.Infof("[gRPC] action=nearby_discovery failed error=%v", err)
+			log.Errorf("[gRPC] action=nearby_discovery failed error=%v", err)
 			if errors.Is(err, ErrInvalidNearbyQuery) {
 				return status.Error(codes.InvalidArgument, err.Error())
 			}
@@ -510,7 +510,7 @@ func (s *Near_Server) FindNear(stream pb.Near_Station_Service_NearServer) error 
 			return err
 		}
 		if err := stream.Send(resp); err != nil {
-			log.Infof("[gRPC] action=send_newdata failed error=%v", err)
+			log.Errorf("[gRPC] action=send_newdata failed error=%v", err)
 			return err
 		}
 		log.Infof("[gRPC] action=send_newdata event=success")

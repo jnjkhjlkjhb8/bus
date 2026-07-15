@@ -157,7 +157,7 @@ func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.
 			if isContextError(result.queryError) {
 				return nil, result.queryError
 			}
-			log.Infof("[NEAR] action=query mode=%d event=failed error=%v", result.mode, result.queryError)
+			log.Errorf("[NEAR] action=query mode=%d event=failed error=%v", result.mode, result.queryError)
 			cancel()
 			return nil, ErrNearbyUnavailable
 		}

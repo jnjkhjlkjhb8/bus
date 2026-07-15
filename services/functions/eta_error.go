@@ -184,7 +184,7 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool) error {
 		) sub
 		WHERE pe.id = sub.id`)
 	if err != nil {
-		log.Infof("[ETA_ERROR] fill actuals error: %v", err)
+		log.Errorf("[ETA_ERROR] fill actuals error: %v", err)
 		return obs.Transient(fmt.Errorf("fill prediction actuals: %w", err))
 	}
 	log.Infof("[ETA_ERROR] filled %d actuals", tag.RowsAffected())
@@ -199,7 +199,7 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool) error {
 		GROUP BY sub_route_uid, source
 		ORDER BY sub_route_uid, source`)
 	if err != nil {
-		log.Infof("[ETA_ERROR] aggregate query error: %v", err)
+		log.Errorf("[ETA_ERROR] aggregate query error: %v", err)
 		return obs.Transient(fmt.Errorf("aggregate prediction error: %w", err))
 	}
 	defer rows.Close()
@@ -209,14 +209,14 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool) error {
 		var mae float64
 		var samples int
 		if err := rows.Scan(&sub, &source, &mae, &samples); err != nil {
-			log.Infof("[ETA_ERROR] scan error: %v", err)
+			log.Errorf("[ETA_ERROR] scan error: %v", err)
 			continue
 		}
 		log.Infof("[ETA_ERROR] sub_route=%s source=%s mae_seconds=%.1f samples=%d", sub, source, mae, samples)
 		count++
 	}
 	if err := rows.Err(); err != nil {
-		log.Infof("[ETA_ERROR] aggregate rows error: %v", err)
+		log.Errorf("[ETA_ERROR] aggregate rows error: %v", err)
 		return obs.Transient(fmt.Errorf("aggregate prediction error: %w", err))
 	}
 	log.Infof("[ETA_ERROR] complete groups=%d", count)
@@ -240,6 +240,6 @@ func recordPredictionErrors(ctx context.Context, db *pgxpool.Pool, preds []predi
 	cols := []string{"sub_route_uid", "direction", "stop_uid", "source", "predicted_at", "predicted_seconds"}
 	_, err := db.CopyFrom(ctx, pgx.Identifier{"bus_eta_prediction_error"}, cols, pgx.CopyFromRows(rows))
 	if err != nil {
-		log.Infof("[ETA_ERROR] insert predictions error: %v rows=%d", err, len(rows))
+		log.Errorf("[ETA_ERROR] insert predictions error: %v rows=%d", err, len(rows))
 	}
 }

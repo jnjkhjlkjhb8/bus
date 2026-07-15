@@ -81,10 +81,10 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 			if err := runner.Run(context.Background(), func(ctx context.Context) error {
 				return runLoad(ctx, src, db, rc, nil)
 			}); err != nil {
-				log.Infof("[LOAD] action=boot event=failed error=%v", err)
+				log.Errorf("[LOAD] action=boot event=failed error=%v", err)
 			}
 		}()
 	} else {
-		log.Infoln("[LOAD] action=boot event=skipped")
+		log.Warn("[LOAD] action=boot event=skipped")
 	}
 }
