@@ -13,6 +13,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -38,6 +39,8 @@ type MaasServer struct {
 type maasDB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
+
+const maasOSRMConcurrency = 4
 
 func shouldRetryMaas(resp *resty.Response, err error) bool {
 	if err != nil {
@@ -220,8 +223,17 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 	}
 	return convert(ctx, s.db, s.osrmClient, &apiResp), nil
 }
+
+type maasSectionRef struct {
+	index  int32
+	source tdxSection
+	target *pb.Section
+	route  *pb.Route
+}
+
 func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxAPIResponse) *pb.MaasPlanResponse {
 	out := &pb.MaasPlanResponse{}
+	refs := make([]maasSectionRef, 0)
 	for _, route := range api.Data.Routes {
 		pbRoute := &pb.Route{
 			TravelTime: route.TravelTime,
@@ -230,87 +242,251 @@ func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxA
 			Transfers:  route.Transfers,
 		}
 		for _, sec := range route.Sections {
-			pbSec := &pb.Section{
-				Type: sec.Type,
-				TravelSummary: &pb.Summary{
-					Duration: sec.TravelSummary.Duration,
-					Length:   sec.TravelSummary.Length,
-				},
-				Departure: &pb.Place{
-					Name: sec.Departure.Place.Name,
-					Type: sec.Departure.Place.Type,
-					Time: sec.Departure.Time,
-					Location: &pb.Location{
-						Lat: sec.Departure.Place.Location.Lat,
-						Lng: sec.Departure.Place.Location.Lng,
-					},
-				},
-				Arrival: &pb.Place{
-					Name: sec.Arrival.Place.Name,
-					Type: sec.Arrival.Place.Type,
-					Time: sec.Arrival.Time,
-					Location: &pb.Location{
-						Lat: sec.Arrival.Place.Location.Lat,
-						Lng: sec.Arrival.Place.Location.Lng,
-					},
-				},
-				NotificationIdentity: &pb.NotificationIdentity{},
-			}
-			if sec.Transport.Mode != "" {
-				pbSec.Transport = &pb.Transport{
-					Mode:       sec.Transport.Mode,
-					Name:       sec.Transport.Name,
-					ShortName:  sec.Transport.ShortName,
-					LongName:   sec.Transport.LongName,
-					Headsign:   sec.Transport.Headsign,
-					Category:   sec.Transport.Category,
-					RouteColor: sec.Transport.RouteColor,
-				}
-			}
-			for _, stop := range sec.IntermediateStops {
-				pbSec.IntermediateStops = append(pbSec.IntermediateStops, &pb.IntermediateStop{
-					Name:          stop.Departure.Place.Name,
-					DepartureTime: stop.Departure.Time,
-					Location: &pb.Location{
-						Lat: stop.Departure.Place.Location.Lat,
-						Lng: stop.Departure.Place.Location.Lng,
-					},
-				})
-			}
-			if sec.Agency.Name != "" {
-				pbSec.Agency = &pb.Agency{
-					AgencyId: sec.Agency.AgencyId,
-					Name:     sec.Agency.Name,
-					Website:  sec.Agency.Website,
-					Phone:    sec.Agency.Phone,
-				}
-			}
-			pbSec.NotificationIdentity = resolveBusNotificationIdentity(ctx, db, sec)
-
-			// Every walk section (first mile, transfer, last mile): TDX bakes a
-			// fixed walk-time budget into the duration and gives no geometry. One
-			// OSRM foot route replaces the duration with the real time and
-			// attaches the street geometry plus turn-by-turn steps. On any OSRM
-			// error or missing coordinate the TDX value is left untouched and the
-			// path and steps stay empty.
-			if isWalkSection(sec) {
-				if secs, path, steps, ok := walkRoute(ctx, osrmClient, pbSec.Departure.Location, pbSec.Arrival.Location); ok {
-					pbSec.TravelSummary.Duration = secs
-					pbSec.WalkPath = path
-					pbSec.WalkSteps = steps
-				}
-			}
-
-			if fare, ok := sectionFare(ctx, db, sec); ok {
-				pbSec.Fare = fare
-				pbRoute.TotalFare += fare
-			}
-
+			pbSec := convertSection(sec)
 			pbRoute.Sections = append(pbRoute.Sections, pbSec)
+			refs = append(refs, maasSectionRef{
+				index: int32(len(refs)), source: sec, target: pbSec, route: pbRoute,
+			})
 		}
 		out.Routes = append(out.Routes, pbRoute)
 	}
+	batchBusNotificationIdentities(ctx, db, refs)
+	batchSectionFares(ctx, db, refs)
+	enrichWalkSections(ctx, osrmClient, refs)
 	return out
+}
+
+func convertSection(sec tdxSection) *pb.Section {
+	pbSec := &pb.Section{
+		Type: sec.Type,
+		TravelSummary: &pb.Summary{
+			Duration: sec.TravelSummary.Duration,
+			Length:   sec.TravelSummary.Length,
+		},
+		Departure: &pb.Place{
+			Name: sec.Departure.Place.Name,
+			Type: sec.Departure.Place.Type,
+			Time: sec.Departure.Time,
+			Location: &pb.Location{
+				Lat: sec.Departure.Place.Location.Lat,
+				Lng: sec.Departure.Place.Location.Lng,
+			},
+		},
+		Arrival: &pb.Place{
+			Name: sec.Arrival.Place.Name,
+			Type: sec.Arrival.Place.Type,
+			Time: sec.Arrival.Time,
+			Location: &pb.Location{
+				Lat: sec.Arrival.Place.Location.Lat,
+				Lng: sec.Arrival.Place.Location.Lng,
+			},
+		},
+		NotificationIdentity: &pb.NotificationIdentity{},
+	}
+	if sec.Transport.Mode != "" {
+		pbSec.Transport = &pb.Transport{
+			Mode:       sec.Transport.Mode,
+			Name:       sec.Transport.Name,
+			ShortName:  sec.Transport.ShortName,
+			LongName:   sec.Transport.LongName,
+			Headsign:   sec.Transport.Headsign,
+			Category:   sec.Transport.Category,
+			RouteColor: sec.Transport.RouteColor,
+		}
+	}
+	for _, stop := range sec.IntermediateStops {
+		pbSec.IntermediateStops = append(pbSec.IntermediateStops, &pb.IntermediateStop{
+			Name:          stop.Departure.Place.Name,
+			DepartureTime: stop.Departure.Time,
+			Location: &pb.Location{
+				Lat: stop.Departure.Place.Location.Lat,
+				Lng: stop.Departure.Place.Location.Lng,
+			},
+		})
+	}
+	if sec.Agency.Name != "" {
+		pbSec.Agency = &pb.Agency{
+			AgencyId: sec.Agency.AgencyId,
+			Name:     sec.Agency.Name,
+			Website:  sec.Agency.Website,
+			Phone:    sec.Agency.Phone,
+		}
+	}
+	return pbSec
+}
+
+func batchBusNotificationIdentities(ctx context.Context, db maasDB, refs []maasSectionRef) {
+	if db == nil {
+		return
+	}
+	var indices []int32
+	var departures, arrivals, names, shortNames, numbers []string
+	byIndex := make(map[int32]*pb.Section)
+	for _, ref := range refs {
+		if !isBusMode(ref.source.Transport.Mode) {
+			continue
+		}
+		indices = append(indices, ref.index)
+		departures = append(departures, ref.source.Departure.Place.Name)
+		arrivals = append(arrivals, ref.source.Arrival.Place.Name)
+		names = append(names, ref.source.Transport.Name)
+		shortNames = append(shortNames, ref.source.Transport.ShortName)
+		numbers = append(numbers, ref.source.Transport.Number)
+		byIndex[ref.index] = ref.target
+	}
+	if len(indices) == 0 {
+		return
+	}
+	rows, err := db.Query(ctx, `
+		WITH input AS (
+			SELECT *
+			FROM unnest($1::integer[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
+				AS request(section_index, departure_name, arrival_name, route_name, sub_route_name, route_number)
+		), matches AS (
+			SELECT request.section_index, b.sub_route_uid, b.direction,
+				departure.stop_uid AS departure_stop_uid,
+				arrival.stop_uid AS arrival_stop_uid,
+				COUNT(*) OVER (PARTITION BY request.section_index) AS match_count,
+				ROW_NUMBER() OVER (
+					PARTITION BY request.section_index
+					ORDER BY b.sub_route_uid, b.direction, departure.stop_uid, arrival.stop_uid
+				) AS match_rank
+			FROM input request
+			JOIN bus_subroutes b ON true
+			JOIN bus_station_stop_map departure
+			  ON departure.sub_route_uid = b.sub_route_uid AND departure.direction = b.direction
+			JOIN bus_station_stop_map arrival
+			  ON arrival.sub_route_uid = b.sub_route_uid AND arrival.direction = b.direction
+			WHERE departure.station_name = request.departure_name
+			  AND arrival.station_name = request.arrival_name
+			  AND arrival.stop_sequence > departure.stop_sequence
+			  AND (
+				(request.route_name <> '' AND (b.route_name = request.route_name OR b.sub_route_name = request.route_name))
+				OR (request.sub_route_name <> '' AND (b.route_name = request.sub_route_name OR b.sub_route_name = request.sub_route_name))
+				OR (request.route_number <> '' AND (b.route_name = request.route_number OR b.sub_route_name = request.route_number))
+			  )
+		)
+		SELECT section_index, sub_route_uid, direction, departure_stop_uid, arrival_stop_uid, match_count
+		FROM matches
+		WHERE match_rank = 1`, indices, departures, arrivals, names, shortNames, numbers)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var index, direction int32
+		var routeKey, departureStopKey, arrivalStopKey string
+		var matchCount int64
+		if rows.Scan(&index, &routeKey, &direction, &departureStopKey, &arrivalStopKey, &matchCount) != nil {
+			return
+		}
+		if target := byIndex[index]; target != nil && matchCount == 1 {
+			target.NotificationIdentity = &pb.NotificationIdentity{
+				RouteType: "bus", RouteKey: routeKey, Direction: fmt.Sprint(direction),
+				DepartureStopKey: departureStopKey, ArrivalStopKey: arrivalStopKey, Supported: true,
+			}
+		}
+	}
+}
+
+func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
+	if db == nil {
+		return
+	}
+	var indices []int32
+	var modes, departures, arrivals []string
+	byIndex := make(map[int32]maasSectionRef)
+	for _, ref := range refs {
+		mode := ref.source.Transport.Mode
+		if !isMetroMode(mode) && !isRailMode(mode) && !isThsrMode(mode) {
+			continue
+		}
+		indices = append(indices, ref.index)
+		modes = append(modes, strings.ToLower(mode))
+		departures = append(departures, ref.source.Departure.Place.Name)
+		arrivals = append(arrivals, ref.source.Arrival.Place.Name)
+		byIndex[ref.index] = ref
+	}
+	if len(indices) == 0 {
+		return
+	}
+	rows, err := db.Query(ctx, `
+		WITH input AS (
+			SELECT *
+			FROM unnest($1::integer[], $2::text[], $3::text[], $4::text[])
+				AS request(section_index, mode, departure_name, arrival_name)
+		), fare_matches AS (
+			SELECT request.section_index, m.fare_nt AS fare
+			FROM input request
+			JOIN mrt_station origin ON origin.name = request.departure_name
+			JOIN mrt_station destination ON destination.name = request.arrival_name AND destination.system = origin.system
+			JOIN mrt_journey_matrix m ON m.from_station_id = origin.station_id
+				AND m.to_station_id = destination.station_id AND m.system = origin.system
+			WHERE request.mode IN ('subway', 'metro', 'mrt')
+			UNION ALL
+			SELECT request.section_index, f.price
+			FROM input request
+			JOIN thsr_stations origin ON origin.name = request.departure_name
+			JOIN thsr_stations destination ON destination.name = request.arrival_name
+			JOIN thsr_fares f ON f.origin_station_id = origin.station_id AND f.destination_station_id = destination.station_id
+			WHERE request.mode IN ('thsr', 'hsr') AND f.ticket_type = 1 AND f.fare_class = 1
+			UNION ALL
+			SELECT request.section_index, f.price
+			FROM input request
+			JOIN tra_stations origin ON origin.name = request.departure_name
+			JOIN tra_stations destination ON destination.name = request.arrival_name
+			JOIN tra_fares f ON f.origin_station_id = origin.station_id AND f.destination_station_id = destination.station_id
+			WHERE request.mode IN ('rail', 'tra', 'train')
+		)
+		SELECT section_index, MIN(fare)::integer AS fare
+		FROM fare_matches
+		WHERE fare > 0
+		GROUP BY section_index`, indices, modes, departures, arrivals)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var index, fare int32
+		if rows.Scan(&index, &fare) != nil {
+			return
+		}
+		if ref, ok := byIndex[index]; ok {
+			ref.target.Fare = fare
+			ref.route.TotalFare += fare
+		}
+	}
+}
+
+// enrichWalkSections treats OSRM as optional enrichment: cancellation, timeout,
+// and routing failures leave the TDX duration and empty geometry untouched. The
+// indexed section references preserve response order while errgroup bounds the
+// number of concurrent OSRM requests.
+func enrichWalkSections(ctx context.Context, osrmClient *resty.Client, refs []maasSectionRef) {
+	if osrmClient == nil {
+		return
+	}
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maasOSRMConcurrency)
+	for _, ref := range refs {
+		if !isWalkSection(ref.source) {
+			continue
+		}
+		ref := ref
+		group.Go(func() error {
+			if err := groupCtx.Err(); err != nil {
+				return err
+			}
+			secs, path, steps, ok := walkRoute(groupCtx, osrmClient, ref.target.Departure.Location, ref.target.Arrival.Location)
+			if ok {
+				ref.target.TravelSummary.Duration = secs
+				ref.target.WalkPath = path
+				ref.target.WalkSteps = steps
+			}
+			return nil
+		})
+	}
+	_ = group.Wait()
 }
 
 // isWalkSection reports whether a section is a pedestrian leg. Keyed off the
@@ -432,70 +608,6 @@ func walkInstruction(maneuverType, modifier, name string) string {
 	}
 }
 
-// sectionFare resolves the adult full fare (NT$) for one transit section by
-// looking up the origin/destination station pair (matched by station name) in
-// the mode's fare table: metro → mrt_journey_matrix, TRA → tra_fares, THSR →
-// thsr_fares. ok is false for non-rail modes, a missing db, a query error, or
-// no matching fare — the caller then leaves the fare unset (a missing fare must
-// never fail the plan).
-func sectionFare(ctx context.Context, db maasDB, sec tdxSection) (int32, bool) {
-	if db == nil {
-		return 0, false
-	}
-	from := sec.Departure.Place.Name
-	to := sec.Arrival.Place.Name
-	if from == "" || to == "" {
-		return 0, false
-	}
-	switch {
-	case isMetroMode(sec.Transport.Mode):
-		return queryFare(ctx, db, `
-			SELECT m.fare_nt
-			FROM mrt_journey_matrix m
-			JOIN mrt_station o ON o.station_id = m.from_station_id AND o.system = m.system
-			JOIN mrt_station d ON d.station_id = m.to_station_id AND d.system = m.system
-			WHERE o.name = $1 AND d.name = $2
-			LIMIT 1`, from, to)
-	case isThsrMode(sec.Transport.Mode):
-		return queryFare(ctx, db, `
-			SELECT f.price
-			FROM thsr_fares f
-			JOIN thsr_stations o ON o.station_id = f.origin_station_id
-			JOIN thsr_stations d ON d.station_id = f.destination_station_id
-			WHERE o.name = $1 AND d.name = $2 AND f.ticket_type = 1 AND f.fare_class = 1
-			ORDER BY f.price
-			LIMIT 1`, from, to)
-	case isRailMode(sec.Transport.Mode):
-		return queryFare(ctx, db, `
-			SELECT f.price
-			FROM tra_fares f
-			JOIN tra_stations o ON o.station_id = f.origin_station_id
-			JOIN tra_stations d ON d.station_id = f.destination_station_id
-			WHERE o.name = $1 AND d.name = $2
-			ORDER BY f.price
-			LIMIT 1`, from, to)
-	}
-	return 0, false
-}
-
-// queryFare runs a single-value fare query and reports whether a positive fare
-// was found. Any error or non-positive fare yields ok=false.
-func queryFare(ctx context.Context, db maasDB, q string, args ...any) (int32, bool) {
-	rows, err := db.Query(ctx, q, args...)
-	if err != nil {
-		return 0, false
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		return 0, false
-	}
-	var fare int32
-	if err := rows.Scan(&fare); err != nil || fare <= 0 {
-		return 0, false
-	}
-	return fare, true
-}
-
 // Rail-mode classifiers. TDX MaaS mode strings vary by dataset; these cover the
 // documented values (SUBWAY/METRO for metro, RAIL/TRA for conventional rail,
 // THSR/HSR for high-speed rail).
@@ -507,53 +619,6 @@ func isThsrMode(mode string) bool {
 }
 func isRailMode(mode string) bool {
 	return strings.EqualFold(mode, "rail") || strings.EqualFold(mode, "tra") || strings.EqualFold(mode, "train")
-}
-
-func resolveBusNotificationIdentity(ctx context.Context, db maasDB, sec tdxSection) *pb.NotificationIdentity {
-	identity := &pb.NotificationIdentity{}
-	if db == nil || !isBusMode(sec.Transport.Mode) {
-		return identity
-	}
-	rows, err := db.Query(ctx, `
-		SELECT b.sub_route_uid, b.direction, departure.stop_uid, arrival.stop_uid
-		FROM bus_subroutes b
-		JOIN bus_station_stop_map departure
-		  ON departure.sub_route_uid=b.sub_route_uid AND departure.direction=b.direction
-		JOIN bus_station_stop_map arrival
-		  ON arrival.sub_route_uid=b.sub_route_uid AND arrival.direction=b.direction
-		WHERE departure.station_name=$1
-		  AND arrival.station_name=$2
-		  AND arrival.stop_sequence>departure.stop_sequence
-		  AND (
-		    ($3<>'' AND (b.route_name=$3 OR b.sub_route_name=$3))
-		    OR ($4<>'' AND (b.route_name=$4 OR b.sub_route_name=$4))
-		    OR ($5<>'' AND (b.route_name=$5 OR b.sub_route_name=$5))
-		  )
-		LIMIT 2`,
-		sec.Departure.Place.Name,
-		sec.Arrival.Place.Name,
-		sec.Transport.Name,
-		sec.Transport.ShortName,
-		sec.Transport.Number,
-	)
-	if err != nil {
-		return identity
-	}
-	defer rows.Close()
-	var matches []*pb.NotificationIdentity
-	for rows.Next() {
-		match := &pb.NotificationIdentity{RouteType: "bus", Supported: true}
-		var direction int32
-		if rows.Scan(&match.RouteKey, &direction, &match.DepartureStopKey, &match.ArrivalStopKey) != nil {
-			return identity
-		}
-		match.Direction = fmt.Sprint(direction)
-		matches = append(matches, match)
-	}
-	if rows.Err() != nil || len(matches) != 1 {
-		return identity
-	}
-	return matches[0]
 }
 
 func isBusMode(mode string) bool {

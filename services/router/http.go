@@ -5,14 +5,18 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
+	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	sentrygin "github.com/getsentry/sentry-go/gin"
@@ -20,23 +24,100 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const (
+	metricsCredentialEnv = "ROUTER_METRICS_TOKEN"
+	httpTokenRateLimit   = 10
+	httpJWKSRateLimit    = 120
+	httpSearchRateLimit  = 30
+	httpMetricsRateLimit = 60
+)
+
 func startHTTPServer(db *pgxpool.Pool, live *liveHub) {
+	metricsCredential, err := metricsCredentialFromEnv()
+	if err != nil {
+		log.Fatalf("[HTTP] metrics credential configuration failed: %v", err)
+	}
 	key, err := loadOrGenerateKey()
 	if err != nil {
 		log.Fatalf("[HTTP] failed to load/generate RSA key: %v", err)
 	}
 	log.Infof("[HTTP] RS256 key ready")
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery())
-	r.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
-	r.GET("/api/token/powersync", handleToken(key))
-	r.GET("/api/.well-known/jwks.json", handleJWKS(key))
-	r.GET("/api/search", handleSearch(db))
-	r.GET("/metrics", handleMetrics(live))
+	r := newHTTPRouter(db, live, key, metricsCredential)
 	log.Infof("[HTTP] server running on 0.0.0.0:8080")
 	if err := r.Run("0.0.0.0:8080"); err != nil {
 		log.Fatalf("[HTTP] server failed: %v", err)
+	}
+}
+
+func newHTTPRouter(db *pgxpool.Pool, live *liveHub, key *rsa.PrivateKey, metricsCredential string) *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Logger(), gin.Recovery())
+	r.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
+	limiter := newRateLimiter()
+	r.GET("/api/token/powersync",
+		httpRateLimit(limiter, "GET /api/token/powersync", httpTokenRateLimit, time.Minute),
+		handleToken(key))
+	r.GET("/api/.well-known/jwks.json",
+		httpRateLimit(limiter, "GET /api/.well-known/jwks.json", httpJWKSRateLimit, time.Minute),
+		handleJWKS(key))
+	r.GET("/api/search",
+		httpRateLimit(limiter, "GET /api/search", httpSearchRateLimit, time.Second),
+		handleSearch(db))
+	r.GET("/metrics",
+		httpRateLimit(limiter, "GET /metrics", httpMetricsRateLimit, time.Minute),
+		requireMetricsCredential(metricsCredential),
+		handleMetrics(live))
+	return r
+}
+
+func httpRateLimit(limiter *rateLimiter, scope string, limit int, window time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		caller := c.Request.RemoteAddr
+		if host, _, err := net.SplitHostPort(caller); err == nil {
+			caller = host
+		}
+		if caller == "" {
+			caller = "unknown"
+		}
+		if !limiter.allow(scope, caller, limit, window) {
+			c.Header("Retry-After", fmt.Sprint(max(1, int(window/time.Second))))
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
+			return
+		}
+		c.Next()
+	}
+}
+
+func metricsCredentialFromEnv() (string, error) {
+	credential := strings.TrimSpace(os.Getenv(metricsCredentialEnv))
+	if len(credential) < 32 {
+		return "", fmt.Errorf("%s must be configured with at least 32 characters", metricsCredentialEnv)
+	}
+	return credential, nil
+}
+
+// requireMetricsCredential accepts the credential only in the Authorization
+// header, keeping it out of URLs and access logs. Hashing both values before the
+// constant-time comparison avoids leaking the configured credential length.
+func requireMetricsCredential(expected string) gin.HandlerFunc {
+	expectedHash := sha256.Sum256([]byte(expected))
+	return func(c *gin.Context) {
+		const prefix = "Bearer "
+		header := c.GetHeader("Authorization")
+		provided := ""
+		if strings.HasPrefix(header, prefix) {
+			provided = strings.TrimPrefix(header, prefix)
+		}
+		providedHash := sha256.Sum256([]byte(provided))
+		if provided == "" || subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) != 1 {
+			c.Header("Cache-Control", "no-store")
+			c.Header("WWW-Authenticate", "Bearer")
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.Next()
 	}
 }
 

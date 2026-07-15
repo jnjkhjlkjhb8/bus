@@ -192,3 +192,72 @@ func TestHandleMetricsWritesLiveHubCounters(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPRoutesUseIndependentRateBuckets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), strings.Repeat("m", 32))
+
+	for requestNumber := 1; requestNumber <= httpTokenRateLimit+1; requestNumber++ {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/token/powersync", nil)
+		router.ServeHTTP(response, request)
+		want := http.StatusOK
+		if requestNumber > httpTokenRateLimit {
+			want = http.StatusTooManyRequests
+		}
+		if response.Code != want {
+			t.Fatalf("token request %d status = %d, want %d", requestNumber, response.Code, want)
+		}
+	}
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/.well-known/jwks.json", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("JWKS route consumed token-route quota: status=%d", response.Code)
+	}
+}
+
+func TestMetricsRequiresConfiguredCredential(t *testing.T) {
+	t.Setenv(metricsCredentialEnv, "")
+	if _, err := metricsCredentialFromEnv(); err == nil {
+		t.Fatal("empty metrics credential was accepted")
+	}
+	t.Setenv(metricsCredentialEnv, "too-short")
+	if _, err := metricsCredentialFromEnv(); err == nil {
+		t.Fatal("short metrics credential was accepted")
+	}
+
+	credential := strings.Repeat("s", 32)
+	t.Setenv(metricsCredentialEnv, credential)
+	loaded, err := metricsCredentialFromEnv()
+	if err != nil || loaded != credential {
+		t.Fatalf("metricsCredentialFromEnv() = (%q, %v)", loaded, err)
+	}
+
+	gin.SetMode(gin.TestMode)
+	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), loaded)
+	for _, test := range []struct {
+		name          string
+		authorization string
+		want          int
+	}{
+		{name: "missing", want: http.StatusUnauthorized},
+		{name: "wrong", authorization: "Bearer " + strings.Repeat("x", 32), want: http.StatusUnauthorized},
+		{name: "valid", authorization: "Bearer " + credential, want: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/metrics?token="+credential, nil)
+			if test.authorization != "" {
+				request.Header.Set("Authorization", test.authorization)
+			}
+			router.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status = %d, want %d; body=%q", response.Code, test.want, response.Body.String())
+			}
+			if test.want != http.StatusOK && strings.Contains(response.Body.String(), "router_goroutines") {
+				t.Fatal("unauthorized response disclosed metrics")
+			}
+		})
+	}
+}

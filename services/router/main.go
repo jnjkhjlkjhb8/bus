@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -141,34 +142,58 @@ type Near_Server struct {
 }
 
 type rateLimiter struct {
-	mu       sync.Mutex
-	counts   map[string]int
-	windowAt time.Time
+	mu          sync.Mutex
+	buckets     map[string]rateBucket
+	nextCleanup time.Time
+	now         func() time.Time
+}
+
+type rateBucket struct {
+	count     int
+	expiresAt time.Time
 }
 
 func newRateLimiter() *rateLimiter {
 	return &rateLimiter{
-		counts:   make(map[string]int, 128),
-		windowAt: time.Now(),
+		buckets: make(map[string]rateBucket, 128),
+		now:     time.Now,
 	}
 }
 
-func (r *rateLimiter) allow(ip string, limit int, window time.Duration) bool {
+func (r *rateLimiter) allow(scope, caller string, limit int, window time.Duration) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	now := time.Now()
-	if now.Sub(r.windowAt) >= window {
-		r.windowAt = now
-		for k := range r.counts {
-			delete(r.counts, k)
+	now := r.now()
+	if r.nextCleanup.IsZero() || !now.Before(r.nextCleanup) {
+		r.nextCleanup = time.Time{}
+		for key, bucket := range r.buckets {
+			if !now.Before(bucket.expiresAt) {
+				delete(r.buckets, key)
+				continue
+			}
+			if r.nextCleanup.IsZero() || bucket.expiresAt.Before(r.nextCleanup) {
+				r.nextCleanup = bucket.expiresAt
+			}
 		}
 	}
-	r.counts[ip]++
-	return r.counts[ip] <= limit
+	key := scope + "\x00" + caller
+	bucket, ok := r.buckets[key]
+	if !ok || !now.Before(bucket.expiresAt) {
+		bucket = rateBucket{expiresAt: now.Add(window)}
+	}
+	if r.nextCleanup.IsZero() || bucket.expiresAt.Before(r.nextCleanup) {
+		r.nextCleanup = bucket.expiresAt
+	}
+	if bucket.count >= limit {
+		return false
+	}
+	bucket.count++
+	r.buckets[key] = bucket
+	return true
 }
 func rateLimitInterceptor(rl *rateLimiter, limit int, window time.Duration) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if !allowRequest(ctx, rl, limit, window) {
+		if !allowRequest(ctx, rl, info.FullMethod, limit, window) {
 			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
 		}
 		return handler(ctx, req)
@@ -176,13 +201,18 @@ func rateLimitInterceptor(rl *rateLimiter, limit int, window time.Duration) grpc
 }
 func rateLimitStreamInterceptor(rl *rateLimiter, limit int, window time.Duration) grpc.StreamServerInterceptor {
 	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if !allowRequest(ss.Context(), rl, limit, window) {
+		if !allowRequest(ss.Context(), rl, info.FullMethod, limit, window) {
 			return status.Error(codes.ResourceExhausted, "rate limit exceeded")
 		}
 		return handler(srv, ss)
 	}
 }
-func allowRequest(ctx context.Context, rl *rateLimiter, limit int, window time.Duration) bool {
+func allowRequest(ctx context.Context, rl *rateLimiter, scope string, limit int, window time.Duration) bool {
+	if strings.HasPrefix(scope, "/Firebase_Service/") {
+		if installID, ok := installationCallerID(ctx); ok {
+			return rl.allow(scope, "install:"+installID, limit, window)
+		}
+	}
 	peerInfo, ok := peer.FromContext(ctx)
 	if !ok || peerInfo.Addr == nil {
 		return true
@@ -192,7 +222,52 @@ func allowRequest(ctx context.Context, rl *rateLimiter, limit int, window time.D
 	if err != nil {
 		host = addr
 	}
-	return rl.allow(host, limit, window)
+	return rl.allow(scope, host, limit, window)
+}
+
+type maasResourceConfig struct {
+	RateLimit     int
+	RateWindow    time.Duration
+	MaxConcurrent int
+	Timeout       time.Duration
+}
+
+var defaultMaasResourceConfig = maasResourceConfig{
+	RateLimit:     5,
+	RateWindow:    time.Minute,
+	MaxConcurrent: 4,
+	Timeout:       20 * time.Second,
+}
+
+// maasResourceInterceptor contains the external TDX quota proxy independently
+// from unrelated gRPC methods. It rejects excess concurrent work immediately
+// and applies a server deadline even when the caller did not set one.
+func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.UnaryServerInterceptor {
+	concurrent := make(chan struct{}, config.MaxConcurrent)
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		if info.FullMethod != pb.MaasService_Plan_FullMethodName {
+			return handler(ctx, req)
+		}
+		if !allowRequest(ctx, rl, info.FullMethod, config.RateLimit, config.RateWindow) {
+			return nil, status.Error(codes.ResourceExhausted, "MaaS rate limit exceeded")
+		}
+		select {
+		case concurrent <- struct{}{}:
+			defer func() { <-concurrent }()
+		case <-ctx.Done():
+			return nil, status.FromContextError(ctx.Err()).Err()
+		default:
+			return nil, status.Error(codes.ResourceExhausted, "MaaS concurrency limit exceeded")
+		}
+
+		limitedCtx, cancel := context.WithTimeout(ctx, config.Timeout)
+		defer cancel()
+		response, err := handler(limitedCtx, req)
+		if limitedCtx.Err() != nil {
+			return nil, status.FromContextError(limitedCtx.Err()).Err()
+		}
+		return response, err
+	}
 }
 
 func main() {
@@ -234,6 +309,7 @@ func main() {
 		grpc.ChainUnaryInterceptor(
 			obs.UnaryInterceptor(),
 			rateLimitInterceptor(rl, 30, time.Second),
+			maasResourceInterceptor(newRateLimiter(), defaultMaasResourceConfig),
 			appCheckUnaryInterceptor(appCheckVerifier, enforceAppCheck),
 		),
 		grpc.ChainStreamInterceptor(

@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -137,153 +139,69 @@ func TestMaasTimeParam(t *testing.T) {
 	})
 }
 
-func TestResolveBusNotificationIdentityUnique(t *testing.T) {
+func TestConvertBatchesIdentityAndFareQueries(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	db.ExpectQuery("FROM bus_subroutes").
-		WithArgs("台北車站", "西門站", "307", "307", "307").
-		WillReturnRows(pgxmock.NewRows([]string{"sub_route_uid", "direction", "departure_stop_uid", "arrival_stop_uid"}).
-			AddRow("TPE3070", int32(0), "TPE100", "TPE200"))
 
-	got := resolveBusNotificationIdentity(context.Background(), db, tdxSection{
-		Departure: tdxPlaceInfo{Place: tdxPlace{Name: "台北車站"}},
-		Arrival:   tdxPlaceInfo{Place: tdxPlace{Name: "西門站"}},
-		Transport: tdxTransport{Mode: "HighwayBus", Name: "307", ShortName: "307", Number: "307"},
-	})
+	db.ExpectQuery(`(?s)WITH input AS.*bus_station_stop_map`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"section_index", "sub_route_uid", "direction", "departure_stop_uid", "arrival_stop_uid", "match_count",
+		}).
+			AddRow(int32(0), "BUS-1", int32(0), "STOP-A", "STOP-B", int64(1)).
+			AddRow(int32(2), "BUS-2", int32(1), "STOP-C", "STOP-D", int64(2)))
+	db.ExpectQuery(`(?s)WITH input AS.*mrt_journey_matrix`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"section_index", "fare"}).
+			AddRow(int32(1), int32(25)).
+			AddRow(int32(4), int32(41)).
+			AddRow(int32(5), int32(700)).
+			AddRow(int32(6), int32(30)))
 
-	want := &pb.NotificationIdentity{
-		RouteType:        "bus",
-		RouteKey:         "TPE3070",
-		Direction:        "0",
-		DepartureStopKey: "TPE100",
-		ArrivalStopKey:   "TPE200",
-		Supported:        true,
+	section := func(mode, name, from, to string) tdxSection {
+		return tdxSection{
+			Type:      "transit",
+			Transport: tdxTransport{Mode: mode, Name: name, ShortName: name},
+			Departure: tdxPlaceInfo{Place: tdxPlace{Name: from}},
+			Arrival:   tdxPlaceInfo{Place: tdxPlace{Name: to}},
+		}
 	}
-	if got.String() != want.String() {
-		t.Fatalf("got %v want %v", got, want)
-	}
+	api := &tdxAPIResponse{}
+	api.Data.Routes = []tdxRoute{{Sections: []tdxSection{
+		section("BUS", "1", "A", "B"),
+		section("MRT", "", "台北", "西門"),
+		section("HighwayBus", "2", "C", "D"),
+		section("BUS", "3", "E", "F"),
+		section("TRA", "", "台北", "台中"),
+		section("THSR", "", "台北", "左營"),
+		section("SUBWAY", "", "西門", "龍山寺"),
+	}}}
+
+	out := convert(context.Background(), db, nil, api)
 	if err := db.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("database queries were not batched to a constant count: %v", err)
 	}
-}
-func TestResolveBusNotificationIdentityAmbiguous(t *testing.T) {
-	db, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
+	sections := out.GetRoutes()[0].GetSections()
+	if got := sections[0].GetNotificationIdentity().GetRouteKey(); got != "BUS-1" {
+		t.Fatalf("first bus route key = %q, want BUS-1", got)
 	}
-	defer db.Close()
-	db.ExpectQuery("FROM bus_subroutes").
-		WithArgs("台北車站", "西門站", "307", "307", "").
-		WillReturnRows(pgxmock.NewRows([]string{"sub_route_uid", "direction", "departure_stop_uid", "arrival_stop_uid"}).
-			AddRow("TPE3070", int32(0), "TPE100", "TPE200").
-			AddRow("NWT3070", int32(0), "NWT100", "NWT200"))
-
-	got := resolveBusNotificationIdentity(context.Background(), db, tdxSection{
-		Departure: tdxPlaceInfo{Place: tdxPlace{Name: "台北車站"}},
-		Arrival:   tdxPlaceInfo{Place: tdxPlace{Name: "西門站"}},
-		Transport: tdxTransport{Mode: "BUS", Name: "307", ShortName: "307"},
-	})
-	if got.GetSupported() {
-		t.Fatalf("ambiguous match must be unsupported: %v", got)
+	if sections[2].GetNotificationIdentity().GetSupported() {
+		t.Fatalf("ambiguous second bus identity must be unsupported: %v", sections[2].GetNotificationIdentity())
 	}
-}
-
-func TestResolveBusNotificationIdentityNoMatchAndNonBus(t *testing.T) {
-	db, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
+	if sections[3].GetNotificationIdentity().GetSupported() {
+		t.Fatalf("unmatched third bus identity must be unsupported: %v", sections[3].GetNotificationIdentity())
 	}
-	defer db.Close()
-	db.ExpectQuery("FROM bus_subroutes").
-		WithArgs("不存在", "西門站", "307", "", "").
-		WillReturnRows(pgxmock.NewRows([]string{"sub_route_uid", "direction", "departure_stop_uid", "arrival_stop_uid"}))
-
-	got := resolveBusNotificationIdentity(context.Background(), db, tdxSection{
-		Departure: tdxPlaceInfo{Place: tdxPlace{Name: "不存在"}},
-		Arrival:   tdxPlaceInfo{Place: tdxPlace{Name: "西門站"}},
-		Transport: tdxTransport{Mode: "BUS", Name: "307"},
-	})
-	if got.GetSupported() {
-		t.Fatalf("no match must be unsupported: %v", got)
+	wantFares := map[int]int32{1: 25, 4: 41, 5: 700, 6: 30}
+	for index, want := range wantFares {
+		if got := sections[index].GetFare(); got != want {
+			t.Fatalf("section %d fare = %d, want %d", index, got, want)
+		}
 	}
-
-	got = resolveBusNotificationIdentity(context.Background(), db, tdxSection{
-		Transport: tdxTransport{Mode: "MRT", Name: "板南線"},
-	})
-	if got.GetSupported() {
-		t.Fatalf("non-bus mode must be unsupported: %v", got)
-	}
-}
-
-func TestSectionFareMetroTraThsr(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		mode  string
-		query string
-		fare  int32
-	}{
-		{"metro", "SUBWAY", "FROM mrt_journey_matrix", 25},
-		{"tra", "RAIL", "FROM tra_fares", 41},
-		{"thsr", "THSR", "FROM thsr_fares", 700},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			db, err := pgxmock.NewPool()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			db.ExpectQuery(tc.query).
-				WithArgs("台北", "台中").
-				WillReturnRows(pgxmock.NewRows([]string{"fare"}).AddRow(tc.fare))
-
-			sec := tdxSection{
-				Departure: tdxPlaceInfo{Place: tdxPlace{Name: "台北"}},
-				Arrival:   tdxPlaceInfo{Place: tdxPlace{Name: "台中"}},
-				Transport: tdxTransport{Mode: tc.mode},
-			}
-			got, ok := sectionFare(context.Background(), db, sec)
-			if !ok || got != tc.fare {
-				t.Fatalf("got=%d ok=%v want=%d", got, ok, tc.fare)
-			}
-			if err := db.ExpectationsWereMet(); err != nil {
-				t.Fatal(err)
-			}
-		})
-	}
-}
-
-func TestSectionFareMissingLeavesUnset(t *testing.T) {
-	db, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	// Non-rail mode: no query is issued and the fare stays unset.
-	if fare, ok := sectionFare(context.Background(), db, tdxSection{
-		Departure: tdxPlaceInfo{Place: tdxPlace{Name: "A"}},
-		Arrival:   tdxPlaceInfo{Place: tdxPlace{Name: "B"}},
-		Transport: tdxTransport{Mode: "BUS"},
-	}); ok || fare != 0 {
-		t.Fatalf("bus mode must not resolve a fare: fare=%d ok=%v", fare, ok)
-	}
-
-	// Rail mode with no matching row: fare stays unset, plan is not failed.
-	db.ExpectQuery("FROM tra_fares").
-		WithArgs("A", "B").
-		WillReturnRows(pgxmock.NewRows([]string{"price"}))
-	if fare, ok := sectionFare(context.Background(), db, tdxSection{
-		Departure: tdxPlaceInfo{Place: tdxPlace{Name: "A"}},
-		Arrival:   tdxPlaceInfo{Place: tdxPlace{Name: "B"}},
-		Transport: tdxTransport{Mode: "TRA"},
-	}); ok || fare != 0 {
-		t.Fatalf("missing fare must be unset: fare=%d ok=%v", fare, ok)
-	}
-	if err := db.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
+	if got := out.GetRoutes()[0].GetTotalFare(); got != 796 {
+		t.Fatalf("total fare = %d, want 796", got)
 	}
 }
 
@@ -401,6 +319,57 @@ func TestConvertWalkRouteFailureLeavesSectionUntouched(t *testing.T) {
 	if len(walk.WalkPath) != 0 || len(walk.WalkSteps) != 0 {
 		t.Fatalf("failed OSRM must leave path/steps empty: path=%d steps=%d",
 			len(walk.WalkPath), len(walk.WalkSteps))
+	}
+}
+
+func TestConvertWalkRoutesAreBoundedConcurrentAndOrderStable(t *testing.T) {
+	const walkCount = 9
+	var active, peak int32
+	client := resty.New()
+	client.SetTransport(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		current := atomic.AddInt32(&active, 1)
+		defer atomic.AddInt32(&active, -1)
+		for {
+			observed := atomic.LoadInt32(&peak)
+			if current <= observed || atomic.CompareAndSwapInt32(&peak, observed, current) {
+				break
+			}
+		}
+		var fromLng float64
+		_, _ = fmt.Sscanf(strings.TrimPrefix(request.URL.Path, "/route/v1/foot/"), "%f,", &fromLng)
+		index := int(math.Round((fromLng - 121) * 100))
+		time.Sleep(time.Duration(walkCount-index) * 5 * time.Millisecond)
+		body := fmt.Sprintf(`{"code":"Ok","routes":[{"duration":%d,"geometry":{"coordinates":[[%f,25],[%f,25.01]]},"legs":[]}]}`,
+			100+index, fromLng, fromLng+0.001)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	}))
+
+	api := &tdxAPIResponse{}
+	sections := make([]tdxSection, walkCount)
+	for index := range sections {
+		lng := 121 + float64(index)/100
+		sections[index] = tdxSection{
+			Type:          "pedestrian",
+			Transport:     tdxTransport{Mode: "pedestrian"},
+			TravelSummary: tdxSummary{Duration: 600},
+			Departure:     tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25, Lng: lng}}},
+			Arrival:       tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.01, Lng: lng + 0.001}}},
+		}
+	}
+	api.Data.Routes = []tdxRoute{{Sections: sections}}
+
+	out := convert(context.Background(), nil, client, api)
+	if got := atomic.LoadInt32(&peak); got <= 1 || got > 4 {
+		t.Fatalf("peak OSRM concurrency = %d, want 2..4", got)
+	}
+	for index, section := range out.GetRoutes()[0].GetSections() {
+		if got, want := section.GetTravelSummary().GetDuration(), int64(100+index); got != want {
+			t.Fatalf("section %d duration = %d, want %d (results must retain input order)", index, got, want)
+		}
 	}
 }
 

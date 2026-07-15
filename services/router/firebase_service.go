@@ -215,13 +215,25 @@ func (s *FirebaseServer) authorizeInstall(ctx context.Context, installID string)
 }
 
 func installationSecretHash(ctx context.Context, installID string) ([]byte, error) {
-	metadataInstallID := metadata.ValueFromIncomingContext(ctx, installIDMetadataKey)
+	metadataInstallID, ok := installationCallerID(ctx)
 	secrets := metadata.ValueFromIncomingContext(ctx, installSecretMetadataKey)
-	if len(metadataInstallID) != 1 || metadataInstallID[0] != installID || len(secrets) != 1 || !validText(secrets[0], 256) || len(secrets[0]) < 32 {
+	if !ok || metadataInstallID != installID || len(secrets) != 1 || !validText(secrets[0], 256) || len(secrets[0]) < 32 {
 		return nil, status.Error(codes.PermissionDenied, "valid installation credential required")
 	}
 	hash := sha256.Sum256([]byte(secrets[0]))
 	return hash[:], nil
+}
+
+// installationCallerID extracts the stable installation identifier used to
+// avoid grouping distinct app installations behind the same carrier NAT into
+// one rate-limit bucket. Authentication still happens independently through
+// installationSecretHash and App Check; this value is only a fairness key.
+func installationCallerID(ctx context.Context) (string, bool) {
+	values := metadata.ValueFromIncomingContext(ctx, installIDMetadataKey)
+	if len(values) != 1 || !validText(values[0], 128) {
+		return "", false
+	}
+	return values[0], true
 }
 
 func validText(value string, max int) bool {
