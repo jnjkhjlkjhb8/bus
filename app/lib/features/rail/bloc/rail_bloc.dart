@@ -24,6 +24,11 @@ class RailBloc extends Bloc<RailEvent, RailState> {
   final TraRepository _traRepository;
   final ThsrRepository _thsrRepository;
 
+  // Both handlers run concurrently (no transformer); a slow earlier request
+  // can otherwise resolve after a newer one and clobber it.
+  var _timetableGeneration = 0;
+  var _trainStopsGeneration = 0;
+
   /// Minutes past midnight for a backend time string (RFC3339 timestamp or a
   /// bare `HH:mm:ss` clock), or null when unparseable.
   static int? _minutesOfDay(String t) {
@@ -77,6 +82,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     RailTimetableRequested event,
     Emitter<RailState> emit,
   ) async {
+    final gen = ++_timetableGeneration;
     final system = event.system;
     final originName = event.origin.name;
     final destName = event.destination.name;
@@ -99,6 +105,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           originId,
           destId,
         );
+        if (gen != _timetableGeneration) return;
         emit(
           RailTimetableLoaded(
             system: system,
@@ -128,6 +135,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           originId,
           destId,
         );
+        if (gen != _timetableGeneration) return;
         emit(
           RailTimetableLoaded(
             system: system,
@@ -145,6 +153,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
         );
       }
     } on Object catch (e) {
+      if (gen != _timetableGeneration) return;
       emit(RailError(AppError.from(e)));
     }
   }
@@ -177,6 +186,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     RailTrainStopsRequested event,
     Emitter<RailState> emit,
   ) async {
+    final gen = ++_trainStopsGeneration;
     try {
       final current = state;
       final system = current is RailTimetableLoaded
@@ -187,6 +197,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           event.date,
           event.trainNo,
         );
+        if (gen != _trainStopsGeneration) return;
         emit(
           RailTrainStopsLoaded(
             system: system,
@@ -200,6 +211,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           event.date,
           event.trainNo,
         );
+        if (gen != _trainStopsGeneration) return;
         emit(
           RailTrainStopsLoaded(
             system: system,
@@ -210,6 +222,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
         );
       }
     } on Object catch (e) {
+      if (gen != _trainStopsGeneration) return;
       emit(RailError(AppError.from(e)));
     }
   }

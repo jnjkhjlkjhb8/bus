@@ -16,10 +16,16 @@ class MetroBloc extends Bloc<MetroEvent, MetroState> {
 
   final MrtRepository _repository;
 
+  // Handlers run concurrently (no transformer), so tapping station B before
+  // station A's matrix fetch resolves can otherwise let A's stale response
+  // land last and clobber B's fresh one.
+  var _generation = 0;
+
   Future<void> _onStationTapped(
     MetroStationTapped event,
     Emitter<MetroState> emit,
   ) async {
+    final gen = ++_generation;
     emit(
       state.copyWith(
         activeStationId: event.stationId,
@@ -29,6 +35,7 @@ class MetroBloc extends Bloc<MetroEvent, MetroState> {
     );
     try {
       final matrix = await _repository.journeyMatrix(event.stationId);
+      if (gen != _generation) return;
       emit(
         state.copyWith(
           activeStationId: event.stationId,
@@ -37,6 +44,7 @@ class MetroBloc extends Bloc<MetroEvent, MetroState> {
         ),
       );
     } on Object catch (e, s) {
+      if (gen != _generation) return;
       CrashReporter.record(e, s);
       emit(state.copyWith(error: AppError.from(e)));
     }

@@ -25,6 +25,7 @@ import 'package:wheres_the_car/features/favorites/widgets/favorite_tile.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_bloc.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_event.dart';
 import 'package:wheres_the_car/features/home/bloc/nearby_state.dart';
+import 'package:wheres_the_car/features/home/bloc/nearby_viewport_query.dart';
 import 'package:wheres_the_car/features/home/widgets/home_station_detail.dart';
 import 'package:wheres_the_car/features/metro/widgets/metro_svg_map.dart';
 import 'package:wheres_the_car/features/rail/view/home_rail_query_sheet.dart';
@@ -68,9 +69,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   int _markerRevision = 0;
   Timer? _idleDebounce;
 
-  /// Center of the last nearby query actually sent; used to suppress redundant
-  /// re-queries when the camera settles only a few metres away.
-  LatLng? _lastQueryCenter;
+  /// Attempted/succeeded nearby-query centers — see [NearbyViewportQuery]:
+  /// a failed attempt never suppresses a retry, only a successful one does.
+  NearbyViewportQuery _viewportQuery = const NearbyViewportQuery();
+
+  /// True once the initial fresh-GPS fix has resolved (success or failure).
+  /// Nearby queries are gated on this so the cached/default-Taipei position
+  /// the map shows immediately never itself triggers a station fetch.
+  bool _freshLocationResolved = false;
 
   /// When the last sonar ring was emitted; dedupes back-to-back pings.
   DateTime? _lastPingAt;
@@ -182,37 +188,31 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     unawaited(_rebuildMarkers(_stations));
   }
 
-  double _distanceMeters(LatLng a, LatLng b) {
-    const earth = 6371000.0;
-    final lat1 = a.latitude * math.pi / 180;
-    final lat2 = b.latitude * math.pi / 180;
-    final dLat = (b.latitude - a.latitude) * math.pi / 180;
-    final dLon = (b.longitude - a.longitude) * math.pi / 180;
-    final h =
-        math.sin(dLat / 2) * math.sin(dLat / 2) +
-        math.cos(lat1) *
-            math.cos(lat2) *
-            math.sin(dLon / 2) *
-            math.sin(dLon / 2);
-    return earth * 2 * math.atan2(math.sqrt(h), math.sqrt(1 - h));
-  }
-
   Future<void> _requestNearbyForViewport(NearbyBloc bloc) async {
-    // Skip re-querying when the camera barely moved — sub-200 m nudges return
-    // essentially the same stations and only churn markers.
-    final last = _lastQueryCenter;
-    if (last != null && _distanceMeters(_camCenter, last) < 200) return;
-    _lastQueryCenter = _camCenter;
+    // Home queries only after the initial fresh-GPS fix has resolved — never
+    // off the cached/default-Taipei position the map shows meanwhile.
+    if (!_freshLocationResolved) return;
+    // Skip re-querying when the camera is still within the area of the last
+    // *successful* fetch — sub-200 m nudges return essentially the same
+    // stations. A failed attempt is deliberately excluded from this check
+    // (see NearbyViewportQuery), so it can't suppress the next retry.
+    if (!_viewportQuery.shouldQuery(_camCenter)) return;
+    final controller = _mapController;
+    if (controller == null) return;
+    final bounds = await controller.getVisibleRegion();
+    if (!mounted) return;
+    final radius = nearbyRadiusForViewport(center: _camCenter, bounds: bounds);
+    _viewportQuery = _viewportQuery.withAttempted(_camCenter);
     bloc.add(
       NearbyRequested(
         lat: _camCenter.latitude,
         lon: _camCenter.longitude,
-        radius: _kNearbyRadiusMeters,
+        radius: radius,
       ),
     );
     // Sonar cue at the query center; skipped under reduce-motion / no controller
     // by _playPing's own guards.
-    unawaited(_playPing(_camCenter));
+    unawaited(_playPing(_camCenter, radiusMeters: radius));
   }
 
   void _scheduleNearbyForViewport(BuildContext context) {
@@ -298,6 +298,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       }
     } on Object catch (e, s) {
       CrashReporter.record(e, s);
+    } finally {
+      // Resolved either way — success or failure — so the fresh-location gate
+      // in _requestNearbyForViewport lets the next camera-idle event through.
+      if (mounted) setState(() => _freshLocationResolved = true);
     }
   }
 
@@ -322,19 +326,19 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
-  /// On-screen radius, in logical pixels, that the 1 km query radius spans at
-  /// the current zoom around [center]. Measures the pixel gap between [c0]
-  /// (the already-fetched screen coordinate of [center]) and a point 1 km due
-  /// east. Returns null if the widget unmounts.
+  /// On-screen radius, in logical pixels, that [radiusMeters] spans at the
+  /// current zoom around [center]. Measures the pixel gap between [c0] (the
+  /// already-fetched screen coordinate of [center]) and a point [radiusMeters]
+  /// due east. Returns null if the widget unmounts.
   Future<double?> _groundRadiusPixels(
     GoogleMapController controller,
     LatLng center,
     ScreenCoordinate c0,
+    int radiusMeters,
   ) async {
     final eastLon =
         center.longitude +
-        _kNearbyRadiusMeters /
-            (111320 * math.cos(center.latitude * math.pi / 180));
+        radiusMeters / (111320 * math.cos(center.latitude * math.pi / 180));
     final c1 = await controller.getScreenCoordinate(
       LatLng(center.latitude, eastLon),
     );
@@ -344,16 +348,26 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   /// Emits a single expanding ring at [target]'s screen position once the
-  /// camera move has settled, growing to the on-screen size of the 1 km query
-  /// radius. `getScreenCoordinate` returns physical pixels, so divide by the
-  /// device ratio for logical layout coordinates.
-  Future<void> _playPing(LatLng target) async {
+  /// camera move has settled, growing to the on-screen size of [radiusMeters]
+  /// (the actual query radius sent, or the fixed fallback for the manual
+  /// "locate me" ping, which issues no query of its own). `getScreenCoordinate`
+  /// returns physical pixels, so divide by the device ratio for logical layout
+  /// coordinates.
+  Future<void> _playPing(
+    LatLng target, {
+    int radiusMeters = _kNearbyRadiusMeters,
+  }) async {
     if (!mounted || MediaQuery.disableAnimationsOf(context)) return;
     await Future<void>.delayed(const Duration(milliseconds: 350));
     final controller = _mapController;
     if (!mounted || controller == null) return;
     final coord = await controller.getScreenCoordinate(target);
-    final radius = await _groundRadiusPixels(controller, target, coord);
+    final radius = await _groundRadiusPixels(
+      controller,
+      target,
+      coord,
+      radiusMeters,
+    );
     if (!mounted || radius == null) return;
     final now = DateTime.now();
     final last = _lastPingAt;
@@ -388,10 +402,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       create: (_) => NearbyBloc(),
       child: Builder(
         builder: (context) => BlocListener<NearbyBloc, NearbyState>(
-          listenWhen: (p, c) => !listEquals(p.stations, c.stations),
+          listenWhen: (p, c) =>
+              !listEquals(p.stations, c.stations) ||
+              p.loading != c.loading ||
+              p.error != c.error,
           listener: (_, state) {
             _stations = state.stations;
             unawaited(_rebuildMarkers(state.stations));
+            // A successful response (not a stale one — NearbyBloc's own
+            // generation guard already dropped those) confirms data for the
+            // center it was attempted at; only then does it count as
+            // "already have this" for the next idle-triggered dedup check.
+            if (!state.loading && state.error == null) {
+              final attempted = _viewportQuery.lastAttempted;
+              if (attempted != null) {
+                _viewportQuery = _viewportQuery.withSuccess(attempted);
+              }
+            }
           },
           child: _buildScaffold(context, cs),
         ),
@@ -405,3 +432,10 @@ Widget buildNearbyRowForTest({
   required NearStationViewModel station,
   required ValueChanged<NearStationViewModel> onStationTap,
 }) => _NearbyStationRow(station: station, onStationTap: onStationTap);
+
+/// Dot marker diameter (logical px) for the mid ([large] = true) vs the most
+/// zoomed-out ([large] = false) marker band. Exposed so a plain unit test can
+/// verify the intended ordering — large > small — without spinning up a map.
+@visibleForTesting
+double dotMarkerSizeForTest({required bool large}) =>
+    large ? _kLargeDotSize : _kSmallDotSize;

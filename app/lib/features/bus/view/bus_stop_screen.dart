@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
@@ -46,13 +47,19 @@ class _BusStopScreenState extends State<BusStopScreen> {
   late final BusStopBloc _bloc;
   BitmapDescriptor? _busIcon;
 
+  /// The one GPS fix requested for map init, shared between `initState` and
+  /// `onMapCreated` (both race to move the camera as soon as it's ready) so
+  /// they don't each fire their own `currentPosition()` call.
+  Future<Position>? _initialPosition;
+
   @override
   void initState() {
     super.initState();
     _sheetController = SheetController();
     _bloc = BusStopBloc(stopId: widget.stopId, city: widget.city);
     unawaited(_loadMarkerIcon());
-    unawaited(_moveToCurrentLocation());
+    _initialPosition = LocationService.instance.currentPosition();
+    unawaited(_moveToInitialLocation());
   }
 
   Future<void> _loadMarkerIcon() async {
@@ -75,6 +82,26 @@ class _BusStopScreenState extends State<BusStopScreen> {
     super.dispose();
   }
 
+  Future<void> _moveToInitialLocation() async {
+    final initial = _initialPosition;
+    if (initial == null) return;
+    try {
+      final pos = await initial;
+      final controller = _controller;
+      if (controller != null) {
+        unawaited(
+          controller.animateCamera(
+            CameraUpdate.newLatLng(LatLng(pos.latitude, pos.longitude)),
+          ),
+        );
+      }
+    } on Object catch (e, s) {
+      CrashReporter.record(e, s);
+    }
+  }
+
+  /// User-triggered recenter: always requests a fresh fix, unlike the shared
+  /// one-shot [_initialPosition] used during map init.
   Future<void> _moveToCurrentLocation() async {
     try {
       final pos = await LocationService.instance.currentPosition();
@@ -154,7 +181,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
                     onMapCreated: (c) {
                       _controller = c;
                       if (state.members.isEmpty) {
-                        unawaited(_moveToCurrentLocation());
+                        unawaited(_moveToInitialLocation());
                       }
                     },
                   );

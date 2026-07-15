@@ -2,14 +2,18 @@ part of '../home_screen.dart';
 
 const _kLargeDotZoomThreshold = 13.0;
 const _kIconZoomThreshold = 15.5;
-const _kSmallDotSize = 10.0;
-const _kLargeDotSize = 7.0;
+// largeDot renders at the mid zoom band (bigger, easier to tap); smallDot at
+// the most zoomed-out band, where dense clusters need to shrink to stay
+// legible.
+const _kSmallDotSize = 7.0;
+const _kLargeDotSize = 10.0;
 const _kIconMarkerSize = 24.0;
 const _kHighlightIconMarkerSize = 44.0;
 const _kMapMarkerLimit = 60;
 
-/// Fixed radius for nearby-station queries. Decoupled from the map viewport so
-/// panning/zooming can't inflate the query into a slow, jank-inducing fetch.
+/// Fallback radius for the manual "locate me" ping and any query issued
+/// before the map has reported a viewport (see [nearbyRadiusForViewport] for
+/// the actual, viewport-derived query radius).
 const _kNearbyRadiusMeters = 1000;
 
 enum _MarkerStyle { icon, largeDot, smallDot }

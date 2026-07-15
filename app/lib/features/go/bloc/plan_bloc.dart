@@ -24,6 +24,10 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
 
   final MaasRepository _repository;
 
+  // PlanSearchRequested handlers run concurrently (no transformer); a slow
+  // earlier search can otherwise resolve after a newer one and clobber it.
+  var _searchGeneration = 0;
+
   List<PlanRoute> _readSavedRoutes() {
     if (!HiveStore.savedPlansReady) return const [];
     final routes = <PlanRoute>[];
@@ -87,6 +91,7 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
     PlanSearchRequested event,
     Emitter<PlanState> emit,
   ) async {
+    final gen = ++_searchGeneration;
     // A new search resets to the results phase, dropping any active preview.
     emit(
       state.copyWith(
@@ -115,6 +120,7 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
         lastMileMode: event.lastMileMode,
         lastMileTime: event.lastMileTime,
       );
+      if (gen != _searchGeneration) return;
       // Results phase: the fastest route (index 0) is the default selection.
       emit(
         state.copyWith(
@@ -126,6 +132,7 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
         ),
       );
     } on Object catch (e) {
+      if (gen != _searchGeneration) return;
       emit(
         state.copyWith(
           status: PlanStatus.failure,

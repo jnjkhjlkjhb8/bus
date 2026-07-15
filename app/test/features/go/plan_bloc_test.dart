@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/data/repositories/maas_repository.dart';
@@ -24,6 +26,36 @@ void main() {
     await next;
   });
 
+  test(
+    'a stale search resolving after a newer one does not overwrite it',
+    () async {
+      final firstCompleter = Completer<PlanResult>();
+      final secondCompleter = Completer<PlanResult>();
+      final repository = _ControlledMaasRepository([
+        firstCompleter,
+        secondCompleter,
+      ]);
+      final bloc = PlanBloc(repository: repository);
+      addTearDown(bloc.close);
+
+      final firstResult = PlanResult(routes: [_route()]);
+      final secondResult = PlanResult(routes: [_route(), _route()]);
+
+      bloc
+        ..add(_search())
+        ..add(_search());
+
+      // The second, newer search resolves first...
+      secondCompleter.complete(secondResult);
+      await pumpEventQueue();
+      // ...then the stale first search resolves after it.
+      firstCompleter.complete(firstResult);
+      await pumpEventQueue();
+
+      expect(bloc.state.result, secondResult);
+    },
+  );
+
   test('search failure emits error state', () async {
     final bloc = PlanBloc(
       repository: _FakeMaasRepository(error: StateError('boom')),
@@ -43,25 +75,27 @@ void main() {
     await next;
   });
 
-  test('search success enters results phase with the fastest selected',
-      () async {
-    final result = PlanResult(routes: [_route(), _route()]);
-    final bloc = PlanBloc(repository: _FakeMaasRepository(result: result));
-    addTearDown(bloc.close);
+  test(
+    'search success enters results phase with the fastest selected',
+    () async {
+      final result = PlanResult(routes: [_route(), _route()]);
+      final bloc = PlanBloc(repository: _FakeMaasRepository(result: result));
+      addTearDown(bloc.close);
 
-    final next = expectLater(
-      bloc.stream,
-      emitsThrough(
-        isA<PlanState>()
-            .having((s) => s.status, 'status', PlanStatus.success)
-            .having((s) => s.selectedRouteIndex, 'selectedRouteIndex', 0)
-            .having((s) => s.previewing, 'previewing', false),
-      ),
-    );
+      final next = expectLater(
+        bloc.stream,
+        emitsThrough(
+          isA<PlanState>()
+              .having((s) => s.status, 'status', PlanStatus.success)
+              .having((s) => s.selectedRouteIndex, 'selectedRouteIndex', 0)
+              .having((s) => s.previewing, 'previewing', false),
+        ),
+      );
 
-    bloc.add(_search());
-    await next;
-  });
+      bloc.add(_search());
+      await next;
+    },
+  );
 
   test('selecting a route enters the preview phase', () async {
     final bloc = PlanBloc(repository: _FakeMaasRepository());
@@ -80,30 +114,32 @@ void main() {
     await next;
   });
 
-  test('closing a results preview returns to results, keeping the result',
-      () async {
-    final result = PlanResult(routes: [_route(), _route()]);
-    final bloc = PlanBloc(repository: _FakeMaasRepository(result: result));
-    addTearDown(bloc.close);
+  test(
+    'closing a results preview returns to results, keeping the result',
+    () async {
+      final result = PlanResult(routes: [_route(), _route()]);
+      final bloc = PlanBloc(repository: _FakeMaasRepository(result: result));
+      addTearDown(bloc.close);
 
-    bloc.add(_search());
-    await bloc.stream.firstWhere((s) => s.status == PlanStatus.success);
-    bloc.add(const RouteSelected(index: 1));
-    await bloc.stream.firstWhere((s) => s.previewing);
+      bloc.add(_search());
+      await bloc.stream.firstWhere((s) => s.status == PlanStatus.success);
+      bloc.add(const RouteSelected(index: 1));
+      await bloc.stream.firstWhere((s) => s.previewing);
 
-    final next = expectLater(
-      bloc.stream,
-      emitsThrough(
-        isA<PlanState>()
-            .having((s) => s.previewing, 'previewing', false)
-            .having((s) => s.result, 'result', result)
-            .having((s) => s.selectedRouteIndex, 'selectedRouteIndex', 1),
-      ),
-    );
+      final next = expectLater(
+        bloc.stream,
+        emitsThrough(
+          isA<PlanState>()
+              .having((s) => s.previewing, 'previewing', false)
+              .having((s) => s.result, 'result', result)
+              .having((s) => s.selectedRouteIndex, 'selectedRouteIndex', 1),
+        ),
+      );
 
-    bloc.add(const PreviewClosed());
-    await next;
-  });
+      bloc.add(const PreviewClosed());
+      await next;
+    },
+  );
 
   test('a new search resets an active preview back to results', () async {
     final bloc = PlanBloc(
@@ -237,6 +273,35 @@ PlanRoute _route() => const PlanRoute(
   transfers: 0,
   sections: [],
 );
+
+class _ControlledMaasRepository implements MaasRepository {
+  _ControlledMaasRepository(this.completers);
+
+  /// Each successive `plan()` call consumes the next completer in order, so
+  /// the two overlapping calls in a test can resolve out of order.
+  final List<Completer<PlanResult>> completers;
+  var _calls = 0;
+
+  @override
+  Future<PlanResult> plan({
+    required double fromLat,
+    required double fromLon,
+    required double toLat,
+    required double toLon,
+    required String date,
+    required String time,
+    bool arriveBy = false,
+    double gc = 0.0,
+    List<int> transitModes = const [3, 4, 5, 6, 7, 8, 9],
+    int top = 5,
+    int transferMin = 15,
+    int transferMax = 60,
+    int firstMileMode = 0,
+    int firstMileTime = 10,
+    int lastMileMode = 0,
+    int lastMileTime = 10,
+  }) => completers[_calls++].future;
+}
 
 class _FakeMaasRepository implements MaasRepository {
   _FakeMaasRepository({PlanResult? result, this.error})

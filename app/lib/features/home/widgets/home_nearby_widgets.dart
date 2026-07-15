@@ -211,9 +211,10 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
               if (state.error != null) {
                 return ErrorStateView(
                   error: state.error!,
-                  onRetry: () => context.read<NearbyBloc>().add(
-                    const NearbyRequested(radius: _kNearbyRadiusMeters),
-                  ),
+                  // Replays the exact failed query (dragged viewport or GPS,
+                  // whichever it was) instead of falling back to device GPS.
+                  onRetry: () =>
+                      context.read<NearbyBloc>().add(const NearbyRetried()),
                 );
               }
               final items = _visibleStations(state.stations);

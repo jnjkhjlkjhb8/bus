@@ -349,6 +349,80 @@ void main() {
 
     expect(state.error, isA<OfflineError>());
   });
+
+  test(
+    'a stale timetable request resolving after a newer one does not '
+    'overwrite it',
+    () async {
+      final firstCompleter = Completer<List<ThsrTimetableItem>>();
+      final secondCompleter = Completer<List<ThsrTimetableItem>>();
+      final thsr = _ControlledThsrRepository([
+        firstCompleter,
+        secondCompleter,
+      ]);
+      final bloc = RailBloc(thsrRepository: thsr);
+      addTearDown(bloc.close);
+
+      const firstItem = ThsrTimetableItem(
+        trainNo: '101',
+        departureTime: '08:00',
+        arrivalTime: '09:30',
+        travelMinutes: 90,
+        delayMinutes: 0,
+        remark: '',
+      );
+      const secondItem = ThsrTimetableItem(
+        trainNo: '201',
+        departureTime: '10:00',
+        arrivalTime: '11:30',
+        travelMinutes: 90,
+        delayMinutes: 0,
+        remark: '',
+      );
+
+      RailTimetableRequested request(String date) => RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: const RailStationSelection(name: '南港', id: '0990'),
+        destination: const RailStationSelection(name: '左營', id: '1070'),
+        date: date,
+      );
+
+      bloc
+        ..add(request('2026-07-10'))
+        ..add(request('2026-07-11'));
+
+      // The second, newer request resolves first...
+      secondCompleter.complete([secondItem]);
+      await pumpEventQueue();
+      // ...then the stale first request resolves after it.
+      firstCompleter.complete([firstItem]);
+      await pumpEventQueue();
+
+      final state = bloc.state;
+      expect(state, isA<RailTimetableLoaded>());
+      expect((state as RailTimetableLoaded).date, '2026-07-11');
+      expect(state.thsrItems, [secondItem]);
+    },
+  );
+}
+
+class _ControlledThsrRepository extends ThsrRepository {
+  _ControlledThsrRepository(this.completers);
+
+  /// Each successive `timetable()` call consumes the next completer in
+  /// order, so overlapping requests in a test can resolve out of order.
+  final List<Completer<List<ThsrTimetableItem>>> completers;
+  var _calls = 0;
+
+  @override
+  Future<String?> stationId(String name) async => null;
+
+  @override
+  Future<List<ThsrTimetableItem>> timetable(
+    String date,
+    String originId,
+    String destId,
+  ) => completers[_calls++].future;
 }
 
 class _FakeThsrRepository extends ThsrRepository {

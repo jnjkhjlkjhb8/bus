@@ -17,3 +17,9 @@ final class NearbyRequested extends NearbyEvent {
   @override
   List<Object?> get props => [radius, lat, lon];
 }
+
+/// Re-sends the most recent [NearbyRequested] query verbatim — including a
+/// failed dragged-viewport query — rather than falling back to device GPS.
+final class NearbyRetried extends NearbyEvent {
+  const NearbyRetried();
+}
