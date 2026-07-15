@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:hive_ce_flutter/adapters.dart';
 
 class HiveStore {
@@ -7,19 +9,40 @@ class HiveStore {
   static const _boxFavRoutes = 'fav_routes';
   static const _boxFavorites = 'favorites';
   static const _boxSettings = 'settings';
-  static const _boxOnboarded = 'onboarded';
   static const _boxRecents = 'recent_searches';
   static const _boxReminders = 'arrival_reminders';
   static const _boxSavedPlans = 'saved_plans';
 
-  static Future<void> init() async {
-    await Hive.initFlutter();
+  static Future<void>? _initFuture;
+
+  /// Opens every Hive box the app reads from. Concurrent callers share the
+  /// same in-flight [Future]. Unlike a plain memoized future, a failure is
+  /// visible to every awaiter (the returned future rejects) and is *not*
+  /// permanently cached (F13): the next call to [init] retries from
+  /// scratch instead of silently reporting success while boxes stay
+  /// unopened. [initBinding] exists only for tests, which point Hive at a
+  /// directory manually and would otherwise hit `path_provider`'s missing
+  /// platform channel via `Hive.initFlutter()`.
+  static Future<void> init({Future<void> Function()? initBinding}) {
+    final existing = _initFuture;
+    if (existing != null) return existing;
+    final future = _open(initBinding ?? Hive.initFlutter);
+    _initFuture = future;
+    unawaited(
+      future.catchError((Object _, StackTrace _) {
+        _initFuture = null;
+      }),
+    );
+    return future;
+  }
+
+  static Future<void> _open(Future<void> Function() initBinding) async {
+    await initBinding();
     await Future.wait([
       Hive.openBox<dynamic>(_boxLayout),
       Hive.openBox<dynamic>(_boxFavRoutes),
       Hive.openBox<dynamic>(_boxFavorites),
       Hive.openBox<dynamic>(_boxSettings),
-      Hive.openBox<bool>(_boxOnboarded),
       Hive.openBox<dynamic>(_boxRecents),
       Hive.openBox<dynamic>(_boxReminders),
       Hive.openBox<dynamic>(_boxSavedPlans),
@@ -93,7 +116,6 @@ class HiveStore {
   static bool get favoritesReady => Hive.isBoxOpen(_boxFavorites);
   static Box<dynamic> get settings => Hive.box(_boxSettings);
   static bool get settingsReady => Hive.isBoxOpen(_boxSettings);
-  static Box<bool> get onboarded => Hive.box<bool>(_boxOnboarded);
   static bool get liveActivityEnabled =>
       settings.get('live_activity_enabled', defaultValue: true) as bool;
 
@@ -132,11 +154,6 @@ class HiveStore {
 
   static set performanceEnabled(bool value) =>
       settings.put('performance_enabled', value);
-
-  static bool get hasCompletedOnboarding =>
-      onboarded.get('done', defaultValue: false)!;
-
-  static Future<void> markOnboardingComplete() => onboarded.put('done', true);
 
   static List<String> get favMetroStations => List<String>.from(
     settings.get('fav_metro_stations', defaultValue: <String>[]) as List,

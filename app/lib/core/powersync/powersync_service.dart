@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -7,6 +8,7 @@ import 'package:powersync/powersync.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/http/http_client.dart';
 import 'package:wheres_the_car/core/powersync/local_db.dart';
+import 'package:wheres_the_car/core/powersync/powersync_health.dart';
 
 const String _envPowersyncUrl = String.fromEnvironment(
   'POWERSYNC_URL',
@@ -65,36 +67,70 @@ const _schema = Schema([
   ]),
 ]);
 
+/// Builds the on-disk [PowerSyncDatabase]. Overridable in tests via
+/// [PowerSyncService.forTesting] since the real factory needs
+/// `path_provider`, which has no platform binding under `flutter test`.
+typedef PowerSyncDatabaseFactory = Future<PowerSyncDatabase> Function();
+
 class PowerSyncService implements LocalDb {
-  PowerSyncService._();
-  static final PowerSyncService instance = PowerSyncService._();
-  late final PowerSyncDatabase _db;
-  bool _initialized = false;
-  String? _lastSyncError;
-  Future<void> init() async {
-    if (_initialized) return;
+  PowerSyncService._(this._dbFactory);
+
+  /// Constructs an isolated instance for unit tests. Never share this with
+  /// [instance]: it exists so tests can exercise the memoization/StateError
+  /// contract without touching real platform channels.
+  @visibleForTesting
+  factory PowerSyncService.forTesting({PowerSyncDatabaseFactory? dbFactory}) =>
+      PowerSyncService._(dbFactory ?? _defaultDbFactory);
+
+  static final PowerSyncService instance = PowerSyncService._(
+    _defaultDbFactory,
+  );
+
+  static Future<PowerSyncDatabase> _defaultDbFactory() async {
     final dir = await getApplicationDocumentsDirectory();
-    _db = PowerSyncDatabase(
+    return PowerSyncDatabase(
       schema: _schema,
       path: p.join(dir.path, 'bus_local.db'),
     );
-    await _db.initialize();
-    _db.statusStream.listen((status) {
-      final error = status.downloadError ?? status.uploadError;
-      if (error == null) {
-        _lastSyncError = null;
-        return;
-      }
-      if (error.toString() == _lastSyncError) return;
-      _lastSyncError = error.toString();
-      CrashReporter.record(error);
-    });
+  }
+
+  final PowerSyncDatabaseFactory _dbFactory;
+  final _health = PowerSyncHealth<SyncStatus>(
+    errorOf: (status) => status.downloadError ?? status.uploadError,
+    onError: CrashReporter.record,
+  );
+
+  PowerSyncDatabase? _db;
+  Future<void>? _initFuture;
+
+  /// Starts (or joins) initialization. Concurrent callers share the same
+  /// in-flight [Future] instead of racing separate `PowerSyncDatabase`
+  /// instances (F14). A failed attempt is not memoized permanently: the next
+  /// call to [init] retries from scratch.
+  Future<void> init() {
+    final existing = _initFuture;
+    if (existing != null) return existing;
+    final future = _doInit();
+    _initFuture = future;
+    unawaited(
+      future.catchError((Object _, StackTrace _) {
+        _initFuture = null;
+      }),
+    );
+    return future;
+  }
+
+  Future<void> _doInit() async {
+    final db = await _dbFactory();
+    await db.initialize();
+    _health.listen(db.statusStream);
+    _db = db;
     if (_envPowersyncUrl.isNotEmpty) {
       try {
         final connector = CachedPowerSyncConnector();
         final creds = await connector.fetchCredentials();
         if (creds != null) {
-          await _db.connect(connector: connector);
+          await db.connect(connector: connector);
         }
       } on Object catch (e, s) {
         CrashReporter.record(e, s);
@@ -105,12 +141,25 @@ class PowerSyncService implements LocalDb {
         }
       }
     }
-    _initialized = true;
   }
 
+  /// Resolves once initialization has completed, then returns [db]. Prefer
+  /// this over `init().then((_) => db)` at call sites — it also joins an
+  /// already-in-flight init instead of starting a second one.
+  Future<PowerSyncDatabase> get readyDb async {
+    await init();
+    return db;
+  }
+
+  /// The initialized database. Guarded by an explicit [StateError] rather
+  /// than `assert` (F15): `assert` is stripped in release builds, which
+  /// would otherwise let a release build dereference an unset `_db`.
   PowerSyncDatabase get db {
-    assert(_initialized, 'PowerSyncService.init() must be called before db');
-    return _db;
+    final db = _db;
+    if (db == null) {
+      throw StateError('PowerSyncService.init() must complete before db');
+    }
+    return db;
   }
 
   @override
@@ -124,10 +173,13 @@ class PowerSyncService implements LocalDb {
   }
 
   Future<void> close() async {
-    if (_initialized) {
-      await _db.close();
-      _initialized = false;
+    await _health.cancel();
+    final db = _db;
+    if (db != null) {
+      await db.close();
+      _db = null;
     }
+    _initFuture = null;
   }
 }
 

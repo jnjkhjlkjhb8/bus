@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:google_maps_flutter_android/google_maps_flutter_android.dart';
 import 'package:google_maps_flutter_platform_interface/google_maps_flutter_platform_interface.dart';
 import 'package:wheres_the_car/app/app.dart';
+import 'package:wheres_the_car/core/bootstrap/app_bootstrap.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/firebase/firebase_bootstrap.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
@@ -16,10 +17,6 @@ import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
 
 Future<void> main() async {
-  await _bootstrap();
-}
-
-Future<void> _bootstrap() async {
   WidgetsFlutterBinding.ensureInitialized();
   if (FirebaseGate.enabled) {
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
@@ -29,33 +26,32 @@ Future<void> _bootstrap() async {
   // overlaps with the Dart-side init below.
   _prewarmMapRenderer();
 
-  // Hive, Firebase core, and the gRPC CA load have no ordering dependencies;
-  // running them in parallel keeps the native splash to the slowest of the
-  // three instead of their sum.
-  final sw = Stopwatch()..start();
-  await Future.wait([
-    HiveStore.init()
-        .then<void>((_) {
-          if (!kReleaseMode) {
-            debugPrint('[boot] HiveStore.init ${sw.elapsedMilliseconds}ms');
-          }
-        })
-        .catchError(CrashReporter.record)
-        .whenComplete(() => App.isInitialized.value = true),
+  // runApp must render the first frame immediately: Hive, Firebase, the
+  // gRPC CA load, and PowerSync all do unbounded filesystem/network I/O, so
+  // none of it may sit on this path (F11/F12). AppBootstrapController runs
+  // it in the background and the UI listens to the resulting state instead
+  // of `main` awaiting it.
+  final bootstrap = AppBootstrapController(
+    initHive: HiveStore.init,
+    initGrpc: GrpcClient.init,
+    initFirebase: FirebaseBootstrap.initFailSoft,
+    initPowerSync: PowerSyncService.instance.init,
+  );
+  // Firebase core must exist before FirebaseBootstrap.initFailSoft's fuller
+  // init runs (crash reporting, remote config, etc. all assume an app),
+  // so it stays a background step ahead of `bootstrap.start()` rather than
+  // sitting on the pre-runApp critical path with it.
+  unawaited(
     FirebaseBootstrap.ensureCoreInitialized().catchError(CrashReporter.record),
-    GrpcClient.init().catchError(CrashReporter.record),
-  ]);
-  if (!kReleaseMode) {
-    debugPrint('[boot] pre-runApp init ${sw.elapsedMilliseconds}ms');
-  }
-  _initializeRemoteServices();
+  );
+  unawaited(bootstrap.start());
   unawaited(
     FavoritesRepository.instance.migrateLegacy().catchError(
       CrashReporter.record,
     ),
   );
 
-  runApp(const App());
+  runApp(App(bootstrap: bootstrap));
 }
 
 void _prewarmMapRenderer() {
@@ -64,13 +60,4 @@ void _prewarmMapRenderer() {
   if (maps is GoogleMapsFlutterAndroid) {
     unawaited(maps.warmup());
   }
-}
-
-void _initializeRemoteServices() {
-  Future.wait([
-    PowerSyncService.instance.init().catchError((Object e, StackTrace s) {
-      CrashReporter.record(e, s);
-    }),
-    FirebaseBootstrap.initFailSoft(),
-  ]).ignore();
 }

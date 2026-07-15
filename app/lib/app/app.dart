@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_ce_flutter/adapters.dart';
 import 'package:wheres_the_car/app/router/app_router.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/core/bootstrap/app_bootstrap.dart';
 import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
 import 'package:wheres_the_car/core/live_activity/pip_mode.dart';
 import 'package:wheres_the_car/core/location/location_service.dart';
@@ -20,7 +21,13 @@ import 'package:wheres_the_car/features/live_activity/bloc/stop_board_cubit.dart
 import 'package:wheres_the_car/features/live_activity/view/journey_pip_card.dart';
 
 class App extends StatefulWidget {
-  const App({super.key});
+  const App({required this.bootstrap, super.key});
+
+  /// Drives [isInitialized]: [AppBootstrapState.ready] and
+  /// [AppBootstrapState.degraded] both mean Hive and the gRPC channel are
+  /// usable (the only difference is whether a best-effort dependency like
+  /// Firebase or PowerSync also came up), so either unlocks the full UI.
+  final AppBootstrapController bootstrap;
 
   /// Tracks background initialization completion
   static final isInitialized = ValueNotifier<bool>(false);
@@ -30,6 +37,28 @@ class App extends StatefulWidget {
 }
 
 class _AppState extends State<App> {
+  @override
+  void initState() {
+    super.initState();
+    widget.bootstrap.addListener(_syncInitialized);
+    _syncInitialized();
+  }
+
+  @override
+  void dispose() {
+    widget.bootstrap.removeListener(_syncInitialized);
+    super.dispose();
+  }
+
+  void _syncInitialized() {
+    final ready =
+        widget.bootstrap.state == AppBootstrapState.ready ||
+        widget.bootstrap.state == AppBootstrapState.degraded;
+    if (App.isInitialized.value != ready) {
+      App.isInitialized.value = ready;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     // Shared across JourneySessionBloc and StopBoardCubit: only one Live

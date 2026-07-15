@@ -56,6 +56,8 @@ class FirebaseBootstrap {
 
   static final _tokenSyncGuard = FirebaseTokenSyncGuard();
   static bool _notificationsInitialized = false;
+  static StreamSubscription<RemoteConfigUpdate>? _remoteConfigSub;
+  static StreamSubscription<String>? _tokenRefreshSub;
 
   static Future<void> initFailSoft({
     Future<void> Function() initializer = init,
@@ -142,22 +144,41 @@ class FirebaseBootstrap {
         AppConfig.version.value++;
         // Realtime updates: apply an ops push to foreground apps within
         // seconds, bypassing minimumFetchInterval. iOS/Android only.
-        remoteConfig.onConfigUpdated.listen((_) async {
+        // Own the subscription (F59): cancel any prior one first so a
+        // repeated init (hot restart, retried bootstrap) never stacks a
+        // second listener applying the same update twice.
+        await _remoteConfigSub?.cancel();
+        _remoteConfigSub = remoteConfig.onConfigUpdated.listen((_) async {
           await remoteConfig.activate();
           AppConfig.version.value++;
         });
       },
       () async => updatePushPreference(requested: HiveStore.pushEnabled),
       () async {
-        messaging.onTokenRefresh.listen(_syncToken);
+        await _tokenRefreshSub?.cancel();
+        _tokenRefreshSub = messaging.onTokenRefresh.listen(_syncToken);
       },
     ]);
   }
 
+  /// Cancels the owned Remote Config / token-refresh subscriptions. Exposed
+  /// for tests; production code has no teardown path today since Firebase
+  /// lives for the app's lifetime, but this keeps `init()` idempotent under
+  /// re-entry (retry, hot restart) without leaking listeners (F59).
+  @visibleForTesting
+  static Future<void> disposeForTesting() async {
+    await _remoteConfigSub?.cancel();
+    _remoteConfigSub = null;
+    await _tokenRefreshSub?.cancel();
+    _tokenRefreshSub = null;
+  }
+
   static Future<bool> updatePushPreference({required bool requested}) async {
     HiveStore.pushEnabled = requested;
-    debugPrint('[firebase-reg] enabled=${FirebaseGate.enabled} '
-        'requested=$requested');
+    debugPrint(
+      '[firebase-reg] enabled=${FirebaseGate.enabled} '
+      'requested=$requested',
+    );
     if (!FirebaseGate.enabled) return requested;
 
     var enabled = false;
@@ -184,8 +205,10 @@ class FirebaseBootstrap {
     } on Object catch (_) {}
     try {
       final token = await FirebaseMessaging.instance.getToken();
-      debugPrint('[firebase-reg] fcm token '
-          '${token == null ? 'null' : 'len=${token.length}'}');
+      debugPrint(
+        '[firebase-reg] fcm token '
+        '${token == null ? 'null' : 'len=${token.length}'}',
+      );
       if (token != null && token.isNotEmpty) await _syncToken(token);
     } on Object catch (error) {
       debugPrint('[firebase-reg] getToken failed: $error');

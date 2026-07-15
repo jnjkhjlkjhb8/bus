@@ -22,25 +22,64 @@ class GrpcClient {
   );
   static const _port = int.fromEnvironment('GRPC_PORT', defaultValue: 50051);
   static const _tls = bool.fromEnvironment('GRPC_TLS');
+  static const _appEnv = String.fromEnvironment('APP_ENV', defaultValue: 'dev');
   static Uint8List? _caBytes;
 
-  /// Loads the pinned self-signed CA before the channel is first built.
-  /// Must be awaited during startup when [_tls] is true. The cert must carry
-  /// the target IP in its SAN, or the TLS handshake fails on hostname check.
+  /// Rejects a channel config that would silently fall back to loopback or
+  /// unencrypted transport in a deployed environment (F43). Dev/test builds
+  /// are allowed to run insecure against localhost; `staging`/`production`
+  /// must have a real host and TLS enabled, or this throws — there is no
+  /// silent fallback.
+  static void validateConfig({
+    required String appEnv,
+    required String host,
+    required bool tls,
+  }) {
+    final isDeployedEnv = appEnv == 'staging' || appEnv == 'production';
+    if (!isDeployedEnv) return;
+    if (host.isEmpty || host == 'localhost' || host == '127.0.0.1') {
+      throw StateError(
+        'GRPC_HOST must be a non-loopback host in the "$appEnv" environment',
+      );
+    }
+    if (!tls) {
+      throw StateError('GRPC_TLS must be true in the "$appEnv" environment');
+    }
+  }
+
+  /// Validates the compiled channel config, then — when TLS is required —
+  /// loads the pinned self-signed CA. Must complete before the channel is
+  /// first built. The cert must carry the target IP in its SAN, or the TLS
+  /// handshake fails on hostname check.
+  ///
+  /// A failure here (bad config, or the CA asset failing to load) must
+  /// surface to the caller rather than be swallowed (F58): swallowing it
+  /// used to leave `_caBytes` null, so `ChannelCredentials.secure` silently
+  /// fell back to the system trust store instead of the pinned CA. The
+  /// `_channel` getter below now fails closed instead.
   static Future<void> init() async {
+    validateConfig(appEnv: _appEnv, host: _host, tls: _tls);
     if (!_tls) return;
     _caBytes = (await rootBundle.load('assets/grpc.crt')).buffer.asUint8List();
   }
 
-  late final ClientChannel _channel = ClientChannel(
-    _host,
-    port: _port,
-    options: ChannelOptions(
-      credentials: _tls
-          ? ChannelCredentials.secure(certificates: _caBytes)
-          : const ChannelCredentials.insecure(),
-    ),
-  );
+  late final ClientChannel _channel = () {
+    if (_tls && _caBytes == null) {
+      throw StateError(
+        'GrpcClient.init() must complete successfully before the channel '
+        'is used when GRPC_TLS is enabled',
+      );
+    }
+    return ClientChannel(
+      _host,
+      port: _port,
+      options: ChannelOptions(
+        credentials: _tls
+            ? ChannelCredentials.secure(certificates: _caBytes)
+            : const ChannelCredentials.insecure(),
+      ),
+    );
+  }();
 
   static final List<ClientInterceptor> _interceptors = [
     GrpcErrorInterceptor(),
