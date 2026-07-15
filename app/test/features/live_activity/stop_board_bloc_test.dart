@@ -44,6 +44,36 @@ class _RecordingChannel extends LiveActivityChannel {
   Future<void> stop(int lease) async => calls.add('stop');
 }
 
+/// A channel whose startBoard round-trip completes only when the test says
+/// so, to interleave a second arrivals frame inside the first start's await
+/// gap (Bloc's default event transformer is concurrent, so a second
+/// BoardArrivalsReceived handler can run before the first one's await
+/// resumes).
+class _SlowStartChannel extends LiveActivityChannel {
+  final calls = <String>[];
+  final startGates = <Completer<void>>[];
+  int _lease = 0;
+
+  @override
+  Future<int> startBoard(String stopName, List<StopBoardRow> rows) async {
+    calls.add('start');
+    final gate = Completer<void>();
+    startGates.add(gate);
+    await gate.future;
+    return ++_lease;
+  }
+
+  @override
+  Future<void> updateBoard(
+    int lease,
+    String stopName,
+    List<StopBoardRow> rows,
+  ) async => calls.add('update');
+
+  @override
+  Future<void> stop(int lease) async => calls.add('stop');
+}
+
 BusStopArrival _arrival(
   String route,
   String dest,
@@ -192,6 +222,42 @@ void main() {
     expect(b.state.active, isFalse);
     await b.close();
   });
+
+  test(
+    'a second arrivals frame during the first startBoard round-trip does '
+    'not start a second board (no double start)',
+    () async {
+      final slow = _SlowStartChannel();
+      final b = StopBoardBloc(
+        channel: slow,
+        session: session,
+        etaSource: (_, _) => etaCtrl.stream,
+      )..add(const StopBoardStarted('Taipei', 'stop-1', '測試站'));
+      await Future<void>.delayed(Duration.zero);
+
+      // Frame 1 kicks off startBoard, which parks on its gate.
+      etaCtrl.add([_arrival('20', '公館', 0)]);
+      await Future<void>.delayed(Duration.zero);
+      expect(slow.calls, ['start']);
+
+      // Frame 2 lands while the first startBoard is still in flight. Bloc's
+      // default transformer runs handlers concurrently, so without a
+      // synchronous guard this would mint a second lease via startBoard.
+      etaCtrl.add([_arrival('20', '公館', 30)]);
+      await Future<void>.delayed(Duration.zero);
+      expect(slow.calls, ['start']);
+      expect(slow.startGates.length, 1);
+
+      // Release the round-trip; subsequent frames update the single board.
+      slow.startGates.single.complete();
+      await Future<void>.delayed(Duration.zero);
+      etaCtrl.add([_arrival('20', '公館', 60)]);
+      await Future<void>.delayed(Duration.zero);
+      expect(slow.calls, ['start', 'update']);
+
+      await b.close();
+    },
+  );
 
   test('close cancels a live subscription without leaking', () async {
     final b = bloc()..add(const StopBoardStarted('Taipei', 'stop-1', '測試站'));

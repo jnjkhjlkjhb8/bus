@@ -125,8 +125,9 @@ void main() {
   test(
     'default (no positions) reaches riding without touching geolocator',
     () async {
-      // positions omitted → _subscribePositions returns early, so no geolocator
-      // platform call is made (that would throw MissingPluginException in tests).
+      // positions omitted → _subscribePositions returns early, so no
+      // geolocator platform call is made (that would throw
+      // MissingPluginException in tests).
       final b = bloc()..add(JourneyStarted(legs: [_leg('307')]));
       await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
       b.add(const BoardConfirmed());

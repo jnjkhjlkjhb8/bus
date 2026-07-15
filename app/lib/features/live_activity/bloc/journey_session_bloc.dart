@@ -93,7 +93,15 @@ class JourneySessionBloc
       event.plate,
       generation,
     );
-    _lease = await _channel?.start(_content(state));
+    final lease = await _channel?.start(_content(state));
+    if (generation == _generation) {
+      _lease = lease;
+    } else if (lease != null) {
+      // Another journey started (or this one was cancelled — _end bumps the
+      // generation) while the start round-trip was in flight: nothing will
+      // ever stop this lease through _end, so release it here.
+      unawaited(_channel?.stop(lease));
+    }
   }
 
   void _onBoarded(BoardConfirmed _, Emitter<JourneySessionState> emit) {
@@ -191,6 +199,10 @@ class JourneySessionBloc
     unawaited(_posSub?.cancel());
     _timeout?.cancel();
     _linger?.cancel();
+    // Invalidates any in-flight events and, crucially, an _onStarted start
+    // round-trip that hasn't resolved yet — its generation check will see
+    // the bump and release the lease instead of adopting it post-mortem.
+    _generation++;
     emit(state.copyWith(phase: JourneyPhase.done, suggestBoarding: false));
     final lease = _lease;
     _lease = null;
