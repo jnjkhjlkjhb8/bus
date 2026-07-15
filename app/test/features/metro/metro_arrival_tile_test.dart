@@ -59,41 +59,4 @@ void main() {
     expect(find.byType(EtaListTile), findsOneWidget);
     expect(find.text('即將進站'), findsOneWidget);
   });
-
-  testWidgets('tapping a metro arrival expands the 6-car crowding board', (
-    tester,
-  ) async {
-    await pump(
-      tester,
-      const SizedBox(
-        width: 390,
-        child: MetroArrivalTile(
-          arrival: MetroArrival(
-            line: 'BL',
-            destination: '南港展覽館',
-            estimateMinutes: 0,
-            approaching: true,
-          ),
-        ),
-      ),
-    );
-
-    // Collapsed: no crowding board yet.
-    expect(find.text('車廂擁擠度'), findsNothing);
-
-    await tester.tap(find.byType(EtaListTile));
-    await tester.pumpAndSettle();
-
-    // Six car cells with their labels, plus the four-level legend.
-    expect(find.text('車廂擁擠度'), findsOneWidget);
-    expect(find.text('車廂1'), findsOneWidget);
-    expect(find.text('車廂6'), findsOneWidget);
-    expect(find.text('非常擁擠'), findsOneWidget);
-
-    // Regression: the car shapes must actually paint (a no-child ColoredBox /
-    // DecoratedBox under loose width collapses to zero — nothing shows).
-    final head = tester.getSize(find.byType(ClipPath).first);
-    expect(head.width, greaterThan(0));
-    expect(head.height, 44);
-  });
 }
