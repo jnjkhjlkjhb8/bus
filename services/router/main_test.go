@@ -58,6 +58,36 @@ func limiterContext(address string) context.Context {
 	return peer.NewContext(context.Background(), &peer.Peer{Addr: limiterTestAddr(address)})
 }
 
+type failingGRPCServer struct {
+	err    error
+	events *[]string
+}
+
+func (s failingGRPCServer) Serve(net.Listener) error {
+	*s.events = append(*s.events, "serve")
+	return s.err
+}
+
+func TestRouterRuntimeReturnsServeErrorAfterCleanup(t *testing.T) {
+	wantErr := errors.New("serve failed")
+	events := make([]string, 0, 5)
+	runtime := &routerRuntime{}
+	err := runtime.run(func() error {
+		for _, name := range []string{"sentry", "redis", "database", "maas"} {
+			name := name
+			runtime.addCleanup(func() { events = append(events, "cleanup "+name) })
+		}
+		return serveGRPC(failingGRPCServer{err: wantErr, events: &events}, nil)
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("run error = %v, want wrapped %v", err, wantErr)
+	}
+	wantEvents := []string{"serve", "cleanup maas", "cleanup database", "cleanup redis", "cleanup sentry"}
+	if fmt.Sprint(events) != fmt.Sprint(wantEvents) {
+		t.Fatalf("lifecycle events = %v, want %v", events, wantEvents)
+	}
+}
+
 func TestRateLimitInterceptorScopesQuotaByMethodAndCaller(t *testing.T) {
 	rl := newRateLimiter()
 	interceptor := rateLimitInterceptor(rl, 1, time.Minute)

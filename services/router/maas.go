@@ -50,7 +50,14 @@ type maasCache interface {
 
 type redisMaasCache struct{ client *redisv9.Client }
 
-func newRedisMaasCache(legacy *legacyredis.Options) *redisMaasCache {
+func v9SocketTimeout(effectiveLegacyTimeout time.Duration) time.Duration {
+	if effectiveLegacyTimeout == 0 {
+		return -1
+	}
+	return effectiveLegacyTimeout
+}
+
+func redisMaasOptions(legacy *legacyredis.Options) *redisv9.Options {
 	maxRetries := legacy.MaxRetries
 	if maxRetries == 0 {
 		// v6 defaults to no command retries, while v9 uses three when this is
@@ -61,7 +68,7 @@ func newRedisMaasCache(legacy *legacyredis.Options) *redisMaasCache {
 	if tlsConfig != nil {
 		tlsConfig = tlsConfig.Clone()
 	}
-	return &redisMaasCache{client: redisv9.NewClient(&redisv9.Options{
+	return &redisv9.Options{
 		Network: legacy.Network,
 		Addr:    legacy.Addr,
 
@@ -75,8 +82,8 @@ func newRedisMaasCache(legacy *legacyredis.Options) *redisMaasCache {
 		MaxRetryBackoff: legacy.MaxRetryBackoff,
 
 		DialTimeout:  legacy.DialTimeout,
-		ReadTimeout:  legacy.ReadTimeout,
-		WriteTimeout: legacy.WriteTimeout,
+		ReadTimeout:  v9SocketTimeout(legacy.ReadTimeout),
+		WriteTimeout: v9SocketTimeout(legacy.WriteTimeout),
 
 		PoolSize:        legacy.PoolSize,
 		MinIdleConns:    legacy.MinIdleConns,
@@ -88,7 +95,11 @@ func newRedisMaasCache(legacy *legacyredis.Options) *redisMaasCache {
 		Protocol:              2,
 		ContextTimeoutEnabled: true,
 		DisableIdentity:       true,
-	})}
+	}
+}
+
+func newRedisMaasCache(legacy *legacyredis.Options) *redisMaasCache {
+	return &redisMaasCache{client: redisv9.NewClient(redisMaasOptions(legacy))}
 }
 
 func (c *redisMaasCache) Get(ctx context.Context, key string) ([]byte, error) {

@@ -297,6 +297,10 @@ func TestRedisMaasCacheCopiesLegacyConnectionOptionsAndOwnsClient(t *testing.T) 
 		PoolSize: 9, MinIdleConns: 3, PoolTimeout: 43 * time.Millisecond,
 		MaxConnAge: 47 * time.Millisecond, IdleTimeout: 53 * time.Millisecond, TLSConfig: tlsConfig,
 	}
+	mappedOptions := redisMaasOptions(legacyOptions)
+	if mappedOptions.ReadTimeout != legacyOptions.ReadTimeout || mappedOptions.WriteTimeout != legacyOptions.WriteTimeout {
+		t.Fatalf("positive timeout mapping = read %v write %v, want %v/%v", mappedOptions.ReadTimeout, mappedOptions.WriteTimeout, legacyOptions.ReadTimeout, legacyOptions.WriteTimeout)
+	}
 	cache := newRedisMaasCache(legacyOptions)
 	options := cache.client.Options()
 	if options.Network != legacyOptions.Network || options.Addr != legacyOptions.Addr ||
@@ -323,6 +327,17 @@ func TestRedisMaasCacheCopiesLegacyConnectionOptionsAndOwnsClient(t *testing.T) 
 	}
 	if err := cache.client.Ping(context.Background()).Err(); !errors.Is(err, redisv9.ErrClosed) {
 		t.Fatalf("owned Redis client remained usable after close: %v", err)
+	}
+}
+
+func TestRedisMaasCachePreservesEffectiveDisabledLegacyTimeouts(t *testing.T) {
+	options := redisMaasOptions(&legacyredis.Options{
+		Addr:         "redis.internal:6379",
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+	})
+	if options.ReadTimeout != -1 || options.WriteTimeout != -1 {
+		t.Fatalf("effective disabled v6 timeouts became read=%v write=%v, want -1/-1 in v9", options.ReadTimeout, options.WriteTimeout)
 	}
 }
 

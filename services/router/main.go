@@ -9,7 +9,9 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -274,80 +276,115 @@ func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.Un
 	}
 }
 
-func main() {
-	defer obs.Init("router")()
-	httpConfig, err := httpServerConfigFromEnv()
-	if err != nil {
-		log.Fatalf("[HTTP] configuration failed before startup: %v", err)
-	}
-	rc := shared.ConnectRedis()
-	live := newLiveHub(redisLiveSource{rc: rc}, int(shared.EnvInt32("ROUTER_MAX_LIVE_STREAMS", 2000)))
-	db := shared.ConnectDB("ROUTER_DB_MAX_CONNS", 20)
-	go logPoolStats(db)
-	// MaaS route planning is the router's sole, deliberate TDX carve-out: it is a
-	// request/response proxy, not cacheable live data, so it stays on the read
-	// path (ADR-0005 amendment). Every other formerly-live TDX fetch, including the
-	// THSR seat refresh, now runs in services/functions. This client exists only
-	// for MaaS.
-	tdx := shared.NewTDXClient(shared.TDXConfig{
-		Store:  shared.RedisTDXStore{RC: rc},
-		IMSKey: shared.TDXLegacyIMSKey,
-	})
-	maasCache := newRedisMaasCache(rc.Options())
+type grpcServing interface {
+	Serve(net.Listener) error
+}
+
+type routerRuntime struct {
+	cleanups []func()
+}
+
+func (r *routerRuntime) addCleanup(cleanup func()) {
+	r.cleanups = append(r.cleanups, cleanup)
+}
+
+func (r *routerRuntime) run(start func() error) error {
 	defer func() {
-		if err := maasCache.Close(); err != nil {
-			log.Infof("[MAAS] action=cache_close event=failed error=%v", err)
+		for index := len(r.cleanups) - 1; index >= 0; index-- {
+			r.cleanups[index]()
 		}
 	}()
-	defer func(rc *redis.Client) {
-		err := rc.Close()
+	return start()
+}
+
+func serveGRPC(server grpcServing, listener net.Listener) error {
+	if err := server.Serve(listener); err != nil {
+		return fmt.Errorf("serve gRPC: %w", err)
+	}
+	return nil
+}
+
+func run() error {
+	runtime := &routerRuntime{}
+	return runtime.run(func() error {
+		runtime.addCleanup(obs.Init("router"))
+		httpConfig, err := httpServerConfigFromEnv()
 		if err != nil {
-			log.Infof("[REDIS] action=close event=failed error=%v", err)
+			return fmt.Errorf("HTTP configuration failed before startup: %w", err)
 		}
-	}(rc)
-	defer db.Close()
-	lis, err := net.Listen("tcp", "0.0.0.0:50051")
-	if err != nil {
-		log.Fatalf("failed to listen: %v", err)
-	}
-	rl := newRateLimiter()
-	tlsCredentials, err := firebaseTLSCredentialsFromEnv()
-	if err != nil {
-		log.Fatalf("gRPC TLS initialization failed: %v", err)
-	}
-	appCheckVerifier, enforceAppCheck, err := firebaseAppCheckFromEnv(context.Background())
-	if err != nil {
-		log.Fatalf("Firebase Admin initialization failed: %v", err)
-	}
-	serverOptions := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(productionUnaryInterceptors(appCheckVerifier, enforceAppCheck)...),
-		grpc.ChainStreamInterceptor(
-			obs.StreamInterceptor(),
-			rateLimitStreamInterceptor(rl, 30, time.Second),
-			appCheckStreamInterceptor(appCheckVerifier, enforceAppCheck),
-		),
-	}
-	if tlsCredentials != nil {
-		serverOptions = append(serverOptions, grpc.Creds(tlsCredentials))
-	}
-	grpcServer := grpc.NewServer(serverOptions...)
-	pb.RegisterBus_Route_ServiceServer(grpcServer, &BusRouteserver{db: db, rc: rc, cache: newTTLCache(), live: live})
-	pb.RegisterBus_Station_ServiceServer(grpcServer, &BusStationserver{db: db, rc: rc, live: live})
-	pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: newTTLCache(), live: live})
-	pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{db: db, rc: rc, live: live})
-	pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, rc: rc, live: live})
-	pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc, live: live})
-	pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc, live: live})
-	pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, rc: rc, live: live})
-	nearbyRouter := newOSRMWalkingRouter(resty.New().SetTimeout(5*time.Second), "http://osrm:5000")
-	pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{discovery: newNearbyDiscovery(newPostgresNearbyStore(db), nearbyRouter)})
-	pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
-	pb.RegisterMaasServiceServer(grpcServer, newMaasServerWithCache(maasCache, db, tdx, defaultMaasSharedWorkConfig))
-	pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
-	go startHTTPServer(db, live, httpConfig)
-	log.Infof("gRPC server is running on port %d", 50051)
-	if err := grpcServer.Serve(lis); err != nil {
-		log.Infof("failed to serve: %v", err)
-		return
+		rc := shared.ConnectRedis()
+		runtime.addCleanup(func() {
+			if err := rc.Close(); err != nil {
+				log.Infof("[REDIS] action=close event=failed error=%v", err)
+			}
+		})
+		live := newLiveHub(redisLiveSource{rc: rc}, int(shared.EnvInt32("ROUTER_MAX_LIVE_STREAMS", 2000)))
+		db := shared.ConnectDB("ROUTER_DB_MAX_CONNS", 20)
+		runtime.addCleanup(db.Close)
+		go logPoolStats(db)
+		// MaaS route planning is the router's sole, deliberate TDX carve-out: it is a
+		// request/response proxy, not cacheable live data, so it stays on the read
+		// path (ADR-0005 amendment). Every other formerly-live TDX fetch, including the
+		// THSR seat refresh, now runs in services/functions. This client exists only
+		// for MaaS.
+		tdx := shared.NewTDXClient(shared.TDXConfig{
+			Store:  shared.RedisTDXStore{RC: rc},
+			IMSKey: shared.TDXLegacyIMSKey,
+		})
+		maasCache := newRedisMaasCache(rc.Options())
+		runtime.addCleanup(func() {
+			if err := maasCache.Close(); err != nil {
+				log.Infof("[MAAS] action=cache_close event=failed error=%v", err)
+			}
+		})
+		lis, err := net.Listen("tcp", "0.0.0.0:50051")
+		if err != nil {
+			return fmt.Errorf("listen for gRPC: %w", err)
+		}
+		runtime.addCleanup(func() { _ = lis.Close() })
+		rl := newRateLimiter()
+		tlsCredentials, err := firebaseTLSCredentialsFromEnv()
+		if err != nil {
+			return fmt.Errorf("gRPC TLS initialization failed: %w", err)
+		}
+		appCheckVerifier, enforceAppCheck, err := firebaseAppCheckFromEnv(context.Background())
+		if err != nil {
+			return fmt.Errorf("Firebase Admin initialization failed: %w", err)
+		}
+		serverOptions := []grpc.ServerOption{
+			grpc.ChainUnaryInterceptor(productionUnaryInterceptors(appCheckVerifier, enforceAppCheck)...),
+			grpc.ChainStreamInterceptor(
+				obs.StreamInterceptor(),
+				rateLimitStreamInterceptor(rl, 30, time.Second),
+				appCheckStreamInterceptor(appCheckVerifier, enforceAppCheck),
+			),
+		}
+		if tlsCredentials != nil {
+			serverOptions = append(serverOptions, grpc.Creds(tlsCredentials))
+		}
+		grpcServer := grpc.NewServer(serverOptions...)
+		pb.RegisterBus_Route_ServiceServer(grpcServer, &BusRouteserver{db: db, rc: rc, cache: newTTLCache(), live: live})
+		pb.RegisterBus_Station_ServiceServer(grpcServer, &BusStationserver{db: db, rc: rc, live: live})
+		pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: newTTLCache(), live: live})
+		pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{db: db, rc: rc, live: live})
+		pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, rc: rc, live: live})
+		pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc, live: live})
+		pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc, live: live})
+		pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, rc: rc, live: live})
+		nearbyRouter := newOSRMWalkingRouter(resty.New().SetTimeout(5*time.Second), "http://osrm:5000")
+		pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{discovery: newNearbyDiscovery(newPostgresNearbyStore(db), nearbyRouter)})
+		pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
+		pb.RegisterMaasServiceServer(grpcServer, newMaasServerWithCache(maasCache, db, tdx, defaultMaasSharedWorkConfig))
+		pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
+		go startHTTPServer(db, live, httpConfig)
+		log.Infof("gRPC server is running on port %d", 50051)
+		return serveGRPC(grpcServer, lis)
+	})
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Infof("router exited with error: %v", err)
+		os.Exit(1)
 	}
 }
