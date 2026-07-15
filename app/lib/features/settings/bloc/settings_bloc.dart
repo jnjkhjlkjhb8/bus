@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/firebase/firebase_bootstrap.dart';
 import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
+import 'package:wheres_the_car/core/powersync/powersync_service.dart';
 import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 import 'package:wheres_the_car/features/settings/bloc/settings_event.dart';
 import 'package:wheres_the_car/features/settings/bloc/settings_state.dart';
@@ -18,13 +22,21 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
   SettingsBloc({
     SettingsRepository? settings,
     PushUpdater? updatePushPreference,
+    Future<PackageInfo> Function()? packageInfoLoader,
+    DateTime? Function()? lastSyncedAtOf,
   }) : this._(
-        settings ?? SettingsRepository.instance,
-        updatePushPreference ?? FirebaseBootstrap.updatePushPreference,
-      );
+         settings ?? SettingsRepository.instance,
+         updatePushPreference ?? FirebaseBootstrap.updatePushPreference,
+         packageInfoLoader ?? PackageInfo.fromPlatform,
+         lastSyncedAtOf ?? (() => PowerSyncService.instance.lastSyncedAt),
+       );
 
-  SettingsBloc._(this._settings, this._updatePush)
-    : super(_initialState(_settings)) {
+  SettingsBloc._(
+    this._settings,
+    this._updatePush,
+    this._packageInfoLoader,
+    this._lastSyncedAtOf,
+  ) : super(_initialState(_settings)) {
     on<AppearanceSelected>(_onAppearanceSelected);
     on<LanguageSelected>(_onLanguageSelected);
     on<LargeTextToggled>(_onLargeTextToggled);
@@ -33,10 +45,53 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
     on<AnalyticsToggled>(_onAnalyticsToggled);
     on<CrashlyticsToggled>(_onCrashlyticsToggled);
     on<VersionTapped>(_onVersionTapped);
+    on<AppMetadataLoaded>(_onAppMetadataLoaded);
+    unawaited(_loadMetadata());
   }
 
   final SettingsRepository _settings;
   final PushUpdater _updatePush;
+  final Future<PackageInfo> Function() _packageInfoLoader;
+  final DateTime? Function() _lastSyncedAtOf;
+
+  /// Reads the real app version and PowerSync freshness (F46) and emits them
+  /// once both are known. Each loader is guarded independently so, e.g., a
+  /// `PackageInfo` platform-channel failure doesn't also blank out a freshly
+  /// read sync timestamp.
+  Future<void> _loadMetadata() async {
+    var version = '';
+    try {
+      version = (await _packageInfoLoader()).version;
+    } on Object catch (_) {
+      // Leave the row blank rather than showing a stale/fake version.
+    }
+    DateTime? lastSyncedAt;
+    try {
+      lastSyncedAt = _lastSyncedAtOf();
+    } on Object catch (_) {
+      // PowerSync not initialized yet, or unavailable in this test/build.
+    }
+    if (!isClosed) {
+      add(
+        AppMetadataLoaded(
+          appVersion: version,
+          powerSyncLastSyncedAt: lastSyncedAt,
+        ),
+      );
+    }
+  }
+
+  void _onAppMetadataLoaded(
+    AppMetadataLoaded e,
+    Emitter<SettingsState> emit,
+  ) {
+    emit(
+      state.copyWith(
+        appVersion: e.appVersion,
+        powerSyncLastSyncedAt: e.powerSyncLastSyncedAt,
+      ),
+    );
+  }
 
   static SettingsState _initialState(SettingsRepository s) => SettingsState(
     appearance: Appearance.fromKey(s.appearanceMode),

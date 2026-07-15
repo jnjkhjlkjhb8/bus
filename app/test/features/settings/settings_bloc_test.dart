@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:wheres_the_car/data/repositories/settings_repository.dart';
 import 'package:wheres_the_car/features/settings/bloc/settings_bloc.dart';
 import 'package:wheres_the_car/features/settings/bloc/settings_event.dart';
@@ -8,6 +9,14 @@ import '../../support/helpers/in_memory_settings_store.dart';
 
 Future<bool> _grant({required bool requested}) async => requested;
 
+Future<PackageInfo> _fakePackageInfo({String version = '2.4.1'}) async =>
+    PackageInfo(
+      appName: 'wheres_the_car',
+      packageName: 'tw.gov.bus',
+      version: version,
+      buildNumber: '1',
+    );
+
 void main() {
   SettingsRepository repo([Map<String, Object?>? initial]) =>
       SettingsRepository(store: InMemorySettingsStore(initial));
@@ -15,10 +24,14 @@ void main() {
   SettingsBloc build({
     SettingsRepository? settings,
     PushUpdater? updatePushPreference,
+    Future<PackageInfo> Function()? packageInfoLoader,
+    DateTime? Function()? lastSyncedAtOf,
   }) {
     final bloc = SettingsBloc(
       settings: settings ?? repo(),
       updatePushPreference: updatePushPreference ?? _grant,
+      packageInfoLoader: packageInfoLoader ?? _fakePackageInfo,
+      lastSyncedAtOf: lastSyncedAtOf ?? () => null,
     );
     addTearDown(bloc.close);
     return bloc;
@@ -37,6 +50,36 @@ void main() {
       expect(bloc.state.crashlyticsEnabled, isTrue);
       expect(bloc.state.largeText, isFalse);
       expect(bloc.state.liveActivityEnabled, isTrue);
+      expect(bloc.state.appVersion, isEmpty);
+      expect(bloc.state.powerSyncLastSyncedAt, isNull);
+    });
+
+    test('loads the real app version from PackageInfo (F46)', () async {
+      final bloc = build(
+        packageInfoLoader: () => _fakePackageInfo(version: '3.2.1'),
+      );
+      await bloc.stream.first;
+
+      expect(bloc.state.appVersion, '3.2.1');
+    });
+
+    test('loads real PowerSync freshness (F46)', () async {
+      final synced = DateTime.utc(2026, 7, 16, 6);
+      final bloc = build(lastSyncedAtOf: () => synced);
+      await bloc.stream.first;
+
+      expect(bloc.state.powerSyncLastSyncedAt, synced);
+    });
+
+    test('falls back to empty metadata when loaders throw', () async {
+      final bloc = build(
+        packageInfoLoader: () async => throw Exception('boom'),
+        lastSyncedAtOf: () => throw Exception('boom'),
+      );
+      await bloc.stream.first;
+
+      expect(bloc.state.appVersion, isEmpty);
+      expect(bloc.state.powerSyncLastSyncedAt, isNull);
     });
 
     test('hydrates from persisted values', () {

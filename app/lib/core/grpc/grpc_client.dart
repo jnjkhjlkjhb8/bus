@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:grpc/grpc.dart';
+import 'package:wheres_the_car/core/grpc/grpc_deadline_interceptor.dart';
 import 'package:wheres_the_car/core/grpc/grpc_error_interceptor.dart';
 import 'package:wheres_the_car/data/generated/alert.pbgrpc.dart';
 import 'package:wheres_the_car/data/generated/bike.pbgrpc.dart';
@@ -87,6 +88,7 @@ class GrpcClient {
   }();
 
   static final List<ClientInterceptor> _interceptors = [
+    GrpcDeadlineInterceptor(),
     GrpcErrorInterceptor(),
   ];
 

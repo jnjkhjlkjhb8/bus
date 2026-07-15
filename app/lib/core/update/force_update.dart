@@ -35,14 +35,40 @@ List<int>? _segments(String v) {
   return out.isEmpty ? null : out;
 }
 
+/// Store hosts a `store_url_ios`/`store_url_android` Remote Config value is
+/// allowed to point at.
+const _allowedStoreHosts = {'apps.apple.com', 'play.google.com'};
+
+/// True when [url] is safe to open as a store link: https and an official
+/// Apple/Google store host (F44). Remote Config is server-controlled but not
+/// a trusted boundary for arbitrary URL schemes — a compromised or
+/// misconfigured console value must never reach `launchUrl` with e.g. an
+/// `intent:` or `javascript:` scheme.
+bool isAllowedStoreUrl(Uri url) =>
+    url.scheme == 'https' && _allowedStoreHosts.contains(url.host);
+
 /// Gates the whole app: renders [child] normally, but swaps in a blocking
 /// [_ForceUpdateScreen] when the running version is below
-/// `min_supported_version`. The check runs once; while it's pending the child
-/// shows (never a blank flash) since the common case is up-to-date.
+/// `min_supported_version`. The check runs on mount and again on every
+/// activated Remote Config revision (F16), so a bar raised after launch is
+/// enforced without a relaunch. While a check is pending the child shows
+/// (never a blank flash) since the common case is up-to-date.
 class ForceUpdateGate extends StatefulWidget {
-  const ForceUpdateGate({required this.child, super.key});
+  const ForceUpdateGate({
+    required this.child,
+    super.key,
+    this.revisions,
+    this.minVersionOf,
+  });
 
   final Widget child;
+
+  /// Injectable for tests; defaults to [AppConfig.revisions()].
+  final Stream<void>? revisions;
+
+  /// Injectable for tests; defaults to reading `min_supported_version` from
+  /// [AppConfig].
+  final String Function()? minVersionOf;
 
   @override
   State<ForceUpdateGate> createState() => _ForceUpdateGateState();
@@ -50,18 +76,31 @@ class ForceUpdateGate extends StatefulWidget {
 
 class _ForceUpdateGateState extends State<ForceUpdateGate> {
   String? _current;
+  StreamSubscription<void>? _revisionSub;
+
+  String get _minVersion =>
+      (widget.minVersionOf ??
+      () => AppConfig.getString('min_supported_version'))();
 
   @override
   void initState() {
     super.initState();
     unawaited(_check());
+    _revisionSub = (widget.revisions ?? AppConfig.revisions()).listen(
+      (_) => unawaited(_check()),
+    );
+  }
+
+  @override
+  void dispose() {
+    unawaited(_revisionSub?.cancel());
+    super.dispose();
   }
 
   Future<void> _check() async {
     try {
       final info = await PackageInfo.fromPlatform();
-      final min = AppConfig.getString('min_supported_version');
-      if (mounted && isBelowMinVersion(info.version, min)) {
+      if (mounted && isBelowMinVersion(info.version, _minVersion)) {
         setState(() => _current = info.version);
       }
     } on Object catch (_) {
@@ -90,17 +129,19 @@ class _ForceUpdateScreen extends StatelessWidget {
       ? AppConfig.getString('store_url_ios')
       : AppConfig.getString('store_url_android');
 
-  Future<void> _openStore() async {
-    final url = Uri.tryParse(_storeUrl);
-    if (url == null) return;
-    await launchUrl(url, mode: LaunchMode.externalApplication);
-  }
-
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final minVersion = AppConfig.getString('min_supported_version');
     final storeUrl = _storeUrl;
+    final parsedStoreUrl = Uri.tryParse(storeUrl);
+    // Only render the direct-open button for a URL that passes the
+    // allowlist (F44); anything else falls back to the "search the store"
+    // copy instead of a button that silently no-ops on tap.
+    final allowedStoreUrl =
+        parsedStoreUrl != null && isAllowedStoreUrl(parsedStoreUrl)
+        ? parsedStoreUrl
+        : null;
 
     return PopScope(
       canPop: false,
@@ -135,9 +176,10 @@ class _ForceUpdateScreen extends StatelessWidget {
                   style: AppTextStyles.memo.copyWith(color: cs.outline),
                 ),
                 const Spacer(flex: 3),
-                if (storeUrl.isNotEmpty)
+                if (allowedStoreUrl case final url?)
                   FilledButton(
-                    onPressed: _openStore,
+                    onPressed: () =>
+                        launchUrl(url, mode: LaunchMode.externalApplication),
                     style: FilledButton.styleFrom(
                       minimumSize: const Size(double.infinity, 50),
                     ),

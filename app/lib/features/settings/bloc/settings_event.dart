@@ -74,3 +74,19 @@ class CrashlyticsToggled extends SettingsEvent {
 class VersionTapped extends SettingsEvent {
   const VersionTapped();
 }
+
+/// Carries the real app version and PowerSync freshness once both loaders
+/// settle (F46). Fired once from the bloc constructor; never dispatched by
+/// the UI.
+class AppMetadataLoaded extends SettingsEvent {
+  const AppMetadataLoaded({
+    required this.appVersion,
+    required this.powerSyncLastSyncedAt,
+  });
+
+  final String appVersion;
+  final DateTime? powerSyncLastSyncedAt;
+
+  @override
+  List<Object?> get props => [appVersion, powerSyncLastSyncedAt];
+}

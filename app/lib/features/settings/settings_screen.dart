@@ -4,7 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
 import 'package:material_symbols_icons/symbols.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:wheres_the_car/app/router/app_routes.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
@@ -20,12 +22,24 @@ import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/app_switch.dart';
 
 class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key, this.updatePushPreference, this.settings});
+  const SettingsScreen({
+    super.key,
+    this.updatePushPreference,
+    this.settings,
+    this.packageInfoLoader,
+    this.lastSyncedAtOf,
+  });
 
   final PushUpdater? updatePushPreference;
 
   /// Injectable for tests; defaults to the shared repository instance.
   final SettingsRepository? settings;
+
+  /// Injectable for tests; forwarded to [SettingsBloc].
+  final Future<PackageInfo> Function()? packageInfoLoader;
+
+  /// Injectable for tests; forwarded to [SettingsBloc].
+  final DateTime? Function()? lastSyncedAtOf;
 
   @override
   Widget build(BuildContext context) {
@@ -33,10 +47,27 @@ class SettingsScreen extends StatelessWidget {
       create: (_) => SettingsBloc(
         settings: settings,
         updatePushPreference: updatePushPreference,
+        packageInfoLoader: packageInfoLoader,
+        lastSyncedAtOf: lastSyncedAtOf,
       ),
       child: const _SettingsView(),
     );
   }
+}
+
+/// Formats [dt] for the "資料庫狀態" freshness row: same-day syncs read
+/// "今日 HH:mm"; anything older reads "MM/dd HH:mm" so a stale sync is
+/// visibly stale rather than silently rendered like a fresh one.
+String formatSyncFreshness(DateTime? dt) {
+  if (dt == null) return '尚未同步';
+  final local = dt.toLocal();
+  final now = DateTime.now();
+  final isToday =
+      local.year == now.year &&
+      local.month == now.month &&
+      local.day == now.day;
+  final time = DateFormat('HH:mm').format(local);
+  return isToday ? '今日 $time' : '${DateFormat('MM/dd').format(local)} $time';
 }
 
 class _SettingsView extends StatelessWidget {
@@ -59,23 +90,6 @@ class _SettingsView extends StatelessWidget {
         orElse: () => current,
       );
       context.read<SettingsBloc>().add(AppearanceSelected(picked));
-    }
-  }
-
-  Future<void> _pickLanguage(BuildContext context, Language current) async {
-    final result = await context.push<String>(
-      AppRoutes.settingsLanguage,
-      extra: {
-        'options': Language.values.map((e) => e.label).toList(),
-        'selected': current.label,
-      },
-    );
-    if (result != null && context.mounted) {
-      final picked = Language.values.firstWhere(
-        (e) => e.label == result,
-        orElse: () => current,
-      );
-      context.read<SettingsBloc>().add(LanguageSelected(picked));
     }
   }
 
@@ -108,12 +122,13 @@ class _SettingsView extends StatelessWidget {
                 hasChevron: 1,
                 onTap: () => _pickAppearance(context, state.appearance),
               ),
-              _SettingsRow(
+              // Language selection is memory-only (not wired to
+              // MaterialApp's locale), so the picker is disabled rather than
+              // offered as a working affordance (F48).
+              const _SettingsRow(
                 icon: Icons.language_rounded,
                 label: '語言',
-                value: state.language.label,
-                hasChevron: 1,
-                onTap: () => _pickLanguage(context, state.language),
+                comingSoon: true,
               ),
               _SettingsSwitchRow(
                 icon: Icons.text_fields_rounded,
@@ -167,28 +182,28 @@ class _SettingsView extends StatelessWidget {
           _SettingsSection(
             title: '關於',
             children: [
-              _SettingsRow(
+              // These destinations don't exist yet; a live chevron with an
+              // empty handler would be a dead affordance (F45), so each row
+              // is disabled with a static "即將推出" marker instead.
+              const _SettingsRow(
                 icon: Icons.help_outline_rounded,
                 label: '常見問題 FAQ',
-                hasChevron: 1,
-                onTap: () {},
+                comingSoon: true,
               ),
-              _SettingsRow(
+              const _SettingsRow(
                 icon: Icons.bug_report_outlined,
                 label: '回報問題',
-                hasChevron: 1,
-                onTap: () {},
+                comingSoon: true,
               ),
-              _SettingsRow(
+              const _SettingsRow(
                 icon: Icons.lock_outline_rounded,
                 label: '隱私權政策',
-                hasChevron: 1,
-                onTap: () {},
+                comingSoon: true,
               ),
               _SettingsRow(
                 icon: Icons.info_outline_rounded,
                 label: '目前版本',
-                value: '1.0.0',
+                value: state.appVersion.isEmpty ? '—' : state.appVersion,
                 onTap: () => bloc.add(const VersionTapped()),
               ),
               if (FirebaseGate.appEnv != 'prod' &&
@@ -201,15 +216,19 @@ class _SettingsView extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 16),
-          const _SettingsSection(
+          _SettingsSection(
             title: '資料庫狀態',
             children: [
               _SettingsRow(
                 icon: Symbols.database_rounded,
                 label: 'TDX 靜態資料',
-                value: '今日 06:00',
-                valueColor: AppTheme.statusArriving,
-                statusIcon: Icons.check_circle_rounded,
+                value: formatSyncFreshness(state.powerSyncLastSyncedAt),
+                valueColor: state.powerSyncLastSyncedAt == null
+                    ? null
+                    : AppTheme.statusArriving,
+                statusIcon: state.powerSyncLastSyncedAt == null
+                    ? null
+                    : Icons.check_circle_rounded,
               ),
             ],
           ),
@@ -258,42 +277,48 @@ class _SettingsSwitchRow extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final sw = AppSwitch(value: value, onChanged: onChanged);
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onChanged != null ? () => onChanged!(!value) : null,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 48),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: 20, color: cs.onSurfaceVariant),
-                const SizedBox(width: 8),
-              ],
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(label, style: AppTextStyles.bodyLarge),
-                    if (subtitle != null) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        subtitle!,
-                        style: AppTextStyles.bodySmall.copyWith(
-                          color: cs.onSurfaceVariant,
+    // MergeSemantics collapses the label Text and the Switch's own
+    // toggled-state node into a single semantics node, so a screen reader
+    // announces "label, on/off" once instead of two separate stops (F52).
+    return MergeSemantics(
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onChanged != null ? () => onChanged!(!value) : null,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 48),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                if (icon != null) ...[
+                  Icon(icon, size: 20, color: cs.onSurfaceVariant),
+                  const SizedBox(width: 8),
+                ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(label, style: AppTextStyles.bodyLarge),
+                      if (subtitle != null) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle!,
+                          style: AppTextStyles.bodySmall.copyWith(
+                            color: cs.onSurfaceVariant,
+                          ),
                         ),
-                      ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
-              ),
-              // Subtitle-less rows keep the base layout (switch flush to the
-              // label column); only the taller subtitle rows get the gap.
-              if (subtitle != null) const SizedBox(width: 12),
-              sw,
-            ],
+                // Subtitle-less rows keep the base layout (switch flush to
+                // the label column); only the taller subtitle rows get the
+                // gap.
+                if (subtitle != null) const SizedBox(width: 12),
+                sw,
+              ],
+            ),
           ),
         ),
       ),
@@ -362,6 +387,7 @@ class _SettingsRow extends StatelessWidget {
     this.statusIcon,
     this.hasChevron = 0,
     this.onTap,
+    this.comingSoon = false,
   });
   final IconData icon;
   final String label;
@@ -370,45 +396,65 @@ class _SettingsRow extends StatelessWidget {
   final IconData? statusIcon;
   final int hasChevron;
   final VoidCallback? onTap;
+
+  /// Renders a static, disabled "即將推出" marker instead of the usual
+  /// value/chevron and drops the tap handler, for a destination that
+  /// doesn't exist yet (F45, F48). Never pulses — the design system reserves
+  /// motion for live state, not placeholders.
+  final bool comingSoon;
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return SizedBox(
-      height: 44,
+    // Min-height, not fixed: a wrapped label under a large text scale grows
+    // the row instead of being clipped (F53).
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 44),
       child: Pressable(
-        onTap: onTap,
-        semanticLabel: label,
-        child: Row(
-          children: [
-            Icon(icon, size: 20, color: cs.onSurfaceVariant),
-            const SizedBox(width: 4),
-            Text(label, style: AppTextStyles.bodyLarge),
-            const Spacer(),
-            if (statusIcon != null) ...[
-              Icon(statusIcon, size: 18, color: valueColor),
+        onTap: comingSoon ? null : onTap,
+        semanticLabel: comingSoon ? '$label，即將推出' : label,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: cs.onSurfaceVariant),
               const SizedBox(width: 4),
-            ],
-            if (value != null)
-              Text(
-                value!,
-                textAlign: TextAlign.right,
-                style: AppTextStyles.heading2.copyWith(
-                  color: valueColor ?? cs.onSurface,
+              Expanded(child: Text(label, style: AppTextStyles.bodyLarge)),
+              if (comingSoon)
+                Text(
+                  '即將推出',
+                  style: AppTextStyles.bodySmall.copyWith(
+                    color: cs.onSurfaceVariant,
+                  ),
+                )
+              else ...[
+                if (statusIcon != null) ...[
+                  Icon(statusIcon, size: 18, color: valueColor),
+                  const SizedBox(width: 4),
+                ],
+                if (value != null)
+                  Text(
+                    value!,
+                    textAlign: TextAlign.right,
+                    style: AppTextStyles.heading2.copyWith(
+                      color: valueColor ?? cs.onSurface,
+                    ),
+                  ),
+              ],
+              if (!comingSoon && hasChevron == 1)
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 20,
+                  color: cs.onSurfaceVariant,
+                )
+              else if (!comingSoon && hasChevron == 2)
+                Icon(
+                  Symbols.arrow_insert_rounded,
+                  size: 20,
+                  color: cs.onSurfaceVariant,
                 ),
-              ),
-            if (hasChevron == 1)
-              Icon(
-                Icons.chevron_right_rounded,
-                size: 20,
-                color: cs.onSurfaceVariant,
-              )
-            else if (hasChevron == 2)
-              Icon(
-                Symbols.arrow_insert_rounded,
-                size: 20,
-                color: cs.onSurfaceVariant,
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );

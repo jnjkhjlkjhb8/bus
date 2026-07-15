@@ -10,7 +10,11 @@ import 'dart:async';
 /// with `T = SyncStatus` and
 /// `errorOf: (s) => s.downloadError ?? s.uploadError`.
 class PowerSyncHealth<T> {
-  PowerSyncHealth({required this.errorOf, required this.onError});
+  PowerSyncHealth({
+    required this.errorOf,
+    required this.onError,
+    this.freshnessOf,
+  });
 
   /// Extracts the current error (or `null` when healthy) from a status
   /// event.
@@ -19,8 +23,18 @@ class PowerSyncHealth<T> {
   /// Called with each newly observed, non-repeated error.
   final void Function(Object error) onError;
 
+  /// Extracts the last-successful-sync timestamp from a status event, or
+  /// `null` when the event carries no fresher timestamp (e.g. mid-download).
+  /// Optional: services that don't need freshness tracking can omit it.
+  final DateTime? Function(T status)? freshnessOf;
+
   StreamSubscription<T>? _subscription;
   String? _lastErrorKey;
+  DateTime? _lastSyncedAt;
+
+  /// Most recent successful-sync timestamp observed on the stream, or
+  /// `null` if [freshnessOf] wasn't supplied or no sync has completed yet.
+  DateTime? get lastSyncedAt => _lastSyncedAt;
 
   /// Subscribes to [stream], replacing any subscription owned by this
   /// instance. Safe to call repeatedly (e.g. on PowerSync re-init): the
@@ -30,6 +44,11 @@ class PowerSyncHealth<T> {
     unawaited(_subscription?.cancel());
     _lastErrorKey = null;
     _subscription = stream.listen((status) {
+      final freshness = freshnessOf;
+      if (freshness != null) {
+        final synced = freshness(status);
+        if (synced != null) _lastSyncedAt = synced;
+      }
       final error = errorOf(status);
       if (error == null) {
         _lastErrorKey = null;
@@ -48,5 +67,6 @@ class PowerSyncHealth<T> {
     await _subscription?.cancel();
     _subscription = null;
     _lastErrorKey = null;
+    _lastSyncedAt = null;
   }
 }

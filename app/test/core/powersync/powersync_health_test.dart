@@ -83,6 +83,82 @@ void main() {
       await controller.close();
     });
 
+    test('lastSyncedAt is null until freshnessOf reports a sync', () async {
+      final controller = StreamController<String?>();
+      final health = PowerSyncHealth<String?>(
+        errorOf: (e) => e,
+        onError: (_) {},
+      );
+
+      final stream = controller.stream;
+      health.listen(stream);
+      expect(health.lastSyncedAt, isNull);
+
+      await health.cancel();
+      await controller.close();
+    });
+
+    test('lastSyncedAt tracks the latest value from freshnessOf', () async {
+      final controller = StreamController<DateTime?>();
+      final synced = DateTime.utc(2026, 7, 16, 6);
+      final health = PowerSyncHealth<DateTime?>(
+        errorOf: (_) => null,
+        onError: (_) {},
+        freshnessOf: (status) => status,
+      );
+
+      final stream = controller.stream;
+      health.listen(stream);
+      controller.add(synced);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(health.lastSyncedAt, synced);
+      await health.cancel();
+      await controller.close();
+    });
+
+    test('lastSyncedAt keeps the previous value on a null status', () async {
+      final controller = StreamController<DateTime?>();
+      final synced = DateTime.utc(2026, 7, 16, 6);
+      final health = PowerSyncHealth<DateTime?>(
+        errorOf: (_) => null,
+        onError: (_) {},
+        freshnessOf: (status) => status,
+      );
+
+      final stream = controller.stream;
+      health.listen(stream);
+      controller
+        ..add(synced)
+        ..add(null);
+      await Future<void>.delayed(Duration.zero);
+
+      // A status event without a synced timestamp (e.g. mid-download)
+      // doesn't erase the last known-good freshness.
+      expect(health.lastSyncedAt, synced);
+      await health.cancel();
+      await controller.close();
+    });
+
+    test('cancel() clears lastSyncedAt', () async {
+      final controller = StreamController<DateTime?>();
+      final synced = DateTime.utc(2026, 7, 16, 6);
+      final health = PowerSyncHealth<DateTime?>(
+        errorOf: (_) => null,
+        onError: (_) {},
+        freshnessOf: (status) => status,
+      );
+
+      final stream = controller.stream;
+      health.listen(stream);
+      controller.add(synced);
+      await Future<void>.delayed(Duration.zero);
+      await health.cancel();
+
+      expect(health.lastSyncedAt, isNull);
+      await controller.close();
+    });
+
     test(
       'listen() again (reinit) cancels the previous subscription first',
       () async {

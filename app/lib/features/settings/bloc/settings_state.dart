@@ -42,6 +42,8 @@ class SettingsState extends Equatable {
     this.crashlyticsEnabled = true,
     this.largeText = false,
     this.liveActivityEnabled = true,
+    this.appVersion = '',
+    this.powerSyncLastSyncedAt,
   });
 
   final Appearance appearance;
@@ -55,6 +57,14 @@ class SettingsState extends Equatable {
   final bool largeText;
   final bool liveActivityEnabled;
 
+  /// Real running-app version from `PackageInfo`, empty until it loads
+  /// (F46). Never hardcoded.
+  final String appVersion;
+
+  /// Real PowerSync freshness, null until it loads or before the first sync
+  /// completes (F46). Never hardcoded.
+  final DateTime? powerSyncLastSyncedAt;
+
   SettingsState copyWith({
     Appearance? appearance,
     Language? language,
@@ -66,6 +76,8 @@ class SettingsState extends Equatable {
     bool? crashlyticsEnabled,
     bool? largeText,
     bool? liveActivityEnabled,
+    String? appVersion,
+    DateTime? powerSyncLastSyncedAt,
   }) => SettingsState(
     appearance: appearance ?? this.appearance,
     language: language ?? this.language,
@@ -77,6 +89,8 @@ class SettingsState extends Equatable {
     crashlyticsEnabled: crashlyticsEnabled ?? this.crashlyticsEnabled,
     largeText: largeText ?? this.largeText,
     liveActivityEnabled: liveActivityEnabled ?? this.liveActivityEnabled,
+    appVersion: appVersion ?? this.appVersion,
+    powerSyncLastSyncedAt: powerSyncLastSyncedAt ?? this.powerSyncLastSyncedAt,
   );
 
   @override
@@ -91,5 +105,7 @@ class SettingsState extends Equatable {
     crashlyticsEnabled,
     largeText,
     liveActivityEnabled,
+    appVersion,
+    powerSyncLastSyncedAt,
   ];
 }

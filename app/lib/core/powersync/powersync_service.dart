@@ -98,7 +98,13 @@ class PowerSyncService implements LocalDb {
   final _health = PowerSyncHealth<SyncStatus>(
     errorOf: (status) => status.downloadError ?? status.uploadError,
     onError: CrashReporter.record,
+    freshnessOf: (status) => status.lastSyncedAt,
   );
+
+  /// Most recent successful PowerSync sync, or `null` before the first sync
+  /// completes (or before [init] runs). Drives the "資料庫狀態" freshness row
+  /// in Settings instead of a hardcoded timestamp (F46).
+  DateTime? get lastSyncedAt => _health.lastSyncedAt;
 
   PowerSyncDatabase? _db;
   Future<void>? _initFuture;

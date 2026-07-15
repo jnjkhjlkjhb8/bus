@@ -20,6 +20,14 @@ import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.
 import 'package:wheres_the_car/features/live_activity/bloc/stop_board_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/view/journey_pip_card.dart';
 
+/// Applies the "大字體模式" floor to [systemScaler]: raises anything below
+/// 1.3x, but never rolls back a larger scale (F51). The old implementation
+/// also capped at 1.6x, which silently overrode a user's system-level
+/// accessibility preference set higher than that — the floor here is a
+/// guarantee, not a ceiling.
+TextScaler applyLargeTextFloor(TextScaler systemScaler) =>
+    systemScaler.clamp(minScaleFactor: 1.3);
+
 class App extends StatefulWidget {
   const App({required this.bootstrap, super.key});
 
@@ -148,10 +156,7 @@ class _AppViewState extends State<_AppView> {
                 final mq = MediaQuery.of(context);
                 base = MediaQuery(
                   data: mq.copyWith(
-                    textScaler: mq.textScaler.clamp(
-                      minScaleFactor: 1.3,
-                      maxScaleFactor: 1.6,
-                    ),
+                    textScaler: applyLargeTextFloor(mq.textScaler),
                   ),
                   child: base,
                 );
