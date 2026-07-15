@@ -55,9 +55,9 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
         ArrivalFeed.passthrough(
           source: () => _repository.stationEta(stationUid),
           // Wired through to state.liveError, kept separate from the static
-          // `error` above: a station-info success can't paper over a live stream
-          // that never came up, so `available == 0` while `liveError` is set
-          // reads as stale, not a confirmed empty station (F27).
+          // `error` above: a station-info success can't paper over a live
+          // stream that never came up, so `available == 0` while `liveError`
+          // is set reads as stale, not a confirmed empty station (F27).
           onFailure: (e) => add(BikeStationEtaFailed(e.title)),
           onRecovered: () => add(const BikeStationEtaRecovered()),
         ).listen(

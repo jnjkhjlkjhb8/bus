@@ -16,9 +16,9 @@ typedef _Merge<T> = List<T> Function(List<T> current, List<T> frame);
 /// down) and must leave freshness/error state untouched (F29, F30).
 enum ArrivalFeedEmissionKind { source, decay }
 
-/// One [watch] emission: the merged/decayed arrival list plus which kind of
-/// event produced it. See [ArrivalFeedEmissionKind] for what each kind means
-/// to a consumer.
+/// One `ArrivalFeed.watch` emission: the merged/decayed arrival list plus
+/// which kind of event produced it. See [ArrivalFeedEmissionKind] for what
+/// each kind means to a consumer.
 class ArrivalFeedEmission<T> {
   const ArrivalFeedEmission(this.arrivals, this.kind);
 
