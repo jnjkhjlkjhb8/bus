@@ -14,8 +14,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -296,6 +298,11 @@ type serverCoordinator struct {
 	shutdownTimeout  time.Duration
 	waitHTTPHandlers func()
 	capture          func(error)
+	// shutdown, when set, carries OS signals (SIGINT/SIGTERM) that should
+	// trigger the same coordinated stop path as a Serve failure. Injectable
+	// for tests; nil disables signal-triggered shutdown (select on a nil
+	// channel blocks forever, so it never wins the race below).
+	shutdown <-chan os.Signal
 }
 
 type serverResult struct {
@@ -303,6 +310,11 @@ type serverResult struct {
 	err  error
 }
 
+// serve runs both servers and blocks until either one exits unexpectedly or
+// a shutdown signal arrives, whichever happens first. Exactly one of those
+// two events drives stopServers: the select below is atomic, so a signal
+// racing a Serve failure resolves to a single winner and stopServers runs
+// exactly once either way.
 func (c serverCoordinator) serve(grpcListener, httpListener net.Listener) error {
 	results := make(chan serverResult, 2)
 	go func() {
@@ -312,10 +324,18 @@ func (c serverCoordinator) serve(grpcListener, httpListener net.Listener) error 
 		results <- serverResult{name: "HTTP", err: c.httpServer.Serve(httpListener)}
 	}()
 
-	first := <-results
-	serveErr := unexpectedServeError(first)
-	c.stopServers()
-	<-results // Both Serve goroutines must finish before backend cleanup.
+	var serveErr error
+	select {
+	case first := <-results:
+		serveErr = unexpectedServeError(first)
+		c.stopServers()
+		<-results // Both Serve goroutines must finish before backend cleanup.
+	case <-c.shutdown:
+		log.Infoln("[ROUTER] action=shutdown event=signal_received")
+		c.stopServers()
+		<-results // Both Serve goroutines must finish before backend cleanup.
+		<-results
+	}
 	if c.capture != nil {
 		c.capture(serveErr)
 	}
@@ -385,6 +405,9 @@ func run() error {
 	runtime := &routerRuntime{}
 	return runtime.run(func() error {
 		runtime.addCleanup(obs.Init("router"))
+		shutdownSignal := make(chan os.Signal, 1)
+		signal.Notify(shutdownSignal, syscall.SIGINT, syscall.SIGTERM)
+		runtime.addCleanup(func() { signal.Stop(shutdownSignal) })
 		httpConfig, err := httpServerConfigFromEnv()
 		if err != nil {
 			return fmt.Errorf("HTTP configuration failed before startup: %w", err)
@@ -477,6 +500,7 @@ func run() error {
 			httpServer:       httpRuntime.server,
 			waitHTTPHandlers: httpRuntime.handlers.stopAndWait,
 			shutdownTimeout:  5 * time.Second,
+			shutdown:         shutdownSignal,
 			capture: func(err error) {
 				obs.Capture("router-serve", err)
 			},

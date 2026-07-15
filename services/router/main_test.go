@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -307,6 +309,103 @@ func TestServerCoordinatorUsesForcedShutdownFallbacks(t *testing.T) {
 				assertEventBefore(t, got, "http force close", "http handler done")
 			}
 		})
+	}
+}
+
+func TestServerCoordinatorShutsDownOnSignal(t *testing.T) {
+	events := &coordinatorEventLog{}
+	grpcServer := newBlockingFakeGRPCServer(events)
+	httpServer := newBlockingFakeHTTPServer(events)
+	shutdown := make(chan os.Signal, 1)
+	var capturedErr error
+	captureCalled := false
+	coordinator := serverCoordinator{
+		grpcServer: grpcServer, httpServer: httpServer,
+		shutdownTimeout: time.Second,
+		shutdown:        shutdown,
+		capture: func(err error) {
+			capturedErr = err
+			captureCalled = true
+			events.add("capture")
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- coordinator.serve(nil, nil) }()
+	<-grpcServer.started
+	<-httpServer.started
+	shutdown <- syscall.SIGTERM
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("coordinator error = %v, want nil for signal-triggered shutdown", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("signal did not trigger coordinated shutdown")
+	}
+	if !captureCalled {
+		t.Fatal("capture was not invoked on signal-triggered shutdown")
+	}
+	if capturedErr != nil {
+		t.Fatalf("captured error = %v, want nil", capturedErr)
+	}
+	got := events.snapshot()
+	assertEventBefore(t, got, "grpc stop", "grpc handler done")
+	assertEventBefore(t, got, "http stop", "http handler done")
+	if count := 0; true {
+		for _, event := range got {
+			if event == "grpc stop" {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("grpc stop invoked %d times, want exactly once", count)
+		}
+	}
+}
+
+func TestServerCoordinatorSignalAndServeErrorShutDownExactlyOnce(t *testing.T) {
+	// A signal and a Serve failure can race in production (e.g. SIGTERM
+	// arrives right as a listener dies). The coordinator must run the
+	// coordinated stop path exactly once regardless of which fires first.
+	events := &coordinatorEventLog{}
+	grpcServer := newBlockingFakeGRPCServer(events)
+	httpServer := newBlockingFakeHTTPServer(events)
+	shutdown := make(chan os.Signal, 1)
+	coordinator := serverCoordinator{
+		grpcServer: grpcServer, httpServer: httpServer,
+		shutdownTimeout: time.Second,
+		shutdown:        shutdown,
+	}
+	done := make(chan error, 1)
+	go func() { done <- coordinator.serve(nil, nil) }()
+	<-grpcServer.started
+	<-httpServer.started
+
+	// Fire the signal and a Serve failure concurrently.
+	go func() { shutdown <- syscall.SIGTERM }()
+	go func() { grpcServer.serveResult <- errors.New("gRPC failed") }()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("coordinator did not terminate under a signal/serve-error race")
+	}
+	got := events.snapshot()
+	stopCount, httpStopCount := 0, 0
+	for _, event := range got {
+		if event == "grpc stop" {
+			stopCount++
+		}
+		if event == "http stop" {
+			httpStopCount++
+		}
+	}
+	if stopCount != 1 {
+		t.Fatalf("grpc stop invoked %d times, want exactly once", stopCount)
+	}
+	if httpStopCount != 1 {
+		t.Fatalf("http stop invoked %d times, want exactly once", httpStopCount)
 	}
 }
 
