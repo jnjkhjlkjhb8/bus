@@ -293,6 +293,12 @@ func main() {
 		Store:  shared.RedisTDXStore{RC: rc},
 		IMSKey: shared.TDXLegacyIMSKey,
 	})
+	maasCache := newRedisMaasCache(rc.Options())
+	defer func() {
+		if err := maasCache.Close(); err != nil {
+			log.Infof("[MAAS] action=cache_close event=failed error=%v", err)
+		}
+	}()
 	defer func(rc *redis.Client) {
 		err := rc.Close()
 		if err != nil {
@@ -336,11 +342,12 @@ func main() {
 	nearbyRouter := newOSRMWalkingRouter(resty.New().SetTimeout(5*time.Second), "http://osrm:5000")
 	pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{discovery: newNearbyDiscovery(newPostgresNearbyStore(db), nearbyRouter)})
 	pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
-	pb.RegisterMaasServiceServer(grpcServer, newMaasServer(rc, db, tdx))
+	pb.RegisterMaasServiceServer(grpcServer, newMaasServerWithCache(maasCache, db, tdx, defaultMaasSharedWorkConfig))
 	pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
 	go startHTTPServer(db, live, httpConfig)
 	log.Infof("gRPC server is running on port %d", 50051)
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("failed to serve: %v", err)
+		log.Infof("failed to serve: %v", err)
+		return
 	}
 }

@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
+	legacyredis "github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	redisv9 "github.com/redis/go-redis/v9"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
@@ -47,14 +48,67 @@ type maasCache interface {
 	Set(context.Context, string, []byte, time.Duration) error
 }
 
-type redisMaasCache struct{ client *redis.Client }
+type redisMaasCache struct{ client *redisv9.Client }
 
-func (c redisMaasCache) Get(ctx context.Context, key string) ([]byte, error) {
-	return c.client.WithContext(ctx).Get(key).Bytes()
+func newRedisMaasCache(legacy *legacyredis.Options) *redisMaasCache {
+	maxRetries := legacy.MaxRetries
+	if maxRetries == 0 {
+		// v6 defaults to no command retries, while v9 uses three when this is
+		// zero. Preserve the configured client's effective behavior.
+		maxRetries = -1
+	}
+	var tlsConfig = legacy.TLSConfig
+	if tlsConfig != nil {
+		tlsConfig = tlsConfig.Clone()
+	}
+	return &redisMaasCache{client: redisv9.NewClient(&redisv9.Options{
+		Network: legacy.Network,
+		Addr:    legacy.Addr,
+
+		// go-redis v6 supports password-only authentication; it has no
+		// username setting to copy.
+		Password: legacy.Password,
+		DB:       legacy.DB,
+
+		MaxRetries:      maxRetries,
+		MinRetryBackoff: legacy.MinRetryBackoff,
+		MaxRetryBackoff: legacy.MaxRetryBackoff,
+
+		DialTimeout:  legacy.DialTimeout,
+		ReadTimeout:  legacy.ReadTimeout,
+		WriteTimeout: legacy.WriteTimeout,
+
+		PoolSize:        legacy.PoolSize,
+		MinIdleConns:    legacy.MinIdleConns,
+		PoolTimeout:     legacy.PoolTimeout,
+		ConnMaxLifetime: legacy.MaxConnAge,
+		ConnMaxIdleTime: legacy.IdleTimeout,
+
+		TLSConfig:             tlsConfig,
+		Protocol:              2,
+		ContextTimeoutEnabled: true,
+		DisableIdentity:       true,
+	})}
 }
 
-func (c redisMaasCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	return c.client.WithContext(ctx).Set(key, value, ttl).Err()
+func (c *redisMaasCache) Get(ctx context.Context, key string) ([]byte, error) {
+	value, err := c.client.Get(ctx, key).Bytes()
+	if err != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return value, err
+}
+
+func (c *redisMaasCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	err := c.client.Set(ctx, key, value, ttl).Err()
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+func (c *redisMaasCache) Close() error {
+	return c.client.Close()
 }
 
 type maasSharedWorkConfig struct {
@@ -76,10 +130,6 @@ func shouldRetryMaas(resp *resty.Response, err error) bool {
 			!shared.IsTDXAuthError(err)
 	}
 	return resp != nil && (resp.StatusCode() == http.StatusTooManyRequests || resp.StatusCode() == http.StatusServiceUnavailable)
-}
-
-func newMaasServer(rc *redis.Client, db maasDB, tdx *shared.TDXClient) *MaasServer {
-	return newMaasServerWithCache(redisMaasCache{client: rc}, db, tdx, defaultMaasSharedWorkConfig)
 }
 
 func newMaasServerWithCache(cache maasCache, db maasDB, tdx *shared.TDXClient, workConfig maasSharedWorkConfig) *MaasServer {

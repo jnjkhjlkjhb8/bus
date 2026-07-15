@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -72,10 +73,16 @@ func trustedProxiesFromEnv() ([]netip.Prefix, error) {
 			}
 			prefix = netip.PrefixFrom(addr, addr.BitLen())
 		}
-		if prefix.Bits() == 0 || prefix.Addr().IsUnspecified() {
+		prefix = prefix.Masked()
+		addressBits := prefix.Addr().BitLen()
+		network := &net.IPNet{
+			IP:   net.IP(prefix.Addr().AsSlice()),
+			Mask: net.CIDRMask(prefix.Bits(), addressBits),
+		}
+		if network.Contains(net.IPv4zero) || network.Contains(net.IPv6zero) {
 			return nil, fmt.Errorf("%s contains unsafe catch-all or unspecified proxy %q", trustedProxiesEnv, value)
 		}
-		proxies = append(proxies, prefix.Masked())
+		proxies = append(proxies, prefix)
 	}
 	return proxies, nil
 }

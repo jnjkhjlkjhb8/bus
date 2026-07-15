@@ -1,23 +1,29 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	legacyredis "github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
 	"github.com/pashagolub/pgxmock/v4"
+	redisv9 "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -115,6 +121,115 @@ type doneObservedContext struct {
 	observed chan struct{}
 }
 
+type commandCompletionHook struct {
+	target string
+	done   chan struct{}
+	once   sync.Once
+}
+
+func (h *commandCompletionHook) DialHook(next redisv9.DialHook) redisv9.DialHook {
+	return next
+}
+
+func (h *commandCompletionHook) ProcessHook(next redisv9.ProcessHook) redisv9.ProcessHook {
+	return func(ctx context.Context, command redisv9.Cmder) error {
+		err := next(ctx, command)
+		if strings.EqualFold(command.Name(), h.target) {
+			h.once.Do(func() { close(h.done) })
+		}
+		return err
+	}
+}
+
+func (h *commandCompletionHook) ProcessPipelineHook(next redisv9.ProcessPipelineHook) redisv9.ProcessPipelineHook {
+	return next
+}
+
+type blockingRedisEndpoint struct {
+	address           string
+	commandStarted    chan struct{}
+	connectionStopped chan struct{}
+	listener          net.Listener
+}
+
+func startBlockingRedisEndpoint(t *testing.T, targetCommand string) *blockingRedisEndpoint {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &blockingRedisEndpoint{
+		address: listener.Addr().String(), commandStarted: make(chan struct{}),
+		connectionStopped: make(chan struct{}), listener: listener,
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer connection.Close()
+		reader := bufio.NewReader(connection)
+		writer := bufio.NewWriter(connection)
+		for {
+			command, err := readRESPCommand(reader)
+			if err != nil {
+				return
+			}
+			name := strings.ToLower(command[0])
+			if name == strings.ToLower(targetCommand) {
+				close(endpoint.commandStarted)
+				_, _ = reader.ReadByte()
+				close(endpoint.connectionStopped)
+				return
+			}
+			if name == "hello" {
+				_, _ = writer.WriteString("-ERR unknown command 'hello'\r\n")
+			} else {
+				_, _ = writer.WriteString("+OK\r\n")
+			}
+			if err := writer.Flush(); err != nil {
+				return
+			}
+		}
+	}()
+	return endpoint
+}
+
+func readRESPCommand(reader *bufio.Reader) ([]string, error) {
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	if len(line) < 3 || line[0] != '*' {
+		return nil, fmt.Errorf("unexpected RESP array header %q", line)
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(line[1:]))
+	if err != nil {
+		return nil, err
+	}
+	parts := make([]string, count)
+	for index := range parts {
+		lengthLine, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		if len(lengthLine) < 3 || lengthLine[0] != '$' {
+			return nil, fmt.Errorf("unexpected RESP bulk header %q", lengthLine)
+		}
+		length, err := strconv.Atoi(strings.TrimSpace(lengthLine[1:]))
+		if err != nil {
+			return nil, err
+		}
+		value := make([]byte, length+2)
+		if _, err := io.ReadFull(reader, value); err != nil {
+			return nil, err
+		}
+		parts[index] = string(value[:length])
+	}
+	return parts, nil
+}
+
 func (c *doneObservedContext) Done() <-chan struct{} {
 	c.once.Do(func() { close(c.observed) })
 	return c.Context.Done()
@@ -170,6 +285,157 @@ func TestMaasAuthCacheErrorIsNotRetried(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Fatalf("upstream hits = %d, want 0", got)
+	}
+}
+
+func TestRedisMaasCacheCopiesLegacyConnectionOptionsAndOwnsClient(t *testing.T) {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "redis.internal"}
+	legacyOptions := &legacyredis.Options{
+		Network: "tcp", Addr: "redis.internal:6380", Password: "password", DB: 7,
+		MaxRetries: 2, MinRetryBackoff: 11 * time.Millisecond, MaxRetryBackoff: 29 * time.Millisecond,
+		DialTimeout: 31 * time.Millisecond, ReadTimeout: 37 * time.Millisecond, WriteTimeout: 41 * time.Millisecond,
+		PoolSize: 9, MinIdleConns: 3, PoolTimeout: 43 * time.Millisecond,
+		MaxConnAge: 47 * time.Millisecond, IdleTimeout: 53 * time.Millisecond, TLSConfig: tlsConfig,
+	}
+	cache := newRedisMaasCache(legacyOptions)
+	options := cache.client.Options()
+	if options.Network != legacyOptions.Network || options.Addr != legacyOptions.Addr ||
+		options.Username != "" || options.Password != legacyOptions.Password || options.DB != legacyOptions.DB {
+		t.Fatalf("connection identity was not copied: %+v", options)
+	}
+	if options.DialTimeout != legacyOptions.DialTimeout || options.ReadTimeout != legacyOptions.ReadTimeout ||
+		options.WriteTimeout != legacyOptions.WriteTimeout || options.PoolTimeout != legacyOptions.PoolTimeout {
+		t.Fatalf("finite timeouts were not copied: %+v", options)
+	}
+	if options.PoolSize != legacyOptions.PoolSize || options.MinIdleConns != legacyOptions.MinIdleConns ||
+		options.ConnMaxLifetime != legacyOptions.MaxConnAge || options.ConnMaxIdleTime != legacyOptions.IdleTimeout {
+		t.Fatalf("pool settings were not copied: %+v", options)
+	}
+	if options.Protocol != 2 || !options.ContextTimeoutEnabled || !options.DisableIdentity {
+		t.Fatalf("MaaS Redis safety options are not enabled: %+v", options)
+	}
+	if options.TLSConfig == nil || options.TLSConfig == tlsConfig ||
+		options.TLSConfig.ServerName != tlsConfig.ServerName || options.TLSConfig.MinVersion != tlsConfig.MinVersion {
+		t.Fatalf("TLS config was not safely cloned: got=%p want-clone-of=%p", options.TLSConfig, tlsConfig)
+	}
+	if err := cache.Close(); err != nil {
+		t.Fatalf("owned Redis client close failed: %v", err)
+	}
+	if err := cache.client.Ping(context.Background()).Err(); !errors.Is(err, redisv9.ErrClosed) {
+		t.Fatalf("owned Redis client remained usable after close: %v", err)
+	}
+}
+
+func TestRedisMaasCacheCommandsEndBeforeContextErrorReturns(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		command   string
+		invoke    func(context.Context, *redisMaasCache) error
+		newCtx    func() (context.Context, context.CancelFunc)
+		wantError error
+	}{
+		{
+			name: "Get deadline", command: "get",
+			invoke: func(ctx context.Context, cache *redisMaasCache) error {
+				_, err := cache.Get(ctx, "blocked")
+				return err
+			},
+			newCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 80*time.Millisecond)
+			},
+			wantError: context.DeadlineExceeded,
+		},
+		{
+			name: "Set deadline", command: "set",
+			invoke: func(ctx context.Context, cache *redisMaasCache) error {
+				return cache.Set(ctx, "blocked", []byte("value"), time.Minute)
+			},
+			newCtx: func() (context.Context, context.CancelFunc) {
+				return context.WithTimeout(context.Background(), 80*time.Millisecond)
+			},
+			wantError: context.DeadlineExceeded,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			endpoint := startBlockingRedisEndpoint(t, test.command)
+			cache := newRedisMaasCache(&legacyredis.Options{
+				Network: "tcp", Addr: endpoint.address, MaxRetries: -1,
+				DialTimeout: time.Second, ReadTimeout: -1, WriteTimeout: -1,
+				PoolSize: 1, PoolTimeout: time.Second,
+			})
+			defer cache.Close()
+			processDone := make(chan struct{})
+			cache.client.AddHook(&commandCompletionHook{target: test.command, done: processDone})
+			ctx, cancel := test.newCtx()
+			defer cancel()
+			result := make(chan error, 1)
+			go func() { result <- test.invoke(ctx, cache) }()
+			select {
+			case <-endpoint.commandStarted:
+			case <-time.After(time.Second):
+				t.Fatal("blocking Redis command never reached the TCP seam")
+			}
+			var err error
+			select {
+			case err = <-result:
+			case <-time.After(time.Second):
+				t.Fatal("cache command did not return after context termination")
+			}
+			if !errors.Is(err, test.wantError) {
+				t.Fatalf("cache command error = %v, want %v", err, test.wantError)
+			}
+			select {
+			case <-processDone:
+			default:
+				t.Fatal("cache returned before the underlying v9 command processor ended")
+			}
+			select {
+			case <-endpoint.connectionStopped:
+			case <-time.After(time.Second):
+				t.Fatal("context termination left a detached Redis command on the socket")
+			}
+		})
+	}
+}
+
+func TestRedisMaasCacheCommandRetainsSharedPermitUntilTermination(t *testing.T) {
+	endpoint := startBlockingRedisEndpoint(t, "get")
+	cache := newRedisMaasCache(&legacyredis.Options{
+		Network: "tcp", Addr: endpoint.address, MaxRetries: -1,
+		DialTimeout: time.Second, ReadTimeout: -1, WriteTimeout: -1,
+		PoolSize: 1, PoolTimeout: time.Second,
+	})
+	defer cache.Close()
+	processDone := make(chan struct{})
+	cache.client.AddHook(&commandCompletionHook{target: "get", done: processDone})
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
+	server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 80 * time.Millisecond})
+	request := &pb.MaasPlanRequest{FromLat: 25, FromLon: 121.5, ToLat: 25.1, ToLon: 121.6, Date: "2027-01-01", Time: "08:00"}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := server.Plan(context.Background(), request)
+		firstDone <- err
+	}()
+	select {
+	case <-endpoint.commandStarted:
+	case <-time.After(time.Second):
+		t.Fatal("shared Redis command never reached the TCP seam")
+	}
+	other := proto.Clone(request).(*pb.MaasPlanRequest)
+	other.ToLat += 0.01
+	if _, err := server.Plan(context.Background(), other); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("shared permit released while Redis command was active: code=%v error=%v", status.Code(err), err)
+	}
+	if err := <-firstDone; status.Code(err) != codes.DeadlineExceeded {
+		t.Fatalf("bounded shared Redis work code = %v, want %v (error=%v)", status.Code(err), codes.DeadlineExceeded, err)
+	}
+	select {
+	case <-processDone:
+	default:
+		t.Fatal("shared flight returned before Redis command termination")
+	}
+	if got := len(server.workSlots); got != 0 {
+		t.Fatalf("shared permit leaked after Redis command termination: %d", got)
 	}
 }
 

@@ -268,7 +268,7 @@ func TestMetricsRequiresConfiguredCredential(t *testing.T) {
 
 func TestHTTPServerConfigFromEnvValidatesBeforeStartup(t *testing.T) {
 	t.Setenv(metricsCredentialEnv, strings.Repeat("s", 32))
-	t.Setenv(trustedProxiesEnv, "10.0.0.0/8, 192.0.2.10")
+	t.Setenv(trustedProxiesEnv, "10.0.0.0/8, 192.0.2.10, 198.51.100.27/24")
 
 	config, err := httpServerConfigFromEnv()
 	if err != nil {
@@ -277,7 +277,11 @@ func TestHTTPServerConfigFromEnvValidatesBeforeStartup(t *testing.T) {
 	if config.MetricsCredential != strings.Repeat("s", 32) {
 		t.Fatalf("metrics credential = %q", config.MetricsCredential)
 	}
-	want := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("192.0.2.10/32")}
+	want := []netip.Prefix{
+		netip.MustParsePrefix("10.0.0.0/8"),
+		netip.MustParsePrefix("192.0.2.10/32"),
+		netip.MustParsePrefix("198.51.100.0/24"),
+	}
 	if len(config.TrustedProxies) != len(want) {
 		t.Fatalf("trusted proxies = %v, want %v", config.TrustedProxies, want)
 	}
@@ -297,7 +301,10 @@ func TestHTTPServerConfigFromEnvValidatesBeforeStartup(t *testing.T) {
 		t.Fatal("invalid trusted proxy was accepted")
 	}
 
-	for _, unsafe := range []string{"0.0.0.0/0", "::/0", "0.0.0.0", "::"} {
+	for _, unsafe := range []string{
+		"0.0.0.0/0", "::/0", "0.0.0.0", "::",
+		"::ffff:0:0/96", "0.1.2.3/8",
+	} {
 		t.Run("reject unsafe proxy "+unsafe, func(t *testing.T) {
 			t.Setenv(trustedProxiesEnv, unsafe)
 			if _, err := httpServerConfigFromEnv(); err == nil {
