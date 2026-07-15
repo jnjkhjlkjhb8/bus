@@ -132,6 +132,20 @@ elif echo "$osrm_healthcheck_test" | grep -qE '/nearest/v1/|/route/v1/'; then
 else
   bad "osrm healthcheck does not reference a documented OSRM endpoint"
 fi
+# The endpoint being right is not enough -- the probe binary must exist in
+# the image. osrm/osrm-backend:v5.25.0 is Debian-based with NO wget, curl,
+# or busybox (verified via `docker run --entrypoint sh ... -c 'command -v
+# ...'`); it does ship bash, so the probe must use bash's /dev/tcp
+# redirection. A wget/curl probe execs fine per compose config but fails
+# with "command not found" at runtime, leaving the container unhealthy
+# forever.
+if echo "$osrm_healthcheck_test" | grep -qE 'wget|curl'; then
+  bad "osrm healthcheck invokes wget/curl, neither of which exists in osrm/osrm-backend:v5.25.0"
+elif echo "$osrm_healthcheck_test" | grep -q '/dev/tcp/'; then
+  ok "osrm healthcheck probes via bash /dev/tcp (only HTTP client available in the image)"
+else
+  bad "osrm healthcheck does not use bash /dev/tcp -- verify its probe binary exists in the pinned image"
+fi
 
 # ---------------------------------------------------------------------------
 # 6. Compose-config-derived checks (need docker compose)

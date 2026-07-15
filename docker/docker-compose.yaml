@@ -344,8 +344,12 @@ services:
     healthcheck:
       # osrm-routed has no /health endpoint; probe a real OSRM HTTP API
       # route (nearest) against a coordinate inside Taiwan and check for a
-      # successful "Ok" response.
-      test: ["CMD-SHELL", "wget -qO- 'http://localhost:5000/nearest/v1/foot/121.5654,25.0330' | grep -q '\"code\":\"Ok\"' || exit 1"]
+      # successful "Ok" response. The pinned Debian-based image ships no
+      # wget/curl/busybox, but it does have bash, so the HTTP request goes
+      # over bash's /dev/tcp redirection instead (verified to execute
+      # inside osrm/osrm-backend:v5.25.0 -- connection-refused without a
+      # server, exit 0 against a stubbed "code":"Ok" response).
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/5000 && printf 'GET /nearest/v1/foot/121.5654,25.0330 HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && grep -q '\"code\":\"Ok\"' <&3"]
       interval: 30s
       timeout: 5s
       retries: 3
