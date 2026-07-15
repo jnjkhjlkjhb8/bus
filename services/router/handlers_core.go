@@ -501,6 +501,9 @@ func (s *Near_Server) FindNear(stream pb.Near_Station_Service_NearServer) error 
 		})
 		if err != nil {
 			log.Infof("[gRPC] action=nearby_discovery failed error=%v", err)
+			if errors.Is(err, ErrInvalidNearbyQuery) {
+				return status.Error(codes.InvalidArgument, err.Error())
+			}
 			if errors.Is(err, ErrNearbyUnavailable) {
 				return status.Error(codes.Unavailable, "nearby discovery unavailable")
 			}

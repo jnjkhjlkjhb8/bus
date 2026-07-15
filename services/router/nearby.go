@@ -4,16 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
 )
 
 const (
 	defaultNearbyRadius = 670
+	maxNearbyRadius     = 5000
 	defaultNearbyLimit  = 80
 )
 
-var ErrNearbyUnavailable = errors.New("nearby discovery unavailable")
+var (
+	ErrInvalidNearbyQuery = errors.New("invalid nearby query")
+	ErrNearbyUnavailable  = errors.New("nearby discovery unavailable")
+)
 
 type geoPoint struct {
 	Lon float64
@@ -76,12 +81,31 @@ type nearbyModeResult struct {
 	error      error
 }
 
-func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.RespNear, error) {
-	if query.RadiusMeters <= 0 {
+func validateNearbyQuery(query nearbyQuery) (nearbyQuery, error) {
+	if math.IsNaN(query.Origin.Lon) || math.IsInf(query.Origin.Lon, 0) ||
+		query.Origin.Lon < -180 || query.Origin.Lon > 180 {
+		return nearbyQuery{}, fmt.Errorf("%w: longitude must be finite and between -180 and 180", ErrInvalidNearbyQuery)
+	}
+	if math.IsNaN(query.Origin.Lat) || math.IsInf(query.Origin.Lat, 0) ||
+		query.Origin.Lat < -90 || query.Origin.Lat > 90 {
+		return nearbyQuery{}, fmt.Errorf("%w: latitude must be finite and between -90 and 90", ErrInvalidNearbyQuery)
+	}
+	if query.RadiusMeters == 0 {
 		query.RadiusMeters = defaultNearbyRadius
+	}
+	if query.RadiusMeters < 0 || query.RadiusMeters > maxNearbyRadius {
+		return nearbyQuery{}, fmt.Errorf("%w: radius must be zero or between 1 and %d metres", ErrInvalidNearbyQuery, maxNearbyRadius)
 	}
 	if query.Limit <= 0 {
 		query.Limit = defaultNearbyLimit
+	}
+	return query, nil
+}
+
+func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.RespNear, error) {
+	query, err := validateNearbyQuery(query)
+	if err != nil {
+		return nil, err
 	}
 
 	results := make(chan nearbyModeResult, len(allNearbyModes))
@@ -114,7 +138,7 @@ func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.
 		}
 		appendNearbyResult(response, result.mode, result.stations)
 	}
-	if queryFailures == len(allNearbyModes) {
+	if queryFailures > 0 {
 		return nil, ErrNearbyUnavailable
 	}
 	return response, nil

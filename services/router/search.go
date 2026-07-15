@@ -8,11 +8,22 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-resty/resty/v2"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 )
+
+const (
+	maxSearchQueryRunes  = 128
+	searchRequestTimeout = 5 * time.Second
+)
+
+type searchDB interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
 
 type searchResult struct {
 	Type   string   `json:"type"`
@@ -37,19 +48,25 @@ func embeddingURL() string {
 	return strings.TrimSpace(os.Getenv("EMBED_URL"))
 }
 
-func embedQuery(text string) ([]float32, error) {
+func embedQuery(ctx context.Context, text string) ([]float32, error) {
 	url := embeddingURL()
 	if url == "" {
 		return nil, fmt.Errorf("embedding disabled")
 	}
+	ctx, cancel := context.WithTimeout(ctx, searchRequestTimeout)
+	defer cancel()
 	client := resty.New().SetHeader("Content-Type", "application/json")
 	resp, err := client.R().
+		SetContext(ctx).
 		SetBody(map[string]interface{}{
 			"model": "qwen3-embedding:0.6b",
 			"input": []string{text},
 		}).
 		Post(url)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, err
 	}
 	if resp.StatusCode() != 200 {
@@ -64,11 +81,11 @@ func embedQuery(text string) ([]float32, error) {
 	return result.Embeddings[0], nil
 }
 
-func vectorSearch(ctx context.Context, q string, limit int, db *pgxpool.Pool) ([]searchResult, error) {
+func vectorSearch(ctx context.Context, q string, limit int, db searchDB) ([]searchResult, error) {
 	if embeddingURL() == "" {
 		return nil, nil
 	}
-	vec, embedErr := embedQuery(q)
+	vec, embedErr := embedQuery(ctx, q)
 	if embedErr != nil {
 		return nil, embedErr
 	}
@@ -87,9 +104,10 @@ func vectorSearch(ctx context.Context, q string, limit int, db *pgxpool.Pool) ([
 	var results []searchResult
 	for rows.Next() {
 		var r searchResult
-		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err == nil {
-			results = append(results, r)
+		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err != nil {
+			return nil, err
 		}
+		results = append(results, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -97,7 +115,7 @@ func vectorSearch(ctx context.Context, q string, limit int, db *pgxpool.Pool) ([
 	return results, nil
 }
 
-func textSearch(ctx context.Context, q string, limit int, db *pgxpool.Pool) ([]searchResult, error) {
+func textSearch(ctx context.Context, q string, limit int, db searchDB) ([]searchResult, error) {
 	rows, err := db.Query(ctx, `
 		SELECT type, uid, name, city, depart, destin,
 		       ST_Y(geom), ST_X(geom)
@@ -130,9 +148,10 @@ func textSearch(ctx context.Context, q string, limit int, db *pgxpool.Pool) ([]s
 	var results []searchResult
 	for rows.Next() {
 		var r searchResult
-		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err == nil {
-			results = append(results, r)
+		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err != nil {
+			return nil, err
 		}
+		results = append(results, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -166,7 +185,7 @@ func mergeSearchResults(limit int, groups ...[]searchResult) []searchResult {
 	return merged
 }
 
-func expandStationRoutes(ctx context.Context, primary []searchResult, db *pgxpool.Pool) []searchResult {
+func expandStationRoutes(ctx context.Context, primary []searchResult, db searchDB) ([]searchResult, error) {
 	var groupUIDs []string
 	seen := make(map[string]bool)
 	for _, r := range primary {
@@ -176,7 +195,7 @@ func expandStationRoutes(ctx context.Context, primary []searchResult, db *pgxpoo
 		}
 	}
 	if len(groupUIDs) == 0 {
-		return primary
+		return primary, nil
 	}
 	rows, err := db.Query(ctx, `
 		SELECT sv.type, sv.uid, sv.name, sv.city, sv.depart, sv.destin,
@@ -190,25 +209,25 @@ func expandStationRoutes(ctx context.Context, primary []searchResult, db *pgxpoo
 		groupUIDs,
 	)
 	if err != nil {
-		log.Infof("[SEARCH] route expansion error: %v", err)
-		return primary
+		return nil, err
 	}
 	defer rows.Close()
 	var extra []searchResult
 	for rows.Next() {
 		var r searchResult
-		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err == nil {
-			key := searchResultKey(r)
-			if !seen[key] {
-				extra = append(extra, r)
-				seen[key] = true
-			}
+		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err != nil {
+			return nil, err
+		}
+		key := searchResultKey(r)
+		if !seen[key] {
+			extra = append(extra, r)
+			seen[key] = true
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Infof("[SEARCH] route expansion rows error: %v", err)
+		return nil, err
 	}
-	return append(primary, extra...)
+	return append(primary, extra...), nil
 }
 
 func isNumericQuery(q string) bool {
@@ -227,7 +246,7 @@ func shouldUseVector(q string) bool {
 	return len([]rune(q)) >= 2 && !isNumericQuery(q)
 }
 
-func trainNumberSearch(ctx context.Context, q string, db *pgxpool.Pool) []searchResult {
+func trainNumberSearch(ctx context.Context, q string, db searchDB) ([]searchResult, error) {
 	rows, err := db.Query(ctx, `
 		SELECT type, uid, name, city, depart, destin,
 		       ST_Y(geom), ST_X(geom)
@@ -236,38 +255,49 @@ func trainNumberSearch(ctx context.Context, q string, db *pgxpool.Pool) []search
 		q,
 	)
 	if err != nil {
-		log.Infof("[SEARCH] train number search error: %v", err)
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var results []searchResult
 	for rows.Next() {
 		var r searchResult
-		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err == nil {
-			results = append(results, r)
+		if err := rows.Scan(&r.Type, &r.UID, &r.Name, &r.City, &r.Depart, &r.Destin, &r.Lat, &r.Lon); err != nil {
+			return nil, err
 		}
+		results = append(results, r)
 	}
 	if err := rows.Err(); err != nil {
-		log.Infof("[SEARCH] train number search rows error: %v", err)
+		return nil, err
 	}
-	return results
+	return results, nil
 }
 
-func handleSearch(db *pgxpool.Pool) gin.HandlerFunc {
+func handleSearch(db searchDB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		q := strings.TrimSpace(c.Query("q"))
 		if len(q) == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "q required"})
 			return
 		}
+		if utf8.RuneCountInString(q) > maxSearchQueryRunes {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "q too long"})
+			return
+		}
 		limit := 20
 		if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 50 {
 			limit = l
 		}
-		ctx := c.Request.Context()
+		ctx, cancel := context.WithTimeout(c.Request.Context(), searchRequestTimeout)
+		defer cancel()
 		var trainResults []searchResult
 		if isNumericQuery(q) {
-			trainResults = trainNumberSearch(ctx, q, db)
+			var err error
+			trainResults, err = trainNumberSearch(ctx, q, db)
+			if err != nil {
+				log.Infof("[SEARCH] train number search failed: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
+				return
+			}
 		}
 		textResults, err := textSearch(ctx, q, limit, db)
 		if err != nil {
@@ -282,12 +312,19 @@ func handleSearch(db *pgxpool.Pool) gin.HandlerFunc {
 		if len(results) == 0 && shouldUseVector(q) {
 			vectorResults, err := vectorSearch(ctx, q, limit, db)
 			if err != nil {
-				log.Infof("[SEARCH] vector supplement skipped: %v", err)
-			} else {
-				results = mergeSearchResults(limit, results, vectorResults)
+				log.Infof("[SEARCH] vector search failed: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
+				return
 			}
+			results = mergeSearchResults(limit, results, vectorResults)
 		}
-		results = mergeSearchResults(limit, expandStationRoutes(ctx, results, db))
+		expandedResults, err := expandStationRoutes(ctx, results, db)
+		if err != nil {
+			log.Infof("[SEARCH] route expansion failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
+			return
+		}
+		results = mergeSearchResults(limit, expandedResults)
 		c.JSON(http.StatusOK, gin.H{"results": results})
 	}
 }

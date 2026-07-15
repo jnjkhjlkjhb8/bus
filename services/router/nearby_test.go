@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 )
 
@@ -33,6 +34,89 @@ func candidate(mode nearbyMode, id, name string, distance float64) nearbyCandida
 	}
 }
 
+func TestValidateNearbyQuery(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      nearbyQuery
+		wantRadius int
+		wantErr    bool
+	}{
+		{
+			name:       "zero radius uses default",
+			query:      nearbyQuery{Origin: geoPoint{Lon: 121.5, Lat: 25}},
+			wantRadius: defaultNearbyRadius,
+		},
+		{
+			name:       "minimum positive radius",
+			query:      nearbyQuery{Origin: geoPoint{Lon: -180, Lat: -90}, RadiusMeters: 1},
+			wantRadius: 1,
+		},
+		{
+			name:       "maximum radius",
+			query:      nearbyQuery{Origin: geoPoint{Lon: 180, Lat: 90}, RadiusMeters: maxNearbyRadius},
+			wantRadius: maxNearbyRadius,
+		},
+		{
+			name:    "negative radius",
+			query:   nearbyQuery{Origin: geoPoint{Lon: 121.5, Lat: 25}, RadiusMeters: -1},
+			wantErr: true,
+		},
+		{
+			name:    "radius above maximum",
+			query:   nearbyQuery{Origin: geoPoint{Lon: 121.5, Lat: 25}, RadiusMeters: 5001},
+			wantErr: true,
+		},
+		{
+			name:    "longitude below range",
+			query:   nearbyQuery{Origin: geoPoint{Lon: -180.1, Lat: 25}, RadiusMeters: 500},
+			wantErr: true,
+		},
+		{
+			name:    "longitude above range",
+			query:   nearbyQuery{Origin: geoPoint{Lon: 180.1, Lat: 25}, RadiusMeters: 500},
+			wantErr: true,
+		},
+		{
+			name:    "latitude below range",
+			query:   nearbyQuery{Origin: geoPoint{Lon: 121.5, Lat: -90.1}, RadiusMeters: 500},
+			wantErr: true,
+		},
+		{
+			name:    "latitude above range",
+			query:   nearbyQuery{Origin: geoPoint{Lon: 121.5, Lat: 90.1}, RadiusMeters: 500},
+			wantErr: true,
+		},
+		{
+			name:    "non-finite longitude",
+			query:   nearbyQuery{Origin: geoPoint{Lon: math.NaN(), Lat: 25}, RadiusMeters: 500},
+			wantErr: true,
+		},
+		{
+			name:    "non-finite latitude",
+			query:   nearbyQuery{Origin: geoPoint{Lon: 121.5, Lat: math.Inf(1)}, RadiusMeters: 500},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := validateNearbyQuery(tt.query)
+			if tt.wantErr {
+				if !errors.Is(err, ErrInvalidNearbyQuery) {
+					t.Fatalf("err = %v, want ErrInvalidNearbyQuery", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.RadiusMeters != tt.wantRadius {
+				t.Fatalf("radius = %d, want %d", got.RadiusMeters, tt.wantRadius)
+			}
+		})
+	}
+}
+
 func TestNearbyDiscoveryPreservesBusGroupUIDIdentity(t *testing.T) {
 	store := fakeNearbyStore{rows: map[nearbyMode][]nearbyCandidate{
 		nearbyBus: {
@@ -57,18 +141,18 @@ func TestNearbyDiscoveryPreservesBusGroupUIDIdentity(t *testing.T) {
 	}
 }
 
-func TestNearbyDiscoveryReturnsPartialResponseWhenOneModeFails(t *testing.T) {
+func TestNearbyDiscoveryRejectsPartialResponseWhenOneModeFails(t *testing.T) {
 	store := fakeNearbyStore{
 		rows: map[nearbyMode][]nearbyCandidate{nearbyBike: {candidate(nearbyBike, "B-1", "Bike", 160)}},
 		err:  map[nearbyMode]error{nearbyBus: errors.New("bus query failed")},
 	}
 
 	got, err := newNearbyDiscovery(store, &fakeWalkingRouter{err: errors.New("osrm unavailable")}).Discover(context.Background(), nearbyQuery{})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrNearbyUnavailable) {
+		t.Fatalf("err = %v, want ErrNearbyUnavailable", err)
 	}
-	if len(got.NearBikeStations) != 1 || got.NearBikeStations[0].StationID != "B-1" {
-		t.Fatalf("bike stations = %+v, want partial success", got.NearBikeStations)
+	if got != nil {
+		t.Fatalf("response = %+v, want nil to prevent partial results", got)
 	}
 }
 
