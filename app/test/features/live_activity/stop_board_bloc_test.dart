@@ -7,33 +7,41 @@ import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_cubit.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_bloc.dart';
+import 'package:wheres_the_car/features/live_activity/bloc/stop_board_event.dart';
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 
 /// Records every board call so tests can assert on stopName/rows without the
 /// platform channel firing (mirrors `_CapturingChannel` in
-/// journey_session_track_only_test.dart).
+/// journey_session_track_only_test.dart). Mints leases the same way the
+/// real channel would, so a lease-plumbing bug in the bloc still surfaces.
 class _RecordingChannel extends LiveActivityChannel {
   final calls = <String>[];
   String? lastStopName;
   List<StopBoardRow>? lastRows;
+  int _lease = 0;
 
   @override
-  Future<void> startBoard(String stopName, List<StopBoardRow> rows) async {
+  Future<int> startBoard(String stopName, List<StopBoardRow> rows) async {
     calls.add('start');
     lastStopName = stopName;
     lastRows = rows;
+    return ++_lease;
   }
 
   @override
-  Future<void> updateBoard(String stopName, List<StopBoardRow> rows) async {
+  Future<void> updateBoard(
+    int lease,
+    String stopName,
+    List<StopBoardRow> rows,
+  ) async {
     calls.add('update');
     lastStopName = stopName;
     lastRows = rows;
   }
 
   @override
-  Future<void> stop() async => calls.add('stop');
+  Future<void> stop(int lease) async => calls.add('stop');
 }
 
 BusStopArrival _arrival(
@@ -89,14 +97,19 @@ void main() {
     await session.close();
   });
 
-  StopBoardCubit cubit() => StopBoardCubit(
+  StopBoardBloc bloc() => StopBoardBloc(
     channel: channel,
     session: session,
     etaSource: (_, _) => etaCtrl.stream,
   );
 
   test('start sends rows sorted soonest-first and capped at 4', () async {
-    final c = cubit()..start('Taipei', 'stop-1', '大安森林公園站');
+    final b = bloc()
+      ..add(const StopBoardStarted('Taipei', 'stop-1', '大安森林公園站'));
+    // Dispatching an event only queues it — the subscription to etaCtrl
+    // isn't live until the bloc's event loop has actually processed
+    // StopBoardStarted, unlike the old Cubit's synchronous start() call.
+    await Future<void>.delayed(Duration.zero);
 
     etaCtrl.add([
       _arrival('672', '科技大樓', 600),
@@ -114,69 +127,77 @@ void main() {
     expect(rows.map((r) => r.routeNumber), ['20', '15', '295', '88']);
     expect(rows[0].destination, '往公館');
     expect(rows[0].etaLabel, '進站中');
-    expect(c.state.active, isTrue);
-    expect(c.state.stopName, '大安森林公園站');
-    await c.close();
+    expect(b.state.active, isTrue);
+    expect(b.state.stopName, '大安森林公園站');
+    await b.close();
   });
 
   test('a row with no resolvable label falls back to em dash', () async {
-    final c = cubit()..start('Taipei', 'stop-1', '測試站');
+    final b = bloc()..add(const StopBoardStarted('Taipei', 'stop-1', '測試站'));
+    await Future<void>.delayed(Duration.zero);
     etaCtrl.add([_arrival('9', '未知', 0, stopStatus: 99)]);
     await Future<void>.delayed(Duration.zero);
     expect(channel.lastRows!.single.etaLabel, '—');
-    await c.close();
+    await b.close();
   });
 
   test('second frame calls updateBoard, not startBoard again', () async {
-    final c = cubit()..start('Taipei', 'stop-1', '測試站');
+    final b = bloc()..add(const StopBoardStarted('Taipei', 'stop-1', '測試站'));
+    await Future<void>.delayed(Duration.zero);
     etaCtrl.add([_arrival('20', '公館', 0)]);
     await Future<void>.delayed(Duration.zero);
     etaCtrl.add([_arrival('20', '公館', 30)]);
     await Future<void>.delayed(Duration.zero);
     expect(channel.calls, ['start', 'update']);
-    await c.close();
+    await b.close();
   });
 
   test('start cancels any live journey session (mutual exclusion)', () async {
     session.add(JourneyStarted(legs: [_leg()]));
     await session.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
 
-    final c = cubit()..start('Taipei', 'stop-1', '測試站');
+    final b = bloc()..add(const StopBoardStarted('Taipei', 'stop-1', '測試站'));
     final s = await session.stream.firstWhere(
       (s) => s.phase == JourneyPhase.done,
     );
     expect(s.phase, JourneyPhase.done);
-    await c.close();
+    await b.close();
   });
 
   test('start is a no-op mutual-exclusion signal even without a live '
       'session', () async {
     // No JourneyStarted was ever dispatched; session stays idle and simply
     // ignores the cancel — this must not throw.
-    final c = cubit();
-    expect(() => c.start('Taipei', 'stop-1', '測試站'), returnsNormally);
+    final b = bloc();
+    expect(
+      () => b.add(const StopBoardStarted('Taipei', 'stop-1', '測試站')),
+      returnsNormally,
+    );
+    await Future<void>.delayed(Duration.zero);
     expect(session.state.phase, JourneyPhase.idle);
-    await c.close();
+    await b.close();
   });
 
   test('stop cancels the subscription and stops the channel', () async {
-    final c = cubit()..start('Taipei', 'stop-1', '測試站');
+    final b = bloc()..add(const StopBoardStarted('Taipei', 'stop-1', '測試站'));
+    await Future<void>.delayed(Duration.zero);
     etaCtrl.add([_arrival('20', '公館', 0)]);
     await Future<void>.delayed(Duration.zero);
     expect(etaCtrl.hasListener, isTrue);
 
-    c.stop();
+    b.add(const StopBoardStopped());
     await Future<void>.delayed(Duration.zero);
     expect(etaCtrl.hasListener, isFalse);
     expect(channel.calls.last, 'stop');
-    expect(c.state.active, isFalse);
-    await c.close();
+    expect(b.state.active, isFalse);
+    await b.close();
   });
 
   test('close cancels a live subscription without leaking', () async {
-    final c = cubit()..start('Taipei', 'stop-1', '測試站');
+    final b = bloc()..add(const StopBoardStarted('Taipei', 'stop-1', '測試站'));
+    await Future<void>.delayed(Duration.zero);
     expect(etaCtrl.hasListener, isTrue);
-    await c.close();
+    await b.close();
     expect(etaCtrl.hasListener, isFalse);
   });
 }
