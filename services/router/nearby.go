@@ -81,6 +81,18 @@ type nearbyModeResult struct {
 	error      error
 }
 
+func receiveNearbyModeResult(ctx context.Context, results <-chan nearbyModeResult) (nearbyModeResult, error) {
+	select {
+	case result := <-results:
+		if err := ctx.Err(); err != nil {
+			return nearbyModeResult{}, err
+		}
+		return result, nil
+	case <-ctx.Done():
+		return nearbyModeResult{}, ctx.Err()
+	}
+}
+
 func validateNearbyQuery(query nearbyQuery) (nearbyQuery, error) {
 	if math.IsNaN(query.Origin.Lon) || math.IsInf(query.Origin.Lon, 0) ||
 		query.Origin.Lon < -180 || query.Origin.Lon > 180 {
@@ -103,8 +115,14 @@ func validateNearbyQuery(query nearbyQuery) (nearbyQuery, error) {
 }
 
 func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.RespNear, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	query, err := validateNearbyQuery(query)
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	workerCtx, cancel := context.WithCancel(ctx)
@@ -131,11 +149,9 @@ func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.
 
 	response := &pb.RespNear{NearBusStations: make(map[string]*pb.ArrayNear)}
 	for range allNearbyModes {
-		var result nearbyModeResult
-		select {
-		case result = <-results:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+		result, err := receiveNearbyModeResult(ctx, results)
+		if err != nil {
+			return nil, err
 		}
 		if result.queryError != nil {
 			if isContextError(result.queryError) {
@@ -149,6 +165,9 @@ func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.
 			return nil, result.error
 		}
 		appendNearbyResult(response, result.mode, result.stations)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return response, nil
 }

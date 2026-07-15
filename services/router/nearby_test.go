@@ -216,6 +216,26 @@ func TestNearbyDiscoveryFailsFastAndCancelsSiblingQueries(t *testing.T) {
 	}
 }
 
+func TestReceiveNearbyModeResultPrefersCallerCancellationOverReadyDatabaseError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	results := make(chan nearbyModeResult, 1)
+	ready := make(chan struct{})
+	go func() {
+		results <- nearbyModeResult{mode: nearbyBus, queryError: errors.New("bus query failed")}
+		cancel()
+		close(ready)
+	}()
+	<-ready
+
+	result, err := receiveNearbyModeResult(ctx, results)
+	if err != context.Canceled {
+		t.Fatalf("err = %v, want exact context.Canceled", err)
+	}
+	if result.mode != 0 || result.stations != nil || result.queryError != nil || result.error != nil {
+		t.Fatalf("result = %+v, want zero value when caller context is canceled", result)
+	}
+}
+
 func TestNearbyDiscoveryReturnsUnavailableWhenEveryModeFails(t *testing.T) {
 	failures := map[nearbyMode]error{}
 	for _, mode := range allNearbyModes {
