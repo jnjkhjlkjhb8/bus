@@ -68,6 +68,17 @@ func main() {
 // callers must pass only trusted column names (this command is a developer tool
 // run against known raw_tdx tables).
 func datasetJSON(ctx context.Context, pool *pgxpool.Pool, table, partCol, partVal string) ([]byte, error) {
+	q, args := buildDatasetQuery(table, partCol, partVal)
+	var body []byte
+	if err := pool.QueryRow(ctx, q, args...).Scan(&body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+// buildDatasetQuery builds the reconstruction SQL and its args. partCol is
+// interpolated into the query, so callers must pass only trusted column names.
+func buildDatasetQuery(table, partCol, partVal string) (string, []any) {
 	strip := "ARRAY['fetched_at']::text[]"
 	if partCol != "" {
 		strip = fmt.Sprintf("ARRAY['fetched_at','%s']::text[]", partCol)
@@ -87,9 +98,5 @@ func datasetJSON(ctx context.Context, pool *pgxpool.Pool, table, partCol, partVa
 	q := fmt.Sprintf(
 		`SELECT COALESCE(jsonb_agg(%s), '[]'::jsonb) FROM raw_tdx.%s t %s`,
 		elem, table, where)
-	var body []byte
-	if err := pool.QueryRow(ctx, q, args...).Scan(&body); err != nil {
-		return nil, err
-	}
-	return body, nil
+	return q, args
 }
