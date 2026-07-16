@@ -438,14 +438,32 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	weatherCancel()
 	// The legacy direct-fetch static jobs are gone: the ingestor lands raw_tdx at
 	// 03:00 and the ROLE=loader container transforms it into this env's schema at
-	// 03:30. changetovector reads the tables the loader fills, so it runs at 03:45 —
-	// cross-service coordination by clock, the same way loader trails ingestor.
+	// 03:30. changetovector reads the tables the loader fills, and computeTravelAvg
+	// (below) reads what changetovector fills, so each cron entry here still fires
+	// on its historical clock offset (03:45 / 04:00) but first polls pipeline_runs
+	// for the upstream stage's durable completion marker (written by the loader/
+	// changetovector on success) instead of trusting the clock offset alone.
+	markerReader := pgPipelineMarkerReader{db: db}
 	refreshVectors := vectorRefreshJob(rc, db, configuredEmbeddingClient())
 	vectorRunner := newStaticPipelineRunner(rawPool, 10*time.Minute)
 	_, _ = addStaticCron(r, "0 45 3 * * *", func() {
-		runDaily("changetovector", 10*time.Minute, func(ctx context.Context) error {
+		runDate := time.Now().In(taipei)
+		waitCtx, cancel := context.WithTimeout(context.Background(), pipelineMarkerPollDeadline+time.Minute)
+		defer cancel()
+		if err := waitForPipelineMarker(waitCtx, markerReader, "load", runDate, pipelineMarkerPollInterval, pipelineMarkerPollDeadline, time.Now, sleepCtx); err != nil {
+			log.Errorf("[PIPELINE] action=changetovector event=marker_wait_failed error=%v", err)
+			return
+		}
+		err := runDailyWithRetry(context.Background(), 10*time.Minute, time.Minute, func(ctx context.Context) error {
 			return vectorRunner.Run(ctx, refreshVectors)
 		})
+		if err != nil {
+			log.Errorf("[crontab] action=changetovector event=failed error=%v", err)
+			return
+		}
+		// Marker write is outside the job retry: a failed one-row upsert must
+		// not re-drive an already successful vector refresh.
+		_ = recordPipelineMarkerWithRetry(context.Background(), db, "changetovector", runDate)
 	})
 	registerLiveCrons(r, tdx, rc, db, dispatcher)
 	_, _ = r.AddFunc("@every 10m", func() {
@@ -463,6 +481,13 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		}
 	})
 	_, _ = r.AddFunc("0 0 4 * * *", func() {
+		runDate := time.Now().In(taipei)
+		waitCtx, cancel := context.WithTimeout(context.Background(), pipelineMarkerPollDeadline+time.Minute)
+		defer cancel()
+		if err := waitForPipelineMarker(waitCtx, markerReader, "changetovector", runDate, pipelineMarkerPollInterval, pipelineMarkerPollDeadline, time.Now, sleepCtx); err != nil {
+			log.Errorf("[PIPELINE] action=compute_travel_avg event=marker_wait_failed error=%v", err)
+			return
+		}
 		runDaily("computeTravelAvg", 15*time.Minute, func(ctx context.Context) error { return computeTravelAvg(ctx, db) })
 	})
 	_, _ = r.AddFunc("0 15 4 * * *", func() {

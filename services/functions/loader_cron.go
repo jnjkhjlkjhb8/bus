@@ -68,21 +68,39 @@ const loadTimeout = 60 * time.Minute
 func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Client) {
 	src := rawTDXSource{pool: rawPool}
 	runner := newStaticPipelineRunner(rawPool, loadTimeout)
+	// The marker write sits outside the load's retry wrapper on purpose: a
+	// failed one-row upsert must not re-drive a load that already succeeded,
+	// and it gets its own quick retry + distinct log instead
+	// (recordPipelineMarkerWithRetry). A failed/partial load never reaches it.
 	_, _ = addStaticCron(r, "0 30 3 * * *", func() {
-		runDaily("load", loadTimeout, func(ctx context.Context) error {
+		runDate := time.Now().In(taipei)
+		err := runDailyWithRetry(context.Background(), loadTimeout, time.Minute, func(ctx context.Context) error {
 			return runner.Run(ctx, func(ctx context.Context) error {
 				return runLoad(ctx, src, db, rc, nil)
 			})
 		})
+		if err != nil {
+			log.Errorf("[crontab] action=load event=failed error=%v", err)
+			return
+		}
+		// Only reached on a fully successful load: downstream stages
+		// (changetovector, computeTravelAvg) poll this marker instead of
+		// assuming the load finished within a fixed clock offset.
+		_ = recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
 	})
 	if os.Getenv("LOAD_ON_BOOT") == "true" {
 		log.Infoln("[LOAD] action=boot event=enabled")
 		go func() {
+			runDate := time.Now().In(taipei)
 			if err := runner.Run(context.Background(), func(ctx context.Context) error {
 				return runLoad(ctx, src, db, rc, nil)
 			}); err != nil {
 				log.Errorf("[LOAD] action=boot event=failed error=%v", err)
+				return
 			}
+			// A boot backfill is a complete load; write the marker so a
+			// redeploy-day run still unblocks the downstream stages.
+			_ = recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
 		}()
 	} else {
 		log.Warn("[LOAD] action=boot event=skipped")
