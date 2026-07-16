@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"firebase.google.com/go/v4/messaging"
@@ -31,6 +32,7 @@ type notificationStorage interface {
 	subscribedTokens(context.Context, string, string) ([]deviceToken, error)
 	activeRemindersForArrivals(context.Context, []ArrivalEvent, time.Time) ([]arrivalMatch, error)
 	dueScheduledReminders(context.Context, time.Time) ([]arrivalReminder, error)
+	hasActiveBusReminders(context.Context, time.Time) (bool, error)
 	claim(context.Context, string, time.Time) (bool, error)
 	release(context.Context, string) (bool, error)
 	fired(context.Context, string, time.Time) (bool, error)
@@ -44,6 +46,42 @@ type Dispatcher struct {
 	sender              Sender
 	now                 func() time.Time
 	finalizationTimeout time.Duration
+	busReminderFlag     atomic.Pointer[busReminderFlag]
+}
+
+// busReminderFlag is one cached "any active bus reminders?" answer with the
+// time it was taken.
+type busReminderFlag struct {
+	checkedAt time.Time
+	active    bool
+}
+
+// busReminderFlagTTL is how long one existence probe stays trusted; MQTT
+// arrival dispatch hits Postgres at most this often while no bus reminders
+// exist. A reminder created inside the window waits at most this long before
+// the MQTT path sees it — the 30s cron sweep covers the gap.
+const busReminderFlagTTL = 30 * time.Second
+
+// hasBusArrivalWork reports whether any bus arrival reminder could currently
+// match, refreshing the cached flag lazily once it is older than
+// busReminderFlagTTL. It exists so the per-message RealTimeNearStop firehose
+// (every city, every route) costs one small query per 30s instead of one per
+// message while nobody has a reminder set. A probe failure fails open —
+// uncached — so a database blip cannot suppress deliveries. Ceiling: one
+// process-wide flag; if the reminder base grows enough that the gate is
+// always open, replace it with a per-stop set.
+func (d *Dispatcher) hasBusArrivalWork(ctx context.Context) bool {
+	now := d.now()
+	if snap := d.busReminderFlag.Load(); snap != nil && now.Sub(snap.checkedAt) < busReminderFlagTTL {
+		return snap.active
+	}
+	active, err := d.store.hasActiveBusReminders(ctx, now)
+	if err != nil {
+		log.Warnf("[FCM] action=bus_reminder_gate event=probe_failed error=%v", err)
+		return true
+	}
+	d.busReminderFlag.Store(&busReminderFlag{checkedAt: now, active: active})
+	return active
 }
 
 // isInvalidFCMToken reports whether an FCM send error means the token is no
@@ -105,6 +143,16 @@ func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body s
 	}
 }
 
+// arrivalReminderBody renders the live-ETA reminder text. Zero minutes means
+// the vehicle is entering the stop now (the MQTT near-stop trigger), where
+// 「預計 0 分鐘後到站」would read as broken copy.
+func arrivalReminderBody(minutes int32) string {
+	if minutes <= 0 {
+		return "即將進站"
+	}
+	return fmt.Sprintf("預計 %d 分鐘後到站", minutes)
+}
+
 func sameArrivalIdentity(left, right ArrivalEvent) bool {
 	return left.RouteType == right.RouteType && left.RouteKey == right.RouteKey &&
 		left.StopKey == right.StopKey && left.Direction == right.Direction
@@ -152,7 +200,7 @@ func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error 
 		if !claimed {
 			continue
 		}
-		msg := notificationMessage(r.token, "即將到站", fmt.Sprintf("預計 %d 分鐘後到站", (event.ETASeconds+59)/60), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
+		msg := notificationMessage(r.token, "即將到站", arrivalReminderBody((event.ETASeconds+59)/60), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
 		sendErr := d.sender.Send(ctx, msg)
 		finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
 		if sendErr != nil {

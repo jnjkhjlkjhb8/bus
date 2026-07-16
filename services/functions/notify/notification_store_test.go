@@ -183,6 +183,25 @@ func TestNotificationStoreReleaseClearsClaimedAt(t *testing.T) {
 	}
 }
 
+func TestNotificationStoreHasActiveBusReminders(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Unix(1_800_000_000, 0)
+	db.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM firebase_arrival_reminder WHERE route_type='bus' AND status IN \\('pending','sending'\\) AND expires_at>\\$1\\)").
+		WithArgs(now).
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
+	active, err := (Store{db: db}).hasActiveBusReminders(context.Background(), now)
+	if err != nil || !active {
+		t.Fatalf("active=%v err=%v", active, err)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestNotificationStoreScheduledSweepIncludesTimedOutSending guards the
 // end-to-end retry path: without the reclaim arm in dueScheduledReminders'
 // WHERE clause, a stranded 'sending' reminder would never reach claim() at all.

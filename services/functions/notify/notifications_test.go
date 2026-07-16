@@ -34,6 +34,17 @@ type fakeNotificationStore struct {
 	claimErrIDs                                             map[string]bool
 	dueErr                                                  error
 	wantRouteType, wantRouteKey, wantStopKey, wantDirection string
+	activeBus                                               bool
+	activeBusErr                                            error
+	activeBusCalls                                          int
+}
+
+func (s *fakeNotificationStore) hasActiveBusReminders(context.Context, time.Time) (bool, error) {
+	s.activeBusCalls++
+	if s.activeBusErr != nil {
+		return false, s.activeBusErr
+	}
+	return s.activeBus, nil
 }
 
 func (s *fakeNotificationStore) activeRemindersForArrivals(_ context.Context, events []ArrivalEvent, _ time.Time) ([]arrivalMatch, error) {
