@@ -50,9 +50,14 @@ func (s Store) subscribedTokens(ctx context.Context, routeType, routeKey string)
 	return out, rows.Err()
 }
 
-// activeRemindersForArrivals joins all live arrivals to their pending reminders
-// in one query. The four identity fields are joined independently so values
-// that happen to share a route, stop, or direction cannot be cross-matched.
+// activeRemindersForArrivals joins all live arrivals to their claimable
+// reminders in one query. The four identity fields are joined independently so
+// values that happen to share a route, stop, or direction cannot be
+// cross-matched. Claimable includes 'sending' rows whose claim is older than
+// ReminderClaimTimeout (or NULL, from before claimed_at existed): a sweep that
+// only saw 'pending' would never resurface a reminder stranded by a dispatcher
+// that died between claim and fired/release. claim() re-checks the same
+// predicate atomically, so surfacing a row here never bypasses the claim race.
 func (s Store) activeRemindersForArrivals(ctx context.Context, events []ArrivalEvent, now time.Time) ([]arrivalMatch, error) {
 	if len(events) == 0 {
 		return nil, nil
@@ -76,8 +81,9 @@ func (s Store) activeRemindersForArrivals(ctx context.Context, events []ArrivalE
 	JOIN firebase_device d ON d.install_id=r.install_id
 	WHERE a.eta_seconds>=0 AND a.eta_seconds<=r.lead_minutes*60
 		AND (r.plate='' OR r.plate=a.arriving_plate)
-		AND r.status='pending' AND r.expires_at>$2
-		AND d.push_enabled AND d.fcm_token<>''`, string(payload), now)
+		AND (r.status='pending' OR (r.status='sending' AND (r.claimed_at IS NULL OR r.claimed_at<=$3)))
+		AND r.expires_at>$2
+		AND d.push_enabled AND d.fcm_token<>''`, string(payload), now, now.Add(-ReminderClaimTimeout))
 	if err != nil {
 		return nil, err
 	}
@@ -98,13 +104,15 @@ func (s Store) activeRemindersForArrivals(ctx context.Context, events []ArrivalE
 	return matches, rows.Err()
 }
 
-// dueScheduledReminders returns pending reminders whose scheduled fire_at has
+// dueScheduledReminders returns claimable reminders whose scheduled fire_at has
 // arrived (rail: fire_at = arrival − lead), joined to a push-enabled device
 // token. Bus reminders leave fire_at NULL and are excluded — they fire off the
 // live ETA via activeReminders instead. expires_at>now drops trains that have
-// already arrived so a late tick doesn't send a stale "arriving" push.
+// already arrived so a late tick doesn't send a stale "arriving" push. Like
+// activeRemindersForArrivals, claimable includes 'sending' rows with a claim
+// older than ReminderClaimTimeout, so a reminder stranded mid-send is retried.
 func (s Store) dueScheduledReminders(ctx context.Context, now time.Time) ([]arrivalReminder, error) {
-	rows, err := s.db.Query(ctx, `SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes FROM firebase_arrival_reminder r JOIN firebase_device d ON d.install_id=r.install_id WHERE r.status='pending' AND r.fire_at IS NOT NULL AND r.fire_at<=$1 AND r.expires_at>$1 AND d.push_enabled AND d.fcm_token<>''`, now)
+	rows, err := s.db.Query(ctx, `SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes FROM firebase_arrival_reminder r JOIN firebase_device d ON d.install_id=r.install_id WHERE (r.status='pending' OR (r.status='sending' AND (r.claimed_at IS NULL OR r.claimed_at<=$2))) AND r.fire_at IS NOT NULL AND r.fire_at<=$1 AND r.expires_at>$1 AND d.push_enabled AND d.fcm_token<>''`, now, now.Add(-ReminderClaimTimeout))
 	if err != nil {
 		return nil, err
 	}
@@ -125,18 +133,33 @@ func (s Store) dueScheduledReminders(ctx context.Context, now time.Time) ([]arri
 // whether they actually won the race. The input error is passed through.
 func rowsChanged(tag pgconn.CommandTag, err error) (bool, error) { return tag.RowsAffected() == 1, err }
 
-// claim atomically moves a pending, unexpired reminder to 'sending', returning
-// true only if this caller won it. This is the guard against two ETA runs pushing
-// the same reminder concurrently.
+// ReminderClaimTimeout is how long a 'sending' claim stays honored before the
+// row becomes claimable again. If the process dies between claim and
+// fired/release, nothing else ever resets the row, so a claim this old marks a
+// dead sender, not an in-flight one: every dispatch runs under the live cron's
+// 25-second job context (liveJobTimeout in the functions package) plus the
+// ArrivalFinalizationTimeout window, so no live send can still be between
+// claim and fired/release five minutes after claiming — which is what makes
+// reclaiming safe from double-sends. Exported so the functions package can
+// assert that bound against liveJobTimeout in a test.
+const ReminderClaimTimeout = 5 * time.Minute
+
+// claim atomically moves a claimable, unexpired reminder to 'sending',
+// stamping claimed_at, and returns true only if this caller won it. This is
+// the guard against two ETA runs pushing the same reminder concurrently.
+// Claimable covers 'pending' plus 'sending' rows whose claim is older than
+// ReminderClaimTimeout (or NULL) — a sender that died mid-send — so those
+// reminders are retried instead of being stuck forever.
 func (s Store) claim(ctx context.Context, id string, now time.Time) (bool, error) {
-	tag, err := s.db.Exec(ctx, `UPDATE firebase_arrival_reminder SET status='sending',updated_at=NOW() WHERE reminder_id=$1 AND status='pending' AND expires_at>$2`, id, now)
+	tag, err := s.db.Exec(ctx, `UPDATE firebase_arrival_reminder SET status='sending',claimed_at=$2,updated_at=NOW() WHERE reminder_id=$1 AND expires_at>$2 AND (status='pending' OR (status='sending' AND (claimed_at IS NULL OR claimed_at<=$3)))`, id, now, now.Add(-ReminderClaimTimeout))
 	return rowsChanged(tag, err)
 }
 
 // release returns a claimed ('sending') reminder to 'pending' so it can be
-// retried, used when a send fails after the claim was taken.
+// retried, used when a send fails after the claim was taken. claimed_at is
+// cleared so it only ever describes the current 'sending' claim.
 func (s Store) release(ctx context.Context, id string) (bool, error) {
-	tag, err := s.db.Exec(ctx, `UPDATE firebase_arrival_reminder SET status='pending',updated_at=NOW() WHERE reminder_id=$1 AND status='sending'`, id)
+	tag, err := s.db.Exec(ctx, `UPDATE firebase_arrival_reminder SET status='pending',claimed_at=NULL,updated_at=NOW() WHERE reminder_id=$1 AND status='sending'`, id)
 	return rowsChanged(tag, err)
 }
 

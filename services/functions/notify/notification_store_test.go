@@ -65,8 +65,9 @@ func TestNotificationStoreActiveRemindersUsesOneCompositeBatchQuery(t *testing.T
 		".*r\\.route_type=a\\.route_type AND r\\.route_key=a\\.route_key"+
 		".*r\\.stop_key=a\\.stop_key AND r\\.direction=a\\.direction"+
 		".*a\\.eta_seconds<=r\\.lead_minutes\\*60"+
-		".*r\\.plate='' OR r\\.plate=a\\.arriving_plate").
-		WithArgs(arrivalEventsJSONMatcher{want: events}, now).
+		".*r\\.plate='' OR r\\.plate=a\\.arriving_plate"+
+		".*r\\.status='pending' OR \\(r\\.status='sending' AND \\(r\\.claimed_at IS NULL OR r\\.claimed_at<=\\$3\\)\\)").
+		WithArgs(arrivalEventsJSONMatcher{want: events}, now, now.Add(-ReminderClaimTimeout)).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"reminder_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes", "plate",
 			"arrival_route_type", "arrival_route_key", "arrival_stop_key", "arrival_direction", "eta_seconds", "arriving_plate",
@@ -100,6 +101,13 @@ func TestNotificationStoreFiltersRouteAndEnabledDevice(t *testing.T) {
 	}
 }
 
+// claimExecPattern matches the single-statement claim UPDATE: it must stamp
+// claimed_at, stay conditional on expiry, and accept 'pending' plus timed-out
+// (or pre-column NULL) 'sending' rows in one atomic predicate.
+const claimExecPattern = "UPDATE firebase_arrival_reminder SET status='sending',claimed_at=\\$2" +
+	".*expires_at>\\$2" +
+	".*status='pending' OR \\(status='sending' AND \\(claimed_at IS NULL OR claimed_at<=\\$3\\)\\)"
+
 func TestNotificationStoreClaimIsAtomic(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
@@ -107,15 +115,93 @@ func TestNotificationStoreClaimIsAtomic(t *testing.T) {
 	}
 	defer db.Close()
 	now := time.Now()
-	db.ExpectExec("UPDATE firebase_arrival_reminder SET status='sending'.*status='pending'.*expires_at>\\$2").WithArgs("r1", now).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	cutoff := now.Add(-ReminderClaimTimeout)
+	db.ExpectExec(claimExecPattern).WithArgs("r1", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	claimed, err := (Store{db: db}).claim(context.Background(), "r1", now)
 	if err != nil || !claimed {
 		t.Fatalf("claimed=%v err=%v", claimed, err)
 	}
-	db.ExpectExec("UPDATE firebase_arrival_reminder SET status='sending'.*status='pending'.*expires_at>\\$2").WithArgs("r1", now).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	db.ExpectExec(claimExecPattern).WithArgs("r1", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	claimed, err = (Store{db: db}).claim(context.Background(), "r1", now)
 	if err != nil || claimed {
 		t.Fatalf("claimed=%v err=%v", claimed, err)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestNotificationStoreClaimReclaimCutoff pins the SQL text and arguments of
+// the reclaim contract: the claim UPDATE must carry a cutoff of exactly
+// now−ReminderClaimTimeout alongside the reclaim predicate. pgxmock does not
+// execute the predicate — whether a given claimed_at is actually reclaimed is
+// enforced by PostgreSQL — so the two scenarios below only exercise how claim()
+// translates the database's 1-row/0-row answers.
+func TestNotificationStoreClaimReclaimCutoff(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Unix(1_800_000_000, 0)
+	cutoff := now.Add(-ReminderClaimTimeout)
+
+	// Stuck sender: its claimed_at is at/before the cutoff, so the predicate
+	// matches and the reclaim wins the row.
+	db.ExpectExec(claimExecPattern).WithArgs("stuck", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	claimed, err := (Store{db: db}).claim(context.Background(), "stuck", now)
+	if err != nil || !claimed {
+		t.Fatalf("reclaim after timeout: claimed=%v err=%v", claimed, err)
+	}
+
+	// Live sender: claimed_at is newer than the cutoff, the predicate matches
+	// no row, and the caller must treat the reminder as still owned.
+	db.ExpectExec(claimExecPattern).WithArgs("in-flight", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	claimed, err = (Store{db: db}).claim(context.Background(), "in-flight", now)
+	if err != nil || claimed {
+		t.Fatalf("no reclaim before timeout: claimed=%v err=%v", claimed, err)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNotificationStoreReleaseClearsClaimedAt(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.ExpectExec("UPDATE firebase_arrival_reminder SET status='pending',claimed_at=NULL.*status='sending'").
+		WithArgs("r1").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	released, err := (Store{db: db}).release(context.Background(), "r1")
+	if err != nil || !released {
+		t.Fatalf("released=%v err=%v", released, err)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestNotificationStoreScheduledSweepIncludesTimedOutSending guards the
+// end-to-end retry path: without the reclaim arm in dueScheduledReminders'
+// WHERE clause, a stranded 'sending' reminder would never reach claim() at all.
+func TestNotificationStoreScheduledSweepIncludesTimedOutSending(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Unix(1_800_000_000, 0)
+	db.ExpectQuery("FROM firebase_arrival_reminder r"+
+		".*r\\.status='pending' OR \\(r\\.status='sending' AND \\(r\\.claimed_at IS NULL OR r\\.claimed_at<=\\$2\\)\\)"+
+		".*r\\.fire_at<=\\$1 AND r\\.expires_at>\\$1").
+		WithArgs(now, now.Add(-ReminderClaimTimeout)).
+		WillReturnRows(pgxmock.NewRows([]string{"reminder_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes"}).
+			AddRow("r1", "token", "tra", "R", "S", "0", 5))
+	out, err := (Store{db: db}).dueScheduledReminders(context.Background(), now)
+	if err != nil || len(out) != 1 || out[0].id != "r1" {
+		t.Fatalf("out=%v err=%v", out, err)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

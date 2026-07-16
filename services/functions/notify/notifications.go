@@ -51,7 +51,11 @@ type Dispatcher struct {
 // substitute the check.
 var isInvalidFCMToken = messaging.IsUnregistered
 
-const arrivalFinalizationTimeout = 2 * time.Second
+// ArrivalFinalizationTimeout bounds the detached fired/release/invalidate
+// window after a send. Exported so the functions package can assert the
+// reclaim-safety bound (liveJobTimeout + this < ReminderClaimTimeout) in a
+// test.
+const ArrivalFinalizationTimeout = 2 * time.Second
 
 // NewDispatcher builds a dispatcher, or returns nil when sender is
 // nil (push disabled). Callers must treat a nil dispatcher as "notifications off"
@@ -60,7 +64,7 @@ func NewDispatcher(store notificationStorage, sender Sender) *Dispatcher {
 	if sender == nil {
 		return nil
 	}
-	return &Dispatcher{store: store, sender: sender, now: time.Now, finalizationTimeout: arrivalFinalizationTimeout}
+	return &Dispatcher{store: store, sender: sender, now: time.Now, finalizationTimeout: ArrivalFinalizationTimeout}
 }
 
 // notificationMessage builds an FCM message with both a notification and a data

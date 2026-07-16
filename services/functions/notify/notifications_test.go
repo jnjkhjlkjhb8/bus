@@ -554,7 +554,7 @@ func TestArrivalsReleasesWithDetachedContextAndStopsAfterParentCancel(t *testing
 	if len(store.claimIDs) != 1 || store.claimIDs[0] != "r1" || len(sender.messages) != 1 {
 		t.Fatalf("processed new reminder after cancellation: claims=%v sends=%d", store.claimIDs, len(sender.messages))
 	}
-	if store.missingFinalizationDeadline || len(store.finalizationDeadlines) != 1 || store.finalizationDeadlines[0] <= 0 || store.finalizationDeadlines[0] > arrivalFinalizationTimeout {
+	if store.missingFinalizationDeadline || len(store.finalizationDeadlines) != 1 || store.finalizationDeadlines[0] <= 0 || store.finalizationDeadlines[0] > ArrivalFinalizationTimeout {
 		t.Fatalf("release finalization deadlines = %v missing=%v, want one bounded deadline", store.finalizationDeadlines, store.missingFinalizationDeadline)
 	}
 }
@@ -708,8 +708,8 @@ func TestInvalidTokenFinalizesWithDetachedContextAfterParentCancel(t *testing.T)
 		t.Fatalf("invalid-token finalization deadlines = %v missing=%v", store.finalizationDeadlines, store.missingFinalizationDeadline)
 	}
 	for _, remaining := range store.finalizationDeadlines {
-		if remaining <= 0 || remaining > arrivalFinalizationTimeout {
-			t.Fatalf("invalid-token finalization deadline remaining = %v, want (0, %v]", remaining, arrivalFinalizationTimeout)
+		if remaining <= 0 || remaining > ArrivalFinalizationTimeout {
+			t.Fatalf("invalid-token finalization deadline remaining = %v, want (0, %v]", remaining, ArrivalFinalizationTimeout)
 		}
 	}
 }
