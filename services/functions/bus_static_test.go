@@ -347,7 +347,10 @@ func TestReadBusCitySnapshotBuildsDeterministicManualGroupCentroid(t *testing.T)
 	}
 }
 
-func TestReadBusCitySnapshotDeduplicatesIdenticalStopsAndRejectsDivergence(t *testing.T) {
+func TestReadBusCitySnapshotDeduplicatesIdenticalStopsAndTakesFirstOnDivergence(t *testing.T) {
+	// One divergent variant out of two is 50% of this fixture; the ratio gate
+	// is covered by TestLoadQuarantineRatioGate.
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "1")
 	src := validBusSnapshotSource("Taipei")
 	one := string(src.bodies["bus_stopofroute|Taipei"])
 	src.bodies["bus_stopofroute|Taipei"] = []byte("[" + one[1:len(one)-1] + "," + one[1:len(one)-1] + "]")
@@ -359,13 +362,21 @@ func TestReadBusCitySnapshotDeduplicatesIdenticalStopsAndRejectsDivergence(t *te
 		t.Fatalf("deduplicated stops = %d, want 1", got)
 	}
 
+	// TDX publishes two stop lists for one subroute/direction and does not say
+	// which is right. Failing the city over it froze InterCity at its last good
+	// snapshot indefinitely, so the first variant wins and the load continues.
 	src = validBusSnapshotSource("Taipei")
 	src.bodies["bus_stopofroute|Taipei"] = []byte(`[
 		{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Stops":[{"StopUID":"S1","StopName":{"Zh_tw":"甲"},"StopSequence":1,"StationID":"ST1","StopPosition":{"PositionLon":121.5,"PositionLat":25}}]},
 		{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Stops":[{"StopUID":"S2","StopName":{"Zh_tw":"乙"},"StopSequence":1,"StationID":"ST2","StopPosition":{"PositionLon":121.6,"PositionLat":25}}]}
 	]`)
-	if _, err := readBusCitySnapshot(context.Background(), src, "Taipei"); !errors.Is(err, errBusSnapshotConflict) {
-		t.Fatalf("divergent duplicate error = %v, want errBusSnapshotConflict", err)
+	snapshot, err = readBusCitySnapshot(context.Background(), src, "Taipei")
+	if err != nil {
+		t.Fatalf("divergent duplicate: %v, want the city to load with the first variant", err)
+	}
+	stops := snapshot.subroutes["TPE100"].Directions[0].Stops
+	if len(stops) != 1 || stops[0].StopUID != "S1" {
+		t.Fatalf("stops = %+v, want only the first variant (S1)", stops)
 	}
 }
 
@@ -717,4 +728,128 @@ func indexSQL(statements []string, fragment string) int {
 		}
 	}
 	return -1
+}
+
+func TestNormalizeClock(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"05:10", "05:10", true},
+		{"0510", "05:10", true},   // the bare shape Taipei publishes
+		{"0700", "07:00", true},   // NewTaipei FirstBusTime
+		{"25:30", "25:30", true},  // service day runs past midnight
+		{"29:59", "29:59", true},  // upper bound
+		{" 0510 ", "05:10", true}, // TDX pads some fields
+		{"30:00", "", false},      // hour out of range
+		{"05:60", "", false},      // minute out of range
+		{"5:10", "", false},
+		{"051", "", false},
+		{"05:1o", "", false},
+		{"abcd", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got, ok := normalizeClock(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("normalizeClock(%q) = (%q,%v), want (%q,%v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// Every case here is a real 2026-07-17 loader failure. Each one rejected an
+// entire city, which writes nothing and therefore froze that city at its last
+// good snapshot indefinitely — TDX never repairs these on its own. The record
+// goes; the city loads.
+func TestReadBusCitySnapshotQuarantinesRecordDefects(t *testing.T) {
+	// These fixtures are one record wide, so any drop is 100% of its kind. The
+	// ratio gate is exercised in TestLoadQuarantineRatioGate; here it is the
+	// per-record drop path under test.
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "1")
+	tests := []struct {
+		name  string
+		table string
+		body  string
+	}{
+		{
+			// Taoyuan: Shape[107] references unknown TAO3021/1.
+			name:  "shape referencing an unknown subroute",
+			table: "bus_shape",
+			body:  `[{"RouteUID":"TPE1","SubRouteUID":"TPE999","Direction":1,"Geometry":"LINESTRING(121.5 25.0,121.6 25.1)"}]`,
+		},
+		{
+			// Kinmen: Schedule[0]: timetable has empty TripID.
+			name:  "schedule with a malformed timetable",
+			table: "bus_schedule",
+			body:  `[{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Timetables":[{"TripID":"","StopTimes":[{"StopUID":"TPE_S1","StopName":{"Zh_tw":"甲站"},"StopSequence":1,"ArrivalTime":"06:00","DepartureTime":"06:00"}]}]}]`,
+		},
+		{
+			// Changhua/Nantou/Yilan: divergent Schedule variants.
+			name:  "divergent schedule variants",
+			table: "bus_schedule",
+			body: `[{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Frequencys":[{"StartTime":"06:00","EndTime":"07:00","MinHeadwayMins":5,"MaxHeadwayMins":10}]},
+			        {"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Frequencys":[{"StartTime":"06:00","EndTime":"08:00","MinHeadwayMins":9,"MaxHeadwayMins":20}]}]`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			src := validBusSnapshotSource("Taipei")
+			src.bodies[test.table+"|Taipei"] = []byte(test.body)
+			snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
+			if err != nil {
+				t.Fatalf("error = %v, want the city to load with the record dropped", err)
+			}
+			if snapshot.subroutes["TPE100"] == nil {
+				t.Fatal("TPE100 missing: the good subroute must survive the drop")
+			}
+		})
+	}
+}
+
+// Tainan: Route[15].SubRoutes[0] has invalid identity/direction. The bad
+// subroute goes, its siblings load.
+func TestReadBusCitySnapshotDropsUnusableSubrouteKeepsSiblings(t *testing.T) {
+	// One of two subroutes drops, which is 50% of a two-record fixture; the
+	// ratio gate is covered by TestLoadQuarantineRatioGate.
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "1")
+	src := validBusSnapshotSource("Taipei")
+	src.bodies["bus_route|Taipei"] = []byte(`[{"RouteUID":"TPE1","RouteName":{"Zh_tw":"1路"},"Operators":[{"OperatorID":"OP1"}],"SubRoutes":[
+		{"SubRouteUID":"TPE100","SubRouteID":"100","SubRouteName":{"Zh_tw":"1路"},"Direction":0,"DepartureStopNameZh":"甲","DestinationStopNameZh":"乙"},
+		{"SubRouteUID":"TPE101","SubRouteID":"101","SubRouteName":{"Zh_tw":""},"Direction":0}
+	]}]`)
+	snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
+	if err != nil {
+		t.Fatalf("error = %v, want the city to load with the bad subroute dropped", err)
+	}
+	if snapshot.subroutes["TPE100"] == nil {
+		t.Fatal("TPE100 missing: the valid sibling must survive")
+	}
+	if snapshot.subroutes["TPE101"] != nil {
+		t.Fatal("TPE101 present: a subroute with no usable identity must be dropped")
+	}
+}
+
+// Taipei: TPE101320/0 HolidayFirstBusTime="0510". A time that survives neither
+// shape blanks that one field; empty already means "not published" to every
+// reader, so the route stays usable rather than vanishing.
+func TestReadBusCitySnapshotBlanksUnparseableClockKeepsSubroute(t *testing.T) {
+	// A blanked clock counts as a drop against a one-subroute fixture; the
+	// ratio gate is covered by TestLoadQuarantineRatioGate.
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "1")
+	src := validBusSnapshotSource("Taipei")
+	src.bodies["bus_route|Taipei"] = []byte(`[{"RouteUID":"TPE1","RouteName":{"Zh_tw":"1路"},"Operators":[{"OperatorID":"OP1"}],"SubRoutes":[
+		{"SubRouteUID":"TPE100","SubRouteID":"100","SubRouteName":{"Zh_tw":"1路"},"Direction":0,"DepartureStopNameZh":"甲","DestinationStopNameZh":"乙","FirstBusTime":"0600","LastBusTime":"garbage"}
+	]}]`)
+	snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
+	if err != nil {
+		t.Fatalf("error = %v, want the city to load", err)
+	}
+	dir := snapshot.subroutes["TPE100"].Directions[0]
+	if dir.FirstBusTime != "06:00" {
+		t.Fatalf("FirstBusTime = %q, want the bare HHMM shape normalized to 06:00", dir.FirstBusTime)
+	}
+	if dir.LastBusTime != "" {
+		t.Fatalf("LastBusTime = %q, want an unparseable time blanked", dir.LastBusTime)
+	}
 }

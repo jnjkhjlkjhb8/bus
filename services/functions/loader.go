@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,6 +65,139 @@ type qualityTarget struct {
 // good data with a landing that never happened.
 var errLoadStale = errors.New("raw_tdx_partition_stale")
 
+// loadQuarantine collects the records one partition dropped instead of
+// rejecting the whole partition over them.
+//
+// TDX publishes a standing tail of dangling references and divergent variants
+// that never resolve on their own. Failing the partition over one of them
+// wrote nothing at all, which left that city frozen at its last good snapshot
+// indefinitely and silently — a load failure has no staleness alarm behind it.
+// Dropping the record keeps the rest of the partition current.
+//
+// The line this draws: a bad *record* is dropped, a wrong *payload* still
+// fails. Dangling refs, divergent variants and unusable per-record identity
+// are data defects and get quarantined; a UID that belongs to another city
+// means the wrong payload landed, so those checks stay fatal rather than
+// silently discarding thousands of rows.
+type loadQuarantine struct {
+	dataset string
+	part    string
+	dropped map[string]int    // reason -> count
+	sample  map[string]string // reason -> first offending record
+	kind    map[string]string // reason -> the kind it was dropped from
+	seen    map[string]int    // kind -> records examined (the ratio denominator)
+}
+
+func newLoadQuarantine(dataset, part string) *loadQuarantine {
+	return &loadQuarantine{
+		dataset: dataset, part: part,
+		dropped: map[string]int{}, sample: map[string]string{},
+		kind: map[string]string{}, seen: map[string]int{},
+	}
+}
+
+// consider records how many records of a kind were examined. It is the
+// denominator quarantineRatioLimit gates on, so every kind that can drop must
+// declare its total.
+func (q *loadQuarantine) consider(kind string, n int) {
+	q.seen[kind] += n
+}
+
+// drop records one rejected record. kind names the section it came from (the
+// ratio bucket, e.g. "shape"); reason is the stable log slug; detail
+// identifies the offending record so an operator can find it.
+func (q *loadQuarantine) drop(kind, reason, detail string) {
+	q.dropped[reason]++
+	q.kind[reason] = kind
+	if _, ok := q.sample[reason]; !ok {
+		q.sample[reason] = logSafeDetail(detail)
+	}
+}
+
+// quarantineRatioLimit is the share of one kind's records that may be dropped
+// before the partition fails instead. A standing tail of TDX defects is a
+// handful of records; a third of a city's shapes vanishing is a defect in the
+// feed or in this loader, and quarantining that silently ships a half-empty
+// city without anyone noticing. The default is a starting guess — the ratio is
+// logged on every run, so tune it from what the feed actually does.
+func quarantineRatioLimit() float64 {
+	if v := os.Getenv("LOAD_QUARANTINE_MAX_RATIO"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+			return f
+		}
+		log.Warnf("[LOAD] action=quarantine event=bad_ratio_env value=%q using=%v", v, defaultQuarantineRatio)
+	}
+	return defaultQuarantineRatio
+}
+
+const defaultQuarantineRatio = 0.10
+
+// exceeded reports the kinds whose drop ratio crossed the limit. The caller
+// fails the partition on a non-nil error, which leaves the previous load's rows
+// in place — stale but whole, which beats fresh but silently gutted.
+func (q *loadQuarantine) exceeded() error {
+	limit := quarantineRatioLimit()
+	byKind := map[string]int{}
+	for reason, n := range q.dropped {
+		byKind[q.kind[reason]] += n
+	}
+	var over []error
+	for _, kind := range sortedKeys(byKind) {
+		seen := q.seen[kind]
+		if seen == 0 {
+			continue
+		}
+		ratio := float64(byKind[kind]) / float64(seen)
+		if ratio > limit {
+			over = append(over, fmt.Errorf("%s dropped %d/%d records (%.1f%% > %.1f%%)",
+				kind, byKind[kind], seen, ratio*100, limit*100))
+		}
+	}
+	if len(over) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s/%s quarantine ratio exceeded: %w", q.dataset, q.part, errors.Join(over...))
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+func logSafeDetail(s string) string {
+	return strings.NewReplacer(" ", "_", "=", ":", `"`, "'").Replace(s)
+}
+
+// report logs one line per reason with its share of the kind it came from, so a
+// tail that stops being a tail is visible before it becomes an outage. A clean
+// partition logs nothing.
+func (q *loadQuarantine) report() {
+	for _, r := range sortedKeys(q.dropped) {
+		kind := q.kind[r]
+		seen := q.seen[kind]
+		ratio := 0.0
+		if seen > 0 {
+			ratio = float64(q.dropped[r]) / float64(seen)
+		}
+		log.Warnf("[LOAD] action=quarantine event=dropped dataset=%s partition=%s reason=%s count=%d of=%d ratio=%.3f first=%s",
+			q.dataset, q.part, r, q.dropped[r], seen, ratio, q.sample[r])
+	}
+}
+
+// loadStats counts partition outcomes for one run. A partition is skipped (not
+// failed) when it never landed at all: the rail date windows reach 45-60 days
+// out, further than TDX publishes timetables, so their tail has no
+// landing_state row every single day. That is the ingestor reporting an empty
+// horizon, not a loader failure, and it cannot overwrite anything.
+type loadStats struct {
+	ok      int
+	failed  int
+	skipped int
+}
+
 // staleAfter is the freshness window. Landing runs at 03:00, loads at 03:30; a
 // partition older than 27h means the last landing failed or was skipped, so the
 // loader leaves the env schema untouched (ADR-0005 coordination).
@@ -75,7 +211,7 @@ func isStale(fetchedAt time.Time) bool {
 // runLoad transforms the named datasets from src into db (and rc for the
 // Redis-only datasets). keys selects registry entries by loadSpec.key; an empty
 // keys slice loads every registered dataset.
-func runLoad(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, keys []string) error {
+func runLoad(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, keys []string) (loadStats, error) {
 	specs := loaderRegistry(src)
 	if len(keys) > 0 {
 		want := map[string]bool{}
@@ -99,8 +235,9 @@ func runLoad(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 // and do not abort the run; every failure is returned through errors.Join so
 // the daily wrapper retries without hiding failures in otherwise independent
 // partitions.
-func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, specs []loadSpec) error {
+func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, specs []loadSpec) (loadStats, error) {
 	sink := pgLoadSink{db: db, rc: rc}
+	var stats loadStats
 	var failures []error
 	for _, spec := range specs {
 		parts := spec.partitions()
@@ -109,24 +246,38 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 			if err != nil {
 				log.Errorf("[LOAD] action=read event=error dataset=%s partition=%s error=%v", spec.key, part, err)
 				failures = append(failures, fmt.Errorf("load dataset %s partition %s: read: %w", spec.key, part, err))
+				stats.failed++
 				continue
 			}
-			if fetchedAt.IsZero() || (!spec.staleOK && isStale(fetchedAt)) {
+			// Never landed and landed-but-stale are different events. No
+			// landing_state row means the ingestor found nothing to land;
+			// a stale one means a landing that should have happened did
+			// not, which is worth failing the run over.
+			if fetchedAt.IsZero() {
+				log.Warnf("[LOAD] action=skip event=never_landed dataset=%s partition=%s", spec.key, part)
+				stats.skipped++
+				continue
+			}
+			if !spec.staleOK && isStale(fetchedAt) {
 				log.Warnf("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s reason=%v", spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale)
 				failures = append(failures, fmt.Errorf("load dataset %s partition %s: %w", spec.key, part, errLoadStale))
+				stats.failed++
 				continue
 			}
 			dec := json.NewDecoder(bytes.NewReader(body))
 			if err := spec.load(ctx, dec, sink, part); err != nil {
 				log.Errorf("[LOAD] action=transform event=error dataset=%s partition=%s error=%v", spec.key, part, err)
 				failures = append(failures, fmt.Errorf("load dataset %s partition %s: transform: %w", spec.key, part, err))
+				stats.failed++
 				continue
 			}
 			log.Infof("[LOAD] action=transform event=success dataset=%s partition=%s", spec.key, part)
+			stats.ok++
 		}
 		reportQuality(ctx, db, spec)
 	}
-	return errors.Join(failures...)
+	log.Infof("[LOAD] action=run event=done ok=%d failed=%d skipped=%d", stats.ok, stats.failed, stats.skipped)
+	return stats, errors.Join(failures...)
 }
 
 // reportQuality logs one data-quality line per target table after a dataset

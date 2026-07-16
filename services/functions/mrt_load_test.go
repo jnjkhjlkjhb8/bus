@@ -336,11 +336,26 @@ func TestLoadMrtDuplicatePolicies(t *testing.T) {
 			t.Fatalf("divergent error = %v", err)
 		}
 	})
+	// A conflicting price on the full (全票) class is a price users see, so it
+	// still rejects.
 	t.Run("journey divergent duplicate adult fare rejects", func(t *testing.T) {
-		body := `[{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":5,"Fares":[{"TicketType":1,"Price":20},{"TicketType":1,"Price":25}]}]`
+		body := `[{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":5,"Fares":[{"TicketType":1,"FareClass":1,"Price":20},{"TicketType":1,"FareClass":1,"Price":25}]}]`
 		err := loadMrtJourneyMatrix(context.Background(), decodeInto(body), &fakeLoadSink{}, "TRTC")
 		if err == nil || !strings.Contains(err.Error(), "duplicate TicketType") {
 			t.Fatalf("divergent adult fare error = %v", err)
+		}
+	})
+	// Only the full and half classes are read, so a conflict on any other class
+	// disputes a value the loader discards. Rejecting the system's whole matrix
+	// over it took TRTC's fares offline; it must load.
+	t.Run("journey divergent duplicate unread fare class loads", func(t *testing.T) {
+		body := `[{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":5,"Fares":[{"TicketType":1,"FareClass":1,"Price":20},{"TicketType":1,"FareClass":3,"Price":15},{"TicketType":1,"FareClass":3,"Price":18}]}]`
+		sink := &fakeLoadSink{}
+		if err := loadMrtJourneyMatrix(context.Background(), decodeInto(body), sink, "TRTC"); err != nil {
+			t.Fatalf("divergent unread fare class error = %v, want the matrix to load", err)
+		}
+		if len(sink.calls) != 1 || len(sink.calls[0].rows) != 1 {
+			t.Fatalf("rows = %+v, want the OD pair written through", sink.calls)
 		}
 	})
 }
@@ -353,5 +368,21 @@ func TestLoadMrtStationsConflictRefreshesBikeAllowance(t *testing.T) {
 	}
 	if len(sink.calls) != 1 || !strings.Contains(sink.calls[0].spec.insertSQL, "bikeallowonholiday = EXCLUDED.bikeallowonholiday") {
 		t.Fatalf("MRT station conflict SQL does not refresh bikeallowonholiday:\n%s", sink.calls[0].spec.insertSQL)
+	}
+}
+
+// KRTC publishes rows with an empty FirstTrainTime for lines it has no window
+// for. mrtServiceWindows already skips a row it cannot parse, so an empty value
+// is absent data, not a defect; rejecting it discarded the whole system.
+func TestLoadMrtFirstlastAcceptsEmptyTrainTime(t *testing.T) {
+	sink := &fakeLoadSink{}
+	err := loadMrtFirstlast(context.Background(), decodeInto(
+		`[{"StationID":"R10","LineID":"R","DestinationStaionID":"R24","FirstTrainTime":"","LastTrainTime":"","ServiceDay":{"Monday":true}}]`,
+	), sink, "KRTC")
+	if err != nil {
+		t.Fatalf("loadMrtFirstlast error = %v, want an empty train time to load", err)
+	}
+	if len(sink.calls) != 1 || len(sink.calls[0].rows) != 1 {
+		t.Fatalf("copyUpsert calls = %+v, want the row written through", sink.calls)
 	}
 }

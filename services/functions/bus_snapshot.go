@@ -79,6 +79,8 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	if !ok {
 		return nil, fmt.Errorf("%w: source cannot return an atomic landing cycle", errBusSnapshotIncomplete)
 	}
+	q := newLoadQuarantine("bus", city)
+	defer q.report()
 	landingCycle := ""
 	readDataset := func(table string) ([]byte, error) {
 		body, cycle, err := readBusRawDataset(ctx, cycleSource, city, table)
@@ -135,6 +137,11 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			sanitizeOperatorPhone(op.OperatorPhone), op.OperatorUrl,
 		})
 	}
+	subrouteCount := 0
+	for _, r := range routes {
+		subrouteCount += len(r.SubRoutes)
+	}
+	q.consider("subroute", subrouteCount)
 	routeToCanonical := make(map[string]map[string]struct{})
 	nativeToCanonical := make(map[string]string)
 	for ri, route := range routes {
@@ -158,18 +165,37 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		for si, sub := range route.SubRoutes {
 			uid, dir := shared.CanonicalSubroute(city, sub.SubRouteUID, sub.Direction)
 			if strings.TrimSpace(uid) == "" || strings.TrimSpace(sub.SubRouteUID) == "" || strings.TrimSpace(sub.SubRouteName.Zhtw) == "" || dir > 1 {
-				return nil, fmt.Errorf("%w: Route[%d].SubRoutes[%d] has invalid identity/direction", errBusSnapshotInvalid, ri, si)
+				// Unusable identity: nothing downstream can key off this
+				// subroute, so it goes rather than the city.
+				q.drop("subroute", "subroute_identity", fmt.Sprintf("Route[%d].SubRoutes[%d] uid=%q dir=%d", ri, si, sub.SubRouteUID, sub.Direction))
+				continue
 			}
 			if !uidBelongsToPrefix(sub.SubRouteUID, prefix) || !uidBelongsToPrefix(uid, prefix) {
 				return nil, fmt.Errorf("%w: Route[%d].SubRoutes[%d] UID %q canonical %q does not belong to %s", errBusSnapshotInvalid, ri, si, sub.SubRouteUID, uid, city)
 			}
-			for label, value := range map[string]string{
-				"FirstBusTime": sub.FirstBusTime, "LastBusTime": sub.LastBusTime,
-				"HolidayFirstBusTime": sub.HolidayFirstBusTime, "HolidayLastBusTime": sub.HolidayLastBusTime,
+			// sub is a range copy, so normalizing in place is what reaches the
+			// candidate Direction below: the snapshot stores the canonical
+			// "HH:MM" form regardless of which shape the city published. An
+			// unparseable time blanks that one field rather than dropping the
+			// subroute — empty already means "not published" to every reader,
+			// and the route itself is still perfectly usable without it.
+			for _, f := range []struct {
+				label string
+				value *string
+			}{
+				{"FirstBusTime", &sub.FirstBusTime}, {"LastBusTime", &sub.LastBusTime},
+				{"HolidayFirstBusTime", &sub.HolidayFirstBusTime}, {"HolidayLastBusTime", &sub.HolidayLastBusTime},
 			} {
-				if value != "" && !validClock(value) {
-					return nil, fmt.Errorf("%w: %s/%d %s=%q", errBusSnapshotInvalid, uid, dir, label, value)
+				if *f.value == "" {
+					continue
 				}
+				norm, ok := normalizeClock(*f.value)
+				if !ok {
+					q.drop("subroute", "subroute_clock", fmt.Sprintf("%s/%d %s=%q", uid, dir, f.label, *f.value))
+					*f.value = ""
+					continue
+				}
+				*f.value = norm
 			}
 			dep, dest := sub.DepartureStopNameZh, sub.DestinationStopNameZh
 			if dep == "" {
@@ -247,13 +273,20 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	if err := decodeStrictJSONArray(stopBody, &stopVariants); err != nil {
 		return nil, fmt.Errorf("%w: StopOfRoute: %v", errBusSnapshotInvalid, err)
 	}
+	q.consider("stopofroute", len(stopVariants))
 	seenStops := make(map[string]rawStopofroute)
 	for i, variant := range stopVariants {
 		uid, dir := shared.CanonicalSubroute(city, variant.SubRouteUID, variant.Direction)
 		route := snapshot.subroutes[uid]
 		direction := directionFor(snapshot.subroutes, uid, dir)
-		if !uidBelongsToPrefix(variant.RouteUID, prefix) || !uidBelongsToPrefix(variant.SubRouteUID, prefix) || !uidBelongsToPrefix(uid, prefix) || route == nil || direction == nil {
-			return nil, fmt.Errorf("%w: StopOfRoute[%d] references unknown %s/%d", errBusSnapshotInvalid, i, uid, dir)
+		if !uidBelongsToPrefix(variant.RouteUID, prefix) || !uidBelongsToPrefix(variant.SubRouteUID, prefix) {
+			return nil, fmt.Errorf("%w: StopOfRoute[%d] UID %q does not belong to %s", errBusSnapshotInvalid, i, variant.SubRouteUID, city)
+		}
+		if !uidBelongsToPrefix(uid, prefix) || route == nil || direction == nil {
+			// Dangling reference: the parent subroute was never published, or
+			// was itself dropped above. Nothing to attach these stops to.
+			q.drop("stopofroute", "stopofroute_dangling", fmt.Sprintf("StopOfRoute[%d] -> %s/%d", i, uid, dir))
+			continue
 		}
 		if variant.RouteUID != route.RouteUID {
 			return nil, fmt.Errorf("%w: StopOfRoute[%d] parent %q does not match %q for %s", errBusSnapshotInvalid, i, variant.RouteUID, route.RouteUID, uid)
@@ -273,8 +306,12 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		}
 		key := fmt.Sprintf("%s/%d", uid, dir)
 		if prior, ok := seenStops[key]; ok {
+			// First variant wins. TDX publishes two stop lists for the same
+			// subroute/direction and does not say which is right; picking the
+			// first is deterministic (the payload order is stable) and beats
+			// discarding the city. Counted so a rising tally is visible.
 			if !jsonSemanticEqual(prior.Stops, variant.Stops) {
-				return nil, fmt.Errorf("%w: %s has divergent StopOfRoute variants", errBusSnapshotConflict, key)
+				q.drop("stopofroute", "stopofroute_divergent", key)
 			}
 			continue
 		}
@@ -303,6 +340,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	if err := decodeStrictJSONArray(shapeBody, &shapes); err != nil {
 		return nil, fmt.Errorf("%w: Shape: %v", errBusSnapshotInvalid, err)
 	}
+	q.consider("shape", len(shapes))
 	seenShapes := make(map[string]string)
 	for i, shape := range shapes {
 		if strings.TrimSpace(shape.Geometry) == "" {
@@ -324,21 +362,38 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			}
 		}
 		if len(targets) == 0 {
-			return nil, fmt.Errorf("%w: Shape[%d] references unknown route", errBusSnapshotInvalid, i)
+			// A shape whose RouteUID is absent from bus_route entirely.
+			// Geometry is the map polyline only, so the route stays fully
+			// usable without it.
+			q.drop("shape", "shape_unknown_route", fmt.Sprintf("Shape[%d]->route:%s", i, shape.RouteUID))
+			continue
 		}
 		for _, uid := range targets {
 			_, dir := shared.CanonicalSubroute(city, shape.SubRouteUID, shape.Direction)
 			route := snapshot.subroutes[uid]
 			direction := directionFor(snapshot.subroutes, uid, dir)
 			if direction == nil || route == nil {
-				return nil, fmt.Errorf("%w: Shape[%d] references unknown %s/%d", errBusSnapshotInvalid, i, uid, dir)
+				// The route exists but not this direction. A route-level shape
+				// (no SubRouteUID) fans out to every subroute of the route and
+				// drops once per subroute lacking shape.Direction, so this one
+				// multiplies — scope tells them apart in the log.
+				scope := "sub"
+				if shape.SubRouteUID == "" {
+					scope = "routelevel"
+				}
+				q.drop("shape", "shape_unknown_direction", fmt.Sprintf("Shape[%d]/%s->%s/%d", i, scope, uid, dir))
+				continue
 			}
+			// A parent mismatch is a payload-integrity signal, not a per-record
+			// defect: it stays fatal alongside the foreign-UID checks.
 			if shape.RouteUID != "" && shape.RouteUID != route.RouteUID {
 				return nil, fmt.Errorf("%w: Shape[%d] parent %q does not match %q for %s", errBusSnapshotInvalid, i, shape.RouteUID, route.RouteUID, uid)
 			}
 			key := fmt.Sprintf("%s/%d", uid, dir)
 			if prior, ok := seenShapes[key]; ok && prior != shape.Geometry {
-				return nil, fmt.Errorf("%w: %s has divergent Shape variants", errBusSnapshotConflict, key)
+				// First variant wins, as for StopOfRoute above.
+				q.drop("shape", "shape_divergent", key)
+				continue
 			}
 			seenShapes[key] = shape.Geometry
 			direction.Geometry = shape.Geometry
@@ -353,28 +408,39 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	if err := decodeStrictJSONArray(scheduleBody, &schedules); err != nil {
 		return nil, fmt.Errorf("%w: Schedule: %v", errBusSnapshotInvalid, err)
 	}
+	q.consider("schedule", len(schedules))
 	seenSchedules := make(map[string]rawBusSchedule)
 	for i, schedule := range schedules {
 		uid, dir := shared.CanonicalSubroute(city, schedule.SubRouteUID, schedule.Direction)
 		route := snapshot.subroutes[uid]
 		direction := directionFor(snapshot.subroutes, uid, dir)
-		if !uidBelongsToPrefix(schedule.RouteUID, prefix) || !uidBelongsToPrefix(schedule.SubRouteUID, prefix) || !uidBelongsToPrefix(uid, prefix) || route == nil || direction == nil {
-			return nil, fmt.Errorf("%w: Schedule[%d] references unknown %s/%d", errBusSnapshotInvalid, i, uid, dir)
+		if !uidBelongsToPrefix(schedule.RouteUID, prefix) || !uidBelongsToPrefix(schedule.SubRouteUID, prefix) {
+			return nil, fmt.Errorf("%w: Schedule[%d] UID %q does not belong to %s", errBusSnapshotInvalid, i, schedule.SubRouteUID, city)
 		}
+		if !uidBelongsToPrefix(uid, prefix) || route == nil || direction == nil {
+			q.drop("schedule", "schedule_dangling", fmt.Sprintf("Schedule[%d] -> %s/%d", i, uid, dir))
+			continue
+		}
+		// A parent mismatch is a payload-integrity signal, not a per-record
+		// defect: it stays fatal alongside the foreign-UID checks.
 		if schedule.RouteUID != route.RouteUID {
 			return nil, fmt.Errorf("%w: Schedule[%d] parent %q does not match %q for %s", errBusSnapshotInvalid, i, schedule.RouteUID, route.RouteUID, uid)
 		}
 		key := fmt.Sprintf("%s/%d", uid, dir)
 		if prior, ok := seenSchedules[key]; ok {
+			// First variant wins, as for StopOfRoute and Shape above.
 			if !jsonSemanticEqual(prior, schedule) {
-				return nil, fmt.Errorf("%w: %s has divergent Schedule variants", errBusSnapshotConflict, key)
+				q.drop("schedule", "schedule_divergent", key)
 			}
 			continue
 		}
 		seenSchedules[key] = schedule
 		rows, modelRows, err := buildScheduleRows(uid, dir, schedule)
 		if err != nil {
-			return nil, fmt.Errorf("%w: Schedule[%d]: %v", errBusSnapshotInvalid, i, err)
+			// One malformed timetable (an empty TripID, an unparseable stop
+			// time) costs this subroute its schedule, not the city its load.
+			q.drop("schedule", "schedule_malformed", fmt.Sprintf("Schedule[%d] %s/%d: %v", i, uid, dir, err))
+			continue
 		}
 		snapshot.scheduleRows = append(snapshot.scheduleRows, rows...)
 		direction.Schedules = append(direction.Schedules, modelRows...)
@@ -558,6 +624,12 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		snapshot.subroutes[uid].Fare = cloneBusFare(candidates[0])
 	}
 
+	// Quarantining a tail keeps the city current; quarantining a third of it
+	// ships a gutted city that looks fresh. Past the ratio the city fails
+	// instead, keeping the previous load's rows — stale but whole.
+	if err := q.exceeded(); err != nil {
+		return nil, fmt.Errorf("%w: %v", errBusSnapshotInvalid, err)
+	}
 	if err := snapshot.buildWriteRows(); err != nil {
 		return nil, err
 	}
@@ -692,6 +764,33 @@ func decodeStrictJSONArray(body []byte, target any) error {
 func validClock(value string) bool {
 	_, err := time.Parse("15:04", value)
 	return err == nil
+}
+
+// normalizeClock accepts the two wall-clock shapes TDX publishes for a bus
+// first/last time — "HH:MM" and bare "HHMM" — and returns the canonical
+// "HH:MM" form. Hours run to 29 because a transit service day extends past
+// midnight, so "25:30" is a real last-bus time that time.Parse("15:04")
+// rejects. Callers that re-parse the value with time.Parse (rail and bus
+// timetable stop times) must keep using validClock instead.
+func normalizeClock(value string) (string, bool) {
+	v := strings.TrimSpace(value)
+	if len(v) == 4 && v[2] != ':' {
+		v = v[:2] + ":" + v[2:]
+	}
+	if len(v) != 5 || v[2] != ':' {
+		return "", false
+	}
+	for _, i := range [...]int{0, 1, 3, 4} {
+		if v[i] < '0' || v[i] > '9' {
+			return "", false
+		}
+	}
+	h := int(v[0]-'0')*10 + int(v[1]-'0')
+	m := int(v[3]-'0')*10 + int(v[4]-'0')
+	if h > 29 || m > 59 {
+		return "", false
+	}
+	return v, true
 }
 
 func validPosition(lon, lat float64) bool {

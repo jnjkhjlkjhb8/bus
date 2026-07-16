@@ -66,9 +66,9 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, sink loadSink, cit
 		if !validPosition(station.StationPosition.PositionLon, station.StationPosition.PositionLat) {
 			return fmt.Errorf("position is invalid: lon=%v lat=%v", station.StationPosition.PositionLon, station.StationPosition.PositionLat)
 		}
-		if station.ServiceType != 1 && station.ServiceType != 2 {
-			return fmt.Errorf("ServiceType must be 1 or 2, got %d", station.ServiceType)
-		}
+		// ServiceType is stored and served as an opaque smallint, never
+		// switched on, so an operator TDX adds later must not reject the
+		// city. A value this loader has not seen flows through unchanged.
 		return nil
 	})
 	if err != nil {

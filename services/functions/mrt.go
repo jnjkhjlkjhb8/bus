@@ -164,11 +164,19 @@ func loadMrtFirstlast(ctx context.Context, dec *json.Decoder, sink loadSink, sys
 		if strings.TrimSpace(timetable.DestinationStaionID) == "" {
 			return errors.New("DestinationStaionID is required")
 		}
-		if _, ok := parseHHMM(timetable.FirstTrainTime); !ok {
-			return fmt.Errorf("FirstTrainTime is invalid: %q", timetable.FirstTrainTime)
+		// An empty first/last train time means the operator publishes no
+		// window for this line/destination, not a defect; mrtServiceWindows
+		// already skips a row it cannot parse. Only a malformed value is
+		// rejected, matching the bus snapshot's empty-is-absent rule.
+		if v := strings.TrimSpace(timetable.FirstTrainTime); v != "" {
+			if _, ok := parseHHMM(v); !ok {
+				return fmt.Errorf("FirstTrainTime is invalid: %q", timetable.FirstTrainTime)
+			}
 		}
-		if _, ok := parseHHMM(timetable.LastTrainTime); !ok {
-			return fmt.Errorf("LastTrainTime is invalid: %q", timetable.LastTrainTime)
+		if v := strings.TrimSpace(timetable.LastTrainTime); v != "" {
+			if _, ok := parseHHMM(v); !ok {
+				return fmt.Errorf("LastTrainTime is invalid: %q", timetable.LastTrainTime)
+			}
 		}
 		if mask(timetable.ServiceDay.Monday, timetable.ServiceDay.Tuesday, timetable.ServiceDay.Wednesday,
 			timetable.ServiceDay.Thursday, timetable.ServiceDay.Friday, timetable.ServiceDay.Saturday,
@@ -513,10 +521,17 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, sink copyUpser
 				return fmt.Errorf("Fares element %d Price must be non-negative, got %d", i, item.Price)
 			}
 			if item.TicketType == mrtTicketTypeSingle {
-				if prior, seen := classPrices[item.FareClass]; seen && prior != item.Price {
-					return fmt.Errorf("Fares element %d divergent duplicate TicketType 1 FareClass %d", i, item.FareClass)
+				// Only the full and half classes are ever read (see fares), so
+				// scope the divergence check to them: a conflicting duplicate
+				// on any other class disputes a value this loader discards, and
+				// rejecting the system's whole matrix over it bought nothing.
+				// A real conflict on a price users see stays fatal.
+				if item.FareClass == mrtFareClassFull || item.FareClass == mrtFareClassHalf {
+					if prior, seen := classPrices[item.FareClass]; seen && prior != item.Price {
+						return fmt.Errorf("Fares element %d divergent duplicate TicketType 1 FareClass %d", i, item.FareClass)
+					}
+					classPrices[item.FareClass] = item.Price
 				}
-				classPrices[item.FareClass] = item.Price
 				singleSeen = true
 			}
 		}

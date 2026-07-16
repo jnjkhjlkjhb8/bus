@@ -205,7 +205,7 @@ func TestRunLoadThroughRawTDXSource(t *testing.T) {
 	}()
 
 	src := rawTDXSource{pool: pool}
-	if err := runLoad(ctx, src, pool, nil, []string{"tra_station"}); err != nil {
+	if _, err := runLoad(ctx, src, pool, nil, []string{"tra_station"}); err != nil {
 		t.Fatalf("runLoad: %v", err)
 	}
 	var n int

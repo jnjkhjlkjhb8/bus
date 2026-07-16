@@ -158,8 +158,11 @@ services:
       REDIS_ADDR: redis:6379
       ROLE: ingestor
       INGEST_DB_MAX_CONNS: "1"
+      TMPDIR: /spool
+    volumes:
+      - ingestor_spool:/spool
     tmpfs:
-      - /tmp:size=512m
+      - /tmp:size=64m
     mem_limit: ${INGESTOR_MEM_LIMIT:-384m}
     pids_limit: 128
     cpus: 0.5
@@ -360,3 +363,4 @@ volumes:
   redis_data:
   ollama_data:
   router_keys:
+  ingestor_spool:

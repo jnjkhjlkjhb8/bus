@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -71,38 +72,70 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 	// The marker write sits outside the load's retry wrapper on purpose: a
 	// failed one-row upsert must not re-drive a load that already succeeded,
 	// and it gets its own quick retry + distinct log instead
-	// (recordPipelineMarkerWithRetry). A failed/partial load never reaches it.
+	// (recordPipelineMarkerWithRetry). markerEarned decides whether the run
+	// earned it.
 	_, _ = addStaticCron(r, "0 30 3 * * *", func() {
 		runDate := time.Now().In(taipei)
+		var stats loadStats
 		err := runDailyWithRetry(context.Background(), loadTimeout, time.Minute, func(ctx context.Context) error {
 			return runner.Run(ctx, func(ctx context.Context) error {
-				return runLoad(ctx, src, db, rc, nil)
+				var runErr error
+				stats, runErr = runLoad(ctx, src, db, rc, nil)
+				return runErr
 			})
 		})
 		if err != nil {
-			log.Errorf("[crontab] action=load event=failed error=%v", err)
+			log.Errorf("[crontab] action=load event=failed ok=%d failed=%d skipped=%d error=%v", stats.ok, stats.failed, stats.skipped, err)
+		}
+		if !markerEarned(stats, err) {
 			return
 		}
-		// Only reached on a fully successful load: downstream stages
-		// (changetovector, computeTravelAvg) poll this marker instead of
-		// assuming the load finished within a fixed clock offset.
 		_ = recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
 	})
 	if os.Getenv("LOAD_ON_BOOT") == "true" {
 		log.Infoln("[LOAD] action=boot event=enabled")
 		go func() {
 			runDate := time.Now().In(taipei)
-			if err := runner.Run(context.Background(), func(ctx context.Context) error {
-				return runLoad(ctx, src, db, rc, nil)
-			}); err != nil {
-				log.Errorf("[LOAD] action=boot event=failed error=%v", err)
+			var stats loadStats
+			err := runner.Run(context.Background(), func(ctx context.Context) error {
+				var runErr error
+				stats, runErr = runLoad(ctx, src, db, rc, nil)
+				return runErr
+			})
+			if err != nil {
+				log.Errorf("[LOAD] action=boot event=failed ok=%d failed=%d skipped=%d error=%v", stats.ok, stats.failed, stats.skipped, err)
+			}
+			if !markerEarned(stats, err) {
 				return
 			}
-			// A boot backfill is a complete load; write the marker so a
-			// redeploy-day run still unblocks the downstream stages.
 			_ = recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
 		}()
 	} else {
 		log.Warn("[LOAD] action=boot event=skipped")
 	}
+}
+
+// markerEarned reports whether a load run may publish its pipeline marker, the
+// signal changetovector and computeTravelAvg poll before starting.
+//
+// A partition that fails validation writes nothing, so its schema keeps
+// yesterday's rows. Running the downstream stages over one stale city plus
+// nineteen fresh ones beats withholding the marker and stranding vector search
+// and ETA prediction nationwide over a single bad row, which is what a
+// per-partition failure used to do.
+//
+// Two cases still withhold it. A run that loaded no partition at all published
+// nothing to act on. A truncated run (deadline, cancellation) is not a partial
+// load but an unfinished one: every partition it never reached would look
+// current to a downstream stage, so the next run must redo it.
+func markerEarned(stats loadStats, err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		log.Errorf("[LOAD] action=marker event=withheld reason=run_truncated ok=%d", stats.ok)
+		return false
+	}
+	if stats.ok == 0 {
+		log.Errorf("[LOAD] action=marker event=withheld reason=no_partition_loaded failed=%d skipped=%d", stats.failed, stats.skipped)
+		return false
+	}
+	return true
 }

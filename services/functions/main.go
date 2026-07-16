@@ -402,7 +402,8 @@ func runBootBusDailyTimetable(
 	rc *redis.Client,
 ) error {
 	return runner.Run(parent, func(ctx context.Context) error {
-		return runLoad(ctx, src, db, rc, []string{"bus_dailytimetable"})
+		_, err := runLoad(ctx, src, db, rc, []string{"bus_dailytimetable"})
+		return err
 	})
 }
 

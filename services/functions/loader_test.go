@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +64,7 @@ func TestRunLoadSpecsReturnsJoinedPartitionErrorsAndContinues(t *testing.T) {
 		},
 	}
 
-	err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec})
+	_, err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec})
 	if !errors.Is(err, readErr) || !errors.Is(err, transformErr) {
 		t.Fatalf("runLoadSpecs error = %v, want joined read and transform errors", err)
 	}
@@ -218,7 +220,7 @@ func TestRunLoadIteratesPartitionsAndDecodes(t *testing.T) {
 			return nil
 		},
 	}
-	if err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec}); err != nil {
+	if _, err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec}); err != nil {
 		t.Fatalf("runLoadSpecs: %v", err)
 	}
 	if len(seen) != 3 || seen[0] != 1 || seen[1] != 2 || seen[2] != 3 {
@@ -243,8 +245,12 @@ func TestRunLoadSkipsStalePartition(t *testing.T) {
 			return nil
 		},
 	}
-	if err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec}); !errors.Is(err, errLoadStale) {
+	stats, err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec})
+	if !errors.Is(err, errLoadStale) {
 		t.Fatalf("runLoadSpecs error = %v, want errLoadStale", err)
+	}
+	if stats.failed != 1 || stats.ok != 0 {
+		t.Fatalf("stats = %+v, want a landed-but-stale partition counted as failed", stats)
 	}
 	if loaded {
 		t.Fatal("stale partition must be skipped, load ran anyway")
@@ -267,12 +273,20 @@ func TestRunLoadStaleOKLoadsOldButSkipsEmpty(t *testing.T) {
 				return nil
 			},
 		}
-		err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec})
+		stats, err := runLoadSpecs(context.Background(), src, nil, nil, []loadSpec{spec})
 		if hasRows && err != nil {
 			t.Fatalf("%s: runLoadSpecs: %v", name, err)
 		}
-		if !hasRows && !errors.Is(err, errLoadStale) {
-			t.Fatalf("%s: runLoadSpecs error = %v, want errLoadStale", name, err)
+		// A zero fetched_at means the partition never landed, which is not a
+		// run failure: the rail date windows outrun TDX's publication horizon
+		// every day. It must still be skipped, just not reported as stale.
+		if !hasRows {
+			if err != nil {
+				t.Fatalf("%s: runLoadSpecs error = %v, want a never-landed partition to be skipped silently", name, err)
+			}
+			if stats.skipped != 1 || stats.failed != 0 {
+				t.Fatalf("%s: stats = %+v, want the partition counted as skipped", name, stats)
+			}
 		}
 		return loaded
 	}
@@ -281,7 +295,7 @@ func TestRunLoadStaleOKLoadsOldButSkipsEmpty(t *testing.T) {
 		t.Fatal("staleOK partition with old-but-present landing must load")
 	}
 	// staleOK still honors the empty guard: a zero fetched_at (empty partition,
-	// i.e. a failed landing) must not DELETE-and-reinsert nothing.
+	// i.e. a landing that never happened) must not DELETE-and-reinsert nothing.
 	if run("empty", time.Time{}, false) {
 		t.Fatal("staleOK partition with empty landing must be skipped")
 	}
@@ -446,7 +460,7 @@ func TestLoaderReplayThsrStation(t *testing.T) {
 	defer cleanup()
 
 	src := fixtureSource{dir: "testdata/raw_tdx", fetched: time.Now()}
-	if err := runLoad(ctx, src, pool, nil, []string{"thsr_station"}); err != nil {
+	if _, err := runLoad(ctx, src, pool, nil, []string{"thsr_station"}); err != nil {
 		t.Fatalf("runLoad: %v", err)
 	}
 
@@ -469,5 +483,121 @@ func TestLoaderReplayThsrStation(t *testing.T) {
 	}
 	if geom != "POINT(121.606700 25.053300)" {
 		t.Fatalf("geom = %q, want POINT(121.606700 25.053300)", geom)
+	}
+}
+
+func TestMarkerEarned(t *testing.T) {
+	cases := []struct {
+		name  string
+		stats loadStats
+		err   error
+		want  bool
+	}{
+		// The regression this whole change exists for: one city rejecting a
+		// bad row must not strand changetovector and computeTravelAvg.
+		{"partial load publishes", loadStats{ok: 19, failed: 1}, errors.New("bus Taoyuan: Shape[107] references unknown"), true},
+		{"clean load publishes", loadStats{ok: 20}, nil, true},
+		{"rail horizon skips do not block", loadStats{ok: 20, skipped: 20}, nil, true},
+		{"nothing loaded withholds", loadStats{failed: 20}, errors.New("boom"), false},
+		{"empty run withholds", loadStats{}, nil, false},
+		// A truncated run is unfinished, not partial: the partitions it never
+		// reached would look current to a downstream stage.
+		{"deadline withholds despite progress", loadStats{ok: 12}, fmt.Errorf("load: %w", context.DeadlineExceeded), false},
+		{"cancel withholds despite progress", loadStats{ok: 12}, fmt.Errorf("load: %w", context.Canceled), false},
+	}
+	for _, c := range cases {
+		if got := markerEarned(c.stats, c.err); got != c.want {
+			t.Errorf("%s: markerEarned(%+v, %v) = %v, want %v", c.name, c.stats, c.err, got, c.want)
+		}
+	}
+}
+
+// The legacy log parser splits a formatted line into key=value attrs, so a
+// detail carrying spaces or '=' (wrapped error text, mostly) was shredded into
+// bogus fields and truncated at the first space.
+func TestLoadQuarantineDetailSurvivesLogParser(t *testing.T) {
+	q := newLoadQuarantine("bus", "Tainan")
+	q.drop("subroute", "subroute_identity", `Route[15].SubRoutes[0] uid="TNN104500" dir=2`)
+	q.drop("subroute", "subroute_identity", "second sample is ignored")
+	got := q.sample["subroute_identity"]
+	if strings.ContainsAny(got, " =\"") {
+		t.Fatalf("sample = %q, want no space, '=' or quote to survive the log parser", got)
+	}
+	if !strings.Contains(got, "TNN104500") {
+		t.Fatalf("sample = %q, want the offending record still identifiable", got)
+	}
+	if q.dropped["subroute_identity"] != 2 {
+		t.Fatalf("count = %d, want both drops counted", q.dropped["subroute_identity"])
+	}
+}
+
+// The gate exists because the 2026-07-17 run dropped 223 of Taipei's shapes as
+// a "tail". A tail is a handful of records; a third of a city's shapes is a
+// defect, and quarantining it silently ships a gutted city that looks fresh.
+func TestLoadQuarantineRatioGate(t *testing.T) {
+	tests := []struct {
+		name    string
+		seen    int
+		drops   int
+		wantErr bool
+	}{
+		{"clean", 400, 0, false},
+		{"tail stays under the limit", 400, 13, false},
+		{"exactly at the limit passes", 400, 40, false},
+		{"a third of the city fails", 400, 223, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := newLoadQuarantine("bus", "Taipei")
+			q.consider("shape", tt.seen)
+			for i := 0; i < tt.drops; i++ {
+				q.drop("shape", "shape_unknown_direction", fmt.Sprintf("Shape[%d]", i))
+			}
+			err := q.exceeded()
+			if tt.wantErr && err == nil {
+				t.Fatalf("exceeded() = nil, want a ratio error for %d/%d", tt.drops, tt.seen)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("exceeded() = %v, want nil for %d/%d", err, tt.drops, tt.seen)
+			}
+		})
+	}
+}
+
+// A kind that dropped nothing must not gate on a zero denominator, and one
+// kind blowing its limit must not be masked by another kind being clean.
+func TestLoadQuarantineRatioGateIsPerKind(t *testing.T) {
+	q := newLoadQuarantine("bus", "Taipei")
+	q.consider("shape", 400)
+	q.consider("subroute", 4000)
+	for i := 0; i < 223; i++ {
+		q.drop("shape", "shape_unknown_direction", fmt.Sprintf("Shape[%d]", i))
+	}
+	err := q.exceeded()
+	if err == nil {
+		t.Fatal("exceeded() = nil, want the shape ratio to fail despite 4000 clean subroutes")
+	}
+	if !strings.Contains(err.Error(), "shape") {
+		t.Fatalf("exceeded() = %v, want the offending kind named", err)
+	}
+	// No drops at all: nothing to gate on, including kinds never considered.
+	if err := newLoadQuarantine("bus", "Taipei").exceeded(); err != nil {
+		t.Fatalf("exceeded() = %v, want nil for a clean partition", err)
+	}
+}
+
+func TestQuarantineRatioLimitEnvOverride(t *testing.T) {
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "0.5")
+	if got := quarantineRatioLimit(); got != 0.5 {
+		t.Fatalf("quarantineRatioLimit() = %v, want 0.5", got)
+	}
+	// A nonsense value must not silently disable the gate.
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "banana")
+	if got := quarantineRatioLimit(); got != defaultQuarantineRatio {
+		t.Fatalf("quarantineRatioLimit() = %v, want the %v default", got, defaultQuarantineRatio)
+	}
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "7")
+	if got := quarantineRatioLimit(); got != defaultQuarantineRatio {
+		t.Fatalf("quarantineRatioLimit() = %v, want the %v default for an out-of-range value", got, defaultQuarantineRatio)
 	}
 }

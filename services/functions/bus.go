@@ -360,6 +360,14 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 	if err != nil {
 		return err
 	}
+	q := newLoadQuarantine("bus_dailytimetable", city)
+	defer q.report()
+	for _, temp := range entries {
+		q.consider("trip", len(temp.Timetables))
+		for _, t := range temp.Timetables {
+			q.consider("stoptime", len(t.StopTimes))
+		}
+	}
 	mp := make(map[string]map[int32]*models.Bus_DirectionTimetable, 300)
 	seenTrips := make(map[string]*models.Bus_DailyTimetable)
 	for _, temp := range entries {
@@ -386,10 +394,13 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 					StopUID:       st.StopUID,
 				}
 				if prior, exists := seenStops[st.StopSequence]; exists {
-					if proto.Equal(prior, candidate) {
-						continue
+					// First variant wins: TDX repeats a stop sequence with a
+					// different time and does not say which is right, and one
+					// such trip is not worth the city's whole timetable.
+					if !proto.Equal(prior, candidate) {
+						q.drop("stoptime", "stoptime_divergent", fmt.Sprintf("TripID %q StopSequence %d", t.TripID, st.StopSequence))
 					}
-					return fmt.Errorf("bus daily timetable %s: divergent duplicate StopSequence %d in TripID %q", city, st.StopSequence, t.TripID)
+					continue
 				}
 				seenStops[st.StopSequence] = candidate
 				stop = append(stop, candidate)
@@ -401,14 +412,20 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 			}
 			key := fmt.Sprintf("%s\x00%d\x00%s", uid, dir, t.TripID)
 			if prior, exists := seenTrips[key]; exists {
-				if proto.Equal(prior, timetable) {
-					continue
+				// First variant wins, as for the stop times above.
+				if !proto.Equal(prior, timetable) {
+					q.drop("trip", "trip_divergent", fmt.Sprintf("TripID %q for %s/%d", t.TripID, uid, dir))
 				}
-				return fmt.Errorf("bus daily timetable %s: divergent duplicate TripID %q for subroute %s direction %d", city, t.TripID, uid, dir)
+				continue
 			}
 			seenTrips[key] = timetable
 			mp[uid][int32(dir)].DailyTimetables = append(mp[uid][int32(dir)].DailyTimetables, timetable)
 		}
+	}
+	// Past the ratio the city's timetable fails instead of publishing a gutted
+	// one; the previous load's Redis payload stays in place.
+	if err := q.exceeded(); err != nil {
+		return err
 	}
 	type redisWrite struct {
 		key   string

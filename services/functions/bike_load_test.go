@@ -36,11 +36,6 @@ func TestLoadBikeStationsRejectsInvalidIdentityOrPosition(t *testing.T) {
 			body: `[{"StationUID":"TPE001","StationID":"001","StationPosition":{"PositionLon":0,"PositionLat":0},"ServiceType":2}]`,
 			want: "position",
 		},
-		{
-			name: "unknown service type",
-			body: `[{"StationUID":"TPE001","StationID":"001","StationPosition":{"PositionLon":121.5,"PositionLat":25.0},"ServiceType":3}]`,
-			want: "ServiceType",
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -53,6 +48,23 @@ func TestLoadBikeStationsRejectsInvalidIdentityOrPosition(t *testing.T) {
 				t.Fatalf("copyUpsert calls = %d, want no write for invalid station", len(sink.calls))
 			}
 		})
+	}
+}
+
+// ServiceType is an opaque smallint the loader never switches on, so a value
+// TDX adds later must flow through rather than reject the whole city. A
+// hardcoded 1-or-2 allowlist took Changhua and Yunlin offline the day a third
+// operator appeared.
+func TestLoadBikeStationsAcceptsUnknownServiceType(t *testing.T) {
+	sink := &fakeLoadSink{}
+	err := loadBikeStations(context.Background(), decodeInto(
+		`[{"StationUID":"CHA001","StationID":"001","StationPosition":{"PositionLon":120.5,"PositionLat":24.0},"ServiceType":3}]`,
+	), sink, "ChanghuaCounty")
+	if err != nil {
+		t.Fatalf("loadBikeStations error = %v, want an unknown ServiceType to load", err)
+	}
+	if len(sink.calls) == 0 {
+		t.Fatal("copyUpsert calls = 0, want the station written through")
 	}
 }
 
