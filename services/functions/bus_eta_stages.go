@@ -15,16 +15,38 @@ import (
 // prediction/fill and proto-emit loop, Redis writes) stay in bus_eta.go where the
 // collaborator handles live.
 
+// parseSrcUpdateTime reads a TDX SrcUpdateTime. Usually RFC3339 with a +08:00
+// offset; some feeds drop the zone, which we read as Taipei local. Empty or
+// unparseable values report false.
+func parseSrcUpdateTime(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, true
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, taipei); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // adjustedEstimate is the live seconds-to-arrival for one ETA entry, net of the
 // age of its source update: TDX reports EstimatedTime as of SrcUpdateTime, so a
-// stale snapshot is aged forward to now. When SrcUpdateTime does not parse as
-// RFC3339 the raw EstimatedTime is used unchanged. Shared by the delay-propagation
-// observation pass and the emit loop so both age the estimate identically.
+// stale snapshot is aged forward to now. When SrcUpdateTime does not parse the raw
+// EstimatedTime is used unchanged. A snapshot older than its own estimate (or a
+// negative EstimatedTime from TDX) clamps to 0 — "arriving now"; every consumer
+// gates on est > 0, so 0 and a negative already behaved alike, but the history
+// row stored the negative. Shared by the delay-propagation observation pass and
+// the emit loop so both age the estimate identically.
 func adjustedEstimate(eta rawBusEsimated, now time.Time) int32 {
-	if srcT, parseErr := time.Parse(time.RFC3339, eta.SrcUpdateTime); parseErr == nil {
-		return eta.EstimatedTime - int32(now.Sub(srcT).Seconds())
+	est := eta.EstimatedTime
+	if srcT, ok := parseSrcUpdateTime(eta.SrcUpdateTime); ok {
+		est -= int32(now.Sub(srcT).Seconds())
 	}
-	return eta.EstimatedTime
+	return max(est, 0)
 }
 
 // buildBusEtaMap collapses a city's raw TDX ETA array into one entry per

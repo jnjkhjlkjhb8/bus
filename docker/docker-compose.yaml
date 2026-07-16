@@ -304,12 +304,14 @@ services:
         pbf_sha256="$$(sha256sum "$$pbf" | cut -d' ' -f1)";
         want_marker="$${pbf_sha256}:$${profile}";
         if [ -f "$$marker_file" ] && [ "$$(cat "$$marker_file")" = "$$want_marker" ]; then
-          echo "osrm-init: preprocessing already up to date for $$pbf ($$profile)"; exit 0;
+          echo "osrm-init: preprocessing already up to date for $$pbf ($$profile)";
+        else
+          osrm-extract -p /opt/foot.lua "$$pbf" &&
+          osrm-partition "$$osrm_base" &&
+          osrm-customize "$$osrm_base" &&
+          echo "$$want_marker" > "$$marker_file";
         fi;
-        osrm-extract -p /opt/foot.lua "$$pbf" &&
-        osrm-partition "$$osrm_base" &&
-        osrm-customize "$$osrm_base" &&
-        echo "$$want_marker" > "$$marker_file"
+        chmod -R a+rX .
     restart: "no"
 
   osrm:

@@ -136,6 +136,8 @@ class FavoritesRepository {
   }
 
   Future<void> migrateLegacy() async {
+    await HiveStore.init();
+
     final settings = HiveStore.settings;
     if (settings.get('favorites_migrated', defaultValue: false) as bool) return;
 

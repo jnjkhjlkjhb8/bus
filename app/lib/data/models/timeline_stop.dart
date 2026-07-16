@@ -1,6 +1,8 @@
 import 'package:equatable/equatable.dart';
 
-enum TimelineStopState { none, approaching, arriving }
+/// [ended] covers the service-over states (末班已過 / 今日未營運): the timeline
+/// draws a cross instead of a stop dot.
+enum TimelineStopState { none, approaching, arriving, ended }
 
 class TimelineStop extends Equatable {
   const TimelineStop({

@@ -471,10 +471,8 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			var busDist *int
 			plateNumb, busSpeed, busDist = nearestBus(b.Lat, b.Lon, busmap[positionKey])
 			var srcTime *time.Time
-			if stime != "" {
-				if t, err := time.Parse(time.RFC3339, stime); err == nil {
-					srcTime = &t
-				}
+			if t, ok := parseSrcUpdateTime(stime); ok {
+				srcTime = &t
 			}
 			var nextBusTimePtr *string
 			if eta.NextBusTime != "" {

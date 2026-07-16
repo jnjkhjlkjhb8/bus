@@ -9,7 +9,18 @@ PROTOC_GEN_GO_VERSION := v1.36.11
 PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
 TOOLS_BIN := $(CURDIR)/.tools/bin
 
-.PHONY: up-test up-staging up-prod up-ollama migrate-up-test migrate-up-staging migrate-up-prod migrate-force-staging run-test run-staging build-prod test test-go test-flutter proto-go proto-dart verify
+# One compose invocation per environment, shared by up-/logs-/down-. Keeping
+# the project name, env file, and overlay list in one place stops the three
+# targets of an environment from drifting apart.
+COMPOSE_TEST := BUS_ENV_FILE=env/test.env $(COMPOSE) -p bus-test --env-file ./env/test.env -f docker/docker-compose.yaml -f docker/docker-compose.test.yaml
+COMPOSE_STAGING := BUS_ENV_FILE=env/staging.env $(COMPOSE) -p bus-staging --env-file ./env/staging.env -f docker/docker-compose.yaml -f docker/docker-compose.staging.yaml
+COMPOSE_PROD := BUS_ENV_FILE=env/prod.env $(COMPOSE) -p bus-prod --env-file ./env/prod.env -f docker/docker-compose.yaml -f docker/docker-compose.prod.yaml
+
+# Optional service filter for the logs- targets: `make logs-prod SERVICE=router`.
+# Empty (the default) follows every service in the environment.
+SERVICE ?=
+
+.PHONY: up-test up-staging up-prod up-ollama logs-test logs-staging logs-prod down-test down-staging down-prod migrate-up-test migrate-up-staging migrate-up-prod migrate-force-staging run-test run-staging build-prod test test-go test-flutter proto-go proto-dart verify
 
 test: test-go test-flutter
 
@@ -56,13 +67,35 @@ verify: proto-go
 	git diff --exit-code
 
 up-test:
-	BUS_ENV_FILE=env/test.env $(COMPOSE) -p bus-test --env-file ./env/test.env -f docker/docker-compose.yaml -f docker/docker-compose.test.yaml up -d --build postgres redis router functions
+	$(COMPOSE_TEST) up -d --build postgres redis router functions
 
 up-staging:
-	BUS_ENV_FILE=env/staging.env $(COMPOSE) -p bus-staging --env-file ./env/staging.env -f docker/docker-compose.yaml -f docker/docker-compose.staging.yaml up -d --build
+	$(COMPOSE_STAGING) up -d --build
 
 up-prod:
-	BUS_ENV_FILE=env/prod.env $(COMPOSE) -p bus-prod --env-file ./env/prod.env -f docker/docker-compose.yaml -f docker/docker-compose.prod.yaml up -d --build
+	$(COMPOSE_PROD) up -d --build
+
+# logs- follows (Ctrl-C to stop) and starts from the last 200 lines, enough to
+# catch the failure that prompted the call without replaying the whole history.
+logs-test:
+	$(COMPOSE_TEST) logs -f --tail=200 $(SERVICE)
+
+logs-staging:
+	$(COMPOSE_STAGING) logs -f --tail=200 $(SERVICE)
+
+logs-prod:
+	$(COMPOSE_PROD) logs -f --tail=200 $(SERVICE)
+
+# down stops and removes containers, never volumes -- prod's ./osrm-data and the
+# test postgres survive a down/up cycle.
+down-test:
+	$(COMPOSE_TEST) down
+
+down-staging:
+	$(COMPOSE_STAGING) down
+
+down-prod:
+	$(COMPOSE_PROD) down
 
 up-ollama:
 	$(COMPOSE) -p bus-dev -f docker/docker-compose.yaml --profile gpu up -d --build ollama

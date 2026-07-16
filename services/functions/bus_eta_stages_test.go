@@ -29,6 +29,21 @@ func TestAdjustedEstimate(t *testing.T) {
 			eta:  rawBusEsimated{EstimatedTime: 60, SrcUpdateTime: "2026-07-10T08:00:30Z"},
 			want: 60,
 		},
+		{
+			name: "snapshot older than its estimate clamps to zero",
+			eta:  rawBusEsimated{EstimatedTime: 10, SrcUpdateTime: "2026-07-10T08:00:00Z"},
+			want: 0,
+		},
+		{
+			name: "negative estimate from tdx clamps to zero",
+			eta:  rawBusEsimated{EstimatedTime: -5, SrcUpdateTime: ""},
+			want: 0,
+		},
+		{
+			name: "zoneless src time reads as taipei local",
+			eta:  rawBusEsimated{EstimatedTime: 120, SrcUpdateTime: "2026-07-10T16:00:00"},
+			want: 90, // 16:00 +08:00 == 08:00Z, 30s before now
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

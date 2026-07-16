@@ -100,11 +100,11 @@ String? _clockLabel(String value) {
     return '$h:${match.group(2)!}';
   }
   final parsed = DateTime.tryParse(value);
-  if (parsed != null) {
-    final local = parsed.toLocal();
-    final h = local.hour.toString().padLeft(2, '0');
-    final m = local.minute.toString().padLeft(2, '0');
-    return '$h:$m';
-  }
+  if (parsed != null) return _hhmm(parsed.toLocal());
   return null;
+}
+
+String _hhmm(DateTime t) {
+  final h = t.hour.toString().padLeft(2, '0');
+  return '$h:${t.minute.toString().padLeft(2, '0')}';
 }
