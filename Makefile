@@ -12,9 +12,9 @@ TOOLS_BIN := $(CURDIR)/.tools/bin
 # One compose invocation per environment, shared by up-/logs-/down-. Keeping
 # the project name, env file, and overlay list in one place stops the three
 # targets of an environment from drifting apart.
-COMPOSE_TEST := BUS_ENV_FILE=env/test.env $(COMPOSE) -p bus-test --env-file ./env/test.env -f docker/docker-compose.yaml -f docker/docker-compose.test.yaml
-COMPOSE_STAGING := BUS_ENV_FILE=env/staging.env $(COMPOSE) -p bus-staging --env-file ./env/staging.env -f docker/docker-compose.yaml -f docker/docker-compose.staging.yaml
-COMPOSE_PROD := BUS_ENV_FILE=env/prod.env $(COMPOSE) -p bus-prod --env-file ./env/prod.env -f docker/docker-compose.yaml -f docker/docker-compose.prod.yaml
+COMPOSE_TEST := ENV_FILE=env/test.env $(COMPOSE) -p test --env-file ./env/test.env -f docker/docker-compose.yaml -f docker/docker-compose.test.yaml
+COMPOSE_STAGING := ENV_FILE=env/staging.env $(COMPOSE) -p staging --env-file ./env/staging.env -f docker/docker-compose.yaml -f docker/docker-compose.staging.yaml
+COMPOSE_PROD := ENV_FILE=env/prod.env $(COMPOSE) -p prod --env-file ./env/prod.env -f docker/docker-compose.yaml -f docker/docker-compose.prod.yaml
 
 # Optional service filter for the logs- targets: `make logs-prod SERVICE=router`.
 # Empty (the default) follows every service in the environment.
@@ -98,7 +98,7 @@ down-prod:
 	$(COMPOSE_PROD) down
 
 up-ollama:
-	$(COMPOSE) -p bus-dev -f docker/docker-compose.yaml --profile gpu up -d --build ollama
+	$(COMPOSE) -p dev -f docker/docker-compose.yaml --profile gpu up -d --build ollama
 
 migrate-up-test:
 	$(MIGRATE) -path migrations -database "$${DATABASE_URL:-postgres://bus:bus@localhost:5432/bus_test?sslmode=disable}" up

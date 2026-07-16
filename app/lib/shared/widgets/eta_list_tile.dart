@@ -262,6 +262,19 @@ class EtaValue extends StatelessWidget {
           ),
         ],
       ),
+      EtaLabel(:final text) when _isClock(text) => Text(
+        text,
+        style: AppTextStyles.memo.copyWith(
+          fontSize: muted
+              ? AppTextStyles.bodyRegular.fontSize
+              : AppTextStyles.heading1.fontSize,
+          fontWeight: muted
+              ? FontWeight.w400
+              : AppTextStyles.heading1.fontWeight,
+          color: muted ? cs.outline : cs.onSurface,
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      ),
       EtaLabel(:final text) => Text(
         text,
         style: AppTextStyles.bodyLarge.copyWith(
@@ -278,3 +291,6 @@ class EtaValue extends StatelessWidget {
     };
   }
 }
+
+final _clockPattern = RegExp(r'^\d{2}:\d{2}$');
+bool _isClock(String text) => _clockPattern.hasMatch(text);
