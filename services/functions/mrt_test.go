@@ -56,6 +56,32 @@ func TestMrtTravelGraph(t *testing.T) {
 	}
 }
 
+// TestMrtODFareFares pins the two-axis fare pick: TicketType selects the medium
+// (1 = 單程票) and FareClass the passenger category (1 = 全票, 2 = 半票). Matching on
+// TicketType alone spans several classes, which is how the half fare used to end
+// up in fare_nt. An absent class stays 0 so the upsert keeps the stored price.
+func TestMrtODFareFares(t *testing.T) {
+	var f mrtODFare
+	if err := json.Unmarshal([]byte(`{"OriginStationID":"BL01","DestinationStationID":"BL05","Fares":[
+		{"TicketType":1,"FareClass":1,"Price":25},
+		{"TicketType":1,"FareClass":2,"Price":12},
+		{"TicketType":1,"FareClass":4,"Price":10},
+		{"TicketType":3,"FareClass":1,"Price":20}]}`), &f); err != nil {
+		t.Fatal(err)
+	}
+	if full, half := f.fares(); full != 25 || half != 12 {
+		t.Errorf("fares() = (%d,%d), want (25,12)", full, half)
+	}
+
+	var noHalf mrtODFare
+	if err := json.Unmarshal([]byte(`{"Fares":[{"TicketType":1,"FareClass":1,"Price":25}]}`), &noHalf); err != nil {
+		t.Fatal(err)
+	}
+	if full, half := noHalf.fares(); full != 25 || half != 0 {
+		t.Errorf("fares() without a half fare = (%d,%d), want (25,0)", full, half)
+	}
+}
+
 // TestParseHHMM covers the text time shapes mrt_schedule actually stores,
 // including past-midnight hours ("24:40") and malformed values.
 func TestParseHHMM(t *testing.T) {

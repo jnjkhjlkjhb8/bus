@@ -49,7 +49,7 @@ class MrtRepository {
     final ids = stationId.split('_');
     final placeholders = List.filled(ids.length, '?').join(',');
     final rows = await _db.getAll(
-      'SELECT to_station_id, fare_nt, travel_time_min '
+      'SELECT to_station_id, fare_nt, half_fare_nt, travel_time_min '
       'FROM mrt_journey_matrix WHERE from_station_id IN ($placeholders)',
       ids,
     );

@@ -429,14 +429,44 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 // malformed, fractional, or negative input aborts the load.
 // TRTC's ODFare omits TravelTime entirely — its times are computed separately by
 // loadMrtTrtcTravelTime from the segment + transfer graph.
+//
+// The two fare axes are independent: TicketType is the ticket medium (1 = single
+// journey) and FareClass is the passenger category (1 = 全票, 2 = 半票). Both must
+// be matched — filtering on TicketType alone spans several classes.
 type mrtODFare struct {
 	OriginStationID      string      `json:"OriginStationID"`
 	DestinationStationID string      `json:"DestinationStationID"`
 	TravelTime           json.Number `json:"TravelTime"`
 	Fares                []struct {
 		TicketType int `json:"TicketType"`
+		FareClass  int `json:"FareClass"`
 		Price      int `json:"Price"`
 	} `json:"Fares"`
+}
+
+// TDX fare codes used by the metro ODFare feed.
+const (
+	mrtTicketTypeSingle = 1 // 單程票
+	mrtFareClassFull    = 1 // 全票
+	mrtFareClassHalf    = 2 // 半票
+)
+
+// fares picks the single-journey full (全票) and half (半票) prices. A class the
+// feed omits stays 0, which the upsert preserves rather than overwriting a known
+// price with a zero.
+func (f mrtODFare) fares() (full, half int) {
+	for _, t := range f.Fares {
+		if t.TicketType != mrtTicketTypeSingle {
+			continue
+		}
+		switch t.FareClass {
+		case mrtFareClassFull:
+			full = t.Price
+		case mrtFareClassHalf:
+			half = t.Price
+		}
+	}
+	return full, half
 }
 
 // travelTimeMin parses an mrtODFare's optional whole-minute TravelTime. Missing
@@ -451,10 +481,11 @@ func (f mrtODFare) travelTimeMin() (int, error) {
 
 // loadMrtJourneyMatrix upserts one metro system's OD fare matrix into
 // mrt_journey_matrix from a decoder over the reconstructed raw_tdx array. It
-// decodes []mrtODFare and writes both the adult fare (TicketType 1) and the
-// station-to-station travel time from the same ODFare feed. The inline upsert
-// always refreshes fare_nt but only replaces travel_time_min with a positive
-// value, so a fare-only refresh never zeroes a prior time.
+// decodes []mrtODFare and writes the single-journey full (全票, TicketType 1
+// FareClass 1) and half (半票, FareClass 2) fares plus the station-to-station
+// travel time from the same ODFare feed. The inline upsert only replaces a fare
+// or travel time with a positive value, so a feed that omits a fare class (or
+// TravelTime, as TRTC's does) never zeroes a previously populated value.
 func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, sink copyUpsertSink, system string) error {
 	if strings.TrimSpace(system) == "" {
 		return errors.New("mrt journey matrix: system is required")
@@ -469,24 +500,27 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, sink copyUpser
 		if _, err := fare.travelTimeMin(); err != nil {
 			return err
 		}
-		adultPrice := 0
-		adultSeen := false
+		singleSeen := false
+		classPrices := map[int]int{}
 		for i, item := range fare.Fares {
 			if item.TicketType <= 0 {
 				return fmt.Errorf("Fares element %d TicketType must be positive, got %d", i, item.TicketType)
 			}
+			if item.FareClass < 0 {
+				return fmt.Errorf("Fares element %d FareClass must be non-negative, got %d", i, item.FareClass)
+			}
 			if item.Price < 0 {
 				return fmt.Errorf("Fares element %d Price must be non-negative, got %d", i, item.Price)
 			}
-			if item.TicketType == 1 {
-				if adultSeen && item.Price != adultPrice {
-					return fmt.Errorf("Fares element %d divergent duplicate TicketType 1", i)
+			if item.TicketType == mrtTicketTypeSingle {
+				if prior, seen := classPrices[item.FareClass]; seen && prior != item.Price {
+					return fmt.Errorf("Fares element %d divergent duplicate TicketType 1 FareClass %d", i, item.FareClass)
 				}
-				adultPrice = item.Price
-				adultSeen = true
+				classPrices[item.FareClass] = item.Price
+				singleSeen = true
 			}
 		}
-		if !adultSeen {
+		if !singleSeen {
 			return errors.New("Fares must include TicketType 1")
 		}
 		return nil
@@ -500,18 +534,13 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, sink copyUpser
 	rows := make([][]any, 0, len(fares))
 	seen := make(map[string][]any, len(fares))
 	for _, f := range fares {
-		adultPrice := 0
-		for _, t := range f.Fares {
-			if t.TicketType == 1 {
-				adultPrice = t.Price
-			}
-		}
+		full, half := f.fares()
 		travelTime, err := f.travelTimeMin()
 		if err != nil {
 			return fmt.Errorf("mrt journey matrix %s row build: %w", system, err)
 		}
 		id := fmt.Sprintf("%s-%s-%s", system, f.OriginStationID, f.DestinationStationID)
-		candidate := []any{id, f.OriginStationID, f.DestinationStationID, system, travelTime, adultPrice}
+		candidate := []any{id, f.OriginStationID, f.DestinationStationID, system, travelTime, full, half}
 		key := system + "\x00" + f.OriginStationID + "\x00" + f.DestinationStationID
 		if err := appendUniqueLoadRow(&rows, seen, key, "OD", candidate); err != nil {
 			return fmt.Errorf("mrt journey matrix %s: %w", system, err)
@@ -521,16 +550,20 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, sink copyUpser
 		key: "mrt_journey_matrix",
 		createSQL: `CREATE TEMP TABLE temp_mrt_journey_matrix (
 			id text, from_station_id text, to_station_id text, system text,
-			travel_time_min int, fare_nt int
+			travel_time_min int, fare_nt int, half_fare_nt int
 		) ON COMMIT DROP`,
 		tempTable: "temp_mrt_journey_matrix",
-		copyCols:  []string{"id", "from_station_id", "to_station_id", "system", "travel_time_min", "fare_nt"},
+		copyCols:  []string{"id", "from_station_id", "to_station_id", "system", "travel_time_min", "fare_nt", "half_fare_nt"},
 		insertSQL: `INSERT INTO mrt_journey_matrix
-			(id, from_station_id, to_station_id, system, travel_time_min, fare_nt, updated_at)
-			SELECT id, from_station_id, to_station_id, system, travel_time_min, fare_nt, NOW()
+			(id, from_station_id, to_station_id, system, travel_time_min, fare_nt, half_fare_nt, updated_at)
+			SELECT id, from_station_id, to_station_id, system, travel_time_min, fare_nt, half_fare_nt, NOW()
 			FROM temp_mrt_journey_matrix
 			ON CONFLICT (from_station_id, to_station_id, system)
-			DO UPDATE SET fare_nt = EXCLUDED.fare_nt,
+			DO UPDATE SET
+				fare_nt = CASE WHEN EXCLUDED.fare_nt > 0
+					THEN EXCLUDED.fare_nt ELSE mrt_journey_matrix.fare_nt END,
+				half_fare_nt = CASE WHEN EXCLUDED.half_fare_nt > 0
+					THEN EXCLUDED.half_fare_nt ELSE mrt_journey_matrix.half_fare_nt END,
 				travel_time_min = CASE WHEN EXCLUDED.travel_time_min > 0
 					THEN EXCLUDED.travel_time_min ELSE mrt_journey_matrix.travel_time_min END,
 				updated_at = NOW()`,

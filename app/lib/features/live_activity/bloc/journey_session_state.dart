@@ -23,7 +23,7 @@ class JourneySessionState extends Equatable {
   final int nextStopIndex;
   final bool suggestBoarding;
 
-  /// Standalone arrival-countdown session; see [JourneyStarted.trackOnly].
+  /// Standalone arrival-countdown session; see `JourneyStarted.trackOnly`.
   final bool trackOnly;
 
   /// The pinned vehicle's plate; display/reminder metadata only — the ETA

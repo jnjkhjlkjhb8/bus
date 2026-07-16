@@ -29,19 +29,12 @@ const String _envPowersyncUrl = String.fromEnvironment(
 // lat/lon (a Postgres-side view or generated column), which is out of scope
 // here; see the migration note in the task report.
 const _schema = Schema([
-  Table('tra_stations', [
-    Column.text('station_id'),
-    Column.text('station_name'),
-  ]),
-  Table('thsr_stations', [
-    Column.text('station_id'),
-    Column.text('station_name'),
-  ]),
   Table('mrt_journey_matrix', [
     Column.text('from_station_id'),
     Column.text('to_station_id'),
     Column.text('system'),
     Column.integer('fare_nt'),
+    Column.integer('half_fare_nt'),
     Column.integer('travel_time_min'),
   ]),
   Table('mrt_schedule', [
@@ -51,19 +44,6 @@ const _schema = Schema([
     Column.integer('serviceday'),
     Column.text('first_train_time'),
     Column.text('last_train_time'),
-  ]),
-  // Offline mirror of the backend `search_vector` table (services/router/
-  // search.go, services/functions/vector.go). Excludes `geom`/`embedding`:
-  // PowerSync sync-rule data queries can't call PostGIS functions, and
-  // SearchRepository's offline path only needs substring matching over the
-  // text columns — HTTP enrichment covers ranked/semantic/geo results.
-  Table('search_vector', [
-    Column.text('type'),
-    Column.text('uid'),
-    Column.text('name'),
-    Column.text('city'),
-    Column.text('depart'),
-    Column.text('destin'),
   ]),
 ]);
 
