@@ -13,6 +13,8 @@ import 'package:flutter/foundation.dart';
 /// proceed until `AppBootstrapController.retry` succeeds.
 enum AppBootstrapState { initializing, ready, degraded, failed }
 
+enum AppBootstrapFailurePhase { storage, network }
+
 /// Drives app startup off the `runApp` critical path.
 ///
 /// Hive, the gRPC channel config, Firebase, and PowerSync all involve
@@ -49,14 +51,18 @@ class AppBootstrapController extends ChangeNotifier {
   /// The error from the most recent failed essential-init attempt, if any.
   Object? lastError;
 
+  /// Which essential step [lastError] came from. Null whenever [lastError]
+  /// is null.
+  AppBootstrapFailurePhase? lastErrorPhase;
+
   bool _bestEffortFailed = false;
 
   /// Runs the essential path and fires the best-effort steps alongside it.
   /// Safe to call once from `main()` right before `runApp`; it never
   /// throws.
   Future<void> start() async {
-    unawaited(_runBestEffort(_initFirebase));
-    unawaited(_runBestEffort(_initPowerSync));
+    unawaited(_runBestEffort(_initFirebase, 'firebase'));
+    unawaited(_runBestEffort(_initPowerSync, 'powersync'));
     await _runEssential();
   }
 
@@ -68,29 +74,49 @@ class AppBootstrapController extends ChangeNotifier {
 
   Future<void> _runEssential() async {
     _setState(AppBootstrapState.initializing);
-    try {
-      await Future.wait([_initHive(), _initGrpc()]);
-      lastError = null;
-      _setState(
-        _bestEffortFailed
-            ? AppBootstrapState.degraded
-            : AppBootstrapState.ready,
-      );
-    } on Object catch (error) {
-      lastError = error;
+    final results = await Future.wait([
+      _guardEssential(_initHive, AppBootstrapFailurePhase.storage),
+      _guardEssential(_initGrpc, AppBootstrapFailurePhase.network),
+    ]);
+    for (final result in results) {
+      if (result.error == null) continue;
+      lastError = result.error;
+      lastErrorPhase = result.phase;
       _setState(AppBootstrapState.failed);
+      return;
+    }
+    lastError = null;
+    lastErrorPhase = null;
+    _setState(
+      _bestEffortFailed ? AppBootstrapState.degraded : AppBootstrapState.ready,
+    );
+  }
+
+  Future<({Object? error, AppBootstrapFailurePhase? phase})> _guardEssential(
+    Future<void> Function() step,
+    AppBootstrapFailurePhase phase,
+  ) async {
+    try {
+      await step();
+      return (error: null, phase: null);
+    } on Object catch (error) {
+      return (error: error, phase: phase);
     }
   }
 
-  Future<void> _runBestEffort(Future<void> Function() step) async {
+  Future<void> _runBestEffort(
+    Future<void> Function() step,
+    String label,
+  ) async {
     try {
       await step();
-    } on Object {
+    } on Object catch (error) {
       // A best-effort dependency can fail before or after the essential
       // path settles (they race). Either way, remember it and degrade an
       // already-ready app immediately, or let `_runEssential` land on
       // `degraded` instead of `ready` once it catches up.
       _bestEffortFailed = true;
+      debugPrint('[bootstrap] $label failed (best-effort, degraded): $error');
       if (_state == AppBootstrapState.ready) {
         _setState(AppBootstrapState.degraded);
       }

@@ -16,13 +16,16 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 )
 
-// ConnectRedis dials REDIS_ADDR with a fixed pool (no auth, DB 0) and verifies
-// the connection with PING. It panics if the ping fails, so callers get a
-// ready client or a crashed process — never a half-open one.
+// ConnectRedis dials REDIS_ADDR with a fixed pool and verifies the connection
+// with PING. REDIS_PASSWORD is optional: empty (the default for the local
+// test-env Redis, which runs without --requirepass) authenticates as
+// no-password, exactly like the pre-auth behavior this replaces; staging and
+// prod set it to match Redis's --requirepass. It panics if the ping fails, so
+// callers get a ready client or a crashed process — never a half-open one.
 func ConnectRedis() *redis.Client {
 	client := redis.NewClient(&redis.Options{
 		Addr:         os.Getenv("REDIS_ADDR"),
-		Password:     "",
+		Password:     os.Getenv("REDIS_PASSWORD"),
 		DB:           0,
 		PoolSize:     20,
 		MinIdleConns: 3,

@@ -34,17 +34,6 @@ type fakeNotificationStore struct {
 	claimErrIDs                                             map[string]bool
 	dueErr                                                  error
 	wantRouteType, wantRouteKey, wantStopKey, wantDirection string
-	activeBus                                               bool
-	activeBusErr                                            error
-	activeBusCalls                                          int
-}
-
-func (s *fakeNotificationStore) hasActiveBusReminders(context.Context, time.Time) (bool, error) {
-	s.activeBusCalls++
-	if s.activeBusErr != nil {
-		return false, s.activeBusErr
-	}
-	return s.activeBus, nil
 }
 
 func (s *fakeNotificationStore) activeRemindersForArrivals(_ context.Context, events []ArrivalEvent, _ time.Time) ([]arrivalMatch, error) {
@@ -295,6 +284,22 @@ func TestRouteAlertsRequireIdentity(t *testing.T) {
 	}
 }
 
+// TestRouteAlertsParseBusAlertTopic runs a TDX v2 Bus/Alert payload through
+// the parser: Alert carries AlertID/Description where News carries
+// NewsID/NewsContent, so the field-name list must cover both or the newly
+// subscribed alert topics parse to nothing.
+func TestRouteAlertsParseBusAlertTopic(t *testing.T) {
+	got := routeAlerts("v2/Bus/Alert/City/Taipei", []byte(`[
+		{"AlertID":"A1","SubRouteUID":"TPE10132","Description":"因道路施工改道","Status":1}
+	]`))
+	if len(got) != 1 {
+		t.Fatalf("alerts = %+v, want 1 from a Bus/Alert payload", got)
+	}
+	if got[0].routeType != "bus" || got[0].routeKey != "TPE10132" || got[0].id != "A1" || got[0].body != "因道路施工改道" {
+		t.Fatalf("alert = %+v", got[0])
+	}
+}
+
 func TestInterCityRouteAlertsUseCanonicalSubrouteIdentity(t *testing.T) {
 	got := routeAlerts("v2/Bus/News/InterCity", []byte(`[
 		{"SubRouteUID":"THB902301","Description":"outbound"},
@@ -311,7 +316,7 @@ func TestInterCityRouteAlertsUseCanonicalSubrouteIdentity(t *testing.T) {
 }
 
 func TestInterCityVehicleMQTTUsesRESTCanonicalIdentity(t *testing.T) {
-	payload := canonicalInterCityBusPayload("v2/Bus/RealTimeNearStop/InterCity", []byte(`[
+	payload := canonicalInterCityBusPayload("v2/Bus/Alert/InterCity", []byte(`[
 		{"PlateNumb":"KKA-1","SubRouteUID":"THB902301","Direction":9},
 		{"PlateNumb":"KKA-2","SubRouteUID":"THB902302","Direction":9}
 	]`))

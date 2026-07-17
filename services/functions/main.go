@@ -101,15 +101,19 @@ func main() {
 
 	switch mode {
 	case modeIngestor:
-		registerIngestorCrons(r, tdx, db)
+		var boot sync.WaitGroup
+		registerIngestorCrons(r, tdx, db, &boot)
 		r.Start()
-		defer r.Stop()
+		touchHealthFile()
 		waitForShutdown()
+		drainShutdown(r.Stop(), &boot, shutdownGrace)
 	case modeLoader:
-		registerLoaderCrons(r, rawPool, db, rc)
+		var boot sync.WaitGroup
+		registerLoaderCrons(r, rawPool, db, rc, &boot)
 		r.Start()
-		defer r.Stop()
+		touchHealthFile()
 		waitForShutdown()
+		drainShutdown(r.Stop(), &boot, shutdownGrace)
 	case modeLegacyProd:
 		runLegacyProd(r, tdx, rc, rawPool, db)
 	}
@@ -379,8 +383,16 @@ func (r staticPipelineRunner) Run(parent context.Context, job func(context.Conte
 // addStaticCron applies cron's own non-overlap guard in addition to the runner's
 // boot/manual gate. The runner remains authoritative because boot is not a cron
 // entry and different static job names can otherwise overlap.
+//
+// Every job registered this way also touches the liveness marker
+// (touchHealthFile) once it returns, success or failure -- see that
+// function's doc comment for why the container healthcheck cares about
+// scheduler liveness, not per-job business success.
 func addStaticCron(r *cron.Cron, spec string, job func()) (cron.EntryID, error) {
-	guarded := cron.NewChain(cron.SkipIfStillRunning(cron.DefaultLogger)).Then(cron.FuncJob(job))
+	guarded := cron.NewChain(cron.SkipIfStillRunning(cron.DefaultLogger)).Then(cron.FuncJob(func() {
+		job()
+		touchHealthFile()
+	}))
 	return r.AddJob(spec, guarded)
 }
 
@@ -467,21 +479,21 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		_ = recordPipelineMarkerWithRetry(context.Background(), db, "changetovector", runDate)
 	})
 	registerLiveCrons(r, tdx, rc, db, dispatcher)
-	_, _ = r.AddFunc("@every 10m", func() {
+	_, _ = addStaticCron(r, "@every 10m", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
 		defer cancel()
 		if err := weatherSync(ctx, rc); err != nil {
 			log.Warnf("[WEATHER] sync failed; keeping last good Redis snapshot: %v", err)
 		}
 	})
-	_, _ = r.AddFunc("@every 24h", func() {
+	_, _ = addStaticCron(r, "@every 24h", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
 		defer cancel()
 		if err := loadHolidays(ctx); err != nil {
 			log.Warnf("[HOLIDAY] refresh failed; keeping last good snapshot: %v", err)
 		}
 	})
-	_, _ = r.AddFunc("0 0 4 * * *", func() {
+	_, _ = addStaticCron(r, "0 0 4 * * *", func() {
 		runDate := time.Now().In(taipei)
 		waitCtx, cancel := context.WithTimeout(context.Background(), pipelineMarkerPollDeadline+time.Minute)
 		defer cancel()
@@ -491,20 +503,23 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		}
 		runDaily("computeTravelAvg", 15*time.Minute, func(ctx context.Context) error { return computeTravelAvg(ctx, db) })
 	})
-	_, _ = r.AddFunc("0 15 4 * * *", func() {
+	_, _ = addStaticCron(r, "0 15 4 * * *", func() {
 		runDaily("measurePredictionError", 10*time.Minute, func(ctx context.Context) error { return measurePredictionError(ctx, db) })
 	})
-	_, _ = r.AddFunc("0 30 4 * * *", func() {
+	_, _ = addStaticCron(r, "0 30 4 * * *", func() {
 		runDaily("cleanupBusHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBusHistory(ctx, db) })
 		runDaily("cleanupBikeHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBikeHistory(ctx, db) })
 	})
 	r.Start()
-	defer r.Stop()
+	touchHealthFile()
 	mqttClient := notify.StartMQTT(rc, dispatcher)
-	if mqttClient != nil {
-		defer mqttClient.Disconnect(500)
-	}
 	waitForShutdown()
+	// Stop intake first: MQTT (no more messages dispatched) then cron (no
+	// more ticks fired). Only then wait for whatever is already in flight.
+	if mqttClient != nil {
+		mqttClient.Disconnect(500)
+	}
+	drainShutdown(r.Stop(), &sync.WaitGroup{}, shutdownGrace)
 }
 
 // waitForShutdown blocks until SIGINT or SIGTERM, letting deferred cleanup
@@ -514,6 +529,47 @@ func waitForShutdown() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	log.Infoln("[BOOT] action=shutdown event=signal_received")
+}
+
+// shutdownGrace bounds how long drainShutdown waits for in-flight cron/boot
+// work to finish before the caller proceeds to close shared Redis/DB
+// connections. A job that outlives it is abandoned mid-flight (its own
+// per-job timeout is expected to have fired well before this), but the
+// process still exits instead of hanging forever on a stuck job.
+const shutdownGrace = 30 * time.Second
+
+// drainShutdown waits, bounded by grace, for both cronDone (the context
+// returned by cron.Cron.Stop — its own intake must already be stopped before
+// calling this) and boot (goroutines started outside cron, e.g. an
+// *_ON_BOOT run) to finish. Call it after intake has stopped and before
+// closing any dependency a running job might still be using: that ordering
+// is what keeps a job from observing a closed Redis/DB connection mid-run.
+func drainShutdown(cronDone context.Context, boot *sync.WaitGroup, grace time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		<-cronDone.Done()
+		if boot != nil {
+			boot.Wait()
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		log.Infoln("[BOOT] action=shutdown event=jobs_drained")
+	case <-time.After(grace):
+		log.Warnf("[BOOT] action=shutdown event=grace_timeout grace=%s", grace)
+	}
+}
+
+// trackBoot runs fn in a goroutine tracked by wg, so a boot-time job started
+// outside cron (INGEST_ON_BOOT, LOAD_ON_BOOT) is waited for by drainShutdown
+// instead of being abandoned when the process starts shutting down.
+func trackBoot(wg *sync.WaitGroup, fn func()) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fn()
+	}()
 }
 
 // busstaticmp loads the per-stop station map for a city prefix: every stop of

@@ -38,6 +38,7 @@ void main() {
 
       expect(controller.state, AppBootstrapState.failed);
       expect(controller.lastError, isA<StateError>());
+      expect(controller.lastErrorPhase, AppBootstrapFailurePhase.storage);
     });
 
     test('fails closed when gRPC config validation throws', () async {
@@ -51,6 +52,7 @@ void main() {
       await controller.start();
 
       expect(controller.state, AppBootstrapState.failed);
+      expect(controller.lastErrorPhase, AppBootstrapFailurePhase.network);
     });
 
     test(
@@ -119,6 +121,8 @@ void main() {
 
       expect(controller.state, AppBootstrapState.ready);
       expect(hiveAttempts, 2);
+      expect(controller.lastError, isNull);
+      expect(controller.lastErrorPhase, isNull);
     });
   });
 }

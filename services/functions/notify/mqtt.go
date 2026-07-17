@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"strconv"
-
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/go-redis/redis"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
@@ -24,13 +22,15 @@ type mqttTopicCfg struct {
 	ttl     time.Duration
 }
 
-// mqttTopics is the set of TDX MQTT subscriptions and their cache TTLs. Live
-// near-stop bus data is short-lived (60s); news and alert topics keep 5 minutes.
+// mqttTopics is the set of TDX MQTT subscriptions and their cache TTLs. TDX
+// publishes only news and alert topics — there is no vehicle-position or
+// near-stop stream — so every subscription here is advisory text on a 5-minute
+// TTL. Bus alerts stay on v2: routeAlerts reads the v2 field names.
 var mqttTopics = []mqttTopicCfg{
-	{"v2/Bus/RealTimeNearStop/City/#", 60 * time.Second},
-	{"v2/Bus/RealTimeNearStop/InterCity", 60 * time.Second},
 	{"v2/Bus/News/City/+", 5 * time.Minute},
 	{"v2/Bus/News/InterCity", 5 * time.Minute},
+	{"v2/Bus/Alert/City/+", 5 * time.Minute},
+	{"v2/Bus/Alert/InterCity", 5 * time.Minute},
 	{"v2/Rail/Metro/Alert/#", 5 * time.Minute},
 	{"v3/Rail/TRA/Alert", 5 * time.Minute},
 	{"v2/Rail/THSR/AlertInfo", 5 * time.Minute},
@@ -97,113 +97,23 @@ func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *Dispatcher) {
 // mqtthandle caches one MQTT message in Redis (key derived from the topic, with
 // slashes turned into colons) and republishes it on that key for live streaming.
 // It then dispatches route alerts, using SetNX on an "fcm:alert:" key as a
-// cross-run dedupe claim so the same alert is not pushed twice within its window,
-// and evaluates RealTimeNearStop events against arrival reminders so an arriving
-// bus pushes immediately instead of waiting for the next 30s ETA cron tick.
+// cross-run dedupe claim so the same alert is not pushed twice within its window.
+// Alert dispatch needs the SetNX claim, so a Redis failure skips it: without the
+// claim the same alert would push on every retry.
 func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatcher *Dispatcher) {
 	key := shared.MQTTChannel(msg.Topic())
 	payload := canonicalInterCityBusPayload(msg.Topic(), msg.Payload())
 	if err := rc.Set(key, payload, ttl).Err(); err != nil {
-		// The cache/publish/alert leg needs Redis; arrival dispatch below needs
-		// only Postgres+FCM, so a cache failure skips the former but never the
-		// latter.
 		log.Errorf("[MQTT] redis set failed key=%s err=%v", key, err)
-	} else {
-		if err := rc.Publish(key, payload).Err(); err != nil {
-			log.Errorf("[MQTT] redis publish failed key=%s err=%v", key, err)
-		}
-		dispatchRouteAlerts(context.Background(), routeAlerts(msg.Topic(), msg.Payload()), func(key string, ttl time.Duration) bool {
-			ok, err := rc.SetNX("fcm:alert:"+key, "1", ttl).Result()
-			return err == nil && ok
-		}, dispatcher)
-	}
-	// The canonicalized payload, not msg.Payload(): InterCity events must carry
-	// the same canonical subroute+direction identity the cron dispatch path and
-	// stored reminders use (ADR-0006).
-	dispatchNearStopArrivals(msg.Topic(), payload, dispatcher)
-}
-
-// mqttArrivalDispatchTimeout bounds one near-stop arrival dispatch, keeping a
-// slow FCM/database round-trip from stalling the MQTT receive path. It stays
-// under the 25-second bound the cron dispatch path runs with, so the
-// reclaim-safety argument on ReminderClaimTimeout covers this path too.
-const mqttArrivalDispatchTimeout = 10 * time.Second
-
-// dispatchNearStopArrivals evaluates arrival reminders for one RealTimeNearStop
-// message. Dispatch errors are logged, never returned: this rides on the MQTT
-// cache handler and must not disturb it. The 30s cron sweep remains the
-// backstop for anything missed here, and the claim state machine makes the
-// cron+MQTT dual trigger safe against double-sends.
-func dispatchNearStopArrivals(topic string, payload []byte, dispatcher *Dispatcher) {
-	if dispatcher == nil || !strings.Contains(topic, "/Bus/RealTimeNearStop") {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), mqttArrivalDispatchTimeout)
-	defer cancel()
-	// Existence pre-gate: RealTimeNearStop is a per-message firehose across
-	// every city, and this handler runs on paho's single ordered goroutine —
-	// without the gate each entering-stop record would run a synchronous
-	// reminder query even when no bus reminder exists at all.
-	if !dispatcher.hasBusArrivalWork(ctx) {
-		return
+	if err := rc.Publish(key, payload).Err(); err != nil {
+		log.Errorf("[MQTT] redis publish failed key=%s err=%v", key, err)
 	}
-	events := nearStopArrivalEvents(topic, payload)
-	if len(events) == 0 {
-		return
-	}
-	if err := dispatcher.Arrivals(ctx, events); err != nil {
-		log.Errorf("[MQTT] action=near_stop event=arrival_dispatch_failed topic=%s error=%v", topic, err)
-	}
-}
-
-// nearStopArrivalEvents derives arrival events from one RealTimeNearStop
-// payload (post-canonicalization; accepts a JSON array or a single object).
-// Only A2EventType 1 (進站 — the vehicle is entering the stop) maps to an
-// event, with ETASeconds 0, which any reminder lead window matches
-// (eta_seconds >= 0 AND <= lead*60). The identity fields translate directly:
-// SubRouteUID/Direction are the canonical pair reminders key on (InterCity
-// payloads were canonicalized before caching), StopUID is the same TDX stop
-// identity the cron path uses, and the plate gets the cron path's
-// normalization (trim + uppercase) so plate-pinned reminders match. Entries
-// missing any identity field are skipped — an invented identity could mis-send.
-func nearStopArrivalEvents(topic string, payload []byte) []ArrivalEvent {
-	if !strings.Contains(topic, "/Bus/RealTimeNearStop") {
-		return nil
-	}
-	var raw any
-	if json.Unmarshal(payload, &raw) != nil {
-		return nil
-	}
-	items, ok := raw.([]any)
-	if !ok {
-		items = []any{raw}
-	}
-	var out []ArrivalEvent
-	for _, item := range items {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		eventType, ok := m["A2EventType"].(float64)
-		if !ok || eventType != 1 {
-			continue
-		}
-		uid := firstString(m, "SubRouteUID")
-		stop := firstString(m, "StopUID")
-		direction, hasDirection := m["Direction"].(float64)
-		if uid == "" || stop == "" || !hasDirection || direction < 0 || direction > 255 {
-			continue
-		}
-		out = append(out, ArrivalEvent{
-			RouteType:     "bus",
-			RouteKey:      uid,
-			StopKey:       stop,
-			Direction:     strconv.Itoa(int(direction)),
-			ETASeconds:    0,
-			ArrivingPlate: strings.ToUpper(firstString(m, "PlateNumb")),
-		})
-	}
-	return out
+	dispatchRouteAlerts(context.Background(), routeAlerts(msg.Topic(), msg.Payload()), func(key string, ttl time.Duration) bool {
+		ok, err := rc.SetNX("fcm:alert:"+key, "1", ttl).Result()
+		return err == nil && ok
+	}, dispatcher)
 }
 
 // canonicalInterCityBusPayload puts MQTT vehicle snapshots in the same

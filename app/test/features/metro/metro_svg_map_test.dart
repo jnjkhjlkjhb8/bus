@@ -1,0 +1,107 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_car/data/models/metro_map_models.dart';
+import 'package:wheres_the_car/features/metro/widgets/metro_svg_map.dart';
+
+void main() {
+  testWidgets(
+    'tap offset toward a neighbouring station resolves via nearest-target '
+    'arbitration instead of picking whichever region is painted on top',
+    (tester) async {
+      final semanticsHandle = tester.ensureSemantics();
+      MetroMapStation? tapped;
+
+      // The map (1080x1920) renders taller than the default 800x600 test
+      // surface at typical widths, leaving lower stations off-screen and
+      // unreachable by tapAt. Size the surface to the map's own aspect
+      // ratio (scale s=1) so every station is on-screen and reachable.
+      tester.view.physicalSize = const Size(1080, 1920);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MetroSvgMap(
+              animate: false,
+              onStationTap: (s) => tapped = s,
+            ),
+          ),
+        ),
+      );
+      // Flush the 350ms hit-target defer timer.
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // BL21 (昆陽) and BL22 (南港) sit only 42 map units apart — their
+      // 44px hit regions overlap. Use their real rendered rects so the
+      // test exercises the actual InteractiveViewer transform rather than
+      // assuming a scale factor.
+      final bl21 = tester.getRect(find.bySemanticsLabel('BL21 昆陽'));
+      final bl22 = tester.getRect(find.bySemanticsLabel('BL22 南港'));
+      final c21 = bl21.center;
+      final c22 = bl22.center;
+
+      // A point 30% of the way from BL21 to BL22 is off BL21's exact
+      // center but still much closer to BL21 than BL22.
+      final nearBl21 = Offset.lerp(c21, c22, 0.3)!;
+      await tester.tapAt(nearBl21);
+      await tester.pump();
+      expect(tapped?.id, 'BL21');
+
+      tapped = null;
+      // A point 80% of the way there is closer to BL22 and — because both
+      // stations' 44px regions cover this point — only correct nearest-
+      // target arbitration (not paint order, not list order) picks BL22.
+      final nearBl22 = Offset.lerp(c21, c22, 0.8)!;
+      await tester.tapAt(nearBl22);
+      await tester.pump();
+      expect(tapped?.id, 'BL22');
+
+      semanticsHandle.dispose();
+    },
+  );
+
+  testWidgets(
+    'label animation is already at its final state when '
+    'MediaQuery.disableAnimations is set, instead of waiting out its delay',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(disableAnimations: true),
+            child: Scaffold(
+              body: MetroSvgMap(
+                selectedStationId: 'BL01',
+                stationLabels: const {'BL02': '5'},
+                onStationTap: (_) {},
+              ),
+            ),
+          ),
+        ),
+      );
+      // A single build/frame — no waiting for the label's entry delay or
+      // its 200ms scale/fade animation.
+      await tester.pump();
+
+      // MaterialApp's default (Zoom) page-transition builder also wraps
+      // the route in a ScaleTransition/FadeTransition; `.first` picks the
+      // closest ancestor to the label text, which is the label's own.
+      final fade = tester.widget<FadeTransition>(
+        find
+            .ancestor(of: find.text('5'), matching: find.byType(FadeTransition))
+            .first,
+      );
+      final scale = tester.widget<ScaleTransition>(
+        find
+            .ancestor(
+              of: find.text('5'),
+              matching: find.byType(ScaleTransition),
+            )
+            .first,
+      );
+      expect(fade.opacity.value, 1);
+      expect(scale.scale.value, 1);
+    },
+  );
+}

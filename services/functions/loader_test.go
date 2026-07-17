@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
 	"google.golang.org/protobuf/proto"
@@ -345,18 +344,11 @@ func TestLoaderExceptionalBindingsUseSemanticSink(t *testing.T) {
 // TestLoadBusDailyTimetableWritesRedis feeds a daily-timetable array to the
 // shared assembly function and asserts it lands the reconstructed protobuf under
 // bus_daily_timetable:<subRouteUID> with the expected TTL, exercising the loader
-// (127.0.0.1:6379) and skips when one is not reachable, mirroring the DB-gated
-// tests' skip posture.
+// against testRedisAddr (REDIS_TEST_ADDR, falling back to 127.0.0.1:6379) and
+// skips when one is not reachable, mirroring the DB-gated tests' skip posture.
 func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
-	rc := redis.NewClient(&redis.Options{
-		Addr:        "127.0.0.1:6379",
-		DialTimeout: 200 * time.Millisecond,
-		MaxRetries:  0,
-	})
+	rc := dialTestRedis(t)
 	defer rc.Close()
-	if err := rc.Ping().Err(); err != nil {
-		t.Skipf("local Redis not reachable; skipping: %v", err)
-	}
 
 	const uid = "KHH_DTT_SUB1"
 	key := "bus_daily_timetable:" + uid

@@ -100,10 +100,14 @@ func Capture(name string, err error) {
 }
 
 // UnaryInterceptor returns a gRPC unary interceptor that puts a per-request
-// Sentry hub (tagged with the method) on the context and recovers panics from
-// downstream handlers. A recovered panic is reported to Sentry and converted
-// into a codes.Internal status so the panic does not escape the gRPC server;
-// the generic "internal error" message avoids leaking internals to clients.
+// Sentry hub (tagged with the method) on the context, recovers panics from
+// downstream handlers, and records the call in the router_grpc_requests_total
+// / router_grpc_errors_total counters (see metrics.go) -- the single choke
+// point every unary RPC passes through, so this covers the whole API surface
+// without touching individual handlers. A recovered panic is reported to
+// Sentry and converted into a codes.Internal status so the panic does not
+// escape the gRPC server; the generic "internal error" message avoids
+// leaking internals to clients.
 func UnaryInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, err error) {
 		hub := sentry.CurrentHub().Clone()
@@ -114,15 +118,18 @@ func UnaryInterceptor() grpc.UnaryServerInterceptor {
 				hub.RecoverWithContext(ctx, r)
 				err = status.Errorf(codes.Internal, "internal error")
 			}
+			RecordGRPCRequest(info.FullMethod, err)
 		}()
 		return handler(ctx, req)
 	}
 }
 
 // StreamInterceptor is the streaming counterpart to UnaryInterceptor: it tags
-// a cloned hub with the method and recovers panics from the stream handler,
-// reporting them and returning a codes.Internal status. The hub is not placed
-// on the stream context here because ServerStream carries its own context.
+// a cloned hub with the method, recovers panics from the stream handler
+// (reporting them and returning a codes.Internal status), and records the
+// call in the same router_grpc_requests_total / router_grpc_errors_total
+// counters. The hub is not placed on the stream context here because
+// ServerStream carries its own context.
 func StreamInterceptor() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
 		hub := sentry.CurrentHub().Clone()
@@ -132,6 +139,7 @@ func StreamInterceptor() grpc.StreamServerInterceptor {
 				hub.RecoverWithContext(ss.Context(), r)
 				err = status.Errorf(codes.Internal, "internal error")
 			}
+			RecordGRPCRequest(info.FullMethod, err)
 		}()
 		return handler(srv, ss)
 	}

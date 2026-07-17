@@ -87,13 +87,66 @@ func TestHandleTokenIssuesValidJWT(t *testing.T) {
 		t.Fatal(err)
 	}
 	claims := verifyJWT(t, body.Token, &key.PublicKey)
-	if claims["aud"] != "powersync" || claims["sub"] != "powersync-client" {
+	if claims["aud"] != "powersync" || claims["sub"] != powersyncAnonymousSubject {
 		t.Fatalf("unexpected claims: %v", claims)
 	}
 	exp := int64(claims["exp"].(float64))
 	iat := int64(claims["iat"].(float64))
 	if exp <= iat || exp <= time.Now().Unix() {
 		t.Fatalf("bad exp/iat: exp=%d iat=%d", exp, iat)
+	}
+	if got, want := exp-iat, int64(powersyncTokenTTL.Seconds()); got != want {
+		t.Fatalf("token TTL = %ds, want %ds", got, want)
+	}
+}
+
+// A caller that sends X-Install-Id gets it back as the "sub" claim, so a
+// leaked/observed token can be traced to the installation that requested it.
+func TestHandleTokenBindsInstallationID(t *testing.T) {
+	key := testKey(t)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/api/token/powersync", handleToken(key))
+	req := httptest.NewRequest(http.MethodGet, "/api/token/powersync", nil)
+	req.Header.Set("X-Install-Id", "install-abc-123")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	claims := verifyJWT(t, body.Token, &key.PublicKey)
+	if claims["sub"] != "install-abc-123" {
+		t.Fatalf("sub = %v, want install-abc-123", claims["sub"])
+	}
+}
+
+// tokenSubject must never let an oversized or control-character-laden header
+// value flow straight into a signed claim.
+func TestTokenSubjectSanitizesInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty falls back", "", powersyncAnonymousSubject},
+		{"whitespace-only falls back", "   ", powersyncAnonymousSubject},
+		{"normal id passes through", "install-1", "install-1"},
+		{"trims surrounding whitespace", "  install-1  ", "install-1"},
+		{"oversized falls back", strings.Repeat("a", installIDHeaderMaxLen+1), powersyncAnonymousSubject},
+		{"control characters fall back", "install\n1", powersyncAnonymousSubject},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tokenSubject(tt.input); got != tt.want {
+				t.Fatalf("tokenSubject(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -595,6 +648,49 @@ func TestSafeAccessLoggerNeverLogsRawQuery(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("safe logger output %q missing %q", output.String(), want)
 		}
+	}
+}
+
+func TestSafeAccessLoggerRecordsHTTPMetricsByRoutePattern(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var output bytes.Buffer
+	router := gin.New()
+	router.Use(safeAccessLogger(&output))
+	router.GET("/probe-metrics/:id", func(c *gin.Context) {
+		if c.Param("id") == "fail" {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		c.Status(http.StatusOK)
+	})
+
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/probe-metrics/one", nil))
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/probe-metrics/two", nil))
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/probe-metrics/fail", nil))
+
+	body := obs.MetricsText()
+	// Every request went through the ":id" pattern (not the concrete paths
+	// "one"/"two"/"fail"), proving the label is the registered route, not the
+	// raw request path -- otherwise this counter set would grow unbounded
+	// with every distinct id a client sends.
+	if !strings.Contains(body, `router_http_requests_total{path="/probe-metrics/:id"} 3`) {
+		t.Fatalf("missing aggregated request count in metrics text:\n%s", body)
+	}
+	if !strings.Contains(body, `router_http_errors_total{path="/probe-metrics/:id"} 1`) {
+		t.Fatalf("missing aggregated error count in metrics text:\n%s", body)
+	}
+}
+
+func TestSafeAccessLoggerLabelsUnmatchedRoutesSeparately(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(safeAccessLogger(&bytes.Buffer{}))
+
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/probe-metrics/does-not-exist-route", nil))
+
+	body := obs.MetricsText()
+	if !strings.Contains(body, `router_http_requests_total{path="unmatched"}`) {
+		t.Fatalf("expected a 404 to a route not registered by any handler above to be aggregated under \"unmatched\", got:\n%s", body)
 	}
 }
 

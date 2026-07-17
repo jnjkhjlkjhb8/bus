@@ -30,6 +30,8 @@ services:
       - /tmp:size=256m
     volumes:
       - ollama_data:/home/ollama/.ollama
+    networks:
+      - backend
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "ollama list | grep -q qwen3-embedding"]
@@ -50,7 +52,9 @@ services:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass "${REDIS_PASSWORD:-}"
+    networks:
+      - backend
     # The official entrypoint normally drops from root to uid 999 itself via
     # setpriv, which needs CAP_SETUID/CAP_SETGID -- capabilities cap_drop:
     # ALL removes. Starting directly as uid 999 (the image's built-in
@@ -81,15 +85,36 @@ services:
     build:
       context: .
       dockerfile: services/router/Dockerfile
-    image: router
+    # ROUTER_IMAGE lets a deploy pin an exact CI-built digest
+    # (ghcr.io/.../bus-router@sha256:...) via `docker compose pull` without a
+    # host build; build: above stays so a bare `docker compose up --build`
+    # (local dev, make up-test) keeps working unchanged (compose permits
+    # build + image together -- image just names what gets built/pulled).
+    image: ${ROUTER_IMAGE:-router}
     ports:
       - "${BIND_HOST:-127.0.0.1}:${GRPC_PORT:-50051}:50051"
       - "${BIND_HOST:-127.0.0.1}:${ROUTER_HTTP_PORT:-8080}:8080"
-    env_file: ${ENV_FILE:-./.env}
+    # ENV_FILE_ROUTER is router's own allowlisted env file, rendered by
+    # scripts/render-env.sh from the operator's single env/<env>.env (see
+    # Makefile render-env-% and docs/config.md). The ${ENV_FILE:-./.env}
+    # fallback is what check-compose-isolation.sh / check-container-
+    # hardening.sh (which only ever set ENV_FILE) and an ad-hoc `docker
+    # compose up` without a Makefile target still resolve to.
+    env_file: ${ENV_FILE_ROUTER:-${ENV_FILE:-./.env}}
     environment:
       TZ: Asia/Taipei
       GOMEMLIMIT: ${ROUTER_GOMEMLIMIT:-230MiB}
       REDIS_ADDR: redis:6379
+    # frontend: reachable by/reaches powersync (jwks_uri in powersync/
+    # config.yaml points at router). backend: redis, DB (via DATABASE_URL,
+    # external), and the ollama embedding proxy. routing: osrm (MaaS/nearby
+    # walking directions) -- router is the only service that talks to osrm,
+    # so osrm stays off backend/frontend entirely (O7 / review_results.md
+    # P2-03 network segmentation).
+    networks:
+      - frontend
+      - backend
+      - routing
     volumes:
       # Only /data is writable — that's where the router persists its
       # PowerSync RSA signing key (persistKeyAtomically in http.go writes a
@@ -123,15 +148,21 @@ services:
     build:
       context: .
       dockerfile: services/functions/Dockerfile
-    image: functions
-    env_file: ${ENV_FILE:-./.env}
+    # FUNCTIONS_IMAGE is shared by functions/ingestor/loader (one image, three
+    # ROLE values) -- see the ROUTER_IMAGE comment above for why build: and
+    # image: coexist.
+    image: ${FUNCTIONS_IMAGE:-functions}
+    env_file: ${ENV_FILE_FUNCTIONS:-${ENV_FILE:-./.env}}
     environment:
       TZ: Asia/Taipei
       GOMEMLIMIT: ${FUNCTIONS_GOMEMLIMIT:-680MiB}
       REDIS_ADDR: redis:6379
+    networks:
+      - backend
     # TDXClient.GetInto (services/shared/tdx.go) spools each response to
     # os.CreateTemp("", ...), i.e. the default $TMPDIR (/tmp) — that's the
-    # only path this binary writes to.
+    # only path this binary writes to. touchHealthFile (services/functions/
+    # healthfile.go) also writes its liveness marker here on every cron tick.
     tmpfs:
       - /tmp:size=256m
     mem_limit: ${FUNCTIONS_MEM_LIMIT:-768m}
@@ -146,12 +177,23 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      # This role's fastest cron (mrtEta) ticks every 10s, so a marker older
+      # than 2 minutes means the scheduler loop has stalled -- addStaticCron
+      # touches /tmp/healthy after every job returns, success or failure
+      # (services/functions/healthfile.go), so this proves cron dispatch is
+      # alive, not that any single TDX-dependent job succeeded.
+      test: ["CMD-SHELL", "find /tmp/healthy -mmin -2 2>/dev/null | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
   ingestor:
     build:
       context: .
       dockerfile: services/functions/Dockerfile
-    image: functions
-    env_file: ${ENV_FILE:-./.env}
+    image: ${FUNCTIONS_IMAGE:-functions}
+    env_file: ${ENV_FILE_INGESTOR:-${ENV_FILE:-./.env}}
     environment:
       TZ: Asia/Taipei
       GOMEMLIMIT: ${INGESTOR_GOMEMLIMIT:-345MiB}
@@ -159,6 +201,8 @@ services:
       ROLE: ingestor
       INGEST_DB_MAX_CONNS: "1"
       TMPDIR: /spool
+    networks:
+      - backend
     volumes:
       - ingestor_spool:/spool
     tmpfs:
@@ -175,12 +219,27 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      # ingestor only runs its landing job once a day (03:00), so a
+      # touch-file freshness check (as functions above uses) would report
+      # unhealthy for the ~23.5 idle hours between ticks. Just prove the
+      # process itself is alive.
+      # busybox pgrep's -x matches the full command line (e.g. "./functions
+      # run changetovector"), not just the process name, so it never matches
+      # plain "functions" -- verified against this image directly. The
+      # unqualified pgrep matches by process name (comm), which is exactly
+      # "functions" for this binary.
+      test: ["CMD-SHELL", "pgrep functions"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
   loader:
     build:
       context: .
       dockerfile: services/functions/Dockerfile
-    image: functions
-    env_file: ${ENV_FILE:-./.env}
+    image: ${FUNCTIONS_IMAGE:-functions}
+    env_file: ${ENV_FILE_LOADER:-${ENV_FILE:-./.env}}
     environment:
       TZ: Asia/Taipei
       GOMEMLIMIT: ${LOADER_GOMEMLIMIT:-345MiB}
@@ -188,6 +247,8 @@ services:
       ROLE: loader
       LOAD_DB_MAX_CONNS: "1"
       PG_STATEMENT_TIMEOUT: 600s
+    networks:
+      - backend
     tmpfs:
       - /tmp:size=256m
     mem_limit: ${LOADER_MEM_LIMIT:-384m}
@@ -202,6 +263,18 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      # Daily cron like ingestor above -- process-alive only, not freshness.
+      # busybox pgrep's -x matches the full command line (e.g. "./functions
+      # run changetovector"), not just the process name, so it never matches
+      # plain "functions" -- verified against this image directly. The
+      # unqualified pgrep matches by process name (comm), which is exactly
+      # "functions" for this binary.
+      test: ["CMD-SHELL", "pgrep functions"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
   powersync:
     image: journeyapps/powersync-service:1.23.3@sha256:b6b22fa7d0d862f04bdff62846e656756d17bcf3dd6eca399a0633671051438b
     ports:
@@ -209,11 +282,17 @@ services:
     volumes:
       - ./powersync/config.yaml:/config/config.yaml:ro
       - ./powersync/sync-rules.yaml:/config/sync-rules.yaml:ro
-    env_file: ${ENV_FILE:-./.env}
+    env_file: ${ENV_FILE_POWERSYNC:-${ENV_FILE:-./.env}}
     environment:
       TZ: Asia/Taipei
       POWERSYNC_CONFIG_PATH: /config/config.yaml
       POWERSYNC_SYNC_RULES_PATH: /config/sync-rules.yaml
+    # frontend only: powersync replicates from Azure Postgres directly
+    # (PS_SOURCE_DATABASE_URL, external) and calls router's jwks_uri over
+    # frontend -- it never touches Redis, so it has no reason to be on
+    # backend (O7 / review_results.md P2-03).
+    networks:
+      - frontend
     tmpfs:
       - /tmp:size=64m
     mem_limit: 384m
@@ -278,6 +357,11 @@ services:
         mv "$$tmp" "$$target";
         echo "osrm-fetch: downloaded and verified $$target (md5 $$actual_md5)"
     restart: "no"
+    # routing: this one-shot job needs internet egress to Geofabrik, which
+    # any bridge network provides regardless of name; grouping it with osrm
+    # keeps it out of backend/frontend, where it has no reason to be.
+    networks:
+      - routing
   osrm-init:
     image: osrm/osrm-backend:v5.25.0@sha256:bdfa60e64ae1376bff6ff5605991be50600132a27469a4a9e77c23afd3a6d555
     depends_on:
@@ -316,6 +400,8 @@ services:
         fi;
         chmod -R a+rX .
     restart: "no"
+    networks:
+      - routing
 
   osrm:
     image: osrm/osrm-backend:v5.25.0@sha256:bdfa60e64ae1376bff6ff5605991be50600132a27469a4a9e77c23afd3a6d555
@@ -330,6 +416,8 @@ services:
     # .osrm files read-only) and the upstream image otherwise runs as root
     # with no built-in privilege drop, so pin it to nobody explicitly.
     user: "65534:65534"
+    networks:
+      - routing
     command: >
       osrm-routed
         --algorithm mld
@@ -364,3 +452,18 @@ volumes:
   ollama_data:
   router_keys:
   ingestor_spool:
+
+# O7 / review_results.md P2-03 network segmentation: frontend carries only
+# router (gRPC/HTTP ingress) and powersync (edge-proxied sync); backend
+# carries router plus everything that needs Redis or talks to Postgres
+# (functions, ingestor, loader, the opt-in ollama embedding proxy); routing
+# is router plus osrm's three services, kept off backend/frontend since
+# nothing there needs Redis, the DB, or a client-facing address. A
+# compromised functions/ingestor/loader container therefore cannot reach
+# powersync or osrm, and a compromised powersync cannot reach Redis, the
+# ingestion pipeline, or osrm. Only router spans all three, by necessity (it
+# is the shared dependency of every other network).
+networks:
+  frontend:
+  backend:
+  routing:

@@ -58,16 +58,27 @@ class FirebaseBootstrap {
   static bool _notificationsInitialized = false;
   static StreamSubscription<RemoteConfigUpdate>? _remoteConfigSub;
   static StreamSubscription<String>? _tokenRefreshSub;
+  static Future<void>? _coreInitFuture;
 
+  /// Runs [init] (or [initializer] in tests) as the app's single best-effort
+  /// Firebase step, bounded by [timeout].
+  ///
+  /// this used to catch and log every failure and return normally,
+  /// so `AppBootstrapController` — which relies on this throwing to know
+  /// the step failed — always saw success and never degraded the app even
+  /// when Firebase never came up. It now rethrows after logging, so a real
+  /// failure reaches the controller and lands the app in `degraded`.
   static Future<void> initFailSoft({
-    Future<void> Function() initializer = init,
+    Future<void> Function({Future<void>? hiveReady}) initializer = init,
     Duration timeout = const Duration(seconds: 10),
+    Future<void>? hiveReady,
   }) async {
     try {
-      await initializer().timeout(timeout);
+      await initializer(hiveReady: hiveReady).timeout(timeout);
     } on Object catch (error, stack) {
       debugPrint('Firebase startup skipped: $error');
       debugPrintStack(stackTrace: stack);
+      rethrow;
     }
   }
 
@@ -84,17 +95,58 @@ class FirebaseBootstrap {
     }
   }
 
-  static Future<void> ensureCoreInitialized() async {
-    if (!FirebaseGate.enabled || Firebase.apps.isNotEmpty) return;
-    FirebaseGate.ensureSecureTransport();
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
+  /// Single-flight guard: concurrent callers share one in-flight
+  /// [Firebase.initializeApp] instead of each racing their own call (P1-09
+  /// — `main.dart` fires this off the same background tick as
+  /// `AppBootstrapController.start`, which also reaches Firebase init via
+  /// [initFailSoft]/[init]). A failure is not permanently cached, matching
+  /// `HiveStore.init`'s convention: the next call retries from scratch.
+  ///
+  /// Exposed with an injectable [initializer] so the memoization behavior
+  /// itself is unit-testable — [FirebaseGate.enabled] is compile-time
+  /// `false` under `flutter test`, which would otherwise make every call
+  /// through [ensureCoreInitialized] a no-op regardless of concurrency.
+  @visibleForTesting
+  static Future<void> singleFlightCoreInit(
+    Future<void> Function() initializer,
+  ) {
+    final existing = _coreInitFuture;
+    if (existing != null) return existing;
+    final future = initializer();
+    _coreInitFuture = future;
+    unawaited(
+      future.catchError((Object _, StackTrace _) {
+        _coreInitFuture = null;
+      }),
     );
+    return future;
   }
 
-  static Future<void> init() async {
+  @visibleForTesting
+  static void resetCoreInitForTesting() => _coreInitFuture = null;
+
+  static Future<void> ensureCoreInitialized() {
+    if (!FirebaseGate.enabled || Firebase.apps.isNotEmpty) {
+      return Future<void>.value();
+    }
+    return singleFlightCoreInit(() async {
+      FirebaseGate.ensureSecureTransport();
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+    });
+  }
+
+  static Future<void> init({Future<void>? hiveReady}) async {
     if (!FirebaseGate.enabled) return;
     await ensureCoreInitialized();
+    // Everything below this point (App Check, analytics/crashlytics
+    // collection toggles, remote config, push preference) either reads a
+    // HiveStore preference directly or transitively depends on one, so it
+    // all waits for Hive's boxes to be open (P1-09: reading an unopened box
+    // throws) rather than each step re-deriving its own guard. `main.dart`
+    // injects the exact `HiveStore.init()` future it started Hive with.
+    await hiveReady;
     const isProd = FirebaseGate.appEnv == 'production';
     await runOptionalSteps([
       () => FirebaseAppCheck.instance.activate(

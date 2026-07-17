@@ -15,12 +15,14 @@ import GoogleMaps
     if !mapsAPIKey.isEmpty {
       GMSServices.provideAPIKey(mapsAPIKey)
     }
-    GeneratedPluginRegistrant.register(with: self)
-    LiveActivityPlugin.register(with: registrar(forPlugin: "LiveActivityPlugin")!)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
-    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+    let registry = engineBridge.pluginRegistry
+    GeneratedPluginRegistrant.register(with: registry)
+    guard !registry.hasPlugin("LiveActivityPlugin") else { return }
+    guard let registrar = registry.registrar(forPlugin: "LiveActivityPlugin") else { return }
+    LiveActivityPlugin.register(with: registrar)
   }
 }

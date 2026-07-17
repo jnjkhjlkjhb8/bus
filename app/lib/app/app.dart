@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
 import 'package:hive_ce_flutter/adapters.dart';
 import 'package:wheres_the_car/app/router/app_router.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
@@ -20,22 +21,25 @@ import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.
 import 'package:wheres_the_car/features/live_activity/bloc/stop_board_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/view/journey_pip_card.dart';
 
-/// Applies the "大字體模式" floor to [systemScaler]: raises anything below
-/// 1.3x, but never rolls back a larger scale (F51). The old implementation
-/// also capped at 1.6x, which silently overrode a user's system-level
-/// accessibility preference set higher than that — the floor here is a
-/// guarantee, not a ceiling.
 TextScaler applyLargeTextFloor(TextScaler systemScaler) =>
     systemScaler.clamp(minScaleFactor: 1.3);
 
 class App extends StatefulWidget {
-  const App({required this.bootstrap, super.key});
+  const App({required this.bootstrap, this.debugRouter, super.key});
 
   /// Drives [isInitialized]: [AppBootstrapState.ready] and
   /// [AppBootstrapState.degraded] both mean Hive and the gRPC channel are
   /// usable (the only difference is whether a best-effort dependency like
   /// Firebase or PowerSync also came up), so either unlocks the full UI.
   final AppBootstrapController bootstrap;
+
+  /// Overrides the router `_AppShell` mounts once bootstrap is ready.
+  /// Production always leaves this null (falls back to `AppRouter.router`);
+  /// tests use it to avoid routing into screens with platform-view/network
+  /// dependencies (Google Maps, gRPC) that widget tests can't satisfy, so
+  /// the bootstrap gate itself stays the thing under test.
+  @visibleForTesting
+  final GoRouter? debugRouter;
 
   /// Tracks background initialization completion
   static final isInitialized = ValueNotifier<bool>(false);
@@ -69,6 +73,138 @@ class _AppState extends State<App> {
 
   @override
   Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: widget.bootstrap,
+      builder: (context, _) {
+        switch (widget.bootstrap.state) {
+          case AppBootstrapState.initializing:
+            return const _BootstrapGateApp(child: _BootstrapSplash());
+          case AppBootstrapState.failed:
+            return _BootstrapGateApp(
+              child: _BootstrapFailedView(
+                phase: widget.bootstrap.lastErrorPhase,
+                onRetry: widget.bootstrap.retry,
+              ),
+            );
+          case AppBootstrapState.ready:
+          case AppBootstrapState.degraded:
+            return _AppShell(router: widget.debugRouter);
+        }
+      },
+    );
+  }
+}
+
+/// Minimal `MaterialApp` for the splash/failed states — no router, no
+/// providers, so it never touches Hive/location/gRPC-backed singletons
+/// before the essential path has actually settled.
+class _BootstrapGateApp extends StatelessWidget {
+  const _BootstrapGateApp({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: '我車呢？',
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      debugShowCheckedModeBanner: false,
+      home: child,
+    );
+  }
+}
+
+/// Controlled loading screen shown while the essential bootstrap path runs.
+/// A plain spinner, not the pulsing coming-soon highlight — that motion is
+/// reserved for ETA emphasis (docs/design.md); this is ordinary indefinite
+/// progress and respects reduce-motion via `CircularProgressIndicator`'s
+/// own platform behavior.
+class _BootstrapSplash extends StatelessWidget {
+  const _BootstrapSplash();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Colors.white,
+      body: Center(
+        child: SizedBox(
+          width: 28,
+          height: 28,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.5,
+            color: AppTheme.inkLight,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown when an essential dependency (local storage or the gRPC channel
+/// config) failed to initialize. No router/providers are mounted behind
+/// this — the app cannot safely proceed until [onRetry] succeeds.
+class _BootstrapFailedView extends StatelessWidget {
+  const _BootstrapFailedView({required this.phase, required this.onRetry});
+
+  final AppBootstrapFailurePhase? phase;
+  final VoidCallback onRetry;
+
+  String get _message => switch (phase) {
+    AppBootstrapFailurePhase.storage => '本機儲存空間初始化失敗，請確認裝置儲存空間充足後再試一次。',
+    AppBootstrapFailurePhase.network => '連線設定初始化失敗，請檢查網路連線後再試一次。',
+    null => '啟動失敗，請再試一次。',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.error_outline,
+                  size: 40,
+                  color: AppTheme.inkLight,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  _message,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 15, color: Colors.black87),
+                ),
+                const SizedBox(height: 24),
+                FilledButton(
+                  key: const Key('bootstrapRetryButton'),
+                  onPressed: onRetry,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppTheme.inkLight,
+                  ),
+                  child: const Text('重試'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The full app: providers, router, alerts. Only ever built once bootstrap
+/// is `ready` or `degraded` (see `_AppState.build`).
+class _AppShell extends StatelessWidget {
+  const _AppShell({this.router});
+
+  final GoRouter? router;
+
+  @override
+  Widget build(BuildContext context) {
     // Shared across JourneySessionBloc and StopBoardBloc: only one Live
     // Activity can exist, so both drivers must target the same channel.
     final liveActivityChannel = LiveActivityChannel();
@@ -96,19 +232,25 @@ class _AppState extends State<App> {
               FavoritesBloc(FavoritesRepository.instance, App.isInitialized),
         ),
       ],
-      child: const _AppView(),
+      child: _AppShellView(router: router),
     );
   }
 }
 
-class _AppView extends StatefulWidget {
-  const _AppView();
+/// Reads `AlertBloc` from context on the first frame, so it must be a
+/// *child* of the `MultiBlocProvider` that creates it (P1-08 regression
+/// guard: this used to live in the same widget that built the provider,
+/// whose own `context` sits above the provider it was trying to read).
+class _AppShellView extends StatefulWidget {
+  const _AppShellView({this.router});
+
+  final GoRouter? router;
 
   @override
-  State<_AppView> createState() => _AppViewState();
+  State<_AppShellView> createState() => _AppShellViewState();
 }
 
-class _AppViewState extends State<_AppView> {
+class _AppShellViewState extends State<_AppShellView> {
   @override
   void initState() {
     super.initState();
@@ -120,56 +262,33 @@ class _AppViewState extends State<_AppView> {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<bool>(
-      valueListenable: App.isInitialized,
-      builder: (context, initialized, _) {
-        if (!initialized) {
-          return MaterialApp.router(
-            title: '我車呢？',
-            theme: AppTheme.light,
-            darkTheme: AppTheme.dark,
-            themeMode: SettingsRepository.instance.themeMode,
-            routerConfig: AppRouter.router,
-            debugShowCheckedModeBanner: false,
-            builder: (context, child) => _PipGate(
-              child: ForceUpdateGate(
-                child: NotificationToastHost(child: child!),
+    return ValueListenableBuilder<Box<dynamic>>(
+      valueListenable: HiveStore.settings.listenable(
+        keys: const ['large_text', 'appearance_mode'],
+      ),
+      builder: (context, _, child) => MaterialApp.router(
+        title: '我車呢？',
+        theme: AppTheme.light,
+        darkTheme: AppTheme.dark,
+        themeMode: SettingsRepository.instance.themeMode,
+        routerConfig: widget.router ?? AppRouter.router,
+        debugShowCheckedModeBanner: false,
+        builder: (context, child) {
+          var base = child!;
+          if (HiveStore.largeText) {
+            final mq = MediaQuery.of(context);
+            base = MediaQuery(
+              data: mq.copyWith(
+                textScaler: applyLargeTextFloor(mq.textScaler),
               ),
-            ),
+              child: base,
+            );
+          }
+          return _PipGate(
+            child: ForceUpdateGate(child: NotificationToastHost(child: base)),
           );
-        }
-
-        return ValueListenableBuilder<Box<dynamic>>(
-          valueListenable: HiveStore.settings.listenable(
-            keys: const ['large_text', 'appearance_mode'],
-          ),
-          builder: (context, _, child) => MaterialApp.router(
-            title: '我車呢？',
-            theme: AppTheme.light,
-            darkTheme: AppTheme.dark,
-            themeMode: SettingsRepository.instance.themeMode,
-            routerConfig: AppRouter.router,
-            debugShowCheckedModeBanner: false,
-            builder: (context, child) {
-              var base = child!;
-              if (HiveStore.largeText) {
-                final mq = MediaQuery.of(context);
-                base = MediaQuery(
-                  data: mq.copyWith(
-                    textScaler: applyLargeTextFloor(mq.textScaler),
-                  ),
-                  child: base,
-                );
-              }
-              return _PipGate(
-                child: ForceUpdateGate(
-                  child: NotificationToastHost(child: base),
-                ),
-              );
-            },
-          ),
-        );
-      },
+        },
+      ),
     );
   }
 }

@@ -158,7 +158,10 @@ else
   work_dir="$(mktemp -d)"
   trap 'rm -rf "$work_dir"' EXIT
   cfg="$work_dir/config.yaml"
-  if ! BUS_ENV_FILE=env/test.env.example docker compose \
+  # ENV_FILE (not BUS_ENV_FILE) is what docker-compose.yaml actually reads
+  # (`env_file: ${ENV_FILE:-./.env}`); see check-compose-isolation.sh for
+  # why it must be exported here rather than left to the --env-file default.
+  if ! ENV_FILE=env/test.env.example docker compose \
     --project-directory . \
     -p bus-hardening-check \
     --env-file env/test.env.example \

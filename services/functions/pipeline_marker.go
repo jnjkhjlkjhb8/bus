@@ -54,14 +54,25 @@ func recordPipelineMarker(ctx context.Context, db *pgxpool.Pool, job string, run
 // upsert must never re-drive the (expensive, already successful) stage it
 // marks. Exhausted attempts are logged distinctly and returned so the caller
 // can surface a marker-only failure without reporting the stage as failed.
+//
+// On success it also logs the marker lag: wall time from runDate (the
+// cron tick's start, per its caller) to the marker write, i.e. how long this
+// pipeline stage took end-to-end including its own retries. It is a plain
+// structured-log gauge, not a queryable metric — waitForPipelineMarker (the
+// only downstream consumer) already reads pipeline_runs directly, so a
+// second read path would duplicate that source of truth for no benefit; a
+// human tuning the SLO in docs/slo.md is the intended reader.
 func recordPipelineMarkerWithRetry(ctx context.Context, db *pgxpool.Pool, job string, runDate time.Time) error {
 	err := obs.Retry(ctx, 3, 5*time.Second, func() error {
 		return obs.Transient(recordPipelineMarker(ctx, db, job, runDate))
 	})
 	if err != nil {
 		log.Errorf("[PIPELINE] action=record_marker event=failed job=%s run_date=%s error=%v", job, runDate.Format(time.DateOnly), err)
+		return err
 	}
-	return err
+	log.Infof("[PIPELINE] action=record_marker event=recorded job=%s run_date=%s gauge=marker_lag_seconds value=%.0f",
+		job, runDate.Format(time.DateOnly), time.Since(runDate).Seconds())
+	return nil
 }
 
 const (

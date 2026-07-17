@@ -210,8 +210,9 @@ func runLive(ctx context.Context, src liveSource, sink liveSink, specs []liveSpe
 	}
 }
 
-// runLiveSpec runs one live job with panic recovery and start/complete logging.
-// A failing job logs and returns so the runner can move to the next one.
+// runLiveSpec runs one live job with panic recovery and start/complete
+// logging. A failing job logs and returns so the runner can move to the next
+// one.
 func runLiveSpec(ctx context.Context, src liveSource, sink liveSink, spec liveSpec) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -479,18 +480,38 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 	}
 }
 
-// liveJobTimeout is the per-tick bound on the 30s bus/bike group: each spec runs
-// under a 25s deadline so a slow city cannot bleed into the next 30s tick. The
-// slower jobs (mrt 10s, tra 2m) kept no per-tick timeout before this refactor,
-// and keep none, to preserve exact behavior.
+// liveJobTimeout is the whole-tick bound on the "@every 30s" bus/bike group
+// (and the separate reminders tick sharing that cadence): 5s under the 30s
+// period, matching liveTickDeadline's own margin for that cadence. Kept as a
+// named constant because it is also used for the reminders tick, which has no
+// liveRegistry cadence entry of its own.
 const liveJobTimeout = 25 * time.Second
+
+// liveTickDeadline returns a deadline strictly under cadence's period, leaving
+// a one-sixth margin so a full tick's jobs cannot bleed past the next tick and
+// collide with SkipIfStillRunning's overlap guard under ordinary conditions.
+// Every liveRegistry cadence is "@every <duration>"; an unparseable or
+// non-positive cadence falls back to liveJobTimeout rather than leaving the
+// tick unbounded.
+func liveTickDeadline(cadence string) time.Duration {
+	d, err := time.ParseDuration(strings.TrimPrefix(cadence, "@every "))
+	if err != nil || d <= 0 {
+		return liveJobTimeout
+	}
+	return d - d/6
+}
 
 // registerLiveCrons schedules the realtime ETA jobs from liveRegistry, one cron
 // entry per distinct cadence, preserving the pre-refactor grouping and ordering:
 // bus and bike share the "@every 30s" tick and run bike-then-bus in registry
-// order, each under a 25s timeout; mrt runs on 10s and tra on 2m, unbounded, as
-// before. Every job goes through runLiveSpec, so a failing job is isolated and
-// logged and the 304→TTL refresh applies uniformly.
+// order. Every cadence's whole tick (not each spec individually) runs under a
+// single liveTickDeadline bound, so a slow job cannot let the group's total
+// runtime bleed past the next tick; a spec that would start after the
+// deadline is skipped and logged rather than started. Every cadence entry also
+// carries cron.SkipIfStillRunning so an overrunning tick is skipped rather than
+// stacking concurrent runs of the same job. Every job goes through
+// runLiveSpec, so a failing job is isolated and logged and the 304→TTL
+// refresh applies uniformly.
 func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db *pgxpool.Pool, dispatcher *notify.Dispatcher) {
 	src := restLiveSource{tdx: tdx}
 	sink := redisLiveSink{rc: rc}
@@ -509,18 +530,18 @@ func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db
 
 	for _, cadence := range order {
 		group := byCadence[cadence]
-		bounded := cadence == "@every 30s"
-		_, _ = r.AddFunc(cadence, func() {
-			log.Infof("[LIVE] action=tick event=start cadence=%s jobs=%d", cadence, len(group))
-			for _, spec := range group {
-				if bounded {
-					withTimeout(liveJobTimeout, func(ctx context.Context) {
-						runLiveSpec(ctx, src, sink, spec)
-					})
-				} else {
-					runLiveSpec(context.Background(), src, sink, spec)
+		deadline := liveTickDeadline(cadence)
+		_, _ = addStaticCron(r, cadence, func() {
+			log.Infof("[LIVE] action=tick event=start cadence=%s jobs=%d deadline=%s", cadence, len(group), deadline)
+			withTimeout(deadline, func(ctx context.Context) {
+				for _, spec := range group {
+					if ctx.Err() != nil {
+						log.Warnf("[LIVE] action=tick event=overrun cadence=%s deadline=%s job=%s", cadence, deadline, spec.key)
+						break
+					}
+					runLiveSpec(ctx, src, sink, spec)
 				}
-			}
+			})
 			log.Infof("[LIVE] action=tick event=end cadence=%s", cadence)
 		})
 	}
@@ -528,7 +549,7 @@ func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db
 	// Rail arrival reminders fire on a schedule (fire_at = arrival − lead) rather
 	// than off a live ETA, so they dispatch on their own tick. Nil-safe when push
 	// is disabled.
-	_, _ = r.AddFunc("@every 30s", func() {
+	_, _ = addStaticCron(r, "@every 30s", func() {
 		withTimeout(liveJobTimeout, func(ctx context.Context) {
 			if err := dispatcher.FireScheduled(ctx); err != nil {
 				log.Errorf("[LIVE] action=run event=error job=scheduled_reminders error=%v", err)

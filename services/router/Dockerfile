@@ -1,14 +1,19 @@
 # Build context: repo root
 # docker build -f services/router/Dockerfile -t wheres_the_car-router .
 
+ARG PROTOC_GEN_GO_VERSION=v1.36.11
+ARG PROTOC_GEN_GO_GRPC_VERSION=v1.6.2
+
 FROM golang:1.26.5-alpine3.23@sha256:622e56dbc11a8cfe87cafa2331e9a201877271cbff918af53d3be315f3da88cc AS builder
+ARG PROTOC_GEN_GO_VERSION
+ARG PROTOC_GEN_GO_GRPC_VERSION
 RUN apk add --no-cache git protobuf-dev
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 ENV PATH $PATH:/go/bin
-RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
-    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION} && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}
 COPY models/ ./models/
 RUN protoc --go_out=paths=source_relative:models \
            --go-grpc_out=paths=source_relative:models \

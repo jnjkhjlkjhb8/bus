@@ -1,0 +1,33 @@
+# router allowlist — one VAR name per line, blank lines and #-comments ignored.
+# Source of truth: grep os.Getenv/shared.EnvInt32 in services/router/*.go and
+# services/shared/bootstrap.go (services/router imports shared). See
+# scripts/check-env-allowlist.sh and docs/config.md for the enforcement
+# mechanism and rationale.
+DATABASE_URL
+PG_SCHEMA
+ROUTER_DB_MAX_CONNS
+ROUTER_DB_MIN_CONNS
+ROUTER_METRICS_TOKEN
+ROUTER_TRUSTED_PROXIES
+ROUTER_MAX_LIVE_STREAMS
+ROUTER_LIVE_SUBSCRIBER_QUEUE
+REDIS_PASSWORD
+EMBED_URL
+# MaaS route planning is the router's sole, deliberate TDX carve-out
+# (services/router/main.go, services/router/maas.go NewAuthedClient) — it is
+# a request/response proxy for /api/maas, not cacheable live data, so it
+# stays on the router's read path per ADR-0005's amendment. This is narrower
+# than AGENTS.md's summary table ("TDX creds prod-only, ingestor"), which
+# describes the raw-landing ingestor only and predates this carve-out.
+TDX_CLIENT_ID
+TDX_CLIENT_SECRET
+FIREBASE_ENABLED
+FIREBASE_PROJECT_ID
+GOOGLE_APPLICATION_CREDENTIALS
+APP_ENV
+GRPC_TLS
+GRPC_TLS_CERT_FILE
+GRPC_TLS_KEY_FILE
+SENTRY_DSN
+SENTRY_ENVIRONMENT
+SENTRY_TRACES_SAMPLE_RATE

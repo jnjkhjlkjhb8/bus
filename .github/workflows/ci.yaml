@@ -9,15 +9,19 @@ on:
 
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   go:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         env:
           POSTGRES_DB: bus_test
           POSTGRES_USER: bus
@@ -30,12 +34,13 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
         ports:
           - 6379:6379
     env:
       DATABASE_URL: postgres://bus:bus@localhost:5432/bus_test?sslmode=disable
       REDIS_ADDR: localhost:6379
+      REDIS_TEST_ADDR: localhost:6379
       PG_SCHEMA: public
       FIREBASE_ENABLED: "false"
     steps:
@@ -46,31 +51,28 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: generate pinned protobuf stubs
         run: make proto-go
-      - run: go vet ./...
       - run: go install gotest.tools/gotestsum@v1.12.3
-      - run: gotestsum --junitfile junit.xml -- -race -coverprofile=coverage.out ./...
+      - name: go vet + go test
+        env:
+          GO_JUNIT_FILE: junit.xml
+          GO_TEST_ARGS: -coverprofile=coverage.out
+        run: ./scripts/ci.sh go
       - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && hashFiles('coverage.out') != '' }}
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.out
           flags: go
       - uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && hashFiles('junit.xml') != '' }}
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: junit.xml
           flags: go
-      # Engineering-contract gates that need generated stubs and the live
-      # postgres/redis services this job already provides. Tool versions are
-      # pinned inside the scripts (installed into .tools/bin, never @latest).
-      - name: guardrail tests still present and passing
-        run: ./scripts/check-guardrail-tests-present.sh
-      - name: govulncheck (pinned SCA gate)
-        run: ./scripts/check-govulncheck.sh
 
   contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -82,23 +84,26 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
-      - name: dependency boundaries (features / proto confinement / Go layering)
-        run: ./scripts/check-dependency-boundaries.sh
-      - name: dependency-boundary scanner self-test
-        run: ./scripts/check-dependency-boundaries.sh --self-test
-      - name: file-size ratchet
-        run: ./scripts/check-file-budgets.sh
-      - name: file-size ratchet self-test
-        run: ./scripts/check-file-budgets.sh --self-test
-      - name: proto contract (buf build + breaking, pinned)
+      - name: contracts (dependency boundaries, file budgets, proto contract)
         env:
           # Enforce wire compatibility against the PR base; on branch pushes
           # HEAD makes the diff a no-op and the gate reduces to `buf build`.
           PROTO_BASELINE_REF: ${{ github.event.pull_request.base.sha || 'HEAD' }}
-        run: ./scripts/check-proto-contract.sh
+        run: ./scripts/ci.sh contracts
+
+  migrations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: migration replay gate (baseline + full history, public + staging)
+        run: ./scripts/ci.sh migrations
 
   security:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -111,46 +116,57 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Repo-root .gitleaks.toml (default rules + reviewed non-secret
           # allowlists) is auto-detected by gitleaks.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: generate pinned protobuf stubs
+        run: make proto-go
+      # Independent job (not a step after go test) specifically so a red
+      # `go` job can never cause these SCA/guardrail gates to be skipped
+      # (review_results.md P0-03).
+      - name: govulncheck (pinned SCA gate)
+        run: ./scripts/check-govulncheck.sh
+      - name: guardrail tests still present and passing
+        run: ./scripts/check-guardrail-tests-present.sh
 
   flutter:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
-          channel: stable
+          # Exact version (not `channel: stable`) so a channel promotion
+          # upstream cannot silently change the toolchain a green run was
+          # tested against. Track app/pubspec.yaml's Dart SDK constraint
+          # (environment.sdk) when bumping.
+          flutter-version: 3.44.1
           cache: true
       - run: dart pub global activate protoc_plugin 25.0.0
-      - run: dart pub global activate junitreport
+      - run: dart pub global activate junitreport 2.0.2
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: echo "$HOME/.pub-cache/bin" >> "$GITHUB_PATH"
-      - run: mkdir -p app/lib/data/generated
-      - run: protoc --dart_out=grpc:app/lib/data/generated -I models models/*.proto
-      - run: flutter pub get
-        working-directory: app
-      # app/assets is gitignored and owner-provided (real sprite/font/marker
-      # binaries, not derivable from source). This job does NOT fabricate
-      # placeholder files for them — a runner with no assets provisioned is
-      # expected to fail flutter analyze/test here, and that failure means
-      # "the asset gate needs owner-provided real assets," not "the workflow
-      # is broken." See scripts/check-hermetic.sh check (b).
-      - run: flutter analyze --no-fatal-infos
-        working-directory: app
-      - run: flutter test --coverage --file-reporter=json:test-results.json
-        working-directory: app
+      # app/assets is tracked (Phase 1) — a clean checkout has everything
+      # flutter analyze/test need; this job is expected to be green, not a
+      # documented-failure gate.
+      - name: flutter analyze + test
+        env:
+          FLUTTER_TEST_ARGS: --coverage --file-reporter=json:test-results.json
+        run: ./scripts/ci.sh flutter
       - run: tojunit --input test-results.json --output junit.xml
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && hashFiles('app/test-results.json') != '' }}
         working-directory: app
       - uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && hashFiles('app/coverage/lcov.info') != '' }}
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: app/coverage/lcov.info
           flags: flutter
       - uses: codecov/test-results-action@0fa95f0e1eeaafde2c782583b36b28ad0d8c77d3 # v1
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && hashFiles('app/junit.xml') != '' }}
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: app/junit.xml

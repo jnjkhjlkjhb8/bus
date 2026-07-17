@@ -26,6 +26,7 @@ import (
 	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 )
 
 const (
@@ -43,6 +44,25 @@ const (
 	httpReadTimeout       = 10 * time.Second
 	httpWriteTimeout      = 15 * time.Second
 	httpIdleTimeout       = 60 * time.Second
+
+	// powersyncTokenTTL bounds how long a leaked/observed PowerSync JWT stays
+	// usable. Was 24h; narrows this to 1h — short enough to cap exposure, long
+	// enough that PowerSyncService's normal refresh cadence (it re-fetches well
+	// before expiry) never causes a mid-session drop. No revocation/quota on top
+	// of this: single-host scale doesn't justify that machinery (YAGNI; see docs/config.md).
+	powersyncTokenTTL = time.Hour
+	// powersyncAnonymousSubject is the "sub" claim used when the caller sends
+	// no installation id — either an older app build that predates the header,
+	// or any other caller of this endpoint. Keeps the endpoint working exactly
+	// as before for those callers instead of failing the request.
+	powersyncAnonymousSubject = "powersync-client"
+	// installIDHeaderMaxLen bounds the installation id accepted into the JWT
+	// "sub" claim. It is not an authorization credential (no secret is
+	// checked here, unlike the gRPC x-install-id/x-install-secret pair in
+	// firebase_service.go) — only a correlation id an operator can use to
+	// trace a specific token back to an installation — so it only needs
+	// sanity bounds, not the same validation UpsertDevice applies.
+	installIDHeaderMaxLen = 128
 )
 
 type httpServerConfig struct {
@@ -218,8 +238,20 @@ func safeAccessLogger(writer io.Writer) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		started := time.Now()
 		c.Next()
+		status := c.Writer.Status()
+		// FullPath (the registered route pattern, e.g. "/bus/route/:subRouteUid")
+		// keeps the router_http_requests_total label set bounded to the routes
+		// actually registered in newHTTPRouter; the raw request path would let a
+		// client mint unbounded label values by varying path parameters or
+		// probing unregistered paths. An unmatched route (404, empty FullPath)
+		// is aggregated under "unmatched" for the same reason.
+		routePath := c.FullPath()
+		if routePath == "" {
+			routePath = "unmatched"
+		}
+		obs.RecordHTTPRequest(routePath, status)
 		_, _ = fmt.Fprintf(writer, "[HTTP] method=%s path=%s status=%d latency=%s\n",
-			c.Request.Method, c.Request.URL.EscapedPath(), c.Writer.Status(), time.Since(started))
+			c.Request.Method, c.Request.URL.EscapedPath(), status, time.Since(started))
 	}
 }
 
@@ -314,23 +346,32 @@ func handleMetrics(live *liveHub) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		stats := live.stats()
 		body := fmt.Sprintf(
-			"router_live_streams %d\nrouter_live_channels %d\nrouter_live_evicted_subscribers_total %d\nrouter_goroutines %d\n",
+			"router_live_streams %d\nrouter_live_channels %d\nrouter_live_evicted_subscribers_total %d\nrouter_goroutines %d\n%s",
 			stats.ActiveStreams,
 			stats.ActiveChannels,
 			stats.EvictedSubscribers,
 			runtime.NumGoroutine(),
+			obs.MetricsText(),
 		)
 		c.Data(200, "text/plain; version=0.0.4; charset=utf-8", []byte(body))
 	}
 }
+
+// handleToken issues a short-lived PowerSync sync JWT. The "sub" claim binds
+// the token to the caller's installation id (X-Install-Id header, the same
+// identity the app already carries for gRPC — see FirebaseCallOptions in the
+// Flutter client) when present, purely so a token can be traced back to an
+// installation after the fact; there is no secret check here and no
+// revocation, so a stolen token is still usable until it expires
+// (powersyncTokenTTL) regardless of whose sub it carries.
 func handleToken(key *rsa.PrivateKey) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		now := time.Now()
 		token, err := signRS256(key, map[string]any{
-			"sub": "powersync-client",
+			"sub": tokenSubject(c.GetHeader(installIDMetadataKey)),
 			"aud": "powersync",
 			"iat": now.Unix(),
-			"exp": now.Add(24 * time.Hour).Unix(),
+			"exp": now.Add(powersyncTokenTTL).Unix(),
 		})
 		if err != nil {
 			c.JSON(500, gin.H{"error": "sign failed"})
@@ -338,6 +379,23 @@ func handleToken(key *rsa.PrivateKey) gin.HandlerFunc {
 		}
 		c.JSON(200, gin.H{"token": token})
 	}
+}
+
+// tokenSubject sanitizes the caller-supplied installation id into a "sub"
+// claim, falling back to powersyncAnonymousSubject for an empty, oversized, or
+// otherwise unusable header instead of putting untrusted content straight
+// into a signed token.
+func tokenSubject(installID string) string {
+	installID = strings.TrimSpace(installID)
+	if installID == "" || len(installID) > installIDHeaderMaxLen {
+		return powersyncAnonymousSubject
+	}
+	for _, r := range installID {
+		if r < 0x20 || r == 0x7f {
+			return powersyncAnonymousSubject
+		}
+	}
+	return installID
 }
 func handleJWKS(key *rsa.PrivateKey) gin.HandlerFunc {
 	pub := &key.PublicKey

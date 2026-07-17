@@ -31,16 +31,24 @@ Future<void> main() async {
   // none of it may sit on this path (F11/F12). AppBootstrapController runs
   // it in the background and the UI listens to the resulting state instead
   // of `main` awaiting it.
+  // Shared with `initFirebase` below : Firebase's preference/ notification
+  // setup reads HiveStore settings, so it must await the same Hive readiness
+  // the essential path is waiting on rather than a second, independently-timed
+  // call to HiveStore.init() (which would still be correct — HiveStore.init is
+  // memoized — but this makes the dependency explicit instead of implicit).
+  final hiveReady = HiveStore.init();
   final bootstrap = AppBootstrapController(
-    initHive: HiveStore.init,
+    initHive: () => hiveReady,
     initGrpc: GrpcClient.init,
-    initFirebase: FirebaseBootstrap.initFailSoft,
+    initFirebase: () => FirebaseBootstrap.initFailSoft(hiveReady: hiveReady),
     initPowerSync: PowerSyncService.instance.init,
   );
   // Firebase core must exist before FirebaseBootstrap.initFailSoft's fuller
   // init runs (crash reporting, remote config, etc. all assume an app),
   // so it stays a background step ahead of `bootstrap.start()` rather than
-  // sitting on the pre-runApp critical path with it.
+  // sitting on the pre-runApp critical path with it. ensureCoreInitialized
+  // is single-flight, so racing it against the ensureCoreInitialized call
+  // inside `init()` itself is safe — they share one initializeApp call.
   unawaited(
     FirebaseBootstrap.ensureCoreInitialized().catchError(CrashReporter.record),
   );

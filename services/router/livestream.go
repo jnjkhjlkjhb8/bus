@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/go-redis/redis"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 )
 
 // liveSource is the seam between live-stream handlers and Redis. Two adapters
@@ -56,6 +57,10 @@ func streamLive(ctx context.Context, src liveSource, spec liveStreamSpec, send f
 		return err
 	}
 	defer closeSub()
+	// Every return past this point ends an established stream (client
+	// disconnect, upstream close, or send failure); a subscribe failure above
+	// never started one, so it is not counted here.
+	defer obs.IncStreamDisconnect()
 
 	keys := spec.seedKeys
 	if spec.seedScan != "" {
@@ -103,6 +108,11 @@ type redisLiveSource struct {
 func (r redisLiveSource) get(key string) ([]byte, bool) {
 	val, err := r.rc.Get(key).Bytes()
 	if err != nil {
+		// redis.Nil means the key is simply absent -- expected traffic, not a
+		// Redis health signal -- so only a real failure counts here.
+		if err != redis.Nil {
+			obs.IncRedisError()
+		}
 		return nil, false
 	}
 	return val, true
@@ -114,6 +124,7 @@ func (r redisLiveSource) scanKeys(pattern string) []string {
 	for {
 		keys, next, err := r.rc.Scan(cursor, pattern, 20).Result()
 		if err != nil {
+			obs.IncRedisError()
 			return out
 		}
 		out = append(out, keys...)

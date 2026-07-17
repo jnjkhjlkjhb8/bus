@@ -56,6 +56,28 @@ func TestGrpcStatusFor(t *testing.T) {
 	}
 }
 
+// TestGrpcStatusForRecordsDBErrorOnlyForGenuineFailures proves the
+// router_db_errors_total counter fires when grpcStatusFor maps an error to
+// Internal, but not for the not-found cases -- a missing row is expected
+// traffic, not a database health signal (see grpcStatusFor's doc comment).
+// parseCounterTotal is defined in livestream_test.go.
+func TestGrpcStatusForRecordsDBErrorOnlyForGenuineFailures(t *testing.T) {
+	before := parseCounterTotal(t, "router_db_errors_total")
+	grpcStatusFor(pgx.ErrNoRows, "not found")
+	grpcStatusFor(redis.Nil, "not found")
+	grpcStatusFor(obs.NotFound(errors.New("missing")), "not found")
+	if got := parseCounterTotal(t, "router_db_errors_total"); got != before {
+		t.Fatalf("not-found mappings must not move router_db_errors_total: before=%d after=%d", before, got)
+	}
+
+	grpcStatusFor(errors.New("boom"), "not found")
+	grpcStatusFor(errors.New("boom again"), "not found")
+	after := parseCounterTotal(t, "router_db_errors_total")
+	if after != before+2 {
+		t.Fatalf("router_db_errors_total = %d, want %d (before %d + 2 genuine failures)", after, before+2, before)
+	}
+}
+
 type limiterTestAddr string
 
 func (a limiterTestAddr) Network() string { return "tcp" }

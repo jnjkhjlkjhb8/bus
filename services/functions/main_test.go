@@ -7,8 +7,12 @@ import (
 	"go/parser"
 	"go/token"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/robfig/cron/v3"
 )
 
 func TestRunLegacyProdRoutesBootLoadThroughStaticGuard(t *testing.T) {
@@ -96,6 +100,132 @@ func TestMask2(t *testing.T) {
 	want := uint8((1 << 1) | (1 << 5))
 	if got != want {
 		t.Fatalf("mask2() = %d, want %d", got, want)
+	}
+}
+
+// TestDrainShutdownWaitsForBootJobBeforeReturning proves drainShutdown does
+// not return the instant shutdown is signaled: a boot goroutine still running
+// must be waited for (up to the grace period) before the caller is allowed to
+// close shared dependencies.
+func TestDrainShutdownWaitsForBootJobBeforeReturning(t *testing.T) {
+	var boot sync.WaitGroup
+	var jobFinished atomic.Bool
+	boot.Add(1)
+	go func() {
+		defer boot.Done()
+		time.Sleep(50 * time.Millisecond)
+		jobFinished.Store(true)
+	}()
+
+	alreadyStoppedCron, cancel := context.WithCancel(context.Background())
+	cancel() // no cron work in flight; isolate the boot-goroutine wait
+
+	start := time.Now()
+	drainShutdown(alreadyStoppedCron, &boot, time.Second)
+	elapsed := time.Since(start)
+
+	if !jobFinished.Load() {
+		t.Fatal("drainShutdown returned before the tracked boot job finished")
+	}
+	if elapsed < 50*time.Millisecond {
+		t.Fatalf("drainShutdown returned after %v, want it to have waited for the 50ms job", elapsed)
+	}
+}
+
+// TestDrainShutdownBoundedByGraceTimeout proves a job that never finishes
+// cannot hang the process forever: drainShutdown must return once the grace
+// period elapses even though the tracked work is still outstanding.
+func TestDrainShutdownBoundedByGraceTimeout(t *testing.T) {
+	var boot sync.WaitGroup
+	boot.Add(1) // deliberately never Done: simulates a stuck boot job
+	t.Cleanup(boot.Done)
+
+	neverDone, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	const grace = 50 * time.Millisecond
+	start := time.Now()
+	drainShutdown(neverDone, &boot, grace)
+	elapsed := time.Since(start)
+
+	if elapsed < grace {
+		t.Fatalf("drainShutdown returned after %v, want at least the %v grace period", elapsed, grace)
+	}
+	if elapsed > grace+500*time.Millisecond {
+		t.Fatalf("drainShutdown returned after %v, want it bounded near the %v grace period", elapsed, grace)
+	}
+}
+
+// TestAddStaticCronSkipsOverlappingEntry exercises addStaticCron itself (the
+// wrapper every realtime and daily cron entry in main.go/live.go now goes
+// through) against a real *cron.Cron, invoking the registered entry's Job
+// twice concurrently the way two ticks racing would.
+func TestAddStaticCronSkipsOverlappingEntry(t *testing.T) {
+	r := cron.New(cron.WithSeconds())
+	var runs atomic.Int64
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	id, err := addStaticCron(r, "@every 1h", func() {
+		runs.Add(1)
+		started <- struct{}{}
+		<-release
+	})
+	if err != nil {
+		t.Fatalf("addStaticCron: %v", err)
+	}
+	entry := r.Entry(id)
+	if entry.Job == nil {
+		t.Fatal("registered entry has no Job")
+	}
+
+	go entry.Job.Run()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first invocation never started")
+	}
+
+	secondDone := make(chan struct{})
+	go func() {
+		entry.Job.Run()
+		close(secondDone)
+	}()
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("overlapping invocation did not return promptly; addStaticCron did not skip it")
+	}
+
+	close(release)
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("addStaticCron job ran %d times, want exactly 1 (overlapping invocation must be skipped)", got)
+	}
+}
+
+// TestLiveTickDeadlineStaysUnderCadence locks in the whole-tick deadline
+// contract: every deadline must be strictly less than its cadence's period, so
+// a tick's jobs cannot bleed into the next tick under ordinary conditions
+// (SkipIfStillRunning is the backstop for when they still do).
+func TestLiveTickDeadlineStaysUnderCadence(t *testing.T) {
+	tests := []struct {
+		cadence string
+		period  time.Duration
+	}{
+		{"@every 10s", 10 * time.Second},
+		{"@every 30s", 30 * time.Second},
+		{"@every 2m", 2 * time.Minute},
+		{"@every 10m", 10 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cadence, func(t *testing.T) {
+			got := liveTickDeadline(tt.cadence)
+			if got <= 0 || got >= tt.period {
+				t.Fatalf("liveTickDeadline(%q) = %v, want strictly between 0 and %v", tt.cadence, got, tt.period)
+			}
+		})
+	}
+	if got := liveTickDeadline("@every 30s"); got != liveJobTimeout {
+		t.Fatalf("liveTickDeadline(@every 30s) = %v, want liveJobTimeout %v (unchanged bus/bike behavior)", got, liveJobTimeout)
 	}
 }
 

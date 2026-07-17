@@ -73,26 +73,37 @@ class _OptionRow extends StatelessWidget {
   final bool selected;
   final VoidCallback onTap;
 
+  // Row content stays visually compact (36 logical px) inside a 44px tap
+  // target — the extra 8px is transparent padding, not extra visible
+  // height, so the list keeps its current density.
+  static const double _visualHeight = 36;
+  static const double _minTapTarget = 44;
+
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 36,
+      height: _minTapTarget,
       child: InkWell(
         onTap: onTap,
-        child: Row(
-          children: [
-            Text(
-              label,
-              style: selected
-                  ? AppTextStyles.heading2
-                  : AppTextStyles.bodyLarge,
-            ),
-            const Spacer(),
-            Opacity(
-              opacity: selected ? 1 : 0,
-              child: const Icon(Icons.check_rounded, size: 20),
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            vertical: (_minTapTarget - _visualHeight) / 2,
+          ),
+          child: Row(
+            children: [
+              Text(
+                label,
+                style: selected
+                    ? AppTextStyles.heading2
+                    : AppTextStyles.bodyLarge,
+              ),
+              const Spacer(),
+              Opacity(
+                opacity: selected ? 1 : 0,
+                child: const Icon(Icons.check_rounded, size: 20),
+              ),
+            ],
+          ),
         ),
       ),
     );

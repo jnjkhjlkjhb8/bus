@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis"
@@ -53,10 +54,6 @@ func rawSourcePool(ctx context.Context, db *pgxpool.Pool) (*pgxpool.Pool, func()
 	return pool, pool.Close, nil
 }
 
-// loadTimeout bounds one full load run. The Azure B1ms database serves reads
-// slowly under memory pressure; a 20-minute budget has been exhausted mid-run,
-// cascading "context deadline exceeded" over every remaining partition. The
-// loader container is otherwise idle, so a generous budget costs nothing.
 const loadTimeout = 60 * time.Minute
 
 // registerLoaderCrons schedules the daily 03:30 load: transform raw_tdx into
@@ -65,8 +62,10 @@ const loadTimeout = 60 * time.Minute
 // one load immediately, mirroring INGEST_ON_BOOT, so a fresh deploy backfills
 // its schema without waiting for the next tick. The raw_tdx reader's pool comes
 // from RAW_DATABASE_URL when set, else the process sink pool db (see
-// rawSourcePool); the transforms always sink to db.
-func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Client) {
+// rawSourcePool); the transforms always sink to db. boot tracks the
+// LOAD_ON_BOOT goroutine so drainShutdown waits for it instead of abandoning
+// it mid-run on shutdown.
+func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Client, boot *sync.WaitGroup) {
 	src := rawTDXSource{pool: rawPool}
 	runner := newStaticPipelineRunner(rawPool, loadTimeout)
 	// The marker write sits outside the load's retry wrapper on purpose: a
@@ -75,7 +74,8 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 	// (recordPipelineMarkerWithRetry). markerEarned decides whether the run
 	// earned it.
 	_, _ = addStaticCron(r, "0 30 3 * * *", func() {
-		runDate := time.Now().In(taipei)
+		started := time.Now()
+		runDate := started.In(taipei)
 		var stats loadStats
 		err := runDailyWithRetry(context.Background(), loadTimeout, time.Minute, func(ctx context.Context) error {
 			return runner.Run(ctx, func(ctx context.Context) error {
@@ -94,7 +94,7 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 	})
 	if os.Getenv("LOAD_ON_BOOT") == "true" {
 		log.Infoln("[LOAD] action=boot event=enabled")
-		go func() {
+		trackBoot(boot, func() {
 			runDate := time.Now().In(taipei)
 			var stats loadStats
 			err := runner.Run(context.Background(), func(ctx context.Context) error {
@@ -109,7 +109,7 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 				return
 			}
 			_ = recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
-		}()
+		})
 	} else {
 		log.Warn("[LOAD] action=boot event=skipped")
 	}

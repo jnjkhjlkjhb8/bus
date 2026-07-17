@@ -55,8 +55,9 @@ const ingestTimeout = 20 * time.Minute
 // registerIngestorCrons schedules the daily 03:00 raw landing (under a 20-minute
 // timeout). When INGEST_ON_BOOT=true it also kicks off one landing immediately in
 // a goroutine, which is how a fresh deploy backfills raw_tdx without waiting for
-// the next 03:00 tick.
-func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool.Pool) {
+// the next 03:00 tick. boot tracks that goroutine so drainShutdown waits for it
+// instead of abandoning it mid-run on shutdown.
+func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool.Pool, boot *sync.WaitGroup) {
 	runner := newStaticPipelineRunner(rawPool, ingestTimeout)
 	_, _ = addStaticCron(r, "0 0 3 * * *", func() {
 		runDaily("ingest", ingestTimeout, func(ctx context.Context) error {
@@ -67,13 +68,13 @@ func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool
 	})
 	if os.Getenv("INGEST_ON_BOOT") == "true" {
 		log.Infoln("[INGEST] INGEST_ON_BOOT=true — running once on boot")
-		go func() {
+		trackBoot(boot, func() {
 			if err := runner.Run(context.Background(), func(ctx context.Context) error {
 				return ingestRaw(ctx, tdx)
 			}); err != nil {
 				log.Errorf("[INGEST] action=boot event=failed error=%v", err)
 			}
-		}()
+		})
 	} else {
 		log.Warn("[INGEST] INGEST_ON_BOOT not set — boot run skipped, daily cron only")
 	}

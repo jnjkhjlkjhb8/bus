@@ -140,23 +140,11 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
                     animate: widget.animate,
                   ),
               if (_hitTargetsReady)
-                for (final station in metroMapStations)
-                  Positioned(
-                    left: station.x * s - 12,
-                    top: station.y * s - 12,
-                    width: 24,
-                    height: 24,
-                    child: Semantics(
-                      button: true,
-                      label: '${station.id} ${station.name}',
-                      child: GestureDetector(
-                        key: ValueKey(station.id),
-                        onTap: () => widget.onStationTap(station),
-                        behavior: HitTestBehavior.opaque,
-                        child: const SizedBox.expand(),
-                      ),
-                    ),
-                  ),
+                _StationHitLayer(
+                  stations: metroMapStations,
+                  scale: s,
+                  onStationTap: widget.onStationTap,
+                ),
               for (final station in metroMapStations)
                 if (widget.stationLabels[station.id] case final label?)
                   Positioned(
@@ -182,6 +170,76 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
   );
 }
 
+/// Station tap targets, sized to the 44×44 logical-pixel HIG minimum. Dense
+/// clusters (interchanges) put adjacent stations' 44px regions well within
+/// overlapping distance of each other, so a single [GestureDetector] spans
+/// the whole map and resolves each tap to the *nearest* station center
+/// within its 22px radius instead of relying on z-order between overlapping
+/// per-station regions (which would make the topmost — an arbitrary paint
+/// order — always win, not the one the user actually meant to hit).
+/// Screen-reader activation bypasses this arbitration entirely: each
+/// station's [Semantics] node carries its own `onTap`, invoked directly by
+/// the accessibility service through the semantics tree rather than through
+/// coordinate-based hit testing, so overlapping regions there are harmless.
+class _StationHitLayer extends StatelessWidget {
+  const _StationHitLayer({
+    required this.stations,
+    required this.scale,
+    required this.onStationTap,
+  });
+
+  final List<MetroMapStation> stations;
+  final double scale;
+  final ValueChanged<MetroMapStation> onStationTap;
+
+  /// Half of the 44×44 minimum touch target.
+  static const double hitRadius = 22;
+
+  @visibleForTesting
+  MetroMapStation? nearestStation(Offset local) {
+    MetroMapStation? nearest;
+    var nearestDist = double.infinity;
+    for (final station in stations) {
+      final dx = station.x * scale - local.dx;
+      final dy = station.y * scale - local.dy;
+      final dist = math.sqrt(dx * dx + dy * dy);
+      if (dist <= hitRadius && dist < nearestDist) {
+        nearest = station;
+        nearestDist = dist;
+      }
+    }
+    return nearest;
+  }
+
+  @override
+  Widget build(BuildContext context) => Positioned.fill(
+    child: GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTapUp: (details) {
+        final station = nearestStation(details.localPosition);
+        if (station != null) onStationTap(station);
+      },
+      child: Stack(
+        children: [
+          for (final station in stations)
+            Positioned(
+              left: station.x * scale - hitRadius,
+              top: station.y * scale - hitRadius,
+              width: hitRadius * 2,
+              height: hitRadius * 2,
+              child: Semantics(
+                button: true,
+                label: '${station.id} ${station.name}',
+                onTap: () => onStationTap(station),
+                child: const SizedBox.expand(),
+              ),
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
 /// Draws the metro map SVG as a pre-rasterized [ui.Image] instead of a live
 /// vector picture. The ~600-path SVG costs >100ms per frame to rasterize
 /// under [InteractiveViewer] pan/zoom (Impeller has no picture raster cache);
@@ -198,8 +256,8 @@ class _RasterSvg extends StatefulWidget {
 }
 
 class _RasterSvgState extends State<_RasterSvg> {
-  // ponytail: images cached for app lifetime (one per theme actually viewed,
-  // ~20-30MB each); evict on memory pressure if this ever shows up in
+  // Images are cached for the app's lifetime (one per theme+size actually
+  // viewed, ~20-30MB each); revisit only if this ever shows up in memory
   // profiling.
   static final Map<String, Future<ui.Image>> _cache = {};
 
@@ -229,8 +287,8 @@ class _RasterSvgState extends State<_RasterSvg> {
           .round()
           .clamp(1080, 2304);
 
-  static Future<ui.Image> ensure(String asset, int targetW) => _cache
-      .putIfAbsent('$asset@$targetW', () => _rasterize(asset, targetW));
+  static Future<ui.Image> ensure(String asset, int targetW) =>
+      _cache.putIfAbsent('$asset@$targetW', () => _rasterize(asset, targetW));
 
   void _load() {
     final asset = widget.asset;
@@ -294,6 +352,7 @@ class _AnimatedLabelState extends State<_AnimatedLabel>
   late final Animation<double> _scale;
   late final Animation<double> _opacity;
   Timer? _timer;
+  bool _entryPlayed = false;
 
   @override
   void initState() {
@@ -308,8 +367,18 @@ class _AnimatedLabelState extends State<_AnimatedLabel>
     _opacity = Tween<double>(begin: 0, end: 1).animate(
       CurvedAnimation(parent: _ctrl, curve: Curves.easeOut),
     );
+  }
 
-    _playEntry();
+  // MediaQuery.disableAnimationsOf requires an inherited-widget lookup,
+  // which is unsafe in initState (no ancestor established yet); the first
+  // entry play is deferred to here instead, mirroring _SelectedMarkerState.
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_entryPlayed) {
+      _entryPlayed = true;
+      _playEntry();
+    }
   }
 
   @override
@@ -323,7 +392,8 @@ class _AnimatedLabelState extends State<_AnimatedLabel>
   void _playEntry() {
     _timer?.cancel();
     _ctrl.value = 0;
-    if (!widget.animate) {
+    final disableAnimations = MediaQuery.disableAnimationsOf(context);
+    if (!widget.animate || disableAnimations) {
       _ctrl.value = 1;
       return;
     }

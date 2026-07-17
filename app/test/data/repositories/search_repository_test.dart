@@ -141,4 +141,46 @@ void main() {
       expect(results.single.uid, 'local-1');
     });
   });
+
+  group('local DB failure falls back to HTTP', () {
+    test(
+      'a local query throwing (e.g. no such table) still calls HTTP and '
+      'returns its results, instead of the exception propagating',
+      () async {
+        final repo = SearchRepository(
+          localDb: FakeLocalDb.throwing(
+            Exception('no such table: search_vector'),
+          ),
+          httpFetch: (query, limit) async => [
+            const SearchResult(
+              type: SearchResultType.busRoute,
+              uid: 'remote-1',
+              name: 'Remote Line',
+              subtitle: 'A → B',
+            ),
+          ],
+        );
+
+        final results = await repo.search('red');
+
+        expect(results, hasLength(1));
+        expect(results.single.uid, 'remote-1');
+      },
+    );
+
+    test(
+      'a local query throwing and HTTP also failing returns an empty list, '
+      'not an exception',
+      () async {
+        final repo = SearchRepository(
+          localDb: FakeLocalDb.throwing(StateError('DB not initialized')),
+          httpFetch: (query, limit) async => throw StateError('offline'),
+        );
+
+        final results = await repo.search('red');
+
+        expect(results, isEmpty);
+      },
+    );
+  });
 }

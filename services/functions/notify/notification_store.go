@@ -144,26 +144,6 @@ func rowsChanged(tag pgconn.CommandTag, err error) (bool, error) { return tag.Ro
 // assert that bound against liveJobTimeout in a test.
 const ReminderClaimTimeout = 5 * time.Minute
 
-// hasActiveBusReminders reports whether any unexpired bus arrival reminder is
-// pending or claimable-sending — the cheap existence probe behind the MQTT
-// dispatch gate. It deliberately ignores claimed_at: counting a live 'sending'
-// row as active only keeps the gate open a little longer, never closes it on
-// deliverable work.
-func (s Store) hasActiveBusReminders(ctx context.Context, now time.Time) (bool, error) {
-	rows, err := s.db.Query(ctx, `SELECT EXISTS(SELECT 1 FROM firebase_arrival_reminder WHERE route_type='bus' AND status IN ('pending','sending') AND expires_at>$1)`, now)
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	var exists bool
-	if rows.Next() {
-		if err := rows.Scan(&exists); err != nil {
-			return false, err
-		}
-	}
-	return exists, rows.Err()
-}
-
 // claim atomically moves a claimable, unexpired reminder to 'sending',
 // stamping claimed_at, and returns true only if this caller won it. This is
 // the guard against two ETA runs pushing the same reminder concurrently.

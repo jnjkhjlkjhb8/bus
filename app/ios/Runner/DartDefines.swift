@@ -57,14 +57,25 @@ enum DartDefines {
 
     /// Resolves the Google Maps API key this build was configured with.
     ///
+    /// A missing key for a fail-closed (non-debug) build is primarily
+    /// caught by the "Validate Dart Defines" build phase
+    /// which fails the build itself before this code ever runs on a device.
+    /// This runtime path is a secondary safety net for the (should-be-unreachable)
+    /// case where that gate was bypassed: `assertionFailure` aborts debug-config test
+    /// and development builds loudly, but — unlike `fatalError` — compiles
+    /// out of a true `-O` release build, so a key that somehow still slips
+    /// through in production degrades to a blank map instead of crashing
+    /// app launch.
+    ///
     /// - Parameters:
     ///   - infoDictionary: the bundle's resolved Info.plist dictionary
     ///     (`Bundle.main.infoDictionary` in production).
-    ///   - failClosed: when `true`, a missing/empty key is a build
-    ///     configuration error that must stop the app rather than fail
-    ///     silently with a blank map. Pass `isFailClosed()` in production.
+    ///   - failClosed: when `true`, a missing/empty key indicates the
+    ///     build-time gate above was bypassed. Pass `isFailClosed()` in
+    ///     production.
     /// - Returns: the non-empty API key, or an empty string when the key is
-    ///   absent and `failClosed` is `false`.
+    ///   absent (regardless of `failClosed` — the hard build-time failure
+    ///   already happened upstream when `failClosed` is `true`).
     static func mapsAPIKey(
         from infoDictionary: [String: Any]?,
         failClosed: Bool
@@ -73,10 +84,11 @@ enum DartDefines {
             return key
         }
         if failClosed {
-            fatalError(
-                "GOOGLE_MAPS_API_KEY is missing from Info.plist. Pass " +
-                "--dart-define=GOOGLE_MAPS_API_KEY=... when building (see app/env/*.json) " +
-                "so Flutter/extract_dart_defines.sh can bridge it into Dart-Defines.xcconfig."
+            assertionFailure(
+                "GOOGLE_MAPS_API_KEY is missing from Info.plist. This should have " +
+                "failed the build in the \"Validate Dart Defines\" phase " +
+                "(Flutter/validate_dart_defines.sh) — pass " +
+                "--dart-define=GOOGLE_MAPS_API_KEY=... when building (see app/env/*.json)."
             )
         }
         return ""

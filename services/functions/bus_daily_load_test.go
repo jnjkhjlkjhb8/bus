@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,34 @@ func unavailableRedisClient() *redis.Client {
 		WriteTimeout: time.Millisecond,
 		MaxRetries:   0,
 	})
+}
+func testRedisAddr() string {
+	if addr := os.Getenv("REDIS_TEST_ADDR"); addr != "" {
+		return addr
+	}
+	return "127.0.0.1:6379"
+}
+
+// dialTestRedis connects to testRedisAddr. An unreachable Redis is only a
+// skip when REDIS_TEST_ADDR is unset (no Redis was promised — local dev
+// without docker); when it is set, the environment declared a Redis and an
+// unreachable one is a fixture failure that must fail loudly, or a CI Redis
+// outage would silently green the suite by skipping every gated test.
+func dialTestRedis(t *testing.T) *redis.Client {
+	t.Helper()
+	rc := redis.NewClient(&redis.Options{
+		Addr:        testRedisAddr(),
+		DialTimeout: 200 * time.Millisecond,
+		MaxRetries:  0,
+	})
+	if err := rc.Ping().Err(); err != nil {
+		rc.Close()
+		if os.Getenv("REDIS_TEST_ADDR") != "" {
+			t.Fatalf("REDIS_TEST_ADDR is set but Redis is not reachable at %s: %v", testRedisAddr(), err)
+		}
+		t.Skipf("Redis not reachable at %s: %v", testRedisAddr(), err)
+	}
+	return rc
 }
 
 func TestLoadBusDailyTimetableRejectsInvalidIdentityTimeOrDirection(t *testing.T) {
@@ -125,11 +154,8 @@ func TestLoadBusDailyTimetableRejectsInvalidCanonicalIdentityBeforeRedis(t *test
 }
 
 func TestLoadBusDailyTimetableMalformedSuffixWritesNoKeys(t *testing.T) {
-	rc := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379", DialTimeout: 200 * time.Millisecond, MaxRetries: 0})
+	rc := dialTestRedis(t)
 	defer rc.Close()
-	if err := rc.Ping().Err(); err != nil {
-		t.Skipf("local Redis not reachable: %v", err)
-	}
 	const uid = "ZZ_TASK5_NO_PARTIAL"
 	key := shared.BusDailyTimetableKey(uid)
 	_ = rc.Del(key).Err()
@@ -159,11 +185,8 @@ func TestLoadBusDailyTimetableReturnsPipelineError(t *testing.T) {
 }
 
 func TestLoadBusDailyTimetableDuplicateTripPolicy(t *testing.T) {
-	rc := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379", DialTimeout: 200 * time.Millisecond, MaxRetries: 0})
+	rc := dialTestRedis(t)
 	defer rc.Close()
-	if err := rc.Ping().Err(); err != nil {
-		t.Skipf("local Redis not reachable: %v", err)
-	}
 	key := shared.BusDailyTimetableKey("KHH1")
 	_ = rc.Del(key).Err()
 	defer func() { _ = rc.Del(key).Err() }()
@@ -189,17 +212,21 @@ func TestLoadBusDailyTimetableDuplicateTripPolicy(t *testing.T) {
 	other := `{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S2","ArrivalTime":"08:00","DepartureTime":"08:01"}]}`
 	divergent := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[` + trip + `,` + other + `]}]`
 	err = loadBusDailyTimetable(context.Background(), decodeInto(divergent), nil, rc, "Kaohsiung")
-	if err == nil || !strings.Contains(err.Error(), "duplicate TripID") {
-		t.Fatalf("divergent duplicate error = %v, want duplicate TripID error", err)
+	if err == nil || !strings.Contains(err.Error(), "quarantine ratio exceeded") {
+		t.Fatalf("divergent duplicate error = %v, want quarantine ratio exceeded error", err)
+	}
+	after, err := rc.Get(key).Bytes()
+	if err != nil {
+		t.Fatalf("read timetable after rejected duplicate: %v", err)
+	}
+	if string(after) != string(bytes) {
+		t.Fatal("divergent duplicate trip mutated Redis")
 	}
 }
 
 func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
-	rc := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379", DialTimeout: 200 * time.Millisecond, MaxRetries: 0})
+	rc := dialTestRedis(t)
 	defer rc.Close()
-	if err := rc.Ping().Err(); err != nil {
-		t.Skipf("local Redis not reachable: %v", err)
-	}
 	key := shared.BusDailyTimetableKey("KHH1")
 	_ = rc.Del(key).Err()
 	defer func() { _ = rc.Del(key).Err() }()
@@ -223,8 +250,8 @@ func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
 	other := `{"StopSequence":1,"StopUID":"S2","ArrivalTime":"08:00","DepartureTime":"08:01"}`
 	divergent := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[` + stop + `,` + other + `]}]}]`
 	err = loadBusDailyTimetable(context.Background(), decodeInto(divergent), nil, rc, "Kaohsiung")
-	if err == nil || !strings.Contains(err.Error(), "duplicate StopSequence") {
-		t.Fatalf("divergent duplicate stop error = %v, want duplicate StopSequence", err)
+	if err == nil || !strings.Contains(err.Error(), "quarantine ratio exceeded") {
+		t.Fatalf("divergent duplicate stop error = %v, want quarantine ratio exceeded", err)
 	}
 	after, err := rc.Get(key).Bytes()
 	if err != nil {

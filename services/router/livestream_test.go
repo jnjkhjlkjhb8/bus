@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/go-redis/redis"
+	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -194,6 +197,85 @@ func TestStreamLiveReturnsUnavailableWhenHubEvictsSlowSubscriber(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("streamLive did not return after subscriber eviction")
 	}
+}
+
+// TestStreamLiveIncrementsStreamDisconnectOnEveryTermination proves
+// router_stream_disconnects_total advances once per completed stream,
+// covering both termination causes exercised elsewhere in this file
+// (upstream close and send failure), but not the initial subscribe error
+// path (subscribeErrSource below), which never establishes a stream to
+// disconnect from.
+func TestStreamLiveIncrementsStreamDisconnectOnEveryTermination(t *testing.T) {
+	before := parseCounterTotal(t, "router_stream_disconnects_total")
+
+	closedSrc := newFakeLiveSource()
+	_, _, waitClosed := startStream(t, closedSrc, liveStreamSpec{channel: "k1"})
+	close(closedSrc.ch)
+	_ = waitClosed()
+
+	sendErrSrc := newFakeLiveSource()
+	sendErrDone := make(chan error, 1)
+	go func() {
+		sendErrDone <- streamLive(context.Background(), sendErrSrc, liveStreamSpec{channel: "k1"}, func([]byte) error {
+			return errors.New("client gone")
+		})
+	}()
+	sendErrSrc.ch <- []byte("live")
+	<-sendErrDone
+
+	subscribeErrSrc := &subscribeErrLiveSource{err: errors.New("capacity reached")}
+	_ = streamLive(context.Background(), subscribeErrSrc, liveStreamSpec{channel: "k1"}, func([]byte) error { return nil })
+
+	after := parseCounterTotal(t, "router_stream_disconnects_total")
+	if after != before+2 {
+		t.Fatalf("router_stream_disconnects_total = %d, want %d (before %d + 2 established streams; the subscribe-error stream must not count)", after, before+2, before)
+	}
+}
+
+// subscribeErrLiveSource fails subscribe unconditionally, exercising
+// streamLive's earliest return path (before any stream is established).
+type subscribeErrLiveSource struct{ err error }
+
+func (s *subscribeErrLiveSource) get(string) ([]byte, bool)     { return nil, false }
+func (s *subscribeErrLiveSource) scanKeys(string) []string      { return nil }
+func (s *subscribeErrLiveSource) subscribe(string) (<-chan []byte, func(), error) {
+	return nil, nil, s.err
+}
+
+// TestRedisLiveSourceRecordsRedisErrorButNotNil proves get/scanKeys count a
+// genuine Redis failure (here: nothing listening on the configured address)
+// in router_redis_errors_total, while a plain missing key (redis.Nil) does
+// not -- see redisLiveSource.get's doc comment for why that distinction
+// matters (an absent key is expected traffic, not a Redis health signal).
+func TestRedisLiveSourceRecordsRedisErrorButNotNil(t *testing.T) {
+	unreachable := redisLiveSource{rc: redis.NewClient(&redis.Options{
+		Addr:        "127.0.0.1:1", // nothing listens here; every call fails fast
+		DialTimeout: 200 * time.Millisecond,
+	})}
+
+	before := parseCounterTotal(t, "router_redis_errors_total")
+	if _, ok := unreachable.get("any-key"); ok {
+		t.Fatal("get against an unreachable Redis must report ok=false")
+	}
+	unreachable.scanKeys("any:*")
+	after := parseCounterTotal(t, "router_redis_errors_total")
+	if after != before+2 {
+		t.Fatalf("router_redis_errors_total = %d, want %d (before %d + get + scanKeys failures)", after, before+2, before)
+	}
+}
+
+func parseCounterTotal(t *testing.T, name string) int64 {
+	t.Helper()
+	for _, line := range strings.Split(obs.MetricsText(), "\n") {
+		if strings.HasPrefix(line, name+" ") {
+			var value int64
+			if _, err := fmt.Sscanf(line, name+" %d", &value); err != nil {
+				t.Fatalf("parse metric line %q: %v", line, err)
+			}
+			return value
+		}
+	}
+	return 0
 }
 
 func TestStreamLiveSendErrorStopsStream(t *testing.T) {

@@ -9,10 +9,19 @@
 #
 # `docker compose config` output is written to files under a private temp
 # directory and never printed in full — only the specific asserted keys are
-# grepped out — because BUS_ENV_FILE-driven expansion can pull in whatever
+# grepped out — because ENV_FILE-driven expansion can pull in whatever
 # secrets the env file holds. The tracked *.env.example files used here only
 # ever contain placeholders, but the script is written so it stays safe if
 # ever pointed at a real env file.
+#
+# ENV_FILE (not a made-up BUS_ENV_FILE) is the variable name docker-compose.yaml
+# actually reads (`env_file: ${ENV_FILE:-./.env}`) for each service's
+# env_file: directive. It must be exported into this process's environment
+# (not just passed via --env-file) because --env-file only seeds variable
+# interpolation from a *file*, and that file — env/test.env.example etc. —
+# does not itself define an ENV_FILE= key. Leaving it unexported let the
+# ${ENV_FILE:-./.env} default silently pull in a developer's own ./.env,
+# defeating the point of expanding against the tracked example file.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,7 +42,7 @@ expand() {
   # expand <env-name> <compose-override-file> <env-example-file> <project-name>
   local env_name="$1" override="$2" env_file="$3" project="$4"
   local out="$work_dir/${env_name}.yaml"
-  if ! BUS_ENV_FILE="$env_file" docker compose \
+  if ! ENV_FILE="$env_file" docker compose \
     --project-directory . \
     -p "$project" \
     --env-file "$env_file" \
@@ -109,6 +118,65 @@ if [ -n "$staging_volumes" ] && [ -n "$prod_volumes" ] && [ -z "$vol_overlap" ];
   ok "staging volumes {$staging_volumes} disjoint from prod volumes {$prod_volumes}"
 else
   bad "volume identities missing or colliding: staging={$staging_volumes} prod={$prod_volumes}"
+fi
+
+note ""
+note "== Network segmentation (O7 / review_results.md P2-03) =="
+# service_networks <file> <service> -> sorted network names the service is
+# attached to, read from its `networks:` map (docker compose config renders
+# it as `<name>: null` per attached network, indented one level deeper than
+# the service's own top-level keys).
+service_networks() {
+  local file="$1" service="$2"
+  awk -v svc="$service:" '
+    $0 == "  " svc { in_svc=1; svc_indent=1; next }
+    in_svc && /^  [a-zA-Z]/ { in_svc=0 }
+    in_svc && /^    networks:$/ { in_nets=1; next }
+    in_svc && in_nets && /^      [a-zA-Z]/ { split($0, a, ":"); v=a[1]; gsub(/^ +/,"",v); print v; next }
+    in_svc && in_nets && /^    [a-zA-Z]/ { in_nets=0 }
+  ' "$file" | sort -u
+}
+assert_networks() {
+  local env_name="$1" file="$2" service="$3" expected="$4"
+  local actual
+  actual=$(service_networks "$file" "$service" | tr '\n' ' ' | sed 's/ $//')
+  if [ "$actual" = "$expected" ]; then
+    ok "$env_name/$service: networks = {$actual}"
+  else
+    bad "$env_name/$service: networks = {$actual}, want {$expected}"
+  fi
+}
+# router is the only service allowed to span all three networks (it is the
+# shared dependency: powersync's jwks_uri, redis, and osrm all sit behind
+# it). Every other service gets exactly the network(s) its actual traffic
+# needs -- see the top-level `networks:` comment in docker/docker-
+# compose.yaml for the full rationale per service.
+assert_networks staging "$staging_cfg" router "backend frontend routing"
+assert_networks staging "$staging_cfg" functions "backend"
+assert_networks staging "$staging_cfg" ingestor "backend"
+assert_networks staging "$staging_cfg" loader "backend"
+assert_networks staging "$staging_cfg" powersync "frontend"
+assert_networks staging "$staging_cfg" redis "backend"
+assert_networks staging "$staging_cfg" osrm "routing"
+assert_networks prod "$prod_cfg" router "backend frontend routing"
+assert_networks prod "$prod_cfg" functions "backend"
+assert_networks prod "$prod_cfg" ingestor "backend"
+assert_networks prod "$prod_cfg" loader "backend"
+assert_networks prod "$prod_cfg" powersync "frontend"
+assert_networks prod "$prod_cfg" redis "backend"
+assert_networks prod "$prod_cfg" osrm "routing"
+# powersync must never be able to reach Redis: the concrete blast-radius
+# claim behind the frontend/backend split (a compromised powersync, which is
+# the one service in this compose file reachable from an edge proxy per its
+# own comment in docker-compose.yaml, cannot pivot to the ETA cache/Pub-Sub
+# bus or the ingestion pipeline).
+powersync_nets=$(service_networks "$prod_cfg" powersync)
+redis_nets=$(service_networks "$prod_cfg" redis)
+shared=$(comm -12 <(echo "$powersync_nets") <(echo "$redis_nets") || true)
+if [ -z "$shared" ]; then
+  ok "powersync and redis share no network (prod)"
+else
+  bad "powersync and redis share a network: $shared"
 fi
 
 note ""

@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:powersync/powersync.dart';
 import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_car/core/firebase/install_identity.dart';
 import 'package:wheres_the_car/core/http/http_client.dart';
 import 'package:wheres_the_car/core/powersync/local_db.dart';
 import 'package:wheres_the_car/core/powersync/powersync_health.dart';
@@ -242,8 +244,10 @@ class CachedPowerSyncConnector extends PowerSyncBackendConnector {
   static Future<PowerSyncCredentials?> _fetchFromRouter() async {
     if (_envPowersyncUrl.isEmpty) return null;
     try {
+      final installId = await InstallIdentity.getOrCreate();
       final res = await HttpClient.instance.dio.get<Map<String, dynamic>>(
         '/api/token/powersync',
+        options: Options(headers: {'X-Install-Id': installId}),
       );
       final token = res.data?['token'] as String?;
       if (token == null) return null;

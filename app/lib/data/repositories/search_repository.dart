@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_car/core/http/http_client.dart';
 import 'package:wheres_the_car/core/powersync/local_db.dart';
 import 'package:wheres_the_car/core/powersync/powersync_service.dart';
@@ -28,6 +30,13 @@ class SearchRepository {
   /// answers the query offline. The router call is optional enrichment —
   /// ranked/semantic matches and live entities (bus routes/stations, bike
   /// stations) the local mirror doesn't carry — merged in when it succeeds.
+  ///
+  /// The local query can throw before PowerSync has synced at least once
+  /// (`no such table: search_vector`) or before [PowerSyncService.init] has
+  /// completed (`StateError`). Either is caught here so it degrades to the
+  /// HTTP path instead of aborting the whole search; if HTTP also fails (or
+  /// the device is offline), [search] returns an empty list rather than
+  /// letting the exception propagate to the caller.
   Future<List<SearchResult>> search(String query, {int limit = 20}) async {
     final local = await _searchLocal(query, limit);
     List<SearchResult> remote;
@@ -41,13 +50,22 @@ class SearchRepository {
 
   Future<List<SearchResult>> _searchLocal(String query, int limit) async {
     final like = '%$query%';
-    final rows = await _db.getAll(
-      'SELECT type, uid, name, city, depart, destin '
-      'FROM search_vector '
-      'WHERE uid = ?1 OR name LIKE ?2 OR depart LIKE ?2 OR destin LIKE ?2 '
-      'ORDER BY name LIMIT ?3',
-      [query, like, limit],
-    );
+    List<Map<String, dynamic>> rows;
+    try {
+      rows = await _db.getAll(
+        'SELECT type, uid, name, city, depart, destin '
+        'FROM search_vector '
+        'WHERE uid = ?1 OR name LIKE ?2 OR depart LIKE ?2 OR destin LIKE ?2 '
+        'ORDER BY name LIMIT ?3',
+        [query, like, limit],
+      );
+    } on Object catch (e, s) {
+      CrashReporter.record(e, s);
+      if (kDebugMode) {
+        debugPrint('[Search] local query failed, falling back to HTTP: $e');
+      }
+      return const [];
+    }
     final results = <SearchResult>[];
     for (final row in rows) {
       final result = _fromRow(row);
