@@ -381,6 +381,7 @@ class _RailScreenState extends State<RailScreen> {
                                 origin: state.originName,
                                 destination: state.destName,
                                 date: state.date,
+                                fare: state.fare,
                                 isThsr: state.system == RailSystem.thsr,
                               ),
                             );

@@ -108,6 +108,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     try {
       final originId = await _stationId(system, event.origin);
       final destId = await _stationId(system, event.destination);
+      final fareFuture = _loadFare(system, event.date, originId, destId);
       if (system == RailSystem.tra) {
         final items = await _traRepository.timetable(
           event.date,
@@ -121,6 +122,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
             originName: originName,
             destName: destName,
             date: event.date,
+            fare: await fareFuture,
             traItems: _sortedFiltered(
               items,
               (item) => item.departureTime,
@@ -150,6 +152,7 @@ class RailBloc extends Bloc<RailEvent, RailState> {
             originName: originName,
             destName: destName,
             date: event.date,
+            fare: await fareFuture,
             thsrItems: _sortedFiltered(
               items,
               (item) => item.departureTime,
@@ -163,6 +166,28 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     } on Object catch (e) {
       if (gen != _timetableGeneration) return;
       emit(RailError(AppError.from(e)));
+    }
+  }
+
+  /// Best-effort adult (全票) fare for the O/D pair. Station ids are already
+  /// resolved here, so this is a direct RPC. Returns null on any failure (e.g.
+  /// no landed fare, or non-prod without TDX data) so the timetable still
+  /// renders without a price.
+  Future<int?> _loadFare(
+    RailSystem system,
+    String date,
+    String originId,
+    String destId,
+  ) async {
+    try {
+      if (system == RailSystem.thsr) {
+        final fare = await _thsrRepository.fare(date, originId, destId);
+        return fare.price;
+      }
+      final fare = await _traRepository.fare('$originId:$destId', date);
+      return fare.price;
+    } on Object {
+      return null;
     }
   }
 

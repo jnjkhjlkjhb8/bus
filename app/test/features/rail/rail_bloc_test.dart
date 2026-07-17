@@ -50,6 +50,67 @@ void main() {
     expect(thsr.timetableCalls, [('2026-07-10', '0990', '1070')]);
   });
 
+  test('loads the server fare into RailTimetableLoaded', () async {
+    const item = ThsrTimetableItem(
+      trainNo: '101',
+      departureTime: '08:00',
+      arrivalTime: '09:30',
+      travelMinutes: 90,
+      delayMinutes: 0,
+      remark: '',
+    );
+    final thsr = _FakeThsrRepository(
+      timetableResult: const [item],
+      fareResult: const ThsrFare(fareClass: 1, price: 1490),
+    );
+    final bloc = RailBloc(thsrRepository: thsr);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: RailStationSelection(name: '南港', id: '0990'),
+        destination: RailStationSelection(name: '左營', id: '1070'),
+        date: '2026-07-10',
+      ),
+    );
+    final loaded =
+        await bloc.stream.firstWhere((state) => state is RailTimetableLoaded)
+            as RailTimetableLoaded;
+
+    expect(loaded.fare, 1490);
+  });
+
+  test('fare query failure still loads the timetable (null fare)', () async {
+    const item = ThsrTimetableItem(
+      trainNo: '101',
+      departureTime: '08:00',
+      arrivalTime: '09:30',
+      travelMinutes: 90,
+      delayMinutes: 0,
+      remark: '',
+    );
+    // No fareResult → the fake's fare() throws; _loadFare swallows it.
+    final thsr = _FakeThsrRepository(timetableResult: const [item]);
+    final bloc = RailBloc(thsrRepository: thsr);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const RailTimetableRequested(
+        system: RailSystem.thsr,
+        origin: RailStationSelection(name: '南港', id: '0990'),
+        destination: RailStationSelection(name: '左營', id: '1070'),
+        date: '2026-07-10',
+      ),
+    );
+    final loaded =
+        await bloc.stream.firstWhere((state) => state is RailTimetableLoaded)
+            as RailTimetableLoaded;
+
+    expect(loaded.fare, isNull);
+    expect(loaded.thsrItems, const [item]);
+  });
+
   test('cutoff drops earlier THSR trains and sorts the rest', () async {
     const early = ThsrTimetableItem(
       trainNo: '801',
@@ -490,10 +551,15 @@ class _ControlledThsrRepository extends ThsrRepository {
 }
 
 class _FakeThsrRepository extends ThsrRepository {
-  _FakeThsrRepository({this.timetableResult = const [], this.error});
+  _FakeThsrRepository({
+    this.timetableResult = const [],
+    this.error,
+    this.fareResult,
+  });
 
   final List<ThsrTimetableItem> timetableResult;
   final Error? error;
+  final ThsrFare? fareResult;
   final timetableCalls = <(String, String, String)>[];
   final stationIdCalls = <String>[];
 
@@ -502,6 +568,10 @@ class _FakeThsrRepository extends ThsrRepository {
     stationIdCalls.add(name);
     return null;
   }
+
+  @override
+  Future<ThsrFare> fare(String date, String originId, String destId) async =>
+      fareResult ?? (throw StateError('no fare'));
 
   @override
   Future<List<ThsrTimetableItem>> timetable(
@@ -522,6 +592,12 @@ class _FakeTraRepository extends TraRepository {
   final Stream<Map<String, int>> _delayStream;
   final timetableCalls = <(String, String, String)>[];
   final delayCalls = <(String, String, String)>[];
+
+  // TRA fare wiring is covered by the THSR test; here fare() just fails so the
+  // existing TRA tests exercise the null-fare path without touching gRPC.
+  @override
+  Future<TraFare> fare(String stationId, String date) async =>
+      throw StateError('no fare');
 
   @override
   Future<List<TraTimetableItem>> timetable(

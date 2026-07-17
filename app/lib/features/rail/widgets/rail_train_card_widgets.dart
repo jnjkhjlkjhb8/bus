@@ -11,6 +11,7 @@ class _TrainCard extends StatefulWidget {
     required this.origin,
     required this.destination,
     required this.date,
+    required this.fare,
     required this.isThsr,
   });
 
@@ -23,6 +24,10 @@ class _TrainCard extends StatefulWidget {
   final String origin;
   final String destination;
   final String date;
+
+  /// Adult (全票) fare in NT$ for this O/D from the server, or null when the
+  /// fare query had no data — the price is hidden rather than faked.
+  final int? fare;
   final bool isThsr;
 
   @override
@@ -120,16 +125,6 @@ class _TrainCardState extends State<_TrainCard> {
     );
   }
 
-  int _getPrice() {
-    if (widget.type.contains('自強') || widget.type.contains('普悠瑪')) {
-      return 443;
-    } else if (widget.type.contains('區間快')) {
-      return 340;
-    } else {
-      return 285;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -188,14 +183,16 @@ class _TrainCardState extends State<_TrainCard> {
                   children: [
                     _trackButton(context, cs),
                     const SizedBox(width: 12),
-                    Text(
-                      'NT\$ ${_getPrice()}',
-                      style: AppTextStyles.bodyLarge.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: cs.onSurface,
+                    if (widget.fare != null) ...[
+                      Text(
+                        'NT\$ ${widget.fare}',
+                        style: AppTextStyles.bodyLarge.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: cs.onSurface,
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 12),
+                      const SizedBox(width: 12),
+                    ],
                     Pressable(
                       onTap: () {
                         unawaited(HapticService.instance.lightTap());

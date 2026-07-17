@@ -38,6 +38,7 @@ final class RailTimetableLoaded extends RailState {
     this.traItems = const [],
     this.thsrItems = const [],
     this.delays = const {},
+    this.fare,
   });
   final RailSystem system;
   final String originName;
@@ -47,6 +48,11 @@ final class RailTimetableLoaded extends RailState {
   final List<ThsrTimetableItem> thsrItems;
   final Map<String, int> delays;
 
+  /// Adult (全票) fare in NT$ for this O/D pair, or null when the fare query
+  /// had no data. TRA/THSR fares are per O/D, not per train, so every card in
+  /// the list shares this value.
+  final int? fare;
+
   RailTimetableLoaded copyWith({
     RailSystem? system,
     String? originName,
@@ -55,6 +61,7 @@ final class RailTimetableLoaded extends RailState {
     List<TraTimetableItem>? traItems,
     List<ThsrTimetableItem>? thsrItems,
     Map<String, int>? delays,
+    int? fare,
   }) => RailTimetableLoaded(
     system: system ?? this.system,
     originName: originName ?? this.originName,
@@ -63,6 +70,7 @@ final class RailTimetableLoaded extends RailState {
     traItems: traItems ?? this.traItems,
     thsrItems: thsrItems ?? this.thsrItems,
     delays: delays ?? this.delays,
+    fare: fare ?? this.fare,
   );
 
   @override
@@ -74,6 +82,7 @@ final class RailTimetableLoaded extends RailState {
     traItems,
     thsrItems,
     delays,
+    fare,
   ];
 }
 
