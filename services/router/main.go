@@ -441,6 +441,7 @@ func run() error {
 			Store:  shared.RedisTDXStore{RC: rc},
 			IMSKey: shared.TDXLegacyIMSKey,
 		})
+		httpConfig.booking = newBookingProxy(tdx)
 		maasCache := newRedisMaasCache(rc.Options())
 		runtime.addCleanup(func() {
 			if err := maasCache.Close(); err != nil {

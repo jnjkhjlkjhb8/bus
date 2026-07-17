@@ -57,5 +57,14 @@
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
         </intent>
+        <!-- Rail booking install-->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="tra-tip"/>
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <data android:scheme="thsrc"/>
+        </intent>
     </queries>
 </manifest>

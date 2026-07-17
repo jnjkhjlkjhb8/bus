@@ -199,9 +199,14 @@ class _TrainCardState extends State<_TrainCard> {
                     Pressable(
                       onTap: () {
                         unawaited(HapticService.instance.lightTap());
-                        AppSnackbar.show(
-                          context,
-                          '已為您開啟 ${widget.type} ${widget.number} 車次訂票系統',
+                        unawaited(
+                          launchRailBooking(
+                            isThsr: widget.isThsr,
+                            origin: widget.origin,
+                            destination: widget.destination,
+                            date: widget.date,
+                            trainNumber: widget.number,
+                          ),
                         );
                       },
                       child: Container(

@@ -19,13 +19,13 @@ import 'package:wheres_the_car/features/live_activity/model/journey_models.dart'
 import 'package:wheres_the_car/features/rail/bloc/rail_bloc.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
+import 'package:wheres_the_car/features/rail/booking_launch.dart';
 import 'package:wheres_the_car/features/rail/rail_navigation_request.dart';
 import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';
 import 'package:wheres_the_car/features/rail/widgets/rail_query_sheet.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
-import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
 import 'package:wheres_the_car/shared/widgets/train_type_chip.dart';

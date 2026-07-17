@@ -36,6 +36,7 @@ const (
 	httpJWKSRateLimit    = 120
 	httpSearchRateLimit  = 30
 	httpMetricsRateLimit = 60
+	httpBookingRateLimit = 30
 
 	// Bound every phase of an HTTP request/connection so a slow or hostile
 	// client (or a stalled network path) cannot hold a connection open
@@ -72,6 +73,10 @@ type httpServerConfig struct {
 	JWKSRateLimit     int
 	SearchRateLimit   int
 	MetricsRateLimit  int
+	// booking is the TDX deeplink proxy for the rail 訂購 handoff (ADR-0012).
+	// Set in main; nil in tests and any env without a TDX client, where the
+	// endpoint returns 503 and the app falls back to a plain booking site link.
+	booking *bookingProxy
 }
 
 func httpServerConfigFromEnv() (httpServerConfig, error) {
@@ -220,6 +225,9 @@ func newHTTPRouter(db *pgxpool.Pool, live *liveHub, key *rsa.PrivateKey, config 
 	r.GET("/api/search",
 		httpRateLimit(limiter, "GET /api/search", searchLimit, time.Second),
 		handleSearch(db))
+	r.GET("/api/booking/deeplink",
+		httpRateLimit(limiter, "GET /api/booking/deeplink", httpBookingRateLimit, time.Minute),
+		handleBookingDeeplink(config.booking))
 	r.GET("/metrics",
 		requireMetricsCredential(config.MetricsCredential),
 		httpPrincipalRateLimit(limiter, "GET /metrics", metricsLimit, time.Minute),

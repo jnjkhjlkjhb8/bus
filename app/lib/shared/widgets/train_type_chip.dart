@@ -10,30 +10,34 @@ class TrainTypeChip extends StatelessWidget {
   final String type;
 
   // Match on substrings, not exact strings: the backend labels a type as
-  // '區間'/'區間車', '自強'/'自強號', or '自強(EMU3000)' interchangeably, and an
-  // exact switch dropped every variant to grey. Order matters — the more
-  // specific variant (區間快, EMU3000) must be tested before its base type.
-  static Color _colorFor(String type) {
+  // '區間'/'區間車', '自強'/'自強號', or '自強(EMU3000)' interchangeably. One table
+  // drives both the colour and the displayed name so every variant of a type
+  // collapses to the same chip — same colour, same label. Order matters: the
+  // more specific variant (區間快, EMU3000) must be tested before its base type.
+  static (Color, String) _styleFor(String type) {
     final t = type.trim();
-    if (t.contains('EMU3000') || t.contains('3000')) return AppTheme.train3000;
-    if (t.contains('區間快')) return AppTheme.trainRangefast;
-    if (t.contains('區間')) return AppTheme.trainRangecar;
-    if (t.contains('普悠瑪')) return AppTheme.trainDelay;
-    if (t.contains('太魯閣')) return AppTheme.trainTaroko;
-    if (t.contains('自強')) return AppTheme.trainSelfstrong;
-    if (t.contains('莒光')) return AppTheme.trainOrangelight;
-    if (t.contains('高鐵')) return AppTheme.trainThsr;
-    return Colors.grey;
+    if (t.contains('EMU3000') || t.contains('3000')) {
+      return (AppTheme.train3000, '新自強');
+    }
+    if (t.contains('區間快')) return (AppTheme.trainRangefast, '區間快');
+    if (t.contains('區間')) return (AppTheme.trainRangecar, '區間車');
+    if (t.contains('普悠瑪')) return (AppTheme.trainDelay, '普悠瑪');
+    if (t.contains('太魯閣')) return (AppTheme.trainTaroko, '太魯閣');
+    if (t.contains('自強')) return (AppTheme.trainSelfstrong, '自強號');
+    if (t.contains('莒光')) return (AppTheme.trainOrangelight, '莒光號');
+    if (t.contains('高鐵')) return (AppTheme.trainThsr, '高鐵');
+    return (Colors.grey, t);
   }
 
   @override
   Widget build(BuildContext context) {
+    final (color, label) = _styleFor(type);
     return Container(
       height: 28,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       alignment: Alignment.center,
       decoration: BoxDecoration(
-        color: _colorFor(type),
+        color: color,
         borderRadius: BorderRadius.circular(AppTheme.radiusChip),
         border: Border.all(
           color: Theme.of(context).colorScheme.outlineVariant,
@@ -41,7 +45,7 @@ class TrainTypeChip extends StatelessWidget {
         ),
       ),
       child: Text(
-        type,
+        label,
         style: AppTextStyles.bodySmall.copyWith(
           color: Colors.white,
           fontWeight: FontWeight.w600,
