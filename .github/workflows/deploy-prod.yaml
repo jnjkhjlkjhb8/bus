@@ -61,6 +61,29 @@ jobs:
             echo "::error::tag commit $TAG_SHA is not an ancestor of origin/main -- refusing to deploy an unmerged commit to production" >&2
             exit 1
           fi
+      - name: verify commit was deployed to staging
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          TAG_SHA: ${{ steps.tag.outputs.sha }}
+        run: |
+          # workflow_dispatch is the operator escape hatch: a manually
+          # dispatched staging deploy records main's tip as its head_sha, so
+          # a commit that only ever reached staging that way is invisible to
+          # this check. The operator confirming staging health and
+          # dispatching deploy-prod by hand takes responsibility instead.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "::warning::workflow_dispatch deploy: skipping the staging-deployment check; confirm staging ran this commit before approving"
+            exit 0
+          fi
+          staging_run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy-staging.yaml \
+            --limit 100 --json databaseId,headSha,conclusion \
+            | jq -r --arg sha "$TAG_SHA" '[.[] | select(.headSha == $sha and .conclusion == "success")][0].databaseId')
+          if [ -z "$staging_run" ] || [ "$staging_run" = "null" ]; then
+            echo "::error::no successful deploy-staging run found for commit $TAG_SHA -- it must be deployed to staging before it can go to production" >&2
+            exit 1
+          fi
+          echo "commit $TAG_SHA was deployed to staging by deploy-staging run $staging_run"
       - name: find build-images run for this commit
         id: run
         env:

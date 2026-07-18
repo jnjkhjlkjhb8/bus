@@ -12,7 +12,10 @@
 # produce -- `docker compose pull` disregards `build:` and always pulls
 # `image:` when both are present.
 #
-# Transaction: capture the digests currently running (for rollback) -> pull
+# Transaction: verify the migration ledger (every dated migrations/*.sql
+# recorded in this environment's schema_migrations with a matching checksum
+# -- never applies SQL itself; migrations stay hand-applied, ADR-0010) ->
+# capture the digests currently running (for rollback) -> pull
 # the new digests -> up --wait (blocks on every service's healthcheck,
 # docker/docker-compose.yaml) -> smoke-test the router -> on any failure,
 # revert to the captured digests and exit 1. A successful run records its
@@ -69,6 +72,64 @@ for svc in router functions ingestor loader powersync; do
   fi
 done
 log "rendered per-service env files into $rendered_dir"
+
+# Migration guard: refuse to promote code whose schema prerequisites are not
+# in place. Diffs migrations/*.sql against this environment's
+# schema_migrations ledger (written only by scripts/apply-migration.sh) and
+# blocks on (a) a dated file the ledger has no record of and (b) a checksum
+# mismatch (the file was edited after being applied). Files whose first line
+# is `-- REPLAY: skip` (superseded or one-shot cleanups, migrations/README.md)
+# are exempt from the missing-check but still checksum-verified when
+# recorded. The guard only reads; applying migrations remains a manual
+# operator step (ADR-0010).
+verify_migration_ledger() {
+  local db_url pg_schema
+  db_url=$(grep -m1 '^DATABASE_URL=' "$env_file" | cut -d= -f2-)
+  pg_schema=$(grep -m1 '^PG_SCHEMA=' "$env_file" | cut -d= -f2-)
+  if [ -z "$db_url" ] || [ -z "$pg_schema" ]; then
+    log "FATAL: DATABASE_URL or PG_SCHEMA missing from $env_file -- cannot verify the migration ledger"
+    return 1
+  fi
+
+  # Same pinned image ci.yaml uses for its postgres service; the deploy host
+  # has no psql of its own.
+  local ledger
+  if ! ledger=$(docker run --rm \
+      -e PGOPTIONS="-c search_path=${pg_schema}" \
+      postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777 \
+      psql "$db_url" -X -v ON_ERROR_STOP=1 -At -F ' ' \
+      -c 'SELECT filename, sha256 FROM schema_migrations'); then
+    log "FATAL: could not read ${pg_schema}.schema_migrations -- refusing to deploy without a readable migration ledger (if this environment predates the ledger, apply migrations/2026-07-17-schema-migrations-ledger.sql first)"
+    return 1
+  fi
+
+  local failed=0 f name want have
+  for f in migrations/*.sql; do
+    name=$(basename "$f")
+    want=$(sha256sum "$f" | awk '{print $1}')
+    have=$(printf '%s\n' "$ledger" | awk -v n="$name" '$1 == n {print $2}')
+    if [ -z "$have" ]; then
+      if head -n1 "$f" | grep -q '^-- REPLAY: skip'; then
+        continue
+      fi
+      log "FATAL: $name is not recorded in ${pg_schema}.schema_migrations -- apply it (scripts/apply-migration.sh), or backfill the ledger if it was applied before the ledger existed (migrations/README.md, \"Ledger\")"
+      failed=1
+    elif [ "$have" != "$want" ]; then
+      log "FATAL: $name checksum differs from the recorded apply in ${pg_schema}.schema_migrations -- the file was edited after being applied; supersede it with a new dated file (migrations/README.md, \"Naming\")"
+      failed=1
+    fi
+  done
+
+  if [ "$failed" -ne 0 ]; then
+    return 1
+  fi
+  log "migration ledger OK: every dated migration is recorded in ${pg_schema}.schema_migrations with a matching checksum"
+}
+
+if ! verify_migration_ledger; then
+  log "deploy REFUSED: migration ledger verification failed -- nothing was pulled or restarted"
+  exit 1
+fi
 
 # compose <args...> -- one invocation shape shared by every call below, mirroring
 # Makefile's COMPOSE_STAGING/COMPOSE_PROD (same project name, env file, per-
