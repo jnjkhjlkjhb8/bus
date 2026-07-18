@@ -31,6 +31,7 @@ import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_badge.dart';
 import 'package:wheres_the_car/shared/widgets/app_button.dart';
 import 'package:wheres_the_car/shared/widgets/app_date_picker.dart';
 import 'package:wheres_the_car/shared/widgets/app_progress_bar.dart';
@@ -186,7 +187,6 @@ class _GoScreenState extends State<GoScreen> {
   }
 
   Future<void> _editField({required bool origin}) async {
-    unawaited(HapticService.instance.lightTap());
     final picked = await showPlaceSearchPage(
       context,
       fieldLabel: origin ? '選擇出發地' : '選擇目的地',
@@ -271,7 +271,6 @@ class _GoScreenState extends State<GoScreen> {
   }
 
   Future<void> _adjustOptions() async {
-    unawaited(HapticService.instance.lightTap());
     final picked = await showOptionsSheet(context, current: _options);
     if (picked == null || !mounted || picked == _options) return;
     setState(() => _options = picked);
@@ -279,7 +278,6 @@ class _GoScreenState extends State<GoScreen> {
   }
 
   Future<void> _adjustTime() async {
-    unawaited(HapticService.instance.lightTap());
     final picked = await _showTimeModeSheet(
       context,
       mode: _timeMode,
@@ -312,7 +310,6 @@ class _GoScreenState extends State<GoScreen> {
   }
 
   void _closePreview() {
-    unawaited(HapticService.instance.lightTap());
     context.read<PlanBloc>().add(const PreviewClosed());
   }
 
@@ -340,7 +337,6 @@ class _GoScreenState extends State<GoScreen> {
   }
 
   void _openSaved(PlanRoute route) {
-    unawaited(HapticService.instance.lightTap());
     context.read<PlanBloc>().add(SavedRouteOpened(route));
   }
 
@@ -1142,9 +1138,7 @@ class _GoScreenState extends State<GoScreen> {
           );
     return AnimatedSwitcher(
       duration: reduce ? Duration.zero : AppMotion.medium,
-      reverseDuration: reduce
-          ? Duration.zero
-          : const Duration(milliseconds: 150),
+      reverseDuration: reduce ? Duration.zero : AppMotion.micro,
       switchInCurve: AppMotion.easeOut,
       switchOutCurve: AppMotion.easeOut,
       transitionBuilder: (child, anim) => FadeTransition(

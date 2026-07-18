@@ -69,17 +69,20 @@ class MetroSvgMap extends StatefulWidget {
 }
 
 class _MetroSvgMapState extends State<MetroSvgMap> {
-  /// Station hit-targets (120 Semantics+GestureDetector subtrees) are built
-  /// one frame after the route transition instead of during it — their
-  /// one-time ~80ms build would stutter the push animation.
-  bool _hitTargetsReady = false;
+  /// The 120 per-station Semantics nodes (accessibility only — hit-testing
+  /// itself is handled by the single map-spanning GestureDetector in
+  /// [_StationHitLayer], which is always live) are built one frame after the
+  /// route transition instead of during it — their one-time ~80ms build
+  /// would stutter the push animation. Ordinary taps are never dropped: only
+  /// screen-reader activation depends on this flag.
+  bool _semanticsReady = false;
   Timer? _deferTimer;
 
   @override
   void initState() {
     super.initState();
     _deferTimer = Timer(const Duration(milliseconds: 350), () {
-      if (mounted) setState(() => _hitTargetsReady = true);
+      if (mounted) setState(() => _semanticsReady = true);
     });
   }
 
@@ -139,12 +142,12 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
                     color: metroLineColor(station.id),
                     animate: widget.animate,
                   ),
-              if (_hitTargetsReady)
-                _StationHitLayer(
-                  stations: metroMapStations,
-                  scale: s,
-                  onStationTap: widget.onStationTap,
-                ),
+              _StationHitLayer(
+                stations: metroMapStations,
+                scale: s,
+                onStationTap: widget.onStationTap,
+                semanticsReady: _semanticsReady,
+              ),
               for (final station in metroMapStations)
                 if (widget.stationLabels[station.id] case final label?)
                   Positioned(
@@ -177,33 +180,47 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
 /// within its 22px radius instead of relying on z-order between overlapping
 /// per-station regions (which would make the topmost — an arbitrary paint
 /// order — always win, not the one the user actually meant to hit).
-/// Screen-reader activation bypasses this arbitration entirely: each
-/// station's [Semantics] node carries its own `onTap`, invoked directly by
-/// the accessibility service through the semantics tree rather than through
-/// coordinate-based hit testing, so overlapping regions there are harmless.
-class _StationHitLayer extends StatelessWidget {
+///
+/// This detector is always live, from the very first frame: only the
+/// per-station [Semantics] nodes below are deferred (see [semanticsReady] on
+/// [MetroSvgMap]) since building 120 of them is what costs ~80ms, not the
+/// single hit-test region. Screen-reader activation bypasses the nearest-hit
+/// arbitration entirely: each station's [Semantics] node carries its own
+/// `onTap`, invoked directly by the accessibility service through the
+/// semantics tree rather than through coordinate-based hit testing, so
+/// overlapping regions there are harmless.
+class _StationHitLayer extends StatefulWidget {
   const _StationHitLayer({
     required this.stations,
     required this.scale,
     required this.onStationTap,
+    required this.semanticsReady,
   });
 
   final List<MetroMapStation> stations;
   final double scale;
   final ValueChanged<MetroMapStation> onStationTap;
+  final bool semanticsReady;
 
   /// Half of the 44×44 minimum touch target.
   static const double hitRadius = 22;
+
+  @override
+  State<_StationHitLayer> createState() => _StationHitLayerState();
+}
+
+class _StationHitLayerState extends State<_StationHitLayer> {
+  MetroMapStation? _pressedStation;
 
   @visibleForTesting
   MetroMapStation? nearestStation(Offset local) {
     MetroMapStation? nearest;
     var nearestDist = double.infinity;
-    for (final station in stations) {
-      final dx = station.x * scale - local.dx;
-      final dy = station.y * scale - local.dy;
+    for (final station in widget.stations) {
+      final dx = station.x * widget.scale - local.dx;
+      final dy = station.y * widget.scale - local.dy;
       final dist = math.sqrt(dx * dx + dy * dy);
-      if (dist <= hitRadius && dist < nearestDist) {
+      if (dist <= _StationHitLayer.hitRadius && dist < nearestDist) {
         nearest = station;
         nearestDist = dist;
       }
@@ -211,33 +228,63 @@ class _StationHitLayer extends StatelessWidget {
     return nearest;
   }
 
+  void _setPressed(MetroMapStation? station) {
+    if (_pressedStation != station) setState(() => _pressedStation = station);
+  }
+
   @override
-  Widget build(BuildContext context) => Positioned.fill(
-    child: GestureDetector(
-      behavior: HitTestBehavior.translucent,
-      onTapUp: (details) {
-        final station = nearestStation(details.localPosition);
-        if (station != null) onStationTap(station);
-      },
-      child: Stack(
-        children: [
-          for (final station in stations)
-            Positioned(
-              left: station.x * scale - hitRadius,
-              top: station.y * scale - hitRadius,
-              width: hitRadius * 2,
-              height: hitRadius * 2,
-              child: Semantics(
-                button: true,
-                label: '${station.id} ${station.name}',
-                onTap: () => onStationTap(station),
-                child: const SizedBox.expand(),
+  Widget build(BuildContext context) {
+    const hitRadius = _StationHitLayer.hitRadius;
+    final pressed = _pressedStation;
+    return Positioned.fill(
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTapDown: (details) =>
+            _setPressed(nearestStation(details.localPosition)),
+        onTapCancel: () => _setPressed(null),
+        onTapUp: (details) {
+          final station = nearestStation(details.localPosition);
+          _setPressed(null);
+          if (station != null) widget.onStationTap(station);
+        },
+        child: Stack(
+          children: [
+            if (pressed != null)
+              Positioned(
+                left: pressed.x * widget.scale - hitRadius,
+                top: pressed.y * widget.scale - hitRadius,
+                width: hitRadius * 2,
+                height: hitRadius * 2,
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: metroLineColor(
+                        pressed.id,
+                      ).withValues(alpha: 0.16),
+                    ),
+                  ),
+                ),
               ),
-            ),
-        ],
+            if (widget.semanticsReady)
+              for (final station in widget.stations)
+                Positioned(
+                  left: station.x * widget.scale - hitRadius,
+                  top: station.y * widget.scale - hitRadius,
+                  width: hitRadius * 2,
+                  height: hitRadius * 2,
+                  child: Semantics(
+                    button: true,
+                    label: '${station.id} ${station.name}',
+                    onTap: () => widget.onStationTap(station),
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+          ],
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 /// Draws the metro map SVG as a pre-rasterized [ui.Image] instead of a live
@@ -359,13 +406,13 @@ class _AnimatedLabelState extends State<_AnimatedLabel>
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 200),
+      duration: AppMotion.short,
     );
-    _scale = Tween<double>(begin: 0.5, end: 1).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack),
+    _scale = Tween<double>(begin: 0.92, end: 1).animate(
+      CurvedAnimation(parent: _ctrl, curve: AppMotion.easeOut),
     );
     _opacity = Tween<double>(begin: 0, end: 1).animate(
-      CurvedAnimation(parent: _ctrl, curve: Curves.easeOut),
+      CurvedAnimation(parent: _ctrl, curve: AppMotion.easeOut),
     );
   }
 

@@ -331,7 +331,7 @@ class _NavHeader extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(left: 12),
       child: AnimatedSwitcher(
-        duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
+        duration: reduce ? Duration.zero : AppMotion.micro,
         child: Column(
           key: ValueKey('$value|$label'),
           crossAxisAlignment: CrossAxisAlignment.end,
@@ -382,7 +382,7 @@ class _NextStrip extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final (dist, unit) = _stepDistanceParts(distanceMeters);
     return AnimatedSwitcher(
-      duration: reduce ? Duration.zero : const Duration(milliseconds: 150),
+      duration: reduce ? Duration.zero : AppMotion.micro,
       child: Container(
         key: ValueKey('${step.instruction}|$distanceMeters'),
         width: double.infinity,
@@ -802,13 +802,26 @@ class _NavSheetHeader extends StatelessWidget {
                 ),
               ),
               if (arrival.isNotEmpty)
-                Text(
-                  '抵達 $arrival',
-                  style: AppTextStyles.bodyVerySmall.copyWith(
-                    color: cs.onSurface,
-                    fontWeight: FontWeight.w600,
-                    fontFeatures: AppTextStyles.tabularFigures,
-                  ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      '抵達 ',
+                      style: AppTextStyles.bodyVerySmall.copyWith(
+                        color: cs.onSurface,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      arrival,
+                      style: AppTextStyles.memo.copyWith(
+                        fontSize: AppTextStyles.bodyVerySmall.fontSize,
+                        color: cs.onSurface,
+                        fontWeight: FontWeight.w600,
+                        fontFeatures: AppTextStyles.tabularFigures,
+                      ),
+                    ),
+                  ],
                 ),
             ],
           ),

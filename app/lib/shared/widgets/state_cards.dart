@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 
 /// Empty state card — shown when a list has no data.
 class EmptyStateCard extends StatelessWidget {
@@ -109,12 +110,12 @@ class _ShimmerRowState extends State<ShimmerRow>
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 900),
+      duration: AppMotion.shimmerLoop,
     );
     _opacity = Tween<double>(
       begin: 0.3,
       end: 0.7,
-    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
+    ).animate(CurvedAnimation(parent: _ctrl, curve: AppMotion.easeInOut));
   }
 
   @override

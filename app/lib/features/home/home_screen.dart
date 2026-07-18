@@ -33,6 +33,7 @@ import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/motion/stagger.dart';
 import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
@@ -114,7 +115,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           anchor: const Offset(0.5, 0.5),
           infoWindow: InfoWindow(title: s.stationName),
           onTap: () {
-            unawaited(HapticService.instance.lightTap());
             _openStationDetail(s);
           },
         );
@@ -153,7 +153,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _openRailQuerySheet() {
-    unawaited(HapticService.instance.lightTap());
     final navigator = _sheetNavigatorKey.currentState;
     if (navigator == null) return;
     unawaited(

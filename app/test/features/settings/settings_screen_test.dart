@@ -32,6 +32,7 @@ void main() {
   ) async {
     await tester.pumpWidget(_wrap(buildScreen()));
     await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('目前版本'), 200);
 
     expect(find.text('4.5.6'), findsOneWidget);
     expect(find.text('1.0.0'), findsNothing);

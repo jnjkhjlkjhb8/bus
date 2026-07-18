@@ -146,7 +146,12 @@ class _FakeBikeRepository implements BikeRepository {
   @override
   Future<BikeStationInfo> stationStatic(String stationUid) async {
     if (staticThrows) throw const GrpcError.unavailable();
-    return const BikeStationInfo(name: '測試站', capacity: 10);
+    return const BikeStationInfo(
+      name: '測試站',
+      capacity: 10,
+      lat: 25.033,
+      lon: 121.565,
+    );
   }
 
   @override

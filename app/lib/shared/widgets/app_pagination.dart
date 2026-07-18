@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 
 class AppPagination extends StatelessWidget {
   const AppPagination({
@@ -108,20 +109,26 @@ class _PageBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return GestureDetector(
+    return Pressable(
       onTap: active ? null : onTap,
+      semanticLabel: '第 $pageNum 頁',
       child: Container(
-        width: 32,
-        height: 32,
+        width: 44,
+        height: 44,
         alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: active ? cs.primary : Colors.transparent,
-          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-        ),
-        child: Text(
-          '$pageNum',
-          style: AppTextStyles.bodyRegular.copyWith(
-            color: active ? cs.onPrimary : cs.onSurfaceVariant,
+        child: Container(
+          width: 32,
+          height: 32,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: active ? cs.primary : Colors.transparent,
+            borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+          ),
+          child: Text(
+            '$pageNum',
+            style: AppTextStyles.bodyRegular.copyWith(
+              color: active ? cs.onPrimary : cs.onSurfaceVariant,
+            ),
           ),
         ),
       ),
@@ -138,16 +145,20 @@ class _NavBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return SizedBox(
-      width: 32,
-      height: 32,
-      child: IconButton(
-        padding: EdgeInsets.zero,
-        icon: Icon(icon, size: 20),
-        color: onPressed != null
-            ? cs.onSurface
-            : cs.onSurface.withValues(alpha: 0.3),
-        onPressed: onPressed,
+    return Pressable(
+      onTap: onPressed,
+      child: SizedBox(
+        width: 44,
+        height: 44,
+        child: Center(
+          child: Icon(
+            icon,
+            size: 20,
+            color: onPressed != null
+                ? cs.onSurface
+                : cs.onSurface.withValues(alpha: 0.3),
+          ),
+        ),
       ),
     );
   }

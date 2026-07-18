@@ -3,6 +3,40 @@ import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/shared/motion/predictive_back.dart';
 
+/// Wraps [CupertinoPageTransitionsBuilder], which ignores the platform
+/// reduce-motion setting, with a short fade when
+/// `MediaQuery.disableAnimationsOf` is true — matching the fallback the
+/// Android [BigPredictiveBackPageTransitionsBuilder] already provides.
+class _ReducedMotionCupertinoPageTransitionsBuilder
+    extends PageTransitionsBuilder {
+  const _ReducedMotionCupertinoPageTransitionsBuilder();
+
+  static const _cupertino = CupertinoPageTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    if (MediaQuery.disableAnimationsOf(context)) {
+      return FadeTransition(
+        opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+        child: child,
+      );
+    }
+    return _cupertino.buildTransitions(
+      route,
+      context,
+      animation,
+      secondaryAnimation,
+      child,
+    );
+  }
+}
+
 class AppTheme {
   AppTheme._();
 
@@ -150,9 +184,10 @@ class AppTheme {
   static TextTheme _text(ColorScheme cs) => TextTheme(
     displayLarge: TextStyle(
       fontFamily: 'IBMPlexSans',
-      fontSize: 24,
+      fontSize: 28,
       fontWeight: FontWeight.w700,
       height: 1.3,
+      letterSpacing: -0.56,
       color: cs.onSurface,
     ),
     headlineLarge: TextStyle(
@@ -167,6 +202,7 @@ class AppTheme {
       fontSize: 24,
       fontWeight: FontWeight.w700,
       height: 1.3,
+      letterSpacing: -0.48,
       color: cs.onSurface,
     ),
     titleMedium: TextStyle(
@@ -202,6 +238,7 @@ class AppTheme {
       fontSize: 12,
       fontWeight: FontWeight.w400,
       height: 1.4,
+      letterSpacing: 0.1,
       color: cs.onSurfaceVariant,
     ),
     labelLarge: TextStyle(
@@ -216,6 +253,7 @@ class AppTheme {
       fontSize: 12,
       fontWeight: FontWeight.w600,
       height: 1.4,
+      letterSpacing: 0.1,
       color: cs.onSurfaceVariant,
     ),
     labelSmall: TextStyle(
@@ -223,6 +261,7 @@ class AppTheme {
       fontSize: 11,
       fontWeight: FontWeight.w500,
       height: 1.4,
+      letterSpacing: 0.2,
       color: cs.onSurfaceVariant,
     ),
   );
@@ -252,8 +291,8 @@ class AppTheme {
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
         TargetPlatform.android: BigPredictiveBackPageTransitionsBuilder(),
-        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-        TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.iOS: _ReducedMotionCupertinoPageTransitionsBuilder(),
+        TargetPlatform.macOS: _ReducedMotionCupertinoPageTransitionsBuilder(),
       },
     ),
     appBarTheme: AppBarTheme(

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 
@@ -52,41 +54,48 @@ class _Chip extends StatelessWidget {
     return Pressable(
       onTap: onTap,
       semanticLabel: selected ? '$label，已選取' : label,
-      child: AnimatedContainer(
-        duration: reduceMotion ? Duration.zero : AppMotion.short,
-        curve: AppMotion.easeOut,
-        height: 30,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: Container(
+        // 30pt visual height with vertical hit-area padding to reach a 44pt
+        // tappable envelope.
+        constraints: const BoxConstraints(minHeight: 44),
+        padding: const EdgeInsets.symmetric(vertical: 7),
         alignment: Alignment.center,
-        // Selection reads from a hairline accent border and a check, not a
-        // filled accent block: these groups default to everything selected,
-        // and a row of solid accent would outweigh the screen's primary action.
-        decoration: BoxDecoration(
-          color: selected ? cs.surfaceContainerHighest : Colors.transparent,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: selected ? cs.primary : cs.outlineVariant,
+        child: AnimatedContainer(
+          duration: reduceMotion ? Duration.zero : AppMotion.short,
+          curve: AppMotion.easeOut,
+          height: 30,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          alignment: Alignment.center,
+          // Selection reads from a hairline accent border and a check, not a
+          // filled accent block: these groups default to everything selected,
+          // and a row of solid accent would outweigh the screen's primary
+          // action.
+          decoration: BoxDecoration(
+            color: selected ? cs.surfaceContainerHighest : Colors.transparent,
+            borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+            border: Border.all(
+              color: selected ? cs.primary : cs.outlineVariant,
+            ),
           ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // The check keeps its slot when unselected so toggling a chip
-            // never reflows the row around it.
-            Opacity(
-              opacity: selected ? 1 : 0,
-              child: Icon(Icons.check_rounded, size: 14, color: cs.onSurface),
-            ),
-            const SizedBox(width: 4),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
-                color: selected ? cs.onSurface : cs.onSurfaceVariant,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // The check keeps its slot when unselected so toggling a chip
+              // never reflows the row around it.
+              Opacity(
+                opacity: selected ? 1 : 0,
+                child: Icon(Icons.check_rounded, size: 14, color: cs.onSurface),
               ),
-            ),
-          ],
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: AppTextStyles.bodySmall.copyWith(
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                  color: selected ? cs.onSurface : cs.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

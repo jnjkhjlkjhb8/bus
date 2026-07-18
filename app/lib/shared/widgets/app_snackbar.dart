@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 
 /// Semantic variant of an [AppSnackbar]. Meaning is carried by a small leading
 /// icon only; the surface stays ink so it reads calm (see design principle
@@ -106,22 +107,24 @@ class _SnackContent extends StatelessWidget {
             ),
             if (action != null) ...[
               const SizedBox(width: 12),
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
+              Pressable(
                 onTap: () {
                   onAction?.call();
                   ScaffoldMessenger.of(context).hideCurrentSnackBar();
                 },
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 2,
+                semanticLabel: action,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    minWidth: 44,
+                    minHeight: 44,
                   ),
-                  child: Text(
-                    action!,
-                    style: AppTextStyles.bodySmall.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w700,
+                  child: Align(
+                    child: Text(
+                      action!,
+                      style: AppTextStyles.bodySmall.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ),

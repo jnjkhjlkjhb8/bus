@@ -42,7 +42,6 @@ class SheetDetailHeader extends StatelessWidget {
   final Widget? trailing;
 
   void _back(BuildContext context) {
-    unawaited(HapticService.instance.lightTap());
     unawaited(Navigator.of(context).maybePop());
   }
 
@@ -104,14 +103,25 @@ class SheetDetailHeader extends StatelessWidget {
 /// Reused by [SheetDetailHeader] and by full-page detail app bars. Requires a
 /// [FavoritesBloc] above it in the tree.
 class FavoriteToggleButton extends StatelessWidget {
-  const FavoriteToggleButton({required this.favorite, super.key});
+  const FavoriteToggleButton({
+    required this.favorite,
+    super.key,
+    this.onToggled,
+  });
 
   final Favorite favorite;
+
+  /// Called after the toggle is dispatched, with `true` when the favorite
+  /// was just added and `false` when it was just removed. Lets callers with
+  /// additional side effects (e.g. syncing a push subscription) hook in
+  /// without reimplementing the toggle/haptic/undo behavior.
+  final ValueChanged<bool>? onToggled;
 
   void _toggle(BuildContext context) {
     unawaited(HapticService.instance.lightTap());
     final wasSaved = context.read<FavoritesBloc>().state.contains(favorite.id);
     context.read<FavoritesBloc>().add(FavoriteToggled(favorite));
+    onToggled?.call(!wasSaved);
     AppSnackbar.show(
       context,
       wasSaved ? '已取消收藏' : '已加入收藏',
@@ -131,7 +141,8 @@ class FavoriteToggleButton extends StatelessWidget {
           onTap: () => _toggle(context),
           semanticLabel: saved ? '取消收藏' : '收藏',
           child: Padding(
-            padding: const EdgeInsets.all(8),
+            // 22pt icon + 11pt padding on each side = 44pt hit envelope.
+            padding: const EdgeInsets.all(11),
             child: Icon(
               saved ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
               size: 22,

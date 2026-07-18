@@ -1,29 +1,80 @@
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
+
+/// Shared full-screen modal transition: fade + scale (0.92 → 1) on
+/// [AppMotion.easeOut], with the exit curve mirrored via `.flipped`, and
+/// reduce-motion gated (no transition when the platform disables
+/// animations). Backs [AppDialog.show] and the TRA/THSR station pickers so
+/// every full-screen dialog opens and closes the same way.
+Future<T?> showAppModal<T>({
+  required BuildContext context,
+  required WidgetBuilder builder,
+  bool barrierDismissible = true,
+  String barrierLabel = '',
+}) {
+  return showGeneralDialog<T>(
+    context: context,
+    barrierDismissible: barrierDismissible,
+    barrierLabel: barrierLabel,
+    barrierColor: Colors.black54,
+    transitionDuration: AppMotion.sheet,
+    pageBuilder: (context, _, _) => Builder(builder: builder),
+    transitionBuilder: (context, animation, _, child) {
+      if (AppMotion.reduced(context)) {
+        return child;
+      }
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: AppMotion.easeOut,
+        reverseCurve: AppMotion.easeOut.flipped,
+      );
+      return FadeTransition(
+        opacity: curved,
+        child: ScaleTransition(
+          scale: Tween<double>(begin: 0.92, end: 1).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+}
 
 class AppDialog extends StatelessWidget {
   const AppDialog({
     required this.title,
     super.key,
     this.content,
+    this.body,
     this.actions,
   });
 
   final String title;
   final String? content;
+
+  /// Arbitrary content below the title, for dialogs that need more than a
+  /// text message (form fields, pickers). Rendered after [content] if both
+  /// are supplied.
+  final Widget? body;
   final List<Widget>? actions;
 
   static Future<T?> show<T>(
     BuildContext context, {
     required String title,
     String? content,
+    Widget? body,
     List<Widget>? actions,
   }) {
-    return showDialog<T>(
+    return showAppModal<T>(
       context: context,
-      builder: (_) =>
-          AppDialog(title: title, content: content, actions: actions),
+      barrierLabel: title,
+      builder: (_) => AppDialog(
+        title: title,
+        content: content,
+        body: body,
+        actions: actions,
+      ),
     );
   }
 
@@ -35,7 +86,7 @@ class AppDialog extends StatelessWidget {
       // dialog indistinguishable from the page behind it in dark mode.
       backgroundColor: cs.surfaceContainerHigh,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppTheme.radiusCard),
+        borderRadius: BorderRadius.circular(AppTheme.radiusModal),
       ),
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -58,6 +109,7 @@ class AppDialog extends StatelessWidget {
                 ),
               ),
             ],
+            if (body != null) ...[const SizedBox(height: 16), body!],
             if (actions != null) ...[
               const SizedBox(height: 24),
               Row(

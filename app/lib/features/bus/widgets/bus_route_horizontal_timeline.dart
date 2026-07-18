@@ -1,7 +1,6 @@
 part of '../view/bus_route_screen.dart';
 
 const _arrowSize = 30.0;
-const _pingBox = 48.0;
 
 class _HorizontalRouteTimeline extends StatelessWidget {
   const _HorizontalRouteTimeline({
@@ -116,20 +115,11 @@ class _HorizontalRouteTimeline extends StatelessWidget {
                       stopState: stop.state,
                       isActiveStop: stop.active,
                       isTarget: isTarget,
+                      plateTextColor: cs.onSurface,
+                      textScaler: MediaQuery.textScalerOf(context),
                     ),
                   ),
                 ),
-
-                if (stop.state == TimelineStopState.approaching)
-                  const Positioned(
-                    left: 60 - _pingBox / 2,
-                    top: 52 - _pingBox / 2,
-                    width: _pingBox,
-                    height: _pingBox,
-                    child: IgnorePointer(
-                      child: _ApproachingPing(color: AppTheme.statusApproach),
-                    ),
-                  ),
 
                 if (vehicle != null && !isLast)
                   Positioned(
@@ -227,8 +217,7 @@ class _HorizontalRouteTimeline extends StatelessWidget {
               child: IgnorePointer(child: cell),
             );
           }
-          return GestureDetector(
-            behavior: HitTestBehavior.opaque,
+          return Pressable(
             onTap: () => onPickStop?.call(stop.uid),
             child: cell,
           );
@@ -311,6 +300,8 @@ class _HorizontalTimelinePainter extends CustomPainter {
     required this.isRightActive,
     required this.stopState,
     required this.isActiveStop,
+    required this.plateTextColor,
+    required this.textScaler,
     this.isTarget = false,
   });
 
@@ -332,6 +323,10 @@ class _HorizontalTimelinePainter extends CustomPainter {
   final bool isRightActive;
   final TimelineStopState stopState;
   final bool isActiveStop;
+
+  /// Theme-aware plate-label color and the current text scale factor.
+  final Color plateTextColor;
+  final TextScaler textScaler;
 
   /// Whether this stop is the chosen alight target in pick-mode; draws an ink
   /// ring around the dot.
@@ -430,13 +425,14 @@ class _HorizontalTimelinePainter extends CustomPainter {
           text: TextSpan(
             text: vehiclePlate,
             style: TextStyle(
-              color: Colors.black.withValues(alpha: 0.85),
+              color: plateTextColor,
               fontSize: 9,
               fontWeight: FontWeight.bold,
               height: 1,
             ),
           ),
           textDirection: TextDirection.ltr,
+          textScaler: textScaler,
         );
         textPainter
           ..layout()
@@ -465,80 +461,7 @@ class _HorizontalTimelinePainter extends CustomPainter {
       old.isRightActive != isRightActive ||
       old.stopState != stopState ||
       old.isActiveStop != isActiveStop ||
-      old.isTarget != isTarget;
-}
-
-/// The 即將進站 radar cue: a stroked ring expands out from the stop dot and
-/// fades, mirroring the home screen's locate ping ([AppMotion.easeOut]). It
-/// loops while the stop stays approaching, with a second ring half a cycle out
-/// of phase so the radar reads continuous. Reduce-motion draws one static ring.
-class _ApproachingPing extends StatefulWidget {
-  const _ApproachingPing({required this.color});
-
-  final Color color;
-
-  @override
-  State<_ApproachingPing> createState() => _ApproachingPingState();
-}
-
-class _ApproachingPingState extends State<_ApproachingPing>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1400),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (MediaQuery.disableAnimationsOf(context)) {
-      return CustomPaint(
-        painter: _PingPainter(color: widget.color, phases: const [0.55]),
-      );
-    }
-    return AnimatedBuilder(
-      animation: _ctrl,
-      builder: (context, _) => CustomPaint(
-        painter: _PingPainter(
-          color: widget.color,
-          phases: [_ctrl.value, (_ctrl.value + 0.5) % 1.0],
-        ),
-      ),
-    );
-  }
-}
-
-class _PingPainter extends CustomPainter {
-  const _PingPainter({required this.color, required this.phases});
-
-  final Color color;
-  final List<double> phases;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final center = size.center(Offset.zero);
-    for (final t in phases) {
-      // Grows from the 7px dot edge outward, fading as it expands.
-      final radius = 7 + AppMotion.easeOut.transform(t) * 17;
-      canvas.drawCircle(
-        center,
-        radius,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2
-          ..color = color.withValues(alpha: (1 - t) * 0.5),
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_PingPainter old) =>
-      old.color != color ||
-      old.phases.length != phases.length ||
-      old.phases.first != phases.first;
+      old.isTarget != isTarget ||
+      old.plateTextColor != plateTextColor ||
+      old.textScaler != textScaler;
 }

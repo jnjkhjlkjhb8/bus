@@ -34,10 +34,7 @@ class _StationDetailSheet extends StatelessWidget {
             children: [
               if (onClose == null)
                 Pressable(
-                  onTap: () {
-                    unawaited(HapticService.instance.lightTap());
-                    unawaited(Navigator.of(context).maybePop());
-                  },
+                  onTap: () => Navigator.of(context).maybePop(),
                   semanticLabel: '返回',
                   child: SizedBox(
                     width: 40,
@@ -73,12 +70,19 @@ class _StationDetailSheet extends StatelessWidget {
                   ],
                 ),
               ),
-              _MetroFavButton(station: station),
+              FavoriteToggleButton(favorite: _metroFavorite(station)),
               if (onClose != null)
-                IconButton(
-                  icon: const Icon(Icons.close_rounded),
-                  onPressed: onClose,
-                  visualDensity: VisualDensity.compact,
+                Pressable(
+                  onTap: onClose,
+                  semanticLabel: '關閉',
+                  child: Padding(
+                    padding: const EdgeInsets.all(11),
+                    child: Icon(
+                      Icons.close_rounded,
+                      size: 22,
+                      color: cs.onSurface,
+                    ),
+                  ),
                 ),
             ],
           ),
@@ -190,42 +194,6 @@ Favorite _metroFavorite(MetroMapStation s) => Favorite(
   title: s.name,
   subtitle: _lineName(s.id),
 );
-
-class _MetroFavButton extends StatelessWidget {
-  const _MetroFavButton({required this.station});
-
-  final MetroMapStation station;
-
-  void _toggle(BuildContext context) {
-    unawaited(HapticService.instance.lightTap());
-    context.read<FavoritesBloc>().add(FavoriteToggled(_metroFavorite(station)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final favorite = _metroFavorite(station);
-    return BlocBuilder<FavoritesBloc, FavoritesState>(
-      buildWhen: (prev, next) =>
-          prev.contains(favorite.id) != next.contains(favorite.id),
-      builder: (context, state) {
-        final saved = state.contains(favorite.id);
-        return Semantics(
-          button: true,
-          label: saved ? '取消收藏' : '加入收藏',
-          child: IconButton(
-            visualDensity: VisualDensity.compact,
-            icon: Icon(
-              saved ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
-              color: cs.onSurface,
-            ),
-            onPressed: () => _toggle(context),
-          ),
-        );
-      },
-    );
-  }
-}
 
 /// A single metro arrival row, rendered through the shared [EtaListTile] in its
 /// bare, roundel-lead configuration: line roundel leading, 往-destination in

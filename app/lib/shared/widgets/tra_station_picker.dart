@@ -1,34 +1,18 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/data/models/tra_stations.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_button.dart';
+import 'package:wheres_the_car/shared/widgets/app_dialog.dart';
 import 'package:wheres_the_car/shared/widgets/clock_dial.dart';
 
 Future<String?> showTRAStationPicker(BuildContext context) {
-  return showGeneralDialog<String>(
+  return showAppModal<String>(
     context: context,
-    barrierDismissible: true,
     barrierLabel: '選擇車站',
-    barrierColor: Colors.black54,
-    transitionDuration: AppMotion.sheet,
-    pageBuilder: (_, _, _) => const _TRAPickerDialog(),
-    transitionBuilder: (context, animation, _, child) {
-      final curved = CurvedAnimation(
-        parent: animation,
-        curve: AppMotion.easeOut,
-        reverseCurve: AppMotion.easeOut.flipped,
-      );
-      return FadeTransition(
-        opacity: curved,
-        child: ScaleTransition(
-          scale: Tween<double>(begin: 0.92, end: 1).animate(curved),
-          child: child,
-        ),
-      );
-    },
+    builder: (_) => const _TRAPickerDialog(),
   );
 }
 
@@ -44,7 +28,6 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
   int _regionIndex = 0;
   int _stationIndex = 0;
   bool _stationTile = false;
-  Timer? _advanceTimer;
 
   List<String> get _regions => TraStations.data[_hemisphere]!.keys.toList();
 
@@ -59,12 +42,6 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
 
   int get _activeIndex => _stationTile ? _stationIndex : _regionIndex;
 
-  @override
-  void dispose() {
-    _advanceTimer?.cancel();
-    super.dispose();
-  }
-
   void _onDialSelected(int idx) {
     setState(() {
       if (_stationTile) {
@@ -74,21 +51,16 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
         _stationIndex = 0;
       }
     });
-    if (!_stationTile) {
-      _advanceTimer?.cancel();
-      _advanceTimer = Timer(const Duration(milliseconds: 300), () {
-        if (mounted) setState(() => _stationTile = true);
-      });
-    }
+    // Region and station selection no longer auto-advance on a dwell timer
+    // (it could fire mid-gesture, swapping dial content under the finger).
+    // The user commits to station mode explicitly via the station tile tap.
   }
 
   void _selectTile(bool station) {
-    _advanceTimer?.cancel();
     setState(() => _stationTile = station);
   }
 
   void _setHemisphere(String h) {
-    _advanceTimer?.cancel();
     setState(() {
       _hemisphere = h;
       _regionIndex = 0;
@@ -100,11 +72,13 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final motion = !(MediaQuery.maybeOf(context)?.disableAnimations ?? false);
+    final motion = !AppMotion.reduced(context);
 
     return Dialog(
       backgroundColor: cs.surfaceContainerHigh,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppTheme.radiusModal),
+      ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
         child: Column(
@@ -194,11 +168,12 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
     required bool active,
     required VoidCallback onTap,
   }) {
-    return GestureDetector(
+    return Pressable(
       onTap: onTap,
+      semanticLabel: text,
       child: AnimatedContainer(
-        duration: Duration(milliseconds: motion ? 150 : 0),
-        curve: Curves.easeOut,
+        duration: motion ? AppMotion.micro : Duration.zero,
+        curve: AppMotion.easeOut,
         width: 76,
         height: 64,
         decoration: BoxDecoration(
@@ -211,7 +186,7 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: AnimatedDefaultTextStyle(
-              duration: Duration(milliseconds: motion ? 150 : 0),
+              duration: motion ? AppMotion.micro : Duration.zero,
               style: TextStyle(
                 fontSize: 30,
                 fontWeight: FontWeight.w400,
@@ -238,19 +213,20 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
           final h = e.value;
           final active = h == _hemisphere;
           return AnimatedContainer(
-            duration: Duration(milliseconds: motion ? 150 : 0),
-            curve: Curves.easeOut,
+            duration: motion ? AppMotion.micro : Duration.zero,
+            curve: AppMotion.easeOut,
             decoration: BoxDecoration(
               color: active ? cs.tertiaryContainer : null,
               border: e.key == 0
                   ? Border(bottom: BorderSide(color: cs.outline))
                   : null,
             ),
-            child: InkWell(
+            child: Pressable(
               onTap: () => _setHemisphere(h),
+              semanticLabel: h,
               child: SizedBox(
                 width: 48,
-                height: 32,
+                height: 44,
                 child: Center(
                   child: Text(
                     h,

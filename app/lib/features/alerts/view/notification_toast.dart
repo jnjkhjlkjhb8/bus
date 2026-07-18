@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_car/app/router/app_router.dart';
 import 'package:wheres_the_car/app/theme/app_shadows.dart';
@@ -11,6 +12,8 @@ import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
 import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
 import 'package:wheres_the_car/features/alerts/view/alert_source_chip.dart';
 import 'package:wheres_the_car/features/alerts/view/notification_sheet.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 
 class NotificationToastHost extends StatefulWidget {
   const NotificationToastHost({required this.child, super.key});
@@ -33,8 +36,8 @@ class _NotificationToastHostState extends State<NotificationToastHost>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 340),
-      reverseDuration: const Duration(milliseconds: 220),
+      duration: AppMotion.sheet,
+      reverseDuration: AppMotion.short,
     );
   }
 
@@ -48,7 +51,10 @@ class _NotificationToastHostState extends State<NotificationToastHost>
   void _present(AlertViewModel alert) {
     _timer?.cancel();
     setState(() => _current = alert);
-    unawaited(_controller.forward(from: 0));
+    // Retarget from the current value instead of snapping to hidden first:
+    // a second alert arriving mid-display swaps content in place rather than
+    // replaying the entrance from scratch.
+    unawaited(_controller.forward());
     _timer = Timer(const Duration(seconds: 5), _hide);
   }
 
@@ -58,6 +64,22 @@ class _NotificationToastHostState extends State<NotificationToastHost>
     await _controller.reverse();
     if (!mounted) return;
     setState(() => _current = null);
+  }
+
+  /// Finalizes a gesture-driven dismissal: the drag already spring-settled
+  /// the controller to 0, so this only clears the content — no re-animation.
+  void _finalizeDismiss() {
+    _timer?.cancel();
+    if (!mounted || _current == null) return;
+    setState(() => _current = null);
+  }
+
+  void _pauseAutoHide() => _timer?.cancel();
+
+  void _resumeAutoHide() {
+    if (_current == null) return;
+    _timer?.cancel();
+    _timer = Timer(const Duration(seconds: 5), _hide);
   }
 
   void _openInbox() {
@@ -87,7 +109,9 @@ class _NotificationToastHostState extends State<NotificationToastHost>
               controller: _controller,
               alert: _current!,
               onTap: _openInbox,
-              onDismiss: _hide,
+              onDismissed: _finalizeDismiss,
+              onInteractionStart: _pauseAutoHide,
+              onInteractionEnd: _resumeAutoHide,
             ),
         ],
       ),
@@ -95,22 +119,122 @@ class _NotificationToastHostState extends State<NotificationToastHost>
   }
 }
 
-class _ToastLayer extends StatelessWidget {
+class _ToastLayer extends StatefulWidget {
   const _ToastLayer({
     required this.controller,
     required this.alert,
     required this.onTap,
-    required this.onDismiss,
+    required this.onDismissed,
+    required this.onInteractionStart,
+    required this.onInteractionEnd,
   });
 
   final AnimationController controller;
   final AlertViewModel alert;
   final VoidCallback onTap;
-  final VoidCallback onDismiss;
+
+  /// The drag settled below the dismiss threshold — clear the toast content.
+  final VoidCallback onDismissed;
+
+  /// A drag grabbed the toast; the caller pauses the auto-hide timer so it
+  /// doesn't fire out from under the gesture.
+  final VoidCallback onInteractionStart;
+
+  /// The drag released back to fully shown; the caller resumes auto-hide.
+  final VoidCallback onInteractionEnd;
+
+  @override
+  State<_ToastLayer> createState() => _ToastLayerState();
+}
+
+class _ToastLayerState extends State<_ToastLayer> {
+  // Upward drag distance, in px, that fully dismisses the toast.
+  static const double _dismissDistance = 120;
+  // Below this release speed (px/s) the gesture is treated as a hold-and-
+  // release rather than a flick, so position decides commit vs. return.
+  static const double _flickVelocityThreshold = 200;
+
+  double _dragStartValue = 1;
+  double _dragAccumDy = 0;
+  bool _dragging = false;
+
+  void _onDragStart(DragStartDetails details) {
+    // Stopping the controller completes any in-flight animateWith future;
+    // _dragging guards _afterSettle so that completion can't dismiss the
+    // toast out from under the new grab.
+    _dragging = true;
+    widget.controller.stop();
+    widget.onInteractionStart();
+    _dragStartValue = widget.controller.value;
+    _dragAccumDy = 0;
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    _dragAccumDy += details.delta.dy;
+    double target;
+    if (_dragAccumDy <= 0) {
+      // Dragging up: the toast tracks the finger 1:1 toward dismissed.
+      target = _dragStartValue + _dragAccumDy / _dismissDistance;
+    } else {
+      // Dragging down past fully shown: progressive resistance:
+      // each further pixel moves the value less, asymptoting at 1.
+      final excess = _dragAccumDy / _dismissDistance;
+      final resisted = excess / (1 + excess);
+      target = _dragStartValue + resisted;
+    }
+    widget.controller.value = target.clamp(0.0, 1.0);
+  }
+
+  void _onDragCancel() {
+    // Treat a cancelled gesture as a zero-velocity release so the toast
+    // settles instead of hanging mid-position with auto-hide paused.
+    _onDragEnd(DragEndDetails());
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    _dragging = false;
+    final velocityY = details.velocity.pixelsPerSecond.dy;
+    final dismiss = velocityY.abs() > _flickVelocityThreshold
+        ? velocityY < 0
+        : widget.controller.value < 0.5;
+    final target = dismiss ? 0.0 : 1.0;
+
+    if (AppMotion.reduced(context)) {
+      widget.controller.value = target;
+      _afterSettle(dismiss: dismiss);
+      return;
+    }
+
+    // Convert the release's pixel velocity into controller-value velocity
+    // (value decreases as the toast moves up) so the spring inherits it.
+    final simVelocity = -velocityY / _dismissDistance;
+    final sim = SpringSimulation(
+      AppMotion.spring,
+      widget.controller.value,
+      target,
+      simVelocity,
+    );
+    unawaited(
+      widget.controller
+          .animateWith(sim)
+          .then((_) => _afterSettle(dismiss: dismiss)),
+    );
+  }
+
+  void _afterSettle({required bool dismiss}) {
+    if (!mounted || _dragging) return;
+    if (dismiss) {
+      widget.onDismissed();
+    } else {
+      widget.onInteractionEnd();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final controller = widget.controller;
+    final alert = widget.alert;
     // Scoped aspects so keyboard/inset changes don't rebuild the toast.
     final reduce = MediaQuery.disableAnimationsOf(context);
     return Positioned(
@@ -120,7 +244,7 @@ class _ToastLayer extends StatelessWidget {
       child: AnimatedBuilder(
         animation: controller,
         builder: (context, child) {
-          final t = Curves.easeOutCubic.transform(controller.value);
+          final t = AppMotion.easeOut.transform(controller.value);
           return Opacity(
             opacity: reduce ? (controller.value > 0 ? 1 : 0) : t,
             child: Transform.translate(
@@ -136,65 +260,73 @@ class _ToastLayer extends StatelessWidget {
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
+            // The vertical drag recognizer lives here, outside Pressable, so
+            // a drag can grab the toast mid-entrance or mid-auto-hide while
+            // Pressable still owns tap press-state and semantics.
             child: GestureDetector(
-              onTap: onTap,
-              onVerticalDragEnd: (d) {
-                if ((d.primaryVelocity ?? 0) < 0) onDismiss();
-              },
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: cs.brightness == Brightness.light
-                      ? Colors.white
-                      : cs.surfaceContainerHigh,
-                  borderRadius: BorderRadius.circular(AppTheme.radiusCard),
-                  boxShadow: AppShadows.floating,
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(top: 1),
-                      child: AlertSourceChip(source: alert.source),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            alert.title ?? alert.message,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: AppTextStyles.bodyRegular.copyWith(
-                              fontSize: 13.5,
-                              color: cs.onSurface,
-                              fontWeight: FontWeight.w600,
-                              height: 1.3,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '剛剛 · 服務中斷',
-                            style: AppTextStyles.memo.copyWith(
-                              fontSize: 11,
-                              color: cs.onSurfaceVariant,
-                              height: 1.2,
-                            ),
-                          ),
-                        ],
+              behavior: HitTestBehavior.opaque,
+              onVerticalDragStart: _onDragStart,
+              onVerticalDragUpdate: _onDragUpdate,
+              onVerticalDragEnd: _onDragEnd,
+              onVerticalDragCancel: _onDragCancel,
+              child: Pressable(
+                onTap: widget.onTap,
+                semanticLabel: alert.title ?? alert.message,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                  decoration: BoxDecoration(
+                    color: cs.brightness == Brightness.light
+                        ? Colors.white
+                        : cs.surfaceContainerHigh,
+                    borderRadius: BorderRadius.circular(AppTheme.radiusCard),
+                    boxShadow: AppShadows.floating,
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 1),
+                        child: AlertSourceChip(source: alert.source),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Icon(
-                      Icons.chevron_right_rounded,
-                      size: 20,
-                      color: cs.outline,
-                    ),
-                  ],
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              alert.title ?? alert.message,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: AppTextStyles.bodyRegular.copyWith(
+                                fontSize: 13.5,
+                                color: cs.onSurface,
+                                fontWeight: FontWeight.w600,
+                                height: 1.3,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              '剛剛 · 服務中斷',
+                              style: AppTextStyles.memo.copyWith(
+                                fontSize: 11,
+                                color: cs.onSurfaceVariant,
+                                height: 1.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Icon(
+                        Icons.chevron_right_rounded,
+                        size: 20,
+                        color: cs.outline,
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ),

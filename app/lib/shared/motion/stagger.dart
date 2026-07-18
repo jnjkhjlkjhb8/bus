@@ -7,12 +7,20 @@ class StaggerItem extends StatefulWidget {
     required this.index,
     required this.child,
     this.maxStep = 8,
+    this.animate = true,
     super.key,
   });
 
   final int index;
   final Widget child;
   final int maxStep;
+
+  /// Whether to play the entrance transition at all. Callers pass false for
+  /// items that have already appeared once in this list instance (tracked by
+  /// the caller, e.g. per `itemKey`) — a row scrolling back into view during
+  /// steady-state scrolling must show its content immediately, not replay
+  /// the fade/slide.
+  final bool animate;
 
   @override
   State<StaggerItem> createState() => _StaggerItemState();
@@ -33,6 +41,10 @@ class _StaggerItemState extends State<StaggerItem>
       begin: const Offset(0, 0.08),
       end: Offset.zero,
     ).animate(CurvedAnimation(parent: _ctrl, curve: AppMotion.easeOut));
+    if (!widget.animate) {
+      _ctrl.value = 1;
+      return;
+    }
     final step = widget.index < widget.maxStep ? widget.index : widget.maxStep;
     unawaited(
       Future.delayed(Duration(milliseconds: step * 50), () {

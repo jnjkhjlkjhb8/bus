@@ -33,7 +33,12 @@ class AppTabs extends StatelessWidget {
         unselectedLabelStyle: AppTextStyles.bodyRegular,
         tabAlignment: scrollable ? TabAlignment.start : TabAlignment.fill,
         splashFactory: NoSplash.splashFactory,
-        overlayColor: WidgetStateProperty.all(Colors.transparent),
+        overlayColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.pressed)) {
+            return cs.onSurface.withValues(alpha: 0.08);
+          }
+          return Colors.transparent;
+        }),
         tabs: tabs.map((t) => Tab(height: 44, text: t)).toList(),
       ),
     );

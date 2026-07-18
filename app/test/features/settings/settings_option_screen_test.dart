@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_car/features/settings/settings_option_screen.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 
 void main() {
   testWidgets('option row tap target is at least 44x44 (HIG minimum)', (
@@ -16,12 +17,11 @@ void main() {
       ),
     );
 
-    final inkWells = find.byType(InkWell);
-    expect(inkWells, findsNWidgets(3));
-    for (final element in inkWells.evaluate()) {
-      final size = tester.getSize(find.byWidget(element.widget));
+    for (final label in ['A', 'B', 'C']) {
+      final row = find.widgetWithText(Pressable, label);
+      expect(row, findsOneWidget);
       expect(
-        size.height,
+        tester.getSize(row).height,
         greaterThanOrEqualTo(44),
         reason: 'option row tap target must be >= 44 logical px tall',
       );

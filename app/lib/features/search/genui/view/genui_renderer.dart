@@ -48,7 +48,6 @@ class GenUiRenderer extends StatelessWidget {
             fontSize: 11,
             fontWeight: FontWeight.w600,
             color: cs.onSurfaceVariant,
-            letterSpacing: 0.04,
           ),
         );
       case GenUiText():
@@ -230,6 +229,7 @@ class _StaggerIn extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (AppMotion.reduced(context)) return child;
     final delay = _step * index;
     final total = AppMotion.medium + delay;
     final start = delay.inMilliseconds / total.inMilliseconds;

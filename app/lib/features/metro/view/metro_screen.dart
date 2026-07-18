@@ -7,6 +7,7 @@ import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/models/favorite.dart';
 import 'package:wheres_the_car/data/models/journey_info.dart';
 import 'package:wheres_the_car/data/models/metro_map_models.dart';
@@ -106,7 +107,12 @@ Widget metroDetailPreview() {
 }
 
 class MetroScreen extends StatefulWidget {
-  const MetroScreen({super.key});
+  const MetroScreen({super.key, this.initialStation});
+
+  /// Station to pre-select on open (matched by map id or display name), so
+  /// entry points that already know the station — e.g. a search result —
+  /// land on it instead of the bare map.
+  final String? initialStation;
 
   @override
   State<MetroScreen> createState() => _MetroScreenState();
@@ -119,6 +125,21 @@ class _MetroScreenState extends State<MetroScreen> {
   MetroMapStation? _prevSelected;
   _MapMode _mode = _MapMode.time;
   final _metroBloc = MetroBloc();
+
+  @override
+  void initState() {
+    super.initState();
+    final query = widget.initialStation;
+    if (query == null || query.isEmpty) return;
+    for (final s in metroMapStations) {
+      if (s.id == query || s.name == query) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _selectStation(s);
+        });
+        break;
+      }
+    }
+  }
 
   @override
   void dispose() {

@@ -39,6 +39,18 @@ class BadgePage extends StatelessWidget {
               ],
             ),
           ),
+          ShowcaseSection(
+            title: 'Data Color',
+            child: Row(
+              children: [
+                AppBadge(label: '自強', color: Color(0xFF1B5E20)),
+                SizedBox(width: 8),
+                AppBadge(label: '區間', color: Color(0xFFFFC107)),
+                SizedBox(width: 8),
+                AppBadge(label: '676', color: Color(0xFFE65100)),
+              ],
+            ),
+          ),
         ],
       ),
     );

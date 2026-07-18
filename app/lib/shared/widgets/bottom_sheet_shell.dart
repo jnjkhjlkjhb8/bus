@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/core/haptics/haptic_service.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 
 /// The single source of truth for bottom-sheet snap heights.
 ///
@@ -179,26 +181,44 @@ class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector> {
   Timer? _exitTimer;
   bool _isHoldingOverflow = false;
 
+  /// 0..1 telegraph strength while dwelling in the overflow, so the sheet
+  /// visibly gives before it commits instead of exiting on a silent timer.
+  double _overflowT = 0;
+
+  /// Overflow (px) at which the telegraph reaches full strength.
+  static const _maxOverflowPx = 64.0;
+
   void _startTimer() {
     if (_exitTimer != null) return;
     _isHoldingOverflow = true;
-    _exitTimer = Timer(const Duration(milliseconds: 300), () {
+    // Paired with AppMotion.sheet (280ms) instead of an independent
+    // hardcoded value, so the dwell before exit and the sheet's own settle
+    // animation move at the same tempo.
+    _exitTimer = Timer(AppMotion.sheet, () {
       if (_isHoldingOverflow && mounted) {
+        unawaited(HapticService.instance.mediumTap());
         widget.onExit();
       }
       _cleanup();
     });
   }
 
+  void _updateOverflow(double overflow) {
+    final t = (overflow / _maxOverflowPx).clamp(0.0, 1.0);
+    if (t != _overflowT && mounted) setState(() => _overflowT = t);
+  }
+
   void _cleanup() {
     _exitTimer?.cancel();
     _exitTimer = null;
     _isHoldingOverflow = false;
+    if (_overflowT != 0 && mounted) setState(() => _overflowT = 0);
   }
 
   @override
   void dispose() {
-    _cleanup();
+    _exitTimer?.cancel();
+    _exitTimer = null;
     super.dispose();
   }
 
@@ -213,6 +233,7 @@ class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector> {
 
           if (isAtMax && notification.overflow > 0) {
             _startTimer();
+            _updateOverflow(notification.overflow);
           } else {
             _cleanup();
           }
@@ -221,7 +242,17 @@ class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector> {
         }
         return false;
       },
-      child: widget.child,
+      // Telegraph: the sheet dims and gives slightly the longer the overflow
+      // is held, so the exit reads as a physical give-way instead of an
+      // unannounced timeout.
+      child: Opacity(
+        opacity: 1 - _overflowT * 0.08,
+        child: Transform.scale(
+          scale: 1 - _overflowT * 0.015,
+          alignment: Alignment.topCenter,
+          child: widget.child,
+        ),
+      ),
     );
   }
 }

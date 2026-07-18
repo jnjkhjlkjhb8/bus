@@ -4,6 +4,8 @@ class BikeStationState extends Equatable {
   const BikeStationState({
     this.name = '',
     this.capacity = 0,
+    this.lat = 0,
+    this.lon = 0,
     this.available = 0,
     this.returnDocks = 0,
     this.generalBikes = 0,
@@ -16,6 +18,8 @@ class BikeStationState extends Equatable {
 
   final String name;
   final int capacity;
+  final double lat;
+  final double lon;
   final int available;
   final int returnDocks;
   final int generalBikes;
@@ -39,6 +43,8 @@ class BikeStationState extends Equatable {
   BikeStationState copyWith({
     String? name,
     int? capacity,
+    double? lat,
+    double? lon,
     int? available,
     int? returnDocks,
     int? generalBikes,
@@ -52,6 +58,8 @@ class BikeStationState extends Equatable {
   }) => BikeStationState(
     name: name ?? this.name,
     capacity: capacity ?? this.capacity,
+    lat: lat ?? this.lat,
+    lon: lon ?? this.lon,
     available: available ?? this.available,
     returnDocks: returnDocks ?? this.returnDocks,
     generalBikes: generalBikes ?? this.generalBikes,
@@ -66,6 +74,8 @@ class BikeStationState extends Equatable {
   List<Object?> get props => [
     name,
     capacity,
+    lat,
+    lon,
     available,
     returnDocks,
     generalBikes,

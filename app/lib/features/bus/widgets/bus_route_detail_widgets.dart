@@ -232,6 +232,15 @@ class _OperatorRow extends StatelessWidget {
   static Future<void> _open(String url) async {
     final uri = Uri.tryParse(url);
     if (uri == null) return;
+    final inApp = uri.scheme == 'https' || uri.scheme == 'http';
+    if (inApp) {
+      try {
+        await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
+        return;
+      } on Object catch (_) {
+        // Fall through to the external handler below.
+      }
+    }
     await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
@@ -801,16 +810,17 @@ class _Timetable extends StatelessWidget {
               color: cs.onSurface,
             ),
           ),
-          // Fixed-height tag slot keeps the time baseline aligned across the
-          // grid whether or not a cell carries a tag. 下一班 wins over 低地板
-          // when a trip is both.
-          SizedBox(
-            height: 14,
+          // Minimum-height tag slot keeps the time baseline aligned across
+          // the grid whether or not a cell carries a tag, while still
+          // growing with the tag text at large accessibility scales instead
+          // of clipping it. 下一班 wins over 低地板 when a trip is both.
+          ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 14),
             child: info.isNext
                 ? _tag('下一班', cs.onSurface, FontWeight.w700)
                 : info.lowFloor
                 ? _tag('低地板', cs.onSurfaceVariant, FontWeight.w600)
-                : null,
+                : const SizedBox.shrink(),
           ),
         ],
       ),

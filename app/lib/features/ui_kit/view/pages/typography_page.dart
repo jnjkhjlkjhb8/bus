@@ -32,11 +32,6 @@ class TypographyPage extends StatelessWidget {
                   ),
                   SizedBox(height: 8),
                   Text('Body Small — 12px 400', style: AppTextStyles.bodySmall),
-                  SizedBox(height: 8),
-                  Text(
-                    'Body Very Small — 8px 400',
-                    style: AppTextStyles.bodyVerySmall,
-                  ),
                 ],
               ),
             ),

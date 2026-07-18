@@ -21,8 +21,19 @@ import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.
 import 'package:wheres_the_car/features/live_activity/bloc/stop_board_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/view/journey_pip_card.dart';
 
+// the floor must never double as a ceiling — it must not silently roll
+// back a larger system-level accessibility preference. Keep this
+// clamp-min-only; any max clamp lives in a separate step (see
+// [applyLargeTextCeiling]) so both compose without either one reintroducing
+// the old regression.
 TextScaler applyLargeTextFloor(TextScaler systemScaler) =>
     systemScaler.clamp(minScaleFactor: 1.3);
+
+/// Caps very large system text scales so fixed-height rows (list tiles,
+/// chips, the nav bar) don't clip. Applied on top of [applyLargeTextFloor]
+/// (or standalone when the large-text toggle is off) — never inside it.
+TextScaler applyLargeTextCeiling(TextScaler systemScaler) =>
+    systemScaler.clamp(maxScaleFactor: 2);
 
 class App extends StatefulWidget {
   const App({required this.bootstrap, this.debugRouter, super.key});
@@ -275,15 +286,14 @@ class _AppShellViewState extends State<_AppShellView> {
         debugShowCheckedModeBanner: false,
         builder: (context, child) {
           var base = child!;
-          if (HiveStore.largeText) {
-            final mq = MediaQuery.of(context);
-            base = MediaQuery(
-              data: mq.copyWith(
-                textScaler: applyLargeTextFloor(mq.textScaler),
-              ),
-              child: base,
-            );
-          }
+          final mq = MediaQuery.of(context);
+          final floored = HiveStore.largeText
+              ? applyLargeTextFloor(mq.textScaler)
+              : mq.textScaler;
+          base = MediaQuery(
+            data: mq.copyWith(textScaler: applyLargeTextCeiling(floored)),
+            child: base,
+          );
           return _PipGate(
             child: ForceUpdateGate(child: NotificationToastHost(child: base)),
           );

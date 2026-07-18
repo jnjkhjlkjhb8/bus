@@ -9,7 +9,6 @@ import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
@@ -338,14 +337,14 @@ class _RailScreenState extends State<RailScreen> {
                     }
                     final items = _rowsFor(state);
                     if (items.isEmpty) {
+                      // A successful query that simply found no departures in
+                      // this window is not an error — ErrorStateView (with its
+                      // retry button) would imply the request failed and
+                      // retrying might help, when the fix is to change the
+                      // search itself.
                       return ListView(
-                        padding: EdgeInsets.fromLTRB(16, topPad + 68, 16, 16),
-                        children: [
-                          ErrorStateView(
-                            error: const NotFoundError(),
-                            onRetry: _dispatchSearch,
-                          ),
-                        ],
+                        padding: EdgeInsets.fromLTRB(24, topPad + 68, 24, 24),
+                        children: const [_NoTimetableEmpty()],
                       );
                     }
                     // The sheet offset changes every frame while the query
@@ -416,10 +415,7 @@ class _RailScreenState extends State<RailScreen> {
                 child: Row(
                   children: [
                     AppBarCircleButton(
-                      onTap: () {
-                        unawaited(HapticService.instance.lightTap());
-                        context.pop();
-                      },
+                      onTap: context.pop,
                       semanticLabel: '返回',
                       child: Icon(
                         Icons.arrow_back_ios_new_rounded,
@@ -430,8 +426,11 @@ class _RailScreenState extends State<RailScreen> {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Container(
-                        height: 42,
-                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        constraints: const BoxConstraints(minHeight: 42),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 6,
+                        ),
                         decoration: BoxDecoration(
                           color: cs.brightness == Brightness.light
                               ? Colors.white
@@ -447,8 +446,7 @@ class _RailScreenState extends State<RailScreen> {
                               _hasSubmittedQuery
                                   ? '$_originName ➔ $_destName'
                                   : '列車時刻查詢',
-                              style: TextStyle(
-                                fontSize: 13,
+                              style: AppTextStyles.bodySmall.copyWith(
                                 fontWeight: FontWeight.w700,
                                 color: cs.onSurface,
                                 height: 1.1,
@@ -457,9 +455,7 @@ class _RailScreenState extends State<RailScreen> {
                             const SizedBox(height: 2),
                             Text(
                               _formatDateDisplay(_selectedDate),
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w400,
+                              style: AppTextStyles.bodyVerySmall.copyWith(
                                 color: cs.onSurfaceVariant,
                                 height: 1.1,
                               ),
@@ -507,6 +503,42 @@ class _RailScreenState extends State<RailScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A successful timetable query with zero departures in the requested
+/// window — distinct from [ErrorStateView], which implies the request
+/// itself failed and a retry might help.
+class _NoTimetableEmpty extends StatelessWidget {
+  const _NoTimetableEmpty();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.event_busy_rounded, size: 40, color: cs.outline),
+          const SizedBox(height: 16),
+          Text(
+            '這個時段沒有班次',
+            textAlign: TextAlign.center,
+            style: AppTextStyles.bodyRegular.copyWith(
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '試試更換時間、日期或方向',
+            textAlign: TextAlign.center,
+            style: AppTextStyles.bodySmall.copyWith(
+              color: cs.outline,
+            ),
+          ),
+        ],
       ),
     );
   }

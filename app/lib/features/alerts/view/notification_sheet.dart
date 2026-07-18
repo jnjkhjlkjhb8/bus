@@ -20,7 +20,6 @@ Color severityColor(AlertSeverity level, ColorScheme cs) =>
     level == AlertSeverity.red ? cs.error : AppTheme.etaApproaching;
 
 Future<void> showNotificationSheet(BuildContext context) async {
-  unawaited(HapticService.instance.lightTap());
   final bloc = context.read<AlertBloc>();
   final unreadAtOpen = bloc.state.unreadAlerts.map((a) => a.message).toSet();
   bloc.add(const AlertAllRead());
@@ -261,50 +260,46 @@ class _NotificationRowState extends State<_NotificationRow> {
           ],
         );
 
-        return Semantics(
-          button: canExpand,
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: canExpand ? _toggle : null,
-            child: AnimatedSize(
-              duration: MediaQuery.disableAnimationsOf(context)
-                  ? Duration.zero
-                  : AppMotion.short,
-              curve: AppMotion.easeOut,
-              alignment: Alignment.topCenter,
-              child: Container(
-                color: background,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 20,
-                  vertical: 16,
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(child: content),
-                    if (unread) ...[
-                      const SizedBox(width: 12),
-                      Container(
-                        width: 8,
-                        height: 8,
-                        margin: const EdgeInsets.only(top: 4),
-                        decoration: BoxDecoration(
-                          color: dotColor,
-                          shape: BoxShape.circle,
-                        ),
+        return Pressable(
+          onTap: canExpand ? _toggle : null,
+          child: AnimatedSize(
+            duration: MediaQuery.disableAnimationsOf(context)
+                ? Duration.zero
+                : AppMotion.short,
+            curve: AppMotion.easeOut,
+            alignment: Alignment.topCenter,
+            child: Container(
+              color: background,
+              padding: const EdgeInsets.symmetric(
+                horizontal: 20,
+                vertical: 16,
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: content),
+                  if (unread) ...[
+                    const SizedBox(width: 12),
+                    Container(
+                      width: 8,
+                      height: 8,
+                      margin: const EdgeInsets.only(top: 4),
+                      decoration: BoxDecoration(
+                        color: dotColor,
+                        shape: BoxShape.circle,
                       ),
-                    ] else if (canExpand) ...[
-                      const SizedBox(width: 12),
-                      Icon(
-                        _expanded
-                            ? Icons.keyboard_arrow_up_rounded
-                            : Icons.keyboard_arrow_down_rounded,
-                        size: 18,
-                        color: cs.outline,
-                      ),
-                    ],
+                    ),
+                  ] else if (canExpand) ...[
+                    const SizedBox(width: 12),
+                    Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_up_rounded
+                          : Icons.keyboard_arrow_down_rounded,
+                      size: 18,
+                      color: cs.outline,
+                    ),
                   ],
-                ),
+                ],
               ),
             ),
           ),

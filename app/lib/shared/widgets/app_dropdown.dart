@@ -2,6 +2,7 @@ import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 
 class AppDropdown<T> extends StatefulWidget {
   const AppDropdown({
@@ -27,6 +28,7 @@ class _AppDropdownState<T> extends State<AppDropdown<T>> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final reduceMotion = AppMotion.reduced(context);
     return DropdownButtonHideUnderline(
       child: DropdownButton2<T>(
         isExpanded: true,
@@ -74,7 +76,7 @@ class _AppDropdownState<T> extends State<AppDropdown<T>> {
               ),
             ],
           ),
-          openInterval: const Interval(0, 1, curve: Curves.easeOut),
+          openInterval: const Interval(0, 1, curve: AppMotion.easeOut),
         ),
         menuItemStyleData: const MenuItemStyleData(
           padding: EdgeInsets.zero,
@@ -83,8 +85,8 @@ class _AppDropdownState<T> extends State<AppDropdown<T>> {
         iconStyleData: IconStyleData(
           icon: AnimatedRotation(
             turns: _isOpen ? 0.5 : 0,
-            duration: const Duration(milliseconds: 150),
-            curve: Curves.easeOut,
+            duration: reduceMotion ? Duration.zero : AppMotion.micro,
+            curve: AppMotion.easeOut,
             child: Icon(
               Icons.keyboard_arrow_down_rounded,
               color: cs.onSurfaceVariant,

@@ -55,7 +55,9 @@ void _navigateToResult(BuildContext context, SearchResult result) {
         context.push(AppRoutes.bikeStationLocation(stationUid: result.uid)),
       );
     case SearchResultType.mrtStation:
-      unawaited(context.push(AppRoutes.metro));
+      // Land on the picked station, not the bare map. Matched by name (the
+      // search uid and the map's station ids use different code schemes).
+      unawaited(context.push(AppRoutes.metro, extra: result.name));
     case SearchResultType.traTrain:
     case SearchResultType.thsrTrain:
       unawaited(
@@ -284,82 +286,124 @@ class _SearchViewState extends State<_SearchView> {
           Expanded(
             child: BlocBuilder<SearchBloc, SearchState>(
               builder: (context, state) {
-                if (state.loading) {
-                  return Center(
-                    child: AppSpinner(
-                      strokeWidth: 2,
-                      color: cs.onSurfaceVariant,
-                    ),
-                  );
-                }
-
-                if (state.query.isEmpty) {
-                  return const _RecentSearches();
-                }
-
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
-                      color: cs.surface,
-                      child: Text(
-                        '搜尋結果',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: cs.onSurfaceVariant,
-                          letterSpacing: 0.04,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: state.error != null
-                          ? ErrorStateView(
-                              error: state.error!,
-                              onRetry: () => context.read<SearchBloc>().add(
-                                SearchQueryChanged(state.query),
-                              ),
-                            )
-                          : state.results.isEmpty
-                          ? Center(
-                              child: Text(
-                                '找不到結果',
-                                style: AppTextStyles.bodyRegular.copyWith(
-                                  color: cs.onSurfaceVariant,
-                                ),
-                              ),
-                            )
-                          : ListView.separated(
-                              padding: EdgeInsets.only(bottom: bottomPad + 16),
-                              itemCount: state.results.length,
-                              separatorBuilder: (_, _) => Divider(
-                                height: 1,
-                                thickness: 0.5,
-                                color: cs.outlineVariant,
-                              ),
-                              itemBuilder: (context, index) {
-                                final result = state.results[index];
-                                return _SearchResultRow(
-                                  result: result,
-                                  transportType: _transportType(result.type),
-                                  onTap: () =>
-                                      _navigateToResult(context, result),
-                                );
-                              },
-                            ),
-                    ),
-                  ],
+                final body = _buildBody(context, state, cs, bottomPad);
+                final reduceMotion = MediaQuery.disableAnimationsOf(context);
+                return AnimatedSwitcher(
+                  duration: reduceMotion ? Duration.zero : AppMotion.short,
+                  switchInCurve: AppMotion.easeOut,
+                  switchOutCurve: AppMotion.easeOut,
+                  child: KeyedSubtree(
+                    key: ValueKey(_bodyKey(state)),
+                    child: body,
+                  ),
                 );
               },
             ),
           ),
         ],
       ),
+    );
+  }
+
+  // Distinguishes the body states for the AnimatedSwitcher. A query that is
+  // still loading but already has results to show (from a previous query)
+  // keeps the 'results' key — see F1: the full-screen spinner only replaces
+  // the body when there is nothing to show yet, otherwise stale results
+  // stay on screen (with scroll position) while a thin progress bar overlays
+  // them. The 'results' key is intentionally constant across queries so a
+  // new results list replaces the old one in place without a crossfade —
+  // only state-kind changes animate.
+  String _bodyKey(SearchState state) {
+    if (state.loading && state.results.isEmpty) return 'loading';
+    if (state.query.isEmpty) return 'recents';
+    if (state.error != null) return 'error';
+    if (state.results.isEmpty) return 'empty';
+    return 'results';
+  }
+
+  Widget _buildBody(
+    BuildContext context,
+    SearchState state,
+    ColorScheme cs,
+    double bottomPad,
+  ) {
+    if (state.loading && state.results.isEmpty) {
+      return Center(
+        child: AppSpinner(
+          strokeWidth: 2,
+          color: cs.onSurfaceVariant,
+        ),
+      );
+    }
+
+    if (state.query.isEmpty) {
+      return const _RecentSearches();
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(
+            horizontal: 20,
+            vertical: 12,
+          ),
+          color: cs.surface,
+          child: Text(
+            '搜尋結果',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+        ),
+        if (state.loading)
+          SizedBox(
+            height: 2,
+            child: LinearProgressIndicator(
+              minHeight: 2,
+              backgroundColor: Colors.transparent,
+              color: cs.onSurfaceVariant.withValues(alpha: 0.4),
+            ),
+          ),
+        Expanded(
+          child: state.error != null
+              ? ErrorStateView(
+                  error: state.error!,
+                  onRetry: () => context.read<SearchBloc>().add(
+                    SearchQueryChanged(state.query),
+                  ),
+                )
+              : state.results.isEmpty
+              ? Center(
+                  child: Text(
+                    '找不到結果',
+                    style: AppTextStyles.bodyRegular.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
+                  ),
+                )
+              : ListView.separated(
+                  padding: EdgeInsets.only(bottom: bottomPad + 16),
+                  itemCount: state.results.length,
+                  separatorBuilder: (_, _) => Divider(
+                    height: 1,
+                    thickness: 0.5,
+                    color: cs.outlineVariant,
+                  ),
+                  itemBuilder: (context, index) {
+                    final result = state.results[index];
+                    return _SearchResultRow(
+                      result: result,
+                      transportType: _transportType(result.type),
+                      onTap: () => _navigateToResult(context, result),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 }

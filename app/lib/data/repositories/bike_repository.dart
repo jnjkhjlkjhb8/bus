@@ -12,7 +12,12 @@ class BikeRepository {
 
   Future<BikeStationInfo> stationStatic(String stationUid) async {
     final s = await _grpc.static(Bike_request(stationUID: stationUid));
-    return BikeStationInfo(name: s.name, capacity: s.capacity);
+    return BikeStationInfo(
+      name: s.name,
+      capacity: s.capacity,
+      lat: double.tryParse(s.lat) ?? 0,
+      lon: double.tryParse(s.lon) ?? 0,
+    );
   }
 
   /// Server-streaming: emits decoded availability updates until cancelled.

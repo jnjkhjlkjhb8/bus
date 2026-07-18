@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_switch.dart';
 
 /// A labelled group of settings rows.
@@ -43,11 +44,14 @@ class SettingsSwitchRow extends StatelessWidget {
   final ValueChanged<bool>? onChanged;
 
   @override
-  Widget build(BuildContext context) => ListTile(
-    leading: icon == null ? null : Icon(icon),
-    title: Text(title),
-    subtitle: subtitle == null ? null : Text(subtitle!),
-    trailing: AppSwitch(value: value, onChanged: onChanged),
+  Widget build(BuildContext context) => Pressable(
     onTap: onChanged == null ? null : () => onChanged!(!value),
+    semanticLabel: title,
+    child: ListTile(
+      leading: icon == null ? null : Icon(icon),
+      title: Text(title),
+      subtitle: subtitle == null ? null : Text(subtitle!),
+      trailing: AppSwitch(value: value, onChanged: onChanged),
+    ),
   );
 }

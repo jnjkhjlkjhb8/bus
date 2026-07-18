@@ -5,6 +5,7 @@ import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_badge.dart';
 
 String formatClock(String raw) {
   if (raw.isEmpty) return '';
@@ -87,12 +88,24 @@ class RouteOptionCard extends StatelessWidget {
         ],
         const Spacer(),
         if (arrival.isNotEmpty)
-          Text(
-            '抵達 $arrival',
-            style: AppTextStyles.bodySmall.copyWith(
-              color: cs.onSurfaceVariant,
-              fontFeatures: AppTextStyles.tabularFigures,
-            ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '抵達 ',
+                style: AppTextStyles.bodySmall.copyWith(
+                  color: cs.onSurfaceVariant,
+                ),
+              ),
+              Text(
+                arrival,
+                style: AppTextStyles.memo.copyWith(
+                  fontSize: AppTextStyles.bodySmall.fontSize,
+                  color: cs.onSurfaceVariant,
+                  fontFeatures: AppTextStyles.tabularFigures,
+                ),
+              ),
+            ],
           ),
         if (onToggleSave != null) ...[
           const SizedBox(width: 8),
@@ -250,11 +263,11 @@ class _LegStrip extends StatelessWidget {
         );
       } else {
         children.add(
-          _LinePill(
-            label: sectionLabel(s),
-            minutes: sectionMinutes(s),
+          AppBadge(
+            label: detailed
+                ? '${sectionLabel(s)} · ${sectionMinutes(s)}分'
+                : sectionLabel(s),
             color: color,
-            detailed: detailed,
           ),
         );
       }
@@ -275,38 +288,6 @@ class _LegStrip extends StatelessWidget {
       crossAxisAlignment: WrapCrossAlignment.center,
       runSpacing: 6,
       children: children,
-    );
-  }
-}
-
-class _LinePill extends StatelessWidget {
-  const _LinePill({
-    required this.label,
-    required this.minutes,
-    required this.color,
-    required this.detailed,
-  });
-
-  final String label;
-  final int minutes;
-  final Color color;
-  final bool detailed;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(AppTheme.radiusChip),
-      ),
-      child: Text(
-        detailed ? '$label · $minutes分' : label,
-        style: AppTextStyles.bodySmall.copyWith(
-          color: Colors.white,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
     );
   }
 }

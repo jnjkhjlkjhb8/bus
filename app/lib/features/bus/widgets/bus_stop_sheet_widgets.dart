@@ -28,8 +28,21 @@ class _StopSheet extends StatelessWidget {
 /// derived tile view-models (recomputed in the bloc only when arrivals move),
 /// the member set, selection, status, and error — never on the freshness time,
 /// which the meta line owns. Build is pure layout over the bloc's derivation.
-class _StopBody extends StatelessWidget {
+class _StopBody extends StatefulWidget {
   const _StopBody();
+
+  @override
+  State<_StopBody> createState() => _StopBodyState();
+}
+
+class _StopBodyState extends State<_StopBody> {
+  // Rows are built lazily by the sliver, so a row that scrolls off-screen and
+  // back gets a brand-new StaggerItem element — this set is what tells that
+  // apart from a row appearing for the first time, so the entrance motion
+  // never replays during steady-state scrolling. Lives as long as this sheet
+  // (the State survives BlocBuilder rebuilds of the same element), so it's
+  // effectively "already played, for this sheet instance."
+  final Set<Object> _played = {};
 
   @override
   Widget build(BuildContext context) {
@@ -110,6 +123,7 @@ class _StopBody extends StatelessWidget {
         () => StaggerItem(
           key: ValueKey(a.itemKey),
           index: staggerIndex,
+          animate: _played.add(a.itemKey),
           child: _EtaChevronTile(
             arrival: a,
             highlighted: i == 0 && a.display.isComingSoon,
@@ -210,8 +224,8 @@ class _StationChip extends StatelessWidget {
         context.read<BusStopBloc>().add(BusStopStationSelected(uid));
       },
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        curve: Curves.easeInOut,
+        duration: AppMotion.micro,
+        curve: AppMotion.easeInOut,
         height: 36,
         padding: const EdgeInsets.symmetric(horizontal: 16),
         decoration: BoxDecoration(

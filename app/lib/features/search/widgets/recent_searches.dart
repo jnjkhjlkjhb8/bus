@@ -23,7 +23,6 @@ class _RecentSearches extends StatelessWidget {
               fontSize: 11,
               fontWeight: FontWeight.w600,
               color: cs.onSurfaceVariant,
-              letterSpacing: 0.04,
             ),
           ),
         ),

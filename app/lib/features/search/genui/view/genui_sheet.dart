@@ -202,7 +202,9 @@ class _GenUiSheetState extends State<_GenUiSheet> {
               const SizedBox(width: 12),
               Expanded(
                 child: AnimatedSwitcher(
-                  duration: AppMotion.short,
+                  duration: AppMotion.reduced(context)
+                      ? Duration.zero
+                      : AppMotion.short,
                   switchInCurve: AppMotion.easeOut,
                   switchOutCurve: AppMotion.easeOut,
                   child: Text(
@@ -259,8 +261,11 @@ class _GenUiSheetState extends State<_GenUiSheet> {
             ),
           );
         }
+        // Keyed by the prompt that produced this content (not object
+        // identity of `nodes`) so the stagger-in only replays for a
+        // genuinely new answer, not on every rebuild of the same one.
         return KeyedSubtree(
-          key: ValueKey(identityHashCode(state.nodes)),
+          key: ValueKey(state.lastPrompt),
           child: GenUiRenderer(
             nodes: state.nodes,
             refs: state.refs,

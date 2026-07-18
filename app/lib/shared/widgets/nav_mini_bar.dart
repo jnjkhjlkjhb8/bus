@@ -3,10 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
-import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/data/models/plan_models.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
@@ -70,18 +68,15 @@ class _MiniBar extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         child: Pressable(
           onTap: () {
-            unawaited(HapticService.instance.lightTap());
+            if (GoRouterState.of(context).uri.path == '/go') return;
             unawaited(context.push('/go'));
           },
           semanticLabel: '返回導航，往$dest',
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: cs.brightness == Brightness.light
-                  ? Colors.white
-                  : cs.surfaceContainerHigh,
+            decoration: AppTheme.floatingControl(
+              cs,
               borderRadius: BorderRadius.circular(AppTheme.radiusCard),
-              boxShadow: AppShadows.floating,
             ),
             child: Row(
               children: [
@@ -128,7 +123,8 @@ class _MiniBar extends StatelessWidget {
                 if (arrival.isNotEmpty)
                   Text(
                     arrival,
-                    style: AppTextStyles.bodyLarge.copyWith(
+                    style: AppTextStyles.memo.copyWith(
+                      fontSize: 16,
                       fontWeight: FontWeight.w700,
                       color: cs.onSurface,
                       fontFeatures: AppTextStyles.tabularFigures,

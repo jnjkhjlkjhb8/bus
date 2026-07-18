@@ -171,7 +171,8 @@ List<RouteBase> buildAppRoutes({
           ),
           GoRoute(
             path: AppRoutes.metro,
-            pageBuilder: (_, _) => _page(const MetroScreen()),
+            pageBuilder: (_, state) =>
+                _page(MetroScreen(initialStation: state.extra as String?)),
           ),
           GoRoute(
             path: AppRoutes.go,

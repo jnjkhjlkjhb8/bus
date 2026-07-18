@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
+
 enum AlertLevel { red, yellow }
 
-/// Dismissible alert card for service disruptions.
+/// Alert card for service disruptions.
 /// Red (severe) / Yellow (minor delay) — no gradients, M3 container colours.
 class AlertCard extends StatelessWidget {
   const AlertCard({
@@ -24,13 +28,24 @@ class AlertCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final bgColor = level == AlertLevel.red
-        ? cs.errorContainer
-        : cs.tertiaryContainer;
-    final fgColor = level == AlertLevel.red
-        ? cs.onErrorContainer
-        : cs.onTertiaryContainer;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final dark = theme.brightness == Brightness.dark;
+    // Yellow relies on the shared warning tokens: the app's ColorScheme never
+    // defines a tertiary swatch, so `cs.tertiaryContainer` falls back to grey
+    // and the severity distinction is lost.
+    final Color bgColor;
+    final Color fgColor;
+    if (level == AlertLevel.red) {
+      bgColor = cs.errorContainer;
+      fgColor = cs.onErrorContainer;
+    } else if (dark) {
+      bgColor = AppTheme.warningBgDark;
+      fgColor = AppTheme.warningInkDark;
+    } else {
+      bgColor = AppTheme.warningBg;
+      fgColor = AppTheme.warningInkLight;
+    }
     final icon = level == AlertLevel.red
         ? Icons.warning_rounded
         : Icons.info_rounded;
@@ -39,7 +54,7 @@ class AlertCard extends StatelessWidget {
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       decoration: BoxDecoration(
         color: bgColor,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(AppTheme.radiusCard),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -72,13 +87,15 @@ class AlertCard extends StatelessWidget {
               IconButton(
                 icon: Icon(Icons.expand_more_rounded, color: fgColor),
                 onPressed: onExpand,
-                visualDensity: VisualDensity.compact,
+                tooltip: '展開',
+                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
               ),
             if (onDismiss != null)
               IconButton(
                 icon: Icon(Icons.close_rounded, color: fgColor),
                 onPressed: onDismiss,
-                visualDensity: VisualDensity.compact,
+                tooltip: '關閉',
+                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
               ),
           ],
         ),
@@ -111,12 +128,12 @@ class _AnimatedAlertBannerState extends State<AnimatedAlertBanner>
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 280),
+      duration: AppMotion.sheet,
     );
     _slide = Tween<Offset>(
       begin: const Offset(0, -1),
       end: Offset.zero,
-    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
+    ).animate(CurvedAnimation(parent: _ctrl, curve: AppMotion.easeOut));
     if (widget.visible) unawaited(_ctrl.forward());
   }
 
@@ -124,7 +141,11 @@ class _AnimatedAlertBannerState extends State<AnimatedAlertBanner>
   void didUpdateWidget(covariant AnimatedAlertBanner old) {
     super.didUpdateWidget(old);
     if (widget.visible != old.visible) {
-      unawaited(widget.visible ? _ctrl.forward() : _ctrl.reverse());
+      if (AppMotion.reduced(context)) {
+        _ctrl.value = widget.visible ? 1 : 0;
+      } else {
+        unawaited(widget.visible ? _ctrl.forward() : _ctrl.reverse());
+      }
     }
   }
 
@@ -135,8 +156,12 @@ class _AnimatedAlertBannerState extends State<AnimatedAlertBanner>
   }
 
   @override
-  Widget build(BuildContext context) =>
-      SlideTransition(position: _slide, child: widget.child);
+  Widget build(BuildContext context) {
+    if (AppMotion.reduced(context)) {
+      return widget.visible ? widget.child : const SizedBox.shrink();
+    }
+    return SlideTransition(position: _slide, child: widget.child);
+  }
 }
 
 /// Red dot that pulses for active severe alerts.
@@ -179,7 +204,11 @@ class _PulsingAlertDotState extends State<PulsingAlertDot>
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, _) => Opacity(
-        opacity: disableAnimations ? 1.0 : (_ctrl.value < 0.5 ? 1.0 : 0.0),
+        // Sine-eased breathing instead of a hard on/off cut, which read as a
+        // strobe. Reduce-motion keeps the static fully-opaque fallback.
+        opacity: disableAnimations
+            ? 1.0
+            : 0.4 + 0.6 * (0.5 + 0.5 * math.sin(2 * math.pi * _ctrl.value)),
         child: Container(
           width: widget.size,
           height: widget.size,

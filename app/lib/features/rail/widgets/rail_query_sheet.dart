@@ -7,6 +7,7 @@ import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/core/haptics/haptic_service.dart';
 import 'package:wheres_the_car/core/storage/hive_store.dart';
 import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
 import 'package:wheres_the_car/shared/widgets/app_date_picker.dart';
@@ -19,7 +20,7 @@ import 'package:wheres_the_car/shared/widgets/tra_station_picker.dart';
 const List<FontFeature> _tnum = AppTextStyles.tabularFigures;
 
 /// Mode-pane cross-fade duration; ~200 ms sits in the app's short-motion band.
-const Duration _kPaneSwitch = Duration(milliseconds: 200);
+const Duration _kPaneSwitch = AppMotion.short;
 
 /// 高鐵品牌橘，僅用於車次晶片上的「高鐵」小標。
 const Color _thsrLabelColor = Color(0xFFDB5325);
@@ -236,7 +237,6 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
       : showTRAStationPicker(context);
 
   Future<void> _pickOrigin() async {
-    unawaited(HapticService.instance.lightTap());
     final name = await _showStationPicker();
     if (name != null && mounted) {
       setState(() {
@@ -247,7 +247,6 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
   }
 
   Future<void> _pickDest() async {
-    unawaited(HapticService.instance.lightTap());
     final name = await _showStationPicker();
     if (name != null && mounted) {
       setState(() {
@@ -258,7 +257,6 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
   }
 
   Future<void> _pickDate() async {
-    unawaited(HapticService.instance.lightTap());
     final cs = Theme.of(context).colorScheme;
     final picked = await showModalBottomSheet<DateTime>(
       context: context,
@@ -369,7 +367,6 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
             if (widget.onBack != null)
               Pressable(
                 onTap: () {
-                  unawaited(HapticService.instance.lightTap());
                   widget.onBack!();
                 },
                 semanticLabel: '返回',
@@ -413,12 +410,12 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
         else
           AnimatedSize(
             duration: _kPaneSwitch,
-            curve: Curves.easeOutCubic,
+            curve: AppMotion.easeOut,
             alignment: Alignment.topCenter,
             child: AnimatedSwitcher(
               duration: _kPaneSwitch,
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeOutCubic,
+              switchInCurve: AppMotion.easeOut,
+              switchOutCurve: AppMotion.easeOut,
               child: KeyedSubtree(key: ValueKey(_mode), child: pane),
             ),
           ),
@@ -489,7 +486,6 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
                   Expanded(
                     child: Pressable(
                       onTap: () async {
-                        unawaited(HapticService.instance.lightTap());
                         final picked = await AppTimePicker.show(
                           context,
                           _selectedTime,

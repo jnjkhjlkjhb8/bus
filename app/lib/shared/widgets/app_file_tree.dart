@@ -79,6 +79,7 @@ class _FileNodeTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final reduceMotion = AppMotion.reduced(context);
 
     final icon = node.isFolder
         ? (isExpanded ? Icons.folder_open_rounded : Icons.folder_rounded)
@@ -95,7 +96,7 @@ class _FileNodeTile extends StatelessWidget {
             if (node.isFolder)
               AnimatedRotation(
                 turns: isExpanded ? 0.25 : 0,
-                duration: const Duration(milliseconds: 150),
+                duration: reduceMotion ? Duration.zero : AppMotion.micro,
                 curve: AppMotion.easeOut,
                 child: Icon(
                   Icons.chevron_right_rounded,

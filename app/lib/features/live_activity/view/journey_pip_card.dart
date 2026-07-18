@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
 import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
 
@@ -49,8 +50,11 @@ class JourneyPipCard extends StatelessWidget {
                 if (waiting && s.eta != null)
                   Text(
                     '${s.eta!.inMinutes}分',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontFamily: 'JetBrainsMono',
+                    style: AppTextStyles.memo.copyWith(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      color: Theme.of(context).colorScheme.onSurface,
+                      fontFeatures: AppTextStyles.tabularFigures,
                     ),
                   ),
               ],

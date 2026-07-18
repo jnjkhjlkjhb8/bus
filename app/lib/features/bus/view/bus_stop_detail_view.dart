@@ -16,6 +16,7 @@ import 'package:wheres_the_car/data/models/favorite.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_event.dart';
 import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/motion/stagger.dart';
 import 'package:wheres_the_car/shared/widgets/error_state_view.dart';

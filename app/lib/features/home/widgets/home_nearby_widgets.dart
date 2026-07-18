@@ -54,8 +54,8 @@ class _FilterButtonGroup extends StatelessWidget {
                 onFilterChanged(filter);
               },
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                curve: Curves.easeInOut,
+                duration: AppMotion.micro,
+                curve: AppMotion.easeInOut,
                 height: 36,
                 padding: const EdgeInsets.symmetric(horizontal: 16),
                 decoration: BoxDecoration(
@@ -126,7 +126,6 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
   // Collapse the sheet to reveal the map, and smoothly return the list to the
   // top at the same time (via the sheet's own PrimaryScrollController).
   void _returnToMap() {
-    unawaited(HapticService.instance.lightTap());
     final scroll = PrimaryScrollController.maybeOf(context);
     if (scroll != null && scroll.hasClients) {
       unawaited(
@@ -190,8 +189,11 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
         Expanded(
           child: BlocBuilder<NearbyBloc, NearbyState>(
             builder: (context, state) {
+              final String kind;
+              final Widget body;
               if (state.loading && state.stations.isEmpty) {
-                return LayoutBuilder(
+                kind = 'loading';
+                body = LayoutBuilder(
                   builder: (context, constraints) {
                     // Each ShimmerRow is height + 8 (vertical margin); fill
                     // the viewport so the skeleton reads as a full list.
@@ -207,46 +209,67 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
                     );
                   },
                 );
-              }
-              if (state.error != null) {
-                return ErrorStateView(
+              } else if (state.error != null) {
+                kind = 'error';
+                body = ErrorStateView(
                   error: state.error!,
                   // Replays the exact failed query (dragged viewport or GPS,
                   // whichever it was) instead of falling back to device GPS.
                   onRetry: () =>
                       context.read<NearbyBloc>().add(const NearbyRetried()),
                 );
-              }
-              final items = _visibleStations(state.stations);
-              if (items.isEmpty) {
-                return const _NearbyEmpty();
-              }
-              return Stack(
-                children: [
-                  NotificationListener<ScrollNotification>(
-                    onNotification: _onScrollNotification,
-                    child: ListView.builder(
-                      physics: const AlwaysScrollableScrollPhysics(),
-                      padding: EdgeInsets.zero,
-                      itemCount: items.length,
-                      itemBuilder: (context, i) => _NearbyStationRow(
-                        station: items[i],
-                        onStationTap: widget.onStationTap,
+              } else {
+                final items = _visibleStations(state.stations);
+                if (items.isEmpty) {
+                  kind = 'empty';
+                  body = const _NearbyEmpty();
+                } else {
+                  kind = 'loaded';
+                  body = Stack(
+                    children: [
+                      NotificationListener<ScrollNotification>(
+                        onNotification: _onScrollNotification,
+                        child: ListView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: EdgeInsets.zero,
+                          itemCount: items.length,
+                          itemBuilder: (context, i) => StaggerItem(
+                            // Composite key: stationId alone is not guaranteed
+                            // unique across transit types in this mixed list.
+                            key: ValueKey(
+                              '${items[i].type.name}:${items[i].stationId}',
+                            ),
+                            index: i,
+                            child: _NearbyStationRow(
+                              station: items[i],
+                              onStationTap: widget.onStationTap,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 40,
-                    child: Center(
-                      child: _ReturnMapPill(
-                        visible: _showReturnMap,
-                        onTap: _returnToMap,
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 40,
+                        child: Center(
+                          child: _ReturnMapPill(
+                            visible: _showReturnMap,
+                            onTap: _returnToMap,
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ],
+                    ],
+                  );
+                }
+              }
+              // 'loaded' stays keyed constant across refreshes so location
+              // updates never re-fade the list.
+              final reduceMotion = MediaQuery.disableAnimationsOf(context);
+              return AnimatedSwitcher(
+                duration: reduceMotion ? Duration.zero : AppMotion.short,
+                switchInCurve: AppMotion.easeOut,
+                switchOutCurve: AppMotion.easeOut,
+                child: KeyedSubtree(key: ValueKey(kind), child: body),
               );
             },
           ),
@@ -318,7 +341,7 @@ class _ReturnMapPillState extends State<_ReturnMapPill>
     super.initState();
     _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 280),
+      duration: AppMotion.sheet,
       reverseDuration: const Duration(milliseconds: 160),
       value: widget.visible ? 1 : 0,
     );
@@ -332,7 +355,7 @@ class _ReturnMapPillState extends State<_ReturnMapPill>
     );
     _content = CurvedAnimation(
       parent: _ctrl,
-      curve: const Interval(0.65, 1, curve: Curves.easeOut),
+      curve: const Interval(0.65, 1, curve: AppMotion.easeOut),
     );
   }
 
@@ -436,7 +459,6 @@ class _NearbyStationRow extends StatelessWidget {
   final ValueChanged<NearStationViewModel> onStationTap;
 
   void _onTap(BuildContext context) {
-    unawaited(HapticService.instance.lightTap());
     onStationTap(station);
   }
 

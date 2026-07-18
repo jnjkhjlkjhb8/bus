@@ -75,9 +75,12 @@ class _MapModeChip extends StatelessWidget {
     return Semantics(
       button: true,
       selected: selected,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: () => onChanged(value),
+      child: Pressable(
+        onTap: () {
+          if (selected) return;
+          unawaited(HapticService.instance.lightTap());
+          onChanged(value);
+        },
         child: Container(
           height: 36,
           alignment: Alignment.center,
@@ -117,7 +120,7 @@ class _SystemPillState extends State<_SystemPill> {
     return Semantics(
       label: '切換捷運系統',
       button: true,
-      child: GestureDetector(
+      child: Pressable(
         onTap: () => _showPicker(context),
         child: Container(
           height: 44,
@@ -140,7 +143,7 @@ class _SystemPillState extends State<_SystemPill> {
               ),
               AnimatedRotation(
                 turns: _isPickerOpen ? 0.5 : 0.0,
-                duration: const Duration(milliseconds: 200),
+                duration: AppMotion.short,
                 child: Icon(
                   Icons.expand_more_rounded,
                   size: 18,

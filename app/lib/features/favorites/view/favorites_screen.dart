@@ -10,6 +10,7 @@ import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_event.dart';
 import 'package:wheres_the_car/features/favorites/bloc/favorites_state.dart';
 import 'package:wheres_the_car/features/favorites/favorite_actions.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
@@ -34,9 +35,19 @@ class FavoritesScreen extends StatelessWidget {
                     : '${items.length} 個收藏 · $pinnedCount 已釘選',
               ),
               Expanded(
-                child: items.isEmpty
-                    ? const _FavoritesEmpty()
-                    : _FavoritesList(items: items),
+                child: AnimatedSwitcher(
+                  duration: MediaQuery.disableAnimationsOf(context)
+                      ? Duration.zero
+                      : AppMotion.short,
+                  switchInCurve: AppMotion.easeOut,
+                  switchOutCurve: AppMotion.easeOut,
+                  child: items.isEmpty
+                      ? const _FavoritesEmpty()
+                      : KeyedSubtree(
+                          key: const ValueKey('favorites-list'),
+                          child: _FavoritesList(items: items),
+                        ),
+                ),
               ),
             ],
           );
@@ -127,7 +138,6 @@ class _FavoriteListRow extends StatelessWidget {
         ),
         child: Pressable(
           onTap: () {
-            unawaited(HapticService.instance.lightTap());
             openFavorite(context, fav);
           },
           semanticLabel: fav.title,

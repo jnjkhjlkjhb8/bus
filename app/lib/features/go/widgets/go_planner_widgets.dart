@@ -870,11 +870,15 @@ class _TimeChip extends StatelessWidget {
     final stamp =
         '${two(at.month)}/${two(at.day)} '
         '${two(at.hour)}:${two(at.minute)}';
-    final label = switch (mode) {
-      _TimeMode.leaveNow => '立即出發',
-      _TimeMode.departAt => '$stamp 出發',
-      _TimeMode.arriveBy => '$stamp 抵達',
+    final suffix = switch (mode) {
+      _TimeMode.leaveNow => null,
+      _TimeMode.departAt => ' 出發',
+      _TimeMode.arriveBy => ' 抵達',
     };
+    final sansStyle = AppTextStyles.bodySmall.copyWith(
+      color: cs.onSurface,
+      fontWeight: FontWeight.w600,
+    );
     return Pressable(
       onTap: onTap,
       semanticLabel: '選擇出發時間',
@@ -889,14 +893,20 @@ class _TimeChip extends StatelessWidget {
           children: [
             Icon(Icons.schedule_rounded, size: 16, color: cs.onSurface),
             const SizedBox(width: 6),
-            Text(
-              label,
-              style: AppTextStyles.bodySmall.copyWith(
-                color: cs.onSurface,
-                fontWeight: FontWeight.w600,
-                fontFeatures: AppTextStyles.tabularFigures,
+            if (suffix == null)
+              Text('立即出發', style: sansStyle)
+            else ...[
+              Text(
+                stamp,
+                style: AppTextStyles.memo.copyWith(
+                  fontSize: sansStyle.fontSize,
+                  fontWeight: sansStyle.fontWeight,
+                  color: sansStyle.color,
+                  fontFeatures: AppTextStyles.tabularFigures,
+                ),
               ),
-            ),
+              Text(suffix, style: sansStyle),
+            ],
           ],
         ),
       ),
@@ -945,7 +955,6 @@ class _TimeModeSheetState extends State<_TimeModeSheet> {
   late DateTime _at = widget.at;
 
   Future<void> _pickDate() async {
-    unawaited(HapticService.instance.lightTap());
     final cs = Theme.of(context).colorScheme;
     final picked = await showModalBottomSheet<DateTime>(
       context: context,
@@ -988,7 +997,6 @@ class _TimeModeSheetState extends State<_TimeModeSheet> {
   }
 
   Future<void> _pickTime() async {
-    unawaited(HapticService.instance.lightTap());
     final picked = await AppTimePicker.show(
       context,
       TimeOfDay(hour: _at.hour, minute: _at.minute),

@@ -22,8 +22,10 @@ import 'package:wheres_the_car/features/live_activity/bloc/stop_board_event.dart
 import 'package:wheres_the_car/features/live_activity/bloc/stop_board_state.dart';
 import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_car/shared/map/marker_factory.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
+import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 
 const _kDefaultPos = LatLng(25.0330, 121.5654);
@@ -48,6 +50,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
   late final SheetController _sheetController;
   late final BusStopBloc _bloc;
   BitmapDescriptor? _busIcon;
+  bool _locating = false;
 
   /// The one GPS fix requested for map init, shared between `initState` and
   /// `onMapCreated` (both race to move the camera as soon as it's ready) so
@@ -105,6 +108,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
   /// User-triggered recenter: always requests a fresh fix, unlike the shared
   /// one-shot [_initialPosition] used during map init.
   Future<void> _moveToCurrentLocation() async {
+    if (mounted) setState(() => _locating = true);
     try {
       final pos = await LocationService.instance.currentPosition();
       final controller = _controller;
@@ -117,6 +121,8 @@ class _BusStopScreenState extends State<BusStopScreen> {
       }
     } on Object catch (e, s) {
       CrashReporter.record(e, s);
+    } finally {
+      if (mounted) setState(() => _locating = false);
     }
   }
 
@@ -210,10 +216,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
                     child: Row(
                       children: [
                         AppBarCircleButton(
-                          onTap: () {
-                            unawaited(HapticService.instance.lightTap());
-                            context.pop();
-                          },
+                          onTap: context.pop,
                           semanticLabel: '返回',
                           child: Icon(
                             Icons.arrow_back_ios_new_rounded,
@@ -277,10 +280,19 @@ class _BusStopScreenState extends State<BusStopScreen> {
                     boxShadow: AppShadows.floating,
                   ),
                   child: Center(
-                    child: Icon(
-                      Icons.gps_fixed_rounded,
-                      size: 20,
-                      color: cs.onSurface,
+                    child: AnimatedSwitcher(
+                      duration: AppMotion.short,
+                      child: _locating
+                          ? const AppSpinner(
+                              key: ValueKey('locating'),
+                              size: 20,
+                            )
+                          : Icon(
+                              Icons.gps_fixed_rounded,
+                              key: const ValueKey('idle'),
+                              size: 20,
+                              color: cs.onSurface,
+                            ),
                     ),
                   ),
                 ),

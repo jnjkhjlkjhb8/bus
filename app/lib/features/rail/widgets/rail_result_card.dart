@@ -3,6 +3,7 @@ import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_car/shared/widgets/app_badge.dart';
 
 const List<FontFeature> _tnum = AppTextStyles.tabularFigures;
 
@@ -51,13 +52,16 @@ class RailResultCard extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final delayed = delayMinutes > 0;
     final hasRemark = remark != null && remark!.isNotEmpty;
+    final cardColor = highlighted
+        ? cs.primaryContainer
+        : cs.surfaceContainerLow;
 
     return Pressable(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
         decoration: BoxDecoration(
-          color: highlighted ? cs.primaryContainer : cs.surfaceContainerLow,
+          color: cardColor,
           borderRadius: BorderRadius.circular(AppTheme.radiusCard),
           boxShadow: highlighted ? null : AppShadows.cardFor(cs.brightness),
         ),
@@ -71,7 +75,7 @@ class RailResultCard extends StatelessWidget {
                 Expanded(
                   child: Row(
                     children: [
-                      _TrainTypeBadge(label: trainType, color: trainTypeColor),
+                      AppBadge(label: trainType, color: trainTypeColor),
                       const SizedBox(width: 8),
                       Text(
                         trainNo,
@@ -126,7 +130,12 @@ class RailResultCard extends StatelessWidget {
                     color: cs.onSurface,
                   ),
                 ),
-                Expanded(child: _JourneyConnector(duration: _duration)),
+                Expanded(
+                  child: _JourneyConnector(
+                    duration: _duration,
+                    endpointColor: cardColor,
+                  ),
+                ),
                 Text(
                   arrivalTime,
                   style: AppTextStyles.memo.copyWith(
@@ -204,37 +213,6 @@ class RailResultCard extends StatelessWidget {
   }
 }
 
-Color _badgeTextColor(Color bg) {
-  final l = bg.computeLuminance();
-  final whiteContrast = 1.05 / (l + 0.05);
-  final blackContrast = (l + 0.05) / 0.05;
-  return blackContrast >= whiteContrast ? Colors.black : Colors.white;
-}
-
-class _TrainTypeBadge extends StatelessWidget {
-  const _TrainTypeBadge({required this.label, required this.color});
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(AppTheme.radiusChip),
-      ),
-      child: Text(
-        label,
-        style: AppTextStyles.bodySmall.copyWith(
-          color: _badgeTextColor(color),
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-}
-
 class _DelayPill extends StatelessWidget {
   const _DelayPill({required this.minutes});
   final int minutes;
@@ -291,8 +269,15 @@ class _BookButton extends StatelessWidget {
 }
 
 class _JourneyConnector extends StatelessWidget {
-  const _JourneyConnector({required this.duration});
+  const _JourneyConnector({
+    required this.duration,
+    required this.endpointColor,
+  });
   final String duration;
+
+  /// Card surface behind the endpoint dots so they punch through instead of
+  /// hardcoding white, which reads as a stray patch in dark mode.
+  final Color endpointColor;
 
   @override
   Widget build(BuildContext context) {
@@ -337,7 +322,7 @@ class _JourneyConnector extends StatelessWidget {
                     width: 12,
                     height: 12,
                     decoration: BoxDecoration(
-                      color: Colors.white,
+                      color: endpointColor,
                       shape: BoxShape.circle,
                       border: Border.all(color: cs.outlineVariant, width: 3.5),
                     ),
@@ -349,7 +334,7 @@ class _JourneyConnector extends StatelessWidget {
                     width: 12,
                     height: 12,
                     decoration: BoxDecoration(
-                      color: Colors.white,
+                      color: endpointColor,
                       shape: BoxShape.circle,
                       border: Border.all(color: cs.outlineVariant, width: 3.5),
                     ),

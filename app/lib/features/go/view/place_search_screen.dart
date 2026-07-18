@@ -13,6 +13,7 @@ import 'package:wheres_the_car/features/go/model/planned_place.dart';
 import 'package:wheres_the_car/features/go/model/saved_place_icons.dart';
 import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_button.dart';
+import 'package:wheres_the_car/shared/widgets/app_dialog.dart';
 import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
 
@@ -123,7 +124,10 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
   List<PlannedPlace> _saved = const [];
   bool _loading = false;
   bool _resolvingLocation = false;
-  bool _picking = false;
+  // The placeId currently resolving a Places `details()` fetch (from either
+  // a tap-to-pick or a swipe-to-save), so only that row shows a busy state
+  // instead of the whole list.
+  String? _pickingId;
 
   @override
   void initState() {
@@ -194,18 +198,18 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
   }
 
   Future<void> _pickResult(PlaceSuggestion suggestion) async {
-    if (_picking) return;
+    if (_pickingId != null) return;
     unawaited(HapticService.instance.lightTap());
-    setState(() => _picking = true);
+    setState(() => _pickingId = suggestion.placeId);
     try {
       final place = await PlacesRepository.instance.details(suggestion.placeId);
       await PlaceRecentRepository.instance.add(place);
       if (!mounted) return;
       widget.onPicked(place);
-      if (mounted) setState(() => _picking = false);
+      if (mounted) setState(() => _pickingId = null);
     } on Object catch (_) {
       if (!mounted) return;
-      setState(() => _picking = false);
+      setState(() => _pickingId = null);
       AppSnackbar.show(context, '無法取得地點資訊', type: SnackType.error);
     }
   }
@@ -250,19 +254,19 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
   // A search result carries no coordinates, so resolve its details before
   // opening the save dialog — otherwise the pin would be stored at (0, 0).
   Future<void> _saveFromResult(PlaceSuggestion suggestion) async {
-    if (_picking) return;
-    setState(() => _picking = true);
+    if (_pickingId != null) return;
+    setState(() => _pickingId = suggestion.placeId);
     PlannedPlace place;
     try {
       place = await PlacesRepository.instance.details(suggestion.placeId);
     } on Object catch (_) {
       if (!mounted) return;
-      setState(() => _picking = false);
+      setState(() => _pickingId = null);
       AppSnackbar.show(context, '無法取得地點資訊', type: SnackType.error);
       return;
     }
     if (!mounted) return;
-    setState(() => _picking = false);
+    setState(() => _pickingId = null);
     await _saveFrom(place);
   }
 
@@ -393,6 +397,7 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
         itemCount: _results.length,
         itemBuilder: (context, i) => _ResultRow(
           result: _results[i],
+          loading: _pickingId == _results[i].placeId,
           onTap: () => _pickResult(_results[i]),
           onSave: () => _saveFromResult(_results[i]),
         ),
@@ -697,27 +702,43 @@ class _ResultRow extends StatelessWidget {
     required this.result,
     required this.onTap,
     required this.onSave,
+    this.loading = false,
   });
 
   final PlaceSuggestion result;
   final VoidCallback onTap;
   final VoidCallback onSave;
 
+  /// True while this row's Places `details()` fetch (from a tap or a
+  /// swipe-to-save) is in flight — shows a spinner in place of the leading
+  /// icon instead of leaving the tap with no visible busy state.
+  final bool loading;
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return _SwipeRow(
       dismissKey: ValueKey('dismiss-result-${result.placeId}'),
-      onSaveSwipe: onSave,
+      onSaveSwipe: loading ? null : onSave,
       child: _PlaceRow(
-        leading: Icon(
-          Icons.place_outlined,
-          size: 22,
-          color: cs.onSurfaceVariant,
-        ),
+        leading: loading
+            ? SizedBox(
+                width: 22,
+                height: 22,
+                child: AppSpinner(
+                  size: 18,
+                  strokeWidth: 2,
+                  color: cs.onSurfaceVariant,
+                ),
+              )
+            : Icon(
+                Icons.place_outlined,
+                size: 22,
+                color: cs.onSurfaceVariant,
+              ),
         title: result.primaryText,
         subtitle: result.secondaryText.isEmpty ? null : result.secondaryText,
-        onTap: onTap,
+        onTap: loading ? null : onTap,
       ),
     );
   }
@@ -735,7 +756,7 @@ class _PlaceRow extends StatelessWidget {
   final Widget leading;
   final String title;
   final String? subtitle;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
   @override
@@ -877,10 +898,22 @@ class _SavePlaceDialogState extends State<_SavePlaceDialog> {
   late String _icon = widget.initialIcon ?? SavedPlaceIcons.keys.first;
 
   @override
+  void initState() {
+    super.initState();
+    _name.addListener(_onNameChanged);
+  }
+
+  @override
   void dispose() {
-    _name.dispose();
+    _name
+      ..removeListener(_onNameChanged)
+      ..dispose();
     super.dispose();
   }
+
+  // Rebuilds only to toggle the 儲存 button's enabled state as the name
+  // field crosses the empty/non-empty boundary.
+  void _onNameChanged() => setState(() {});
 
   void _submit() {
     final name = _name.text.trim();
@@ -892,86 +925,77 @@ class _SavePlaceDialogState extends State<_SavePlaceDialog> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return Dialog(
-      backgroundColor: cs.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(AppTheme.radiusModal),
-      ),
-      insetPadding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '儲存地點',
-              style: AppTextStyles.heading2.copyWith(color: cs.onSurface),
+    return AppDialog(
+      title: '儲存地點',
+      body: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '名稱',
+            style: AppTextStyles.bodySmall.copyWith(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
             ),
-            const SizedBox(height: 16),
-            Text(
-              '名稱',
-              style: AppTextStyles.bodySmall.copyWith(
-                color: cs.onSurfaceVariant,
-                fontWeight: FontWeight.w700,
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _name,
+            autofocus: true,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _submit(),
+            style: AppTextStyles.bodyLarge.copyWith(
+              color: cs.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+            decoration: InputDecoration(
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 12,
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+                borderSide: BorderSide(color: cs.outlineVariant),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+                borderSide: BorderSide(color: cs.onSurface, width: 2),
               ),
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _name,
-              autofocus: true,
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _submit(),
-              style: AppTextStyles.bodyLarge.copyWith(
-                color: cs.onSurface,
-                fontWeight: FontWeight.w600,
-              ),
-              decoration: InputDecoration(
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 12,
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-                  borderSide: BorderSide(color: cs.outlineVariant),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-                  borderSide: BorderSide(color: cs.onSurface, width: 2),
+          ),
+          const SizedBox(height: 18),
+          Text(
+            '圖示',
+            style: AppTextStyles.bodySmall.copyWith(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _IconGrid(
+            selected: _icon,
+            onSelect: (key) => setState(() => _icon = key),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Expanded(
+                child: AppButton.outlined(
+                  label: '取消',
+                  onPressed: () => Navigator.of(context).pop(),
                 ),
               ),
-            ),
-            const SizedBox(height: 18),
-            Text(
-              '圖示',
-              style: AppTextStyles.bodySmall.copyWith(
-                color: cs.onSurfaceVariant,
-                fontWeight: FontWeight.w700,
+              const SizedBox(width: 12),
+              Expanded(
+                child: AppButton(
+                  label: '儲存',
+                  onPressed: _name.text.trim().isEmpty ? null : _submit,
+                ),
               ),
-            ),
-            const SizedBox(height: 10),
-            _IconGrid(
-              selected: _icon,
-              onSelect: (key) => setState(() => _icon = key),
-            ),
-            const SizedBox(height: 20),
-            Row(
-              children: [
-                Expanded(
-                  child: AppButton.outlined(
-                    label: '取消',
-                    onPressed: () => Navigator.of(context).pop(),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: AppButton(label: '儲存', onPressed: _submit),
-                ),
-              ],
-            ),
-          ],
-        ),
+            ],
+          ),
+        ],
       ),
     );
   }

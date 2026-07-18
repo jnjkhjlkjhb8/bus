@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:wheres_the_car/app/theme/app_shadows.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 
 /// Route progress card with station markers and prominent times.
@@ -26,15 +27,9 @@ class RouteStatusCard extends StatelessWidget {
       height: 80,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
+        color: theme.colorScheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(AppTheme.radiusCard),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            offset: const Offset(0, 2),
-            blurRadius: 8,
-          ),
-        ],
+        boxShadow: AppShadows.cardFor(theme.colorScheme.brightness),
       ),
       child: Row(
         children: [

@@ -30,12 +30,13 @@ class BigPredictiveBackPageTransitionsBuilder extends PageTransitionsBuilder {
       route: route,
       builder:
           (
-            BuildContext context,
-            _PredictiveBackPhase phase,
-            PredictiveBackEvent? startBackEvent,
-            PredictiveBackEvent? currentBackEvent,
+            context,
+            phase,
+            startBackEvent,
+            currentBackEvent,
           ) {
-            // Only do a predictive back transition when the user is performing a
+            // Only do a predictive back transition when the user is
+            // performing a
             // pop gesture. Otherwise, for things like button presses or other
             // programmatic navigation, fall back to
             // FadeForwardsPageTransitionsBuilder. The fade fallback is also
@@ -67,13 +68,6 @@ class BigPredictiveBackPageTransitionsBuilder extends PageTransitionsBuilder {
   }
 }
 
-typedef _PredictiveBackGestureDetectorWidgetBuilder =
-    Widget Function(
-      BuildContext context,
-      _PredictiveBackPhase phase,
-      PredictiveBackEvent? startBackEvent,
-      PredictiveBackEvent? currentBackEvent,
-    );
 
 /// The phases of a predictive back gesture.
 enum _PredictiveBackPhase {
@@ -103,7 +97,13 @@ class _PredictiveBackGestureDetector extends StatefulWidget {
     required this.builder,
   });
 
-  final _PredictiveBackGestureDetectorWidgetBuilder builder;
+  final Widget Function(
+    BuildContext,
+    _PredictiveBackPhase,
+    PredictiveBackEvent?,
+    PredictiveBackEvent?,
+  )
+  builder;
   final PageRoute<dynamic> route;
 
   @override
@@ -150,7 +150,7 @@ class _PredictiveBackGestureDetectorState
   @override
   bool handleStartBackGesture(PredictiveBackEvent backEvent) {
     phase = _PredictiveBackPhase.start;
-    final bool gestureInProgress = !backEvent.isButtonEvent && _isEnabled;
+    final gestureInProgress = !backEvent.isButtonEvent && _isEnabled;
     if (!gestureInProgress) {
       return false;
     }
@@ -202,7 +202,7 @@ class _PredictiveBackGestureDetectorState
 
   @override
   Widget build(BuildContext context) {
-    final _PredictiveBackPhase effectivePhase =
+    final effectivePhase =
         widget.route.popGestureInProgress ? phase : _PredictiveBackPhase.idle;
     return widget.builder(
       context,
@@ -245,36 +245,37 @@ class _PredictiveBackSharedElementPageTransitionState
   // upstream (screen/12 vs screen/20) so the preview reads clearly.
   // https://developer.android.com/design/ui/mobile/guides/patterns/predictive-back#motion-specs
   static const double _kMinScale = 0.9; // upstream 0.90
-  static const double _kDivisionFactor = 12.0; // upstream 20.0
-  static const double _kMargin = 8.0;
+  static const double _kDivisionFactor = 12; // upstream 20.0
+  static const double _kMargin = 8;
   static const double _kYPositionFactor = 0.1;
   static const double _kMaxShadowOpacity = 0.18;
   static const int _kCommitMilliseconds = 280;
   static const Curve _kCurve = AppMotion.easeOut;
   static const Interval _kCommitInterval = Interval(
-    0.0,
+    0,
     _kCommitMilliseconds /
         FadeForwardsPageTransitionsBuilder.kTransitionMilliseconds,
     curve: _kCurve,
   );
 
-  // A fallback corner radius used when the display corner radii are unavailable.
+  // A fallback corner radius used when the display corner radii are
+  // unavailable.
   // See https://github.com/flutter/flutter/issues/97349.
-  static const double _kDeviceBorderRadius = 32.0;
+  static const double _kDeviceBorderRadius = 32;
 
   // Provides a smooth transition between the default radius and the
   // _kDeviceBorderRadius, when the display corner radii are unavailable.
   final Tween<double> _borderRadiusTween = Tween<double>(
-    begin: 0.0,
+    begin: 0,
     end: _kDeviceBorderRadius,
   );
 
   // The route fades out after commit.
-  final Tween<double> _opacityTween = Tween<double>(begin: 1.0, end: 0.0);
+  final Tween<double> _opacityTween = Tween<double>(begin: 1, end: 0);
 
   // The route shrinks during the gesture and animates back to normal after
   // commit.
-  final Tween<double> _scaleTween = Tween<double>(begin: 1.0, end: _kMinScale);
+  final Tween<double> _scaleTween = Tween<double>(begin: 1, end: _kMinScale);
 
   // An animation that stays constant at zero before the commit, and after the
   // commit goes from zero to one.
@@ -283,7 +284,7 @@ class _PredictiveBackSharedElementPageTransitionState
   // An animation that goes from zero to a maximum of one during a predictive
   // back gesture, and then at commit, it goes from its current value to zero.
   final ProxyAnimation _bounceAnimation = ProxyAnimation();
-  double _lastBounceAnimationValue = 0.0;
+  double _lastBounceAnimationValue = 0;
 
   // An animation that proxies to widget.animation during the gesture and then
   // to _commitAnimation after the commit.
@@ -302,15 +303,15 @@ class _PredictiveBackSharedElementPageTransitionState
   // This isn't done as an animation because it's based on the vertical drag
   // amount, not the progression of the back gesture like widget.animation is.
   double _getYShiftPosition(double screenHeight) {
-    final double startTouchY = widget.startBackEvent?.touchOffset?.dy ?? 0;
-    final double currentTouchY = widget.currentBackEvent?.touchOffset?.dy ?? 0;
+    final startTouchY = widget.startBackEvent?.touchOffset?.dy ?? 0;
+    final currentTouchY = widget.currentBackEvent?.touchOffset?.dy ?? 0;
 
-    final double yShiftMax = (screenHeight / _kDivisionFactor) - _kMargin;
+    final yShiftMax = (screenHeight / _kDivisionFactor) - _kMargin;
 
-    final double rawYShift = currentTouchY - startTouchY;
-    final double easedYShift =
+    final rawYShift = currentTouchY - startTouchY;
+    final easedYShift =
         Curves.easeOut.transform(
-          clampDouble(rawYShift.abs() / screenHeight, 0.0, 1.0),
+          clampDouble(rawYShift.abs() / screenHeight, 0, 1),
         ) *
         rawYShift.sign *
         yShiftMax;
@@ -326,7 +327,7 @@ class _PredictiveBackSharedElementPageTransitionState
 
     _bounceAnimation.parent = switch (widget.phase) {
       _PredictiveBackPhase.commit => Tween<double>(
-        begin: 0.0,
+        begin: 0,
         end: _lastBounceAnimationValue,
       ).animate(_curvedAnimation!),
       _ => ReverseAnimation(widget.animation),
@@ -337,11 +338,11 @@ class _PredictiveBackSharedElementPageTransitionState
       _ => kAlwaysDismissedAnimation,
     };
 
-    final double xShift = (screenSize.width / _kDivisionFactor) - _kMargin;
+    final xShift = (screenSize.width / _kDivisionFactor) - _kMargin;
     _positionAnimation = _animation.drive(switch (widget.phase) {
       _PredictiveBackPhase.commit => Tween<Offset>(
         begin: _lastDrag,
-        end: Offset(screenSize.height * _kYPositionFactor, 0.0),
+        end: Offset(screenSize.height * _kYPositionFactor, 0),
       ),
       _ => Tween<Offset>(
         // The y position before commit is given by the vertical drag, not by an
@@ -411,7 +412,7 @@ class _PredictiveBackSharedElementPageTransitionState
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: widget.animation,
-      builder: (BuildContext context, Widget? child) {
+      builder: (context, child) {
         _lastBounceAnimationValue = _bounceAnimation.value;
         final lift = clampDouble(_bounceAnimation.value, 0, 1);
         final borderRadius =

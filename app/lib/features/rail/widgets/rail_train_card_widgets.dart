@@ -128,10 +128,15 @@ class _TrainCardState extends State<_TrainCard> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    // The O/D column and the connector beside it must share one height, and
+    // the time column must stay wide enough for its digits — both grow with
+    // the user's text scale instead of clipping at a fixed extent.
+    final textScaler = MediaQuery.textScalerOf(context);
+    final odHeight = textScaler.scale(64);
+    final timeColumnWidth = textScaler.scale(75);
 
     return Pressable(
       onTap: () {
-        unawaited(HapticService.instance.lightTap());
         unawaited(
           Navigator.push(
             context,
@@ -233,7 +238,7 @@ class _TrainCardState extends State<_TrainCard> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 SizedBox(
-                  width: 75,
+                  width: timeColumnWidth,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -273,7 +278,7 @@ class _TrainCardState extends State<_TrainCard> {
                     children: [
                       SizedBox(
                         width: 20,
-                        height: 64,
+                        height: odHeight,
                         child: Stack(
                           alignment: Alignment.center,
                           children: [
@@ -301,7 +306,10 @@ class _TrainCardState extends State<_TrainCard> {
                                 width: 12,
                                 height: 12,
                                 decoration: BoxDecoration(
-                                  color: Colors.white,
+                                  // Punched-out hole to the card surface, not
+                                  // a hardcoded white — reads correctly in
+                                  // dark mode too.
+                                  color: cs.surfaceContainerLow,
                                   shape: BoxShape.circle,
                                   border: Border.all(
                                     color: cs.outlineVariant,
@@ -316,7 +324,10 @@ class _TrainCardState extends State<_TrainCard> {
                                 width: 12,
                                 height: 12,
                                 decoration: BoxDecoration(
-                                  color: Colors.white,
+                                  // Punched-out hole to the card surface, not
+                                  // a hardcoded white — reads correctly in
+                                  // dark mode too.
+                                  color: cs.surfaceContainerLow,
                                   shape: BoxShape.circle,
                                   border: Border.all(
                                     color: cs.outlineVariant,
@@ -331,7 +342,7 @@ class _TrainCardState extends State<_TrainCard> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: SizedBox(
-                          height: 64,
+                          height: odHeight,
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -355,22 +366,6 @@ class _TrainCardState extends State<_TrainCard> {
                         ),
                       ),
                     ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Divider(
-              color: cs.outlineVariant.withValues(alpha: 0.5),
-              height: 1,
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Text(
-                  '備註：',
-                  style: AppTextStyles.bodySmall.copyWith(
-                    color: cs.onSurfaceVariant.withValues(alpha: 0.7),
                   ),
                 ),
               ],

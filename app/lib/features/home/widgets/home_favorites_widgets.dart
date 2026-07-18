@@ -70,7 +70,6 @@ class _SeeMoreButton extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
       onTap: () {
-        unawaited(HapticService.instance.lightTap());
         unawaited(context.push('/favorites'));
       },
       semanticLabel: '查看全部收藏',
@@ -141,7 +140,6 @@ class _FavoritesEmpty extends StatelessWidget {
             const SizedBox(height: 16),
             Pressable(
               onTap: () {
-                unawaited(HapticService.instance.lightTap());
                 unawaited(context.push('/favorites'));
               },
               semanticLabel: '前往收藏頁',

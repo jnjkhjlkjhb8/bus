@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_search_bar.dart';
 import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
 
@@ -40,9 +41,12 @@ class _StationPickerSheetState extends State<StationPickerSheet> {
         Expanded(
           child: ListView.builder(
             itemCount: filtered.length,
-            itemBuilder: (_, i) => ListTile(
-              title: Text(filtered[i], style: AppTextStyles.bodyLarge),
+            itemBuilder: (_, i) => Pressable(
               onTap: () => Navigator.of(context).pop(filtered[i]),
+              semanticLabel: filtered[i],
+              child: ListTile(
+                title: Text(filtered[i], style: AppTextStyles.bodyLarge),
+              ),
             ),
           ),
         ),

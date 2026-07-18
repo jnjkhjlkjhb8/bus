@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 
 class AppDrawerItem {
   const AppDrawerItem({required this.label, required this.icon});
@@ -44,29 +45,34 @@ class AppDrawerWidget extends StatelessWidget {
                   horizontal: 12,
                   vertical: 2,
                 ),
-                child: ListTile(
-                  leading: Icon(
-                    e.value.icon,
-                    size: 20,
-                    color: active
-                        ? cs.onSecondaryContainer
-                        : cs.onSurfaceVariant,
-                  ),
-                  title: Text(
-                    e.value.label,
-                    style: AppTextStyles.bodyRegular.copyWith(
+                child: Pressable(
+                  onTap: () => onChanged(e.key),
+                  semanticLabel: e.value.label,
+                  child: ListTile(
+                    leading: Icon(
+                      e.value.icon,
+                      size: 20,
                       color: active
                           ? cs.onSecondaryContainer
                           : cs.onSurfaceVariant,
                     ),
+                    title: Text(
+                      e.value.label,
+                      style: AppTextStyles.bodyRegular.copyWith(
+                        color: active
+                            ? cs.onSecondaryContainer
+                            : cs.onSurfaceVariant,
+                      ),
+                    ),
+                    selected: active,
+                    selectedTileColor: cs.secondaryContainer,
+                    tileColor: Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(
+                        AppTheme.radiusStadium,
+                      ),
+                    ),
                   ),
-                  selected: active,
-                  selectedTileColor: cs.secondaryContainer,
-                  tileColor: Colors.transparent,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(AppTheme.radiusStadium),
-                  ),
-                  onTap: () => onChanged(e.key),
                 ),
               );
             }),

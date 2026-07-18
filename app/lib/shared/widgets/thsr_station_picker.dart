@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/shared/widgets/app_button.dart';
+import 'package:wheres_the_car/shared/widgets/app_dialog.dart';
 import 'package:wheres_the_car/shared/widgets/clock_dial.dart';
 
 const _thsrStations = [
@@ -19,8 +21,9 @@ const _thsrStations = [
 ];
 
 Future<String?> showTHSRStationPicker(BuildContext context) {
-  return showDialog<String>(
+  return showAppModal<String>(
     context: context,
+    barrierLabel: '選擇車站',
     builder: (_) => const _THSRPickerDialog(),
   );
 }
@@ -41,7 +44,9 @@ class _THSRPickerDialogState extends State<_THSRPickerDialog> {
 
     return Dialog(
       backgroundColor: cs.surfaceContainerHigh,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppTheme.radiusModal),
+      ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
         child: Column(

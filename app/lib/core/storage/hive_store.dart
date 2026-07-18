@@ -132,8 +132,17 @@ class HiveStore {
 
   static set largeText(bool v) => settings.put('large_text', v);
 
+  // Defaults to false-until-asked: a brand-new install has no stored value,
+  // and `FirebaseBootstrap.init` passes this straight through as the
+  // `requested` permission on first launch (F-push-launch). Defaulting it
+  // true used to fire the OS permission dialog on first launch with no
+  // context. An existing user who already granted push always has an
+  // explicit `true` persisted here (every `updatePushPreference` call
+  // writes the real, OS-reconciled value before returning — see
+  // `FirebaseBootstrap.updatePushPreference`), so this default only ever
+  // applies to installs that have never been through that flow.
   static bool get pushEnabled =>
-      settings.get('push_enabled', defaultValue: true) as bool;
+      settings.get('push_enabled', defaultValue: false) as bool;
 
   static set pushEnabled(bool value) => settings.put('push_enabled', value);
 

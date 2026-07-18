@@ -34,14 +34,18 @@ class _AppChatBubbleState extends State<AppChatBubble>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 200),
+      duration: AppMotion.short,
     );
     _fade = CurvedAnimation(parent: _controller, curve: AppMotion.easeOut);
     _slide = Tween<Offset>(
       begin: const Offset(0, 0.1),
       end: Offset.zero,
     ).animate(CurvedAnimation(parent: _controller, curve: AppMotion.easeOut));
-    unawaited(_controller.forward());
+    if (AppMotion.reduced(context)) {
+      _controller.value = 1;
+    } else {
+      unawaited(_controller.forward());
+    }
   }
 
   @override

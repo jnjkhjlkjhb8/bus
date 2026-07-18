@@ -5,6 +5,7 @@ import 'package:wheres_the_car/app/theme/app_text_styles.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/features/ui_kit/view/widgets/showcase_section.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 
 class MotionPage extends StatelessWidget {
@@ -21,6 +22,7 @@ class MotionPage extends StatelessWidget {
             title: 'Timings',
             child: Column(
               children: [
+                _TimingRow('micro', AppMotion.micro),
                 _TimingRow('press', AppMotion.press),
                 _TimingRow('short', AppMotion.short),
                 _TimingRow('medium', AppMotion.medium),
@@ -38,7 +40,47 @@ class MotionPage extends StatelessWidget {
               ],
             ),
           ),
+          ShowcaseSection(
+            title: 'Pressable (scale ${AppMotion.pressedScale})',
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: _PressableDemo(),
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(16, 4, 16, 0),
+            child: Text(
+              'Reduce motion: all durations above collapse to zero and the '
+              'Pressable scale is skipped when the platform accessibility '
+              'setting is on (AppMotion.reduced).',
+              style: AppTextStyles.bodySmall,
+            ),
+          ),
         ],
+      ),
+    );
+  }
+}
+
+class _PressableDemo extends StatelessWidget {
+  const _PressableDemo();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Pressable(
+      onTap: () {},
+      semanticLabel: 'Pressable demo',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: cs.primary,
+          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+        ),
+        child: Text(
+          'Tap and hold',
+          style: AppTextStyles.bodyRegular.copyWith(color: cs.onPrimary),
+        ),
       ),
     );
   }

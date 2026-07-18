@@ -35,7 +35,7 @@ class AppCard extends StatelessWidget {
         shadows = [];
         border = null;
       case _CardVariant.outlined:
-        bg = cs.surface;
+        bg = cs.surfaceContainerLow;
         shadows = [];
         border = Border.all(color: cs.outlineVariant);
     }

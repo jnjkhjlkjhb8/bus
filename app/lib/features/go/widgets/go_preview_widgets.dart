@@ -484,7 +484,7 @@ class _PreviewItinerary extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _PreviewPill(label: sectionLabel(s), color: color),
+        AppBadge(label: sectionLabel(s), color: color),
         const SizedBox(height: 6),
         Text(
           '${s.departure.name} → ${s.arrival.name}',
@@ -603,32 +603,6 @@ class _PreviewRow extends StatelessWidget {
         color: cs.surface,
         shape: BoxShape.circle,
         border: Border.all(color: nodeRing, width: 2.5),
-      ),
-    );
-  }
-}
-
-/// Line/route label pill; reuses the results card's transit-color vocabulary.
-class _PreviewPill extends StatelessWidget {
-  const _PreviewPill({required this.label, required this.color});
-
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(AppTheme.radiusChip),
-      ),
-      child: Text(
-        label,
-        style: AppTextStyles.bodySmall.copyWith(
-          color: Colors.white,
-          fontWeight: FontWeight.w600,
-        ),
       ),
     );
   }

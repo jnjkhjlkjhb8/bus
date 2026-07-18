@@ -205,6 +205,11 @@ class FirebaseBootstrap {
           AppConfig.version.value++;
         });
       },
+      // `HiveStore.pushEnabled` defaults to false until a user has actually
+      // gone through the permission flow (settings toggle or a prior grant),
+      // so this only re-requests the OS permission (and re-syncs the FCM
+      // token) for users who already have push on. It never surfaces the OS
+      // dialog on a fresh install, because `requested` is false there.
       () async => updatePushPreference(requested: HiveStore.pushEnabled),
       () async {
         await _tokenRefreshSub?.cancel();

@@ -52,7 +52,6 @@ extension _HomeScreenScaffold on _HomeScreenState {
             child: SafeArea(
               child: Pressable(
                 onTap: () {
-                  unawaited(HapticService.instance.lightTap());
                   unawaited(context.push('/settings'));
                 },
                 semanticLabel: '設定',
@@ -119,7 +118,6 @@ extension _HomeScreenScaffold on _HomeScreenState {
                   ),
                   Pressable(
                     onTap: () {
-                      unawaited(HapticService.instance.lightTap());
                       unawaited(context.push('/metro'));
                     },
                     semanticLabel: '捷運',
@@ -222,7 +220,6 @@ extension _HomeScreenScaffold on _HomeScreenState {
                   ),
                   Pressable(
                     onTap: () {
-                      unawaited(HapticService.instance.lightTap());
                       unawaited(context.push('/go'));
                     },
                     semanticLabel: '路線規劃',
@@ -304,7 +301,6 @@ extension _HomeScreenScaffold on _HomeScreenState {
               Expanded(
                 child: _SearchBar(
                   onTap: () {
-                    unawaited(HapticService.instance.lightTap());
                     unawaited(context.push('/search'));
                   },
                 ),

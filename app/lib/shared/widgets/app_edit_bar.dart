@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/shared/motion/app_motion.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 
 enum AppEditAction { bold, italic, underline, link, bulletList, quote }
 
@@ -43,7 +44,7 @@ class AppEditBar extends StatelessWidget {
   }
 }
 
-class _EditBarBtn extends StatefulWidget {
+class _EditBarBtn extends StatelessWidget {
   const _EditBarBtn({
     required this.icon,
     required this.active,
@@ -54,38 +55,23 @@ class _EditBarBtn extends StatefulWidget {
   final VoidCallback onTap;
 
   @override
-  State<_EditBarBtn> createState() => _EditBarBtnState();
-}
-
-class _EditBarBtnState extends State<_EditBarBtn> {
-  bool _pressed = false;
-
-  @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _pressed = true),
-      onTapUp: (_) => setState(() => _pressed = false),
-      onTapCancel: () => setState(() => _pressed = false),
-      onTap: widget.onTap,
-      child: AnimatedScale(
-        scale: _pressed ? AppMotion.pressedScale : 1.0,
-        duration: AppMotion.press,
+    return Pressable(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: AppMotion.short,
         curve: AppMotion.easeOut,
-        child: AnimatedContainer(
-          duration: AppMotion.short,
-          curve: AppMotion.easeOut,
-          width: 44,
-          height: 44,
-          decoration: BoxDecoration(
-            color: widget.active ? cs.primaryContainer : Colors.transparent,
-            borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-          ),
-          child: Icon(
-            widget.icon,
-            size: 20,
-            color: widget.active ? cs.primary : cs.onSurfaceVariant,
-          ),
+        width: 44,
+        height: 44,
+        decoration: BoxDecoration(
+          color: active ? cs.primaryContainer : Colors.transparent,
+          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+        ),
+        child: Icon(
+          icon,
+          size: 20,
+          color: active ? cs.primary : cs.onSurfaceVariant,
         ),
       ),
     );

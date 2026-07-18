@@ -36,6 +36,8 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
         state.copyWith(
           name: info.name,
           capacity: info.capacity,
+          lat: info.lat,
+          lon: info.lon,
           loading: false,
           clearError: true,
         ),

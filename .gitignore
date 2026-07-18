@@ -14,7 +14,6 @@
 .codex
 .swiftpm/
 migrate_working_dir/
-/app/assets
 /app/env/staging.json
 /app/env/prod.json
 /app/env/test.json

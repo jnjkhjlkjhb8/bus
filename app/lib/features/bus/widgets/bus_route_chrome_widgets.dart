@@ -25,7 +25,6 @@ class _FloatingAppBar extends StatelessWidget {
           children: [
             AppBarCircleButton(
               onTap: () {
-                unawaited(HapticService.instance.lightTap());
                 context.pop();
               },
               semanticLabel: '返回',

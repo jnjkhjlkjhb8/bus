@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_bars.dart';
 import 'package:wheres_the_car/shared/widgets/app_card.dart';
 
@@ -83,8 +84,9 @@ class _OptionRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return SizedBox(
       height: _minTapTarget,
-      child: InkWell(
+      child: Pressable(
         onTap: onTap,
+        semanticLabel: label,
         child: Padding(
           padding: const EdgeInsets.symmetric(
             vertical: (_minTapTarget - _visualHeight) / 2,

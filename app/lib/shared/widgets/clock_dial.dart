@@ -2,8 +2,10 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:flutter/services.dart';
 import 'package:wheres_the_car/app/theme/app_text_styles.dart';
+import 'package:wheres_the_car/shared/motion/app_motion.dart';
 
 class ClockDial extends StatefulWidget {
   const ClockDial({
@@ -25,10 +27,17 @@ class ClockDial extends StatefulWidget {
 
 class _ClockDialState extends State<ClockDial>
     with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-  Animation<double> _hand = const AlwaysStoppedAnimation(0);
-  double _angle = 0;
+  // Unbounded: the hand angle isn't a 0..1 progress value, it's the raw
+  // radian position, and it needs to be able to accumulate past ±π as the
+  // finger crosses the wrap boundary without clamping.
+  late final AnimationController _controller = AnimationController.unbounded(
+    vsync: this,
+  );
   bool _reduceMotion = false;
+
+  /// Last pointer position during a pan, used at release to convert linear
+  /// flick velocity into an angular velocity for the spring hand-off.
+  Offset? _lastLocal;
 
   double get _radius => widget.size / 2 - 24;
 
@@ -38,45 +47,52 @@ class _ClockDialState extends State<ClockDial>
     return -pi / 2 + (i / widget.items.length) * 2 * pi;
   }
 
+  /// Shifts [target] by whole turns so it lands within half a turn of
+  /// [reference] — the shortest path, and no visual jump across the ±π seam.
+  double _unwrapNear(double target, double reference) {
+    var t = target;
+    while (t - reference > pi) {
+      t -= 2 * pi;
+    }
+    while (t - reference < -pi) {
+      t += 2 * pi;
+    }
+    return t;
+  }
+
   @override
   void initState() {
     super.initState();
-    _angle = _angleFor(widget.selectedIndex);
-    _hand = AlwaysStoppedAnimation(_angle);
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 220),
-    );
+    _controller.value = _angleFor(widget.selectedIndex);
   }
 
   @override
   void didUpdateWidget(ClockDial old) {
     super.didUpdateWidget(old);
     if (old.items.length != widget.items.length) {
-      setState(() => _angle = _angleFor(widget.selectedIndex));
-      _hand = AlwaysStoppedAnimation(_angle);
+      _controller.value = _angleFor(widget.selectedIndex);
     } else if (old.selectedIndex != widget.selectedIndex) {
       _animateTo(_angleFor(widget.selectedIndex));
     }
   }
 
+  /// Programmatic retarget (e.g. selection changed from outside the dial):
+  /// springs from wherever the hand currently is — including mid-flight —
+  /// carrying its current velocity, instead of cutting to a fixed-duration
+  /// tween from a standing start.
   void _animateTo(double target) {
+    final unwrapped = _unwrapNear(target, _controller.value);
     if (_reduceMotion) {
-      setState(() => _angle = target);
-      _hand = AlwaysStoppedAnimation(target);
+      _controller.value = unwrapped;
       return;
     }
-    var t = target;
-    while (t - _angle > pi) {
-      t -= 2 * pi;
-    }
-    while (t - _angle < -pi) {
-      t += 2 * pi;
-    }
-    _hand = Tween<double>(begin: _angle, end: t).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOutCubic),
-    )..addListener(() => setState(() => _angle = _hand.value));
-    unawaited(_controller.forward(from: 0));
+    final sim = SpringSimulation(
+      AppMotion.spring,
+      _controller.value,
+      unwrapped,
+      _controller.velocity,
+    );
+    unawaited(_controller.animateWith(sim));
   }
 
   @override
@@ -85,8 +101,13 @@ class _ClockDialState extends State<ClockDial>
     super.dispose();
   }
 
-  void _handlePointer(Offset local) {
-    if (widget.items.isEmpty) return;
+  /// Sector-crossing commit: fires the haptic and reports the new index the
+  /// instant the pointer crosses a sector midpoint, independent of whether
+  /// the hand itself has finished tracking there yet. Returns the sector the
+  /// pointer is over now (whether or not it was newly committed), so callers
+  /// don't have to wait a frame for `widget.selectedIndex` to catch up.
+  int? _commitSector(Offset local) {
+    if (widget.items.isEmpty) return null;
     final center = widget.size / 2;
     final theta = atan2(local.dy - center, local.dx - center);
     final n = widget.items.length;
@@ -96,6 +117,67 @@ class _ClockDialState extends State<ClockDial>
       unawaited(HapticFeedback.selectionClick());
       widget.onSelected(idx);
     }
+    return idx;
+  }
+
+  /// Tap: jump straight to the tapped sector (no drag to track).
+  void _handleTap(Offset local) {
+    final idx = _commitSector(local);
+    if (idx != null) _animateTo(_angleFor(idx));
+  }
+
+  /// Drag: the hand follows the raw finger angle 1:1, live — not quantized
+  /// to the nearest sector and then animated over. Index commits (and their
+  /// haptic) still happen the instant a sector midpoint is crossed.
+  void _trackPointer(Offset local) {
+    _lastLocal = local;
+    final idx = _commitSector(local);
+    if (idx == null) return;
+    if (_reduceMotion) {
+      _controller.value = _angleFor(idx);
+      return;
+    }
+    final center = widget.size / 2;
+    final theta = atan2(local.dy - center, local.dx - center);
+    final unwrapped = _unwrapNear(theta, _controller.value);
+    _controller
+      ..stop()
+      ..value = unwrapped;
+  }
+
+  /// Release: springs the hand the rest of the way from wherever the raw
+  /// angle stopped to the selected sector's centre, carrying the finger's
+  /// release velocity (converted from linear to angular) so the settle
+  /// reads as a continuation of the flick, not a reset.
+  void _settle(Velocity velocity) {
+    final local = _lastLocal;
+    var angularVelocity = 0.0;
+    if (local != null) {
+      final center = widget.size / 2;
+      final x = local.dx - center;
+      final y = local.dy - center;
+      final r2 = x * x + y * y;
+      if (r2 > 0) {
+        final v = velocity.pixelsPerSecond;
+        angularVelocity = (x * v.dy - y * v.dx) / r2;
+      }
+    }
+    _lastLocal = null;
+    final target = _unwrapNear(
+      _angleFor(widget.selectedIndex),
+      _controller.value,
+    );
+    if (_reduceMotion) {
+      _controller.value = target;
+      return;
+    }
+    final sim = SpringSimulation(
+      AppMotion.spring,
+      _controller.value,
+      target,
+      angularVelocity,
+    );
+    unawaited(_controller.animateWith(sim));
   }
 
   @override
@@ -106,14 +188,13 @@ class _ClockDialState extends State<ClockDial>
     final selectedIndex = widget.selectedIndex;
     final size = widget.size;
     final hasSelection = selectedIndex >= 0 && selectedIndex < items.length;
-    final angle = _angle;
-    final dx = _radius * cos(angle);
-    final dy = _radius * sin(angle);
 
     return GestureDetector(
-      onTapDown: (d) => _handlePointer(d.localPosition),
-      onPanStart: (d) => _handlePointer(d.localPosition),
-      onPanUpdate: (d) => _handlePointer(d.localPosition),
+      onTapDown: (d) => _handleTap(d.localPosition),
+      onPanStart: (d) => _trackPointer(d.localPosition),
+      onPanUpdate: (d) => _trackPointer(d.localPosition),
+      onPanEnd: (d) => _settle(d.velocity),
+      onPanCancel: () => _settle(Velocity.zero),
       child: SizedBox(
         width: size,
         height: size,
@@ -137,22 +218,25 @@ class _ClockDialState extends State<ClockDial>
                   color: cs.primary,
                 ),
               ),
-              Positioned(
-                left: size / 2,
-                top: size / 2,
-                child: Transform.rotate(
-                  angle: angle - pi / 2,
-                  alignment: Alignment.topCenter,
-                  child: Container(
-                    width: 2,
-                    height: _radius,
-                    color: cs.primary,
+              AnimatedBuilder(
+                animation: _controller,
+                child: Container(
+                  width: 2,
+                  height: _radius,
+                  color: cs.primary,
+                ),
+                builder: (context, child) => Positioned(
+                  left: size / 2,
+                  top: size / 2,
+                  child: Transform.rotate(
+                    angle: _controller.value - pi / 2,
+                    alignment: Alignment.topCenter,
+                    child: child,
                   ),
                 ),
               ),
-              Positioned(
-                left: size / 2 + dx - 24,
-                top: size / 2 + dy - 24,
+              AnimatedBuilder(
+                animation: _controller,
                 child: Container(
                   width: 48,
                   height: 48,
@@ -160,6 +244,11 @@ class _ClockDialState extends State<ClockDial>
                     shape: BoxShape.circle,
                     color: cs.primary,
                   ),
+                ),
+                builder: (context, child) => Positioned(
+                  left: size / 2 + _radius * cos(_controller.value) - 24,
+                  top: size / 2 + _radius * sin(_controller.value) - 24,
+                  child: child!,
                 ),
               ),
             ],
