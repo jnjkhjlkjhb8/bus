@@ -1168,3 +1168,38 @@ func TestMaasKeyIdentityAndCollision(t *testing.T) {
 		seen[key] = name
 	}
 }
+
+// TestBatchSectionFaresPicksFullTraFare pins the TRA branch to the adult 成復
+// fare — the 區間車 tier a planner leg runs on. tra_fares packs 票種 and 車種 into
+// ticket_type, so the cheapest row is a discounted (sometimes 0) ticket and the
+// priciest is the 自強 fare; neither prices a 區間車 leg.
+func TestBatchSectionFaresPicksFullTraFare(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	db.ExpectQuery("f.ticket_type = '成復'").
+		WithArgs([]int32{0}, []string{"rail"}, []string{"臺北"}, []string{"臺中"}).
+		WillReturnRows(pgxmock.NewRows([]string{"section_index", "fare"}).
+			AddRow(int32(0), int32(375)))
+
+	section := &pb.Section{}
+	route := &pb.Route{}
+	src := tdxSection{}
+	src.Transport.Mode = "RAIL"
+	src.Departure.Place.Name = "臺北"
+	src.Arrival.Place.Name = "臺中"
+
+	batchSectionFares(context.Background(), db, []maasSectionRef{
+		{index: 0, source: src, target: section, route: route},
+	})
+
+	if section.Fare != 375 || route.TotalFare != 375 {
+		t.Fatalf("fare = %d, total = %d, want 375 both", section.Fare, route.TotalFare)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

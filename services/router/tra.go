@@ -47,10 +47,19 @@ type trafare struct {
 	Price      int32  `db:"price"`
 }
 
-// traFarePayload reads a TRA fare from the loaded env schema and returns the
-// marshaled TraFareItems proto. It returns an empty slice (not an error) when no
-// rows match, so callers treat an unlanded date as NotFound (ADR-0005); it never
-// fetches from TDX.
+// traAdultTicketTypes are the TDX ticket types for a full-price adult ticket,
+// one per train class: 自強 (incl. 太魯閣/普悠瑪/EMU3000), 莒光, 復興 — which is
+// also the 區間車 tier — and 普快. TDX packs 票種 and 車種 into a single
+// ticket_type string, so a pair yields four different adult prices (e.g.
+// 桃園→臺北: 成自 99, 成莒 76, 成復 63, 成普 31); the caller picks by the train's
+// class. Excluded are the 孩/愛 (child/disabled) and 折 (return-trip discount)
+// variants, which are not the full adult fare.
+var traAdultTicketTypes = []string{"成自", "成莒", "成復", "成普"}
+
+// traFarePayload reads a TRA pair's adult fares from the loaded env schema and
+// returns the marshaled TraFareItems proto, one item per train class, priciest
+// first. It returns an empty slice (not an error) when no rows match, so callers
+// treat an unlanded date as NotFound (ADR-0005); it never fetches from TDX.
 func traFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, error) {
 	start, err := resolveRailStationID(ctx, db, "tra_stations", start)
 	if err != nil {
@@ -60,8 +69,8 @@ func traFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	const q = `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2 ORDER BY price, ticket_type;`
-	rows, err := db.Query(ctx, q, start, end)
+	const q = `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = ANY($3) AND price > 0 ORDER BY price DESC, ticket_type;`
+	rows, err := db.Query(ctx, q, start, end, traAdultTicketTypes)
 	if err != nil {
 		return nil, err
 	}

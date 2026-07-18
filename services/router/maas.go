@@ -603,6 +603,16 @@ func batchBusNotificationIdentities(ctx context.Context, db maasDB, refs []maasS
 	}
 }
 
+// batchSectionFares fills in per-section fares for metro, TRA, and THSR legs in
+// one round trip, leaving the fare unset when no row matches.
+//
+// Each branch must yield the full adult fare so TotalFare stays comparable
+// across modes, which means pinning every fare axis TDX splits a pair across.
+// THSR selects by ticket and fare class. TRA packs 票種 and 車種 into one
+// ticket_type, so a pair carries four adult prices (自強/莒光/復興/普快) and the
+// branch pins 成復 — the 區間車 tier a planner leg runs on, and the only class
+// present for every pair. Taking the max instead quoted the 自強 fare on every
+// leg (桃園→臺北: 99 rather than 63).
 func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
 	if db == nil {
 		return
@@ -650,7 +660,7 @@ func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
 			JOIN tra_stations origin ON origin.name = request.departure_name
 			JOIN tra_stations destination ON destination.name = request.arrival_name
 			JOIN tra_fares f ON f.origin_station_id = origin.station_id AND f.destination_station_id = destination.station_id
-			WHERE request.mode IN ('rail', 'tra', 'train')
+			WHERE request.mode IN ('rail', 'tra', 'train') AND f.ticket_type = '成復'
 		)
 		SELECT section_index, MIN(fare)::integer AS fare
 		FROM fare_matches

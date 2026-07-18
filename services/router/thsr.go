@@ -39,6 +39,11 @@ type thsrfare struct {
 // thsrFarePayload reads a THSR fare from the loaded env schema and returns the
 // marshaled ThsaFares proto. It is a pure read: an unlanded fare stays empty and
 // the router never fetches from TDX (ADR-0005).
+//
+// The three fare axes must all be pinned: TDX prices each pair across ticket
+// type, fare class (1 全票 / 9 半票) and cabin class (1 標準對號 / 2 商務 /
+// 3 自由座), so 南港→左營 alone lands eight rows from 740 to 2500. Only
+// (1, 1, 1) is the standard adult reserved-seat fare, 1530.
 func thsrFarePayload(ctx context.Context, start, end string, db railDB) ([]byte, error) {
 	arr, err := queryThsrFares(ctx, db, start, end)
 	if err != nil {
@@ -55,7 +60,7 @@ func queryThsrFares(ctx context.Context, db railDB, start, end string) ([]*model
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(ctx, `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 ORDER BY price, ticket_type, fare_class, cabin_class;`, start, end)
+	rows, err := db.Query(ctx, `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = 1 AND fare_class = 1 AND cabin_class = 1 ORDER BY price, ticket_type, fare_class, cabin_class;`, start, end)
 	if err != nil {
 		return nil, err
 	}

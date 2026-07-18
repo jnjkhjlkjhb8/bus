@@ -2,7 +2,7 @@ syntax = "proto3";
 option go_package = "github.com/jnjkhjlkjhb8/wheres_the_car/models";
 service TRA_timetable_service{
   rpc timetable(ask_route) returns (tra_timetables) {}
-  rpc fare(ask_staiton) returns (TraFareItem) {}
+  rpc fare(ask_staiton) returns (tra_fare_items) {}
   rpc delay(ask_route) returns (stream Resp_tra_delay) {}
 }
 service TRA_Detain_service{

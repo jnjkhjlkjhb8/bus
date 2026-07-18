@@ -41,26 +41,30 @@ func TestThsrFarePayloadReadsFare(t *testing.T) {
 	}
 }
 
-func TestQueryThsrFaresOrdersCheapestFareFirst(t *testing.T) {
+// TestQueryThsrFaresPinsStandardAdultSeat pins all three fare axes in the query.
+// TDX prices a pair across ticket type, fare class (全票/半票) and cabin class
+// (對號/商務/自由座) — 南港→左營 alone lands eight rows — and the RPC quotes
+// Items[0], so leaving any axis open let the 半票自由座 row (740) stand in for the
+// standard adult fare (1530).
+func TestQueryThsrFaresPinsStandardAdultSeat(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	wantQuery := `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 ORDER BY price, ticket_type, fare_class, cabin_class;`
+	wantQuery := `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = 1 AND fare_class = 1 AND cabin_class = 1 ORDER BY price, ticket_type, fare_class, cabin_class;`
 	db.ExpectQuery(regexp.QuoteMeta(wantQuery)).
-		WithArgs("0990", "1000").
+		WithArgs("0990", "1070").
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "fare_class", "cabin_class", "price"}).
-			AddRow(uint8(2), uint8(1), uint8(1), int32(60)).
-			AddRow(uint8(1), uint8(1), uint8(1), int32(120)))
+			AddRow(uint8(1), uint8(1), uint8(1), int32(1530)))
 
-	fares, err := queryThsrFares(context.Background(), db, "0990", "1000")
+	fares, err := queryThsrFares(context.Background(), db, "0990", "1070")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fares) != 2 || fares[0].Price != 60 {
-		t.Fatalf("fares = %+v, want cheapest fare first", fares)
+	if len(fares) != 1 || fares[0].Price != 1530 {
+		t.Fatalf("fares = %+v, want the standard adult reserved seat at 1530", fares)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

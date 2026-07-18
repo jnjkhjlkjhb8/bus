@@ -292,11 +292,13 @@ func (s *Tra_TimetableServer) Delay(_ *pb.AskRoute, stream pb.TRATimetableServic
 	return s.traDelay(stream)
 }
 
-// Fare returns the single lowest TRA fare item between two stations. This RPC
-// reuses AskStaiton to carry the pair: StationId is the origin and Date is the
-// destination station ID. It returns InvalidArgument when either is empty and
-// NotFound when no fare exists.
-func (s *Tra_TimetableServer) Fare(ctx context.Context, in *pb.AskStaiton) (*pb.TraFareItem, error) {
+// Fare returns the adult TRA fares between two stations, one item per train
+// class (see traAdultTicketTypes) priciest first, because a TRA fare depends on
+// the class of train taken — the caller matches the item to its train rather
+// than quoting a single price for the pair. This RPC reuses AskStaiton to carry
+// the pair: StationId is the origin and Date is the destination station ID. It
+// returns InvalidArgument when either is empty and NotFound when no fare exists.
+func (s *Tra_TimetableServer) Fare(ctx context.Context, in *pb.AskStaiton) (*pb.TraFareItems, error) {
 	if in.StationId == "" || in.Date == "" {
 		return nil, status.Error(codes.InvalidArgument, "origin and destination are required")
 	}
@@ -315,7 +317,7 @@ func (s *Tra_TimetableServer) Fare(ctx context.Context, in *pb.AskStaiton) (*pb.
 	if len(items.Items) == 0 {
 		return nil, status.Error(codes.NotFound, "fare not found")
 	}
-	return items.Items[0], nil
+	return items, nil
 }
 
 // Timetable returns the TRA timetable between two stations for the requested
@@ -396,8 +398,9 @@ func (s *Tra_DetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainServi
 	})
 }
 
-// Fare returns the single lowest THSR fare item between two stations, decoding
-// the cached payload from thsrFare. It returns NotFound when no fare exists.
+// Fare returns the standard adult reserved-seat THSR fare between two stations
+// (the only row thsrFare's query keeps), decoding the cached payload from
+// thsrFare. It returns NotFound when no fare exists.
 func (s *ThsrServer) Fare(ctx context.Context, in *pb.Ask_Thsr) (*pb.ThsaFare, error) {
 	req := &pb.AskRoute{
 		OriginStationId:      in.OriginStationId,

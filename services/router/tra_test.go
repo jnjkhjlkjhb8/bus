@@ -21,8 +21,8 @@ func TestTraFarePayloadReturnsRows(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery("SELECT ticket_type,price FROM tra_fares").
-		WithArgs("1000", "1040").
-		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}).AddRow("成人", int32(41)))
+		WithArgs("1000", "1040", traAdultTicketTypes).
+		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}).AddRow("成自", int32(41)))
 
 	payload, err := traFarePayload(context.Background(), db, "1000", "1040")
 	if err != nil {
@@ -32,7 +32,7 @@ func TestTraFarePayloadReturnsRows(t *testing.T) {
 	if err := proto.Unmarshal(payload, &fares); err != nil {
 		t.Fatal(err)
 	}
-	if len(fares.Items) != 1 || fares.Items[0].Price != 41 || fares.Items[0].TicketType != "成人" {
+	if len(fares.Items) != 1 || fares.Items[0].Price != 41 || fares.Items[0].TicketType != "成自" {
 		t.Fatalf("fares = %+v, want one fare priced 41", fares.Items)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
@@ -40,21 +40,28 @@ func TestTraFarePayloadReturnsRows(t *testing.T) {
 	}
 }
 
-func TestTraFarePayloadOrdersCheapestFareFirst(t *testing.T) {
+// TestTraFarePayloadKeepsAdultFarePerTrainClass pins the two things the Fare RPC
+// depends on: only the four adult ticket types are returned (the 孩/愛/折 rows are
+// not the full fare, and some are priced 0), and all four survive so the caller
+// can pick the one matching its train's class. Collapsing them to a single price
+// quoted the 自強 fare (成自) for a 區間車 — 桃園→臺北 showed 99 instead of 63.
+func TestTraFarePayloadKeepsAdultFarePerTrainClass(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	wantQuery := `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2 ORDER BY price, ticket_type;`
+	wantQuery := `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = ANY($3) AND price > 0 ORDER BY price DESC, ticket_type;`
 	db.ExpectQuery(regexp.QuoteMeta(wantQuery)).
-		WithArgs("1000", "1040").
+		WithArgs("1080", "1000", traAdultTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}).
-			AddRow("優待", int32(21)).
-			AddRow("成人", int32(41)))
+			AddRow("成自", int32(99)).
+			AddRow("成莒", int32(76)).
+			AddRow("成復", int32(63)).
+			AddRow("成普", int32(31)))
 
-	payload, err := traFarePayload(context.Background(), db, "1000", "1040")
+	payload, err := traFarePayload(context.Background(), db, "1080", "1000")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,8 +69,15 @@ func TestTraFarePayloadOrdersCheapestFareFirst(t *testing.T) {
 	if err := proto.Unmarshal(payload, &fares); err != nil {
 		t.Fatal(err)
 	}
-	if len(fares.Items) != 2 || fares.Items[0].Price != 21 {
-		t.Fatalf("fares = %+v, want cheapest fare first", fares.Items)
+	if len(fares.Items) != 4 || fares.Items[0].TicketType != "成自" {
+		t.Fatalf("fares = %+v, want all four adult classes, priciest first", fares.Items)
+	}
+	byType := map[string]int32{}
+	for _, item := range fares.Items {
+		byType[item.TicketType] = item.Price
+	}
+	if byType["成復"] != 63 || byType["成自"] != 99 {
+		t.Fatalf("fares = %+v, want 成復 63 and 成自 99", fares.Items)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -80,7 +94,7 @@ func TestTraFarePayloadEmptyOnNoRows(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery("SELECT ticket_type,price FROM tra_fares").
-		WithArgs("1000", "1040").
+		WithArgs("1000", "1040", traAdultTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}))
 
 	payload, err := traFarePayload(context.Background(), db, "1000", "1040")
