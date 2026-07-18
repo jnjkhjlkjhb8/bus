@@ -7,6 +7,7 @@ import 'package:wheres_the_car/shared/motion/pressable.dart';
 import 'package:wheres_the_car/shared/widgets/app_button.dart';
 import 'package:wheres_the_car/shared/widgets/app_dialog.dart';
 import 'package:wheres_the_car/shared/widgets/clock_dial.dart';
+import 'package:wheres_the_car/shared/widgets/station_display_field.dart';
 
 Future<String?> showTRAStationPicker(BuildContext context) {
   return showAppModal<String>(
@@ -51,9 +52,15 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
         _stationIndex = 0;
       }
     });
-    // Region and station selection no longer auto-advance on a dwell timer
-    // (it could fire mid-gesture, swapping dial content under the finger).
-    // The user commits to station mode explicitly via the station tile tap.
+  }
+
+  // Region → station is a two-step flow: releasing the dial after picking a
+  // region advances to station select. Releasing in station mode does nothing
+  // (the station tap on the region tile is how you go back to fix the region).
+  void _onDialReleased() {
+    if (!_stationTile) {
+      setState(() => _stationTile = true);
+    }
   }
 
   void _selectTile(bool station) {
@@ -100,6 +107,7 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
                 items: _activeItems,
                 selectedIndex: _activeIndex,
                 onSelected: _onDialSelected,
+                onReleased: _onDialReleased,
               ),
             ),
             const SizedBox(height: 16),
@@ -129,10 +137,8 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
       children: [
         Row(
           children: [
-            _tile(
-              cs,
-              _region,
-              motion,
+            StationDisplayField(
+              value: _region,
               active: !_stationTile,
               onTap: () => _selectTile(false),
             ),
@@ -143,14 +149,12 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
                 style: TextStyle(
                   fontSize: 36,
                   fontWeight: FontWeight.w400,
-                  color: cs.onSurface,
+                  color: cs.onSurfaceVariant,
                 ),
               ),
             ),
-            _tile(
-              cs,
-              _station,
-              motion,
+            StationDisplayField(
+              value: _station,
               active: _stationTile,
               onTap: () => _selectTile(true),
             ),
@@ -158,45 +162,6 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
         ),
         _hemisphereToggle(cs, motion),
       ],
-    );
-  }
-
-  Widget _tile(
-    ColorScheme cs,
-    String text,
-    bool motion, {
-    required bool active,
-    required VoidCallback onTap,
-  }) {
-    return Pressable(
-      onTap: onTap,
-      semanticLabel: text,
-      child: AnimatedContainer(
-        duration: motion ? AppMotion.micro : Duration.zero,
-        curve: AppMotion.easeOut,
-        width: 76,
-        height: 64,
-        decoration: BoxDecoration(
-          color: active ? cs.primaryContainer : cs.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        alignment: Alignment.center,
-        child: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: AnimatedDefaultTextStyle(
-              duration: motion ? AppMotion.micro : Duration.zero,
-              style: TextStyle(
-                fontSize: 30,
-                fontWeight: FontWeight.w400,
-                color: active ? cs.onPrimaryContainer : cs.onSurface,
-              ),
-              child: Text(text),
-            ),
-          ),
-        ),
-      ),
     );
   }
 
@@ -221,12 +186,14 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
                   ? Border(bottom: BorderSide(color: cs.outline))
                   : null,
             ),
+            // Two cells stack to the field height (76) so the toggle's baseline
+            // lines up with the value fields, as M3's AM/PM does.
             child: Pressable(
               onTap: () => _setHemisphere(h),
               semanticLabel: h,
               child: SizedBox(
-                width: 48,
-                height: 44,
+                width: 52,
+                height: 38,
                 child: Center(
                   child: Text(
                     h,

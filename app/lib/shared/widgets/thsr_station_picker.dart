@@ -4,6 +4,7 @@ import 'package:wheres_the_car/app/theme/app_theme.dart';
 import 'package:wheres_the_car/shared/widgets/app_button.dart';
 import 'package:wheres_the_car/shared/widgets/app_dialog.dart';
 import 'package:wheres_the_car/shared/widgets/clock_dial.dart';
+import 'package:wheres_the_car/shared/widgets/station_display_field.dart';
 
 const _thsrStations = [
   '南港',
@@ -60,6 +61,14 @@ class _THSRPickerDialogState extends State<_THSRPickerDialog> {
                 color: cs.onSurfaceVariant,
               ),
             ),
+            const SizedBox(height: 20),
+            // THSR is a single flat line, so the M3 "big value above the dial"
+            // is one always-selected field (no second field, no AM/PM toggle).
+            StationDisplayField(
+              value: _thsrStations[_selectedIndex],
+              active: true,
+              width: 120,
+            ),
             const SizedBox(height: 24),
             Center(
               child: ClockDial(
@@ -68,7 +77,7 @@ class _THSRPickerDialogState extends State<_THSRPickerDialog> {
                 onSelected: (i) => setState(() => _selectedIndex = i),
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
