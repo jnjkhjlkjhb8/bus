@@ -19,7 +19,7 @@ services:
       OLLAMA_NUM_PARALLEL: 2
       OLLAMA_MAX_LOADED_MODELS: 1
     mem_limit: 4g
-    pids_limit: 512
+    pids_limit: 4096
     cpus: 2.0
     security_opt:
       - no-new-privileges:true
