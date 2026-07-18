@@ -10,9 +10,10 @@ ARG PROTOC_GEN_GO_GRPC_VERSION
 RUN apk add --no-cache git protobuf-dev
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 ENV PATH $PATH:/go/bin
-RUN go install google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION} && \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION} && \
     go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}
 COPY models/ ./models/
 RUN protoc --go_out=paths=source_relative:models \
@@ -21,7 +22,9 @@ RUN protoc --go_out=paths=source_relative:models \
 COPY services/obs/ ./services/obs/
 COPY services/shared/ ./services/shared/
 COPY services/functions/ ./services/functions/
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o functions ./services/functions
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o functions ./services/functions
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 RUN apk add --no-cache ca-certificates tzdata && \
