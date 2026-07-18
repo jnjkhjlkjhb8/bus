@@ -47,6 +47,14 @@ func thsrFarePayload(ctx context.Context, start, end string, db railDB) ([]byte,
 	return proto.Marshal(&models.ThsaFares{Items: arr})
 }
 func queryThsrFares(ctx context.Context, db railDB, start, end string) ([]*models.ThsaFare, error) {
+	start, err := resolveRailStationID(ctx, db, "thsr_stations", start)
+	if err != nil {
+		return nil, err
+	}
+	end, err = resolveRailStationID(ctx, db, "thsr_stations", end)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := db.Query(ctx, `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 ORDER BY price, ticket_type, fare_class, cabin_class;`, start, end)
 	if err != nil {
 		return nil, err

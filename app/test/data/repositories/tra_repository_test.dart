@@ -6,7 +6,7 @@ import 'package:wheres_the_car/data/repositories/tra_repository.dart';
 import '../../support/helpers/fake_grpc.dart';
 
 void main() {
-  test('fare builds the ask_staiton request and decodes to a domain fare', () {
+  test('fare packs the O/D pair into ask_staiton and decodes to a domain fare', () {
     final client = _FakeTraTimetableClient(
       response: TraFareItem(
         originStationId: '1000',
@@ -17,9 +17,11 @@ void main() {
     );
     final repo = TraRepository(timetableClient: client);
 
-    return repo.fare('1000:3300', '2026-07-09').then((fare) {
-      expect(client.request?.stationId, '1000:3300');
-      expect(client.request?.date, '2026-07-09');
+    // station_id carries the origin, date carries the destination id — matching
+    // the router's Fare handler, which reuses ask_staiton to carry the O/D pair.
+    return repo.fare('1000', '3300').then((fare) {
+      expect(client.request?.stationId, '1000');
+      expect(client.request?.date, '3300');
       // Domain type, not the proto TraFareItem.
       expect(fare.price, 375);
       expect(fare.ticketType, '成人');

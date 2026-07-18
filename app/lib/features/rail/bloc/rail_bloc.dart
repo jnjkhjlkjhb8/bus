@@ -106,8 +106,8 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     _delaySub = null;
 
     try {
-      final originId = await _stationId(system, event.origin);
-      final destId = await _stationId(system, event.destination);
+      final originId = _stationId(event.origin);
+      final destId = _stationId(event.destination);
       final fareFuture = _loadFare(system, event.date, originId, destId);
       if (system == RailSystem.tra) {
         final items = await _traRepository.timetable(
@@ -184,23 +184,20 @@ class RailBloc extends Bloc<RailEvent, RailState> {
         final fare = await _thsrRepository.fare(date, originId, destId);
         return fare.price;
       }
-      final fare = await _traRepository.fare('$originId:$destId', date);
+      final fare = await _traRepository.fare(originId, destId);
       return fare.price;
     } on Object {
       return null;
     }
   }
 
-  Future<String> _stationId(
-    RailSystem system,
-    RailStationSelection selection,
-  ) async {
-    final knownId = selection.id;
-    if (knownId != null && knownId.isNotEmpty) return knownId;
-    final resolved = system == RailSystem.tra
-        ? await _traRepository.stationId(selection.name)
-        : await _thsrRepository.stationId(selection.name);
-    return resolved ?? selection.name;
+  /// The station id when the selection carries one, else its name. The router
+  /// resolves rail station names to ids (臺/台-tolerant) on every rail RPC, so a
+  /// bare name is a valid origin/destination — the app keeps no local station
+  /// table to resolve against since offline search was removed.
+  String _stationId(RailStationSelection selection) {
+    final id = selection.id;
+    return (id != null && id.isNotEmpty) ? id : selection.name;
   }
 
   @override

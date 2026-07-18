@@ -268,11 +268,10 @@ void main() {
     );
     await bloc.stream.firstWhere((state) => state is RailTimetableLoaded);
 
-    expect(thsr.stationIdCalls, isEmpty);
     expect(thsr.timetableCalls, [('2026-07-10', '0990', '1070')]);
   });
 
-  test('unknown station names fall back to names as IDs', () async {
+  test('a name without an id is passed through as the RPC id', () async {
     final thsr = _FakeThsrRepository();
     final bloc = RailBloc(thsrRepository: thsr);
     addTearDown(bloc.close);
@@ -287,7 +286,6 @@ void main() {
     );
     await bloc.stream.firstWhere((state) => state is RailTimetableLoaded);
 
-    expect(thsr.stationIdCalls, ['未知起點', '未知終點']);
     expect(
       thsr.timetableCalls,
       [('2026-07-10', '未知起點', '未知終點')],
@@ -540,9 +538,6 @@ class _ControlledThsrRepository extends ThsrRepository {
   var _calls = 0;
 
   @override
-  Future<String?> stationId(String name) async => null;
-
-  @override
   Future<List<ThsrTimetableItem>> timetable(
     String date,
     String originId,
@@ -561,13 +556,6 @@ class _FakeThsrRepository extends ThsrRepository {
   final Error? error;
   final ThsrFare? fareResult;
   final timetableCalls = <(String, String, String)>[];
-  final stationIdCalls = <String>[];
-
-  @override
-  Future<String?> stationId(String name) async {
-    stationIdCalls.add(name);
-    return null;
-  }
 
   @override
   Future<ThsrFare> fare(String date, String originId, String destId) async =>

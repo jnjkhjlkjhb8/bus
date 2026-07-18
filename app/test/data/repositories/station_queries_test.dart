@@ -1,47 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_car/data/repositories/mrt_repository.dart';
-import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
-import 'package:wheres_the_car/data/repositories/tra_repository.dart';
 
 import '../../support/helpers/fake_local_db.dart';
 
 void main() {
-  group('TraRepository.stationId', () {
-    test('resolves a known station name to its id', () async {
-      final repo = TraRepository(
-        localDb: FakeLocalDb({
-          '台北': [
-            {'station_id': '1000'},
-          ],
-        }),
-      );
-      expect(await repo.stationId('台北'), '1000');
-    });
-
-    test('returns null for an unknown name', () async {
-      final repo = TraRepository(localDb: FakeLocalDb({}));
-      expect(await repo.stationId('不存在'), isNull);
-    });
-  });
-
-  group('ThsrRepository.stationId', () {
-    test('resolves a known station name to its id', () async {
-      final repo = ThsrRepository(
-        localDb: FakeLocalDb({
-          '左營': [
-            {'station_id': '2000'},
-          ],
-        }),
-      );
-      expect(await repo.stationId('左營'), '2000');
-    });
-
-    test('returns null for an unknown name', () async {
-      final repo = ThsrRepository(localDb: FakeLocalDb({}));
-      expect(await repo.stationId('不存在'), isNull);
-    });
-  });
-
   group('MrtRepository local queries', () {
     test('schedule maps rows to schedule entries', () async {
       final repo = MrtRepository(

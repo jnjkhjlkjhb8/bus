@@ -1,6 +1,4 @@
 import 'package:wheres_the_car/core/grpc/grpc_client.dart';
-import 'package:wheres_the_car/core/powersync/local_db.dart';
-import 'package:wheres_the_car/core/powersync/powersync_service.dart';
 import 'package:wheres_the_car/data/decoders/tra_decoder.dart';
 import 'package:wheres_the_car/data/generated/tra.pbgrpc.dart';
 import 'package:wheres_the_car/data/models/tra_models.dart';
@@ -9,17 +7,10 @@ class TraRepository {
   TraRepository({
     TRA_timetable_serviceClient? timetableClient,
     TRA_Detain_serviceClient? detainClient,
-    LocalDb? localDb,
   }) : _timetableClient = timetableClient,
-       _detainClient = detainClient,
-       _localDb = localDb;
+       _detainClient = detainClient;
 
   static final TraRepository instance = TraRepository();
-
-  // Resolved lazily so tests that never touch the local DB can construct the
-  // repository without initializing PowerSync.
-  LocalDb? _localDb;
-  LocalDb get _db => _localDb ??= PowerSyncService.instance;
 
   TRA_timetable_serviceClient? _timetableClient;
   TRA_timetable_serviceClient get _timetable =>
@@ -44,11 +35,14 @@ class TraRepository {
     return TraDecoder.instance.decodeTimetable(result);
   }
 
-  /// Fare query. [stationId] is expected in `'originId:destId'` format when
-  /// querying an O/D pair.
-  Future<TraFare> fare(String stationId, String date) async {
+  /// Adult/full fare for an origin→destination pair. `ask_staiton` carries the
+  /// pair across its two string fields — station_id is the origin, date is the
+  /// destination id — matching the router's Fare handler (TRA fares are per
+  /// O/D, not per date). The router resolves station names to ids, so plain
+  /// station names are valid arguments too.
+  Future<TraFare> fare(String originId, String destId) async {
     final result = await _timetable.fare(
-      ask_staiton(stationId: stationId, date: date),
+      ask_staiton(stationId: originId, date: destId),
     );
     return TraDecoder.instance.decodeFare(result);
   }
@@ -78,16 +72,5 @@ class TraRepository {
       ask_detain(date: date, trainno: trainNo),
     );
     return TraDecoder.instance.decodeStops(result);
-  }
-
-  /// Resolves a TRA station name to its id from the synced station table, or
-  /// null when the name is unknown. Reads the offline PowerSync mirror.
-  Future<String?> stationId(String name) async {
-    final rows = await _db.getAll(
-      'SELECT station_id FROM tra_stations WHERE station_name = ? LIMIT 1',
-      [name],
-    );
-    if (rows.isEmpty) return null;
-    return rows.first['station_id'] as String?;
   }
 }

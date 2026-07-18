@@ -132,17 +132,13 @@ class RailTrainBloc extends Bloc<RailTrainEvent, RailTrainState> {
   /// any failure so the timetable still renders without a fare card.
   Future<int?> _loadFare(String originName, String destName) async {
     try {
+      // The router resolves station names to ids, so the stop names go straight
+      // to the fare RPC — the app no longer keeps a local station table.
       if (_isThsr) {
-        final originId = await _thsr.stationId(originName);
-        final destId = await _thsr.stationId(destName);
-        if (originId == null || destId == null) return null;
-        final fare = await _thsr.fare(date, originId, destId);
+        final fare = await _thsr.fare(date, originName, destName);
         return fare.price;
       }
-      final originId = await _tra.stationId(originName);
-      final destId = await _tra.stationId(destName);
-      if (originId == null || destId == null) return null;
-      final fare = await _tra.fare('$originId:$destId', date);
+      final fare = await _tra.fare(originName, destName);
       return fare.price;
     } on Object {
       return null;

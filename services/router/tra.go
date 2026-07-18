@@ -52,6 +52,14 @@ type trafare struct {
 // rows match, so callers treat an unlanded date as NotFound (ADR-0005); it never
 // fetches from TDX.
 func traFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, error) {
+	start, err := resolveRailStationID(ctx, db, "tra_stations", start)
+	if err != nil {
+		return nil, err
+	}
+	end, err = resolveRailStationID(ctx, db, "tra_stations", end)
+	if err != nil {
+		return nil, err
+	}
 	const q = `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2 ORDER BY price, ticket_type;`
 	rows, err := db.Query(ctx, q, start, end)
 	if err != nil {
