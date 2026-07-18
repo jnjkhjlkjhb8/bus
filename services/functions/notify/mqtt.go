@@ -178,48 +178,21 @@ func dispatchRouteAlerts(ctx context.Context, alerts []normalizedRouteAlert, cla
 	}
 }
 
-// routeAlerts parses an MQTT alert payload into normalized alerts. Only bus
-// alerts are currently emitted — other transit types resolve their type but
-// return nil, since only bus alerts carry a per-route key to target. It accepts
-// either a JSON array or a single object, extracts the route key and body from
-// the first matching TDX field name, and dedupes on key+body.
+// routeAlerts parses an MQTT disruption payload into normalized alerts. Each
+// transit type scopes its alerts differently, so the route key comes from a
+// per-type extractor; an alert that names no route yields one entry with an
+// empty key, which dispatches line-wide to every subscriber of that type.
+// Alerts are deduped on key+body, since TDX repeats one disruption across the
+// routes it scopes.
 func routeAlerts(topic string, payload []byte) []normalizedRouteAlert {
-	routeType := ""
-	switch {
-	case strings.Contains(topic, "/Bus/"):
-		routeType = "bus"
-	case strings.Contains(topic, "/Metro/"):
-		routeType = "mrt"
-	case strings.Contains(topic, "/TRA/"):
-		routeType = "tra"
-	case strings.Contains(topic, "/THSR/"):
-		routeType = "thsr"
-	}
-	if routeType != "bus" {
+	routeType := alertRouteType(topic)
+	if routeType == "" {
 		return nil
 	}
-	var raw any
-	if json.Unmarshal(payload, &raw) != nil {
-		return nil
-	}
-	items, ok := raw.([]any)
-	if !ok {
-		items = []any{raw}
-	}
+	items := alertItems(payload)
 	seen := map[string]struct{}{}
 	out := make([]normalizedRouteAlert, 0, len(items))
-	for _, item := range items {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		key := firstString(m, routeKeyFields(routeType)...)
-		if key == "" {
-			continue
-		}
-		if strings.Contains(topic, "/InterCity") {
-			key, _ = shared.CanonicalSubroute("InterCity", key, 0)
-		}
+	for _, m := range items {
 		body := firstString(m, "Description", "NewsContent", "AlertDescription", "Message")
 		if body == "" {
 			body = firstString(m, "NewsTitle", "Title")
@@ -227,24 +200,134 @@ func routeAlerts(topic string, payload []byte) []normalizedRouteAlert {
 		if body == "" {
 			continue
 		}
-		dedupe := key + "\x00" + body
-		if _, ok := seen[dedupe]; ok {
-			continue
+		id := firstString(m, "NewsID", "AlertID", "UpdateTime")
+		for _, key := range alertRouteKeys(routeType, m) {
+			if key != "" && strings.Contains(topic, "/InterCity") {
+				key, _ = shared.CanonicalSubroute("InterCity", key, 0)
+			}
+			dedupe := key + "\x00" + body
+			if _, ok := seen[dedupe]; ok {
+				continue
+			}
+			seen[dedupe] = struct{}{}
+			out = append(out, normalizedRouteAlert{routeType: routeType, routeKey: key, body: body, id: id})
 		}
-		seen[dedupe] = struct{}{}
-		out = append(out, normalizedRouteAlert{routeType: routeType, routeKey: key, body: body, id: firstString(m, "NewsID", "AlertID", "UpdateTime")})
 	}
 	return out
 }
 
-// routeKeyFields returns the payload field names that hold the route key for a
-// transit type. Only bus is mapped (to SubRouteUID); other types return nil,
-// which makes routeAlerts skip them.
-func routeKeyFields(routeType string) []string {
-	if routeType == "bus" {
-		return []string{"SubRouteUID"}
+// alertRouteType maps an MQTT topic to the transit type its payload describes,
+// or "" for a topic that carries no disruption info.
+func alertRouteType(topic string) string {
+	switch {
+	case strings.Contains(topic, "/Bus/"):
+		return "bus"
+	case strings.Contains(topic, "/Metro/"):
+		return "mrt"
+	case strings.Contains(topic, "/TRA/"):
+		return "tra"
+	case strings.Contains(topic, "/THSR/"):
+		return "thsr"
 	}
-	return nil
+	return ""
+}
+
+// alertRouteKeys returns the route keys one alert applies to. Bus alerts scope
+// to routes and TRA alerts to train numbers, both of which the app subscribes
+// by. THSR and metro alerts scope only to stations, lines, and line sections —
+// none of which is a subscription key — so they fall through to the empty key
+// and dispatch line-wide, as does a rail alert whose scope names no train.
+//
+// Bus has no such fallback: it spans thousands of routes across every
+// operator, and route-less bus News (fare changes, timetable notices) would
+// otherwise push to every bus subscriber in the country.
+func alertRouteKeys(routeType string, m map[string]any) []string {
+	switch routeType {
+	case "bus":
+		return busRouteKeys(m)
+	case "tra":
+		if keys := scopeKeys(m, "Trains", "TrainNo"); len(keys) > 0 {
+			return keys
+		}
+	}
+	return []string{""}
+}
+
+// alertItems unwraps an MQTT payload into the individual alert objects it
+// carries. Bus news/alerts arrive as a bare JSON array, while metro and TRA
+// wrap several alerts in an authority envelope
+// ({"AuthorityCode":"TRTC","Alerts":[...]}); a lone object is treated as a
+// one-element payload.
+func alertItems(payload []byte) []map[string]any {
+	var raw any
+	if json.Unmarshal(payload, &raw) != nil {
+		return nil
+	}
+	var items []any
+	switch v := raw.(type) {
+	case []any:
+		items = v
+	case map[string]any:
+		if nested, ok := v["Alerts"].([]any); ok {
+			items = nested
+		} else {
+			items = []any{v}
+		}
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// busRouteKeys returns every route key one bus alert applies to. News payloads
+// carry no scope at all; Alert payloads list the affected routes under
+// Scope.SubRoutes / Scope.Routes, where TDX publishes IDs and UIDs
+// inconsistently across operators. Both are emitted — a key with no
+// subscribers simply pushes nothing — and duplicates are dropped.
+func busRouteKeys(m map[string]any) []string {
+	keys := []string{}
+	if top := firstString(m, "SubRouteUID", "RouteUID"); top != "" {
+		keys = append(keys, top)
+	}
+	keys = append(keys, scopeKeys(m, "SubRoutes", "SubRouteUID", "SubRouteID")...)
+	keys = append(keys, scopeKeys(m, "Routes", "RouteUID", "RouteID")...)
+	return dedupeStrings(keys)
+}
+
+// scopeKeys reads one Scope list (Scope.SubRoutes, Scope.Trains, …) and
+// returns each entry's first non-empty value among fields. TDX publishes IDs
+// and UIDs inconsistently across operators, so callers pass both: a key with
+// no subscribers simply pushes nothing.
+func scopeKeys(m map[string]any, list string, fields ...string) []string {
+	scope, _ := m["Scope"].(map[string]any)
+	entries, _ := scope[list].([]any)
+	keys := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if e, ok := entry.(map[string]any); ok {
+			if key := firstString(e, fields...); key != "" {
+				keys = append(keys, key)
+			}
+		}
+	}
+	return dedupeStrings(keys)
+}
+
+// dedupeStrings drops repeats while preserving order.
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := values[:0]
+	for _, v := range values {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 // firstString returns the trimmed value of the first key in keys that maps to a

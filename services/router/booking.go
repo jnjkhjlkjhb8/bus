@@ -67,6 +67,22 @@ var (
 // maxTicketsPerCategory is TDX's documented per-category ceiling.
 const maxTicketsPerCategory = 10
 
+// queryIntInRange reads an integer query parameter, returning fallback when it
+// is absent and an error when it is present but outside [min, max]. An
+// out-of-range value is rejected rather than clamped: silently booking one
+// ticket when nine were asked for is worse than saying no.
+func queryIntInRange(c *gin.Context, name string, fallback, min, max int) (int, error) {
+	raw := strings.TrimSpace(c.Query(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < min || n > max {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", name, min, max)
+	}
+	return n, nil
+}
+
 // parseTicketCounts reads the passenger-category counts, defaulting a missing
 // category to 0. It rejects out-of-range values here rather than letting TDX
 // reject the whole exchange, and requires at least one passenger so a booking
@@ -127,7 +143,20 @@ type bookingRequest struct {
 	train    string
 	carriage string         // "Y" standard, "J" business — THSR web only
 	tickets  map[string]int // passenger category → count — THSR web only
+
+	// TRA web takes a single quantity plus its own ticket_type, which is a
+	// booking class (1 一般 / 2 騰雲座艙 / 3 兩鐵) — not THSR's ticket_type,
+	// which is the trip type. Same parameter name, unrelated meanings.
+	traClass int
+	traCount int
 }
+
+// TRA web booking classes and its per-order ticket ceiling.
+const (
+	traClassStandard = 1
+	traClassMax      = 3
+	traCountMax      = 9
+)
 
 // thsrTicketParams maps a passenger category to its TDX parameter. THSR takes
 // one count parameter per category rather than a single quantity, and only the
@@ -148,7 +177,8 @@ var thsrTicketParams = map[string]string{
 //     departure_number, ticket_type (trip type, S = one-way), carriage_type,
 //     and one count parameter per passenger category.
 //   - /direct/hsr: train_date (yyyy-mm-dd) plus a required train_time.
-//   - /web/tra: departure_date — a live 500 named it.
+//   - /web/tra: departure_date, plus a single ticket_count (1-9) and a
+//     ticket_type that means the booking class, not THSR's trip type.
 //   - /direct/tra: train_date, and no train_time.
 //
 // train_time is a THSR-only field: TRA takes none, so sending it there is at
@@ -172,6 +202,16 @@ func bookingParams(r bookingRequest) map[string]string {
 	}
 	if r.agency == "tra" && r.kind == "web" {
 		q["departure_date"] = r.date
+		class := r.traClass
+		if class < traClassStandard || class > traClassMax {
+			class = traClassStandard
+		}
+		q["ticket_type"] = strconv.Itoa(class)
+		count := r.traCount
+		if count < 1 || count > traCountMax {
+			count = 1
+		}
+		q["ticket_count"] = strconv.Itoa(count)
 	} else {
 		q["train_date"] = r.date
 	}
@@ -246,6 +286,14 @@ func handleBookingDeeplink(booking *bookingProxy) gin.HandlerFunc {
 			return
 		}
 		req.tickets = tickets
+		if req.traClass, err = queryIntInRange(c, "ticket_type", traClassStandard, traClassStandard, traClassMax); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if req.traCount, err = queryIntInRange(c, "ticket_count", 1, 1, traCountMax); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		url, expired, err := booking.exchange(c.Request.Context(), client, resource, req)
 		if err != nil {
 			log.Errorf("[BOOKING] action=exchange event=failed agency=%s kind=%s start=%q end=%q date=%s time=%s train=%s error=%v",

@@ -276,11 +276,33 @@ func TestRouteAlertsRequireIdentity(t *testing.T) {
 	if len(got) != 1 || got[0].routeKey != "R1" {
 		t.Fatalf("got=%v", got)
 	}
-	if got := routeAlerts("v3/Rail/TRA/Alert", []byte(`{"TrainNo":"123","Description":"x"}`)); len(got) != 0 {
-		t.Fatalf("train-level alert leaked: %v", got)
+	if got := routeAlerts("v2/Bus/News/City/Taipei", []byte(`[{"SubRouteUID":"R1"}]`)); len(got) != 0 {
+		t.Fatalf("bodyless alert leaked: %v", got)
 	}
-	if got := routeAlerts("v2/Rail/Metro/Alert/TRTC", []byte(`{"LineID":"BL","Description":"x"}`)); len(got) != 0 {
-		t.Fatalf("non-bus alert leaked: %v", got)
+}
+
+// TestRouteAlertsPerTypeScoping covers each transit type's own scope shape:
+// TRA names train numbers the app subscribes by, while THSR and metro scope
+// only to lines and stations and must fall through to a line-wide (empty-key)
+// alert rather than being dropped.
+func TestRouteAlertsPerTypeScoping(t *testing.T) {
+	tra := routeAlerts("v3/Rail/TRA/Alert", []byte(`{"AuthorityCode":"TRA","Alerts":[
+		{"AlertID":"A1","Description":"停駛","Scope":{"Trains":[{"TrainNo":"123"},{"TrainNo":"456"}]}}
+	]}`))
+	if len(tra) != 2 || tra[0].routeType != "tra" || tra[0].routeKey != "123" || tra[1].routeKey != "456" {
+		t.Fatalf("tra alerts = %+v, want one per scoped train", tra)
+	}
+	thsr := routeAlerts("v2/Rail/THSR/AlertInfo", []byte(`[
+		{"AlertID":"A1","Description":"delay","Scope":{"LineSections":[{"LineID":"THSR"}]}}
+	]`))
+	if len(thsr) != 1 || thsr[0].routeType != "thsr" || thsr[0].routeKey != "" {
+		t.Fatalf("thsr alerts = %+v, want one line-wide alert", thsr)
+	}
+	mrt := routeAlerts("v2/Rail/Metro/Alert/TRTC", []byte(`{"AuthorityCode":"TRTC","Alerts":[
+		{"AlertID":"A1","Description":"號誌異常","Scope":{"Lines":[{"LineID":"BL"}]}}
+	]}`))
+	if len(mrt) != 1 || mrt[0].routeType != "mrt" || mrt[0].routeKey != "" {
+		t.Fatalf("mrt alerts = %+v, want one line-wide alert", mrt)
 	}
 }
 
@@ -297,6 +319,35 @@ func TestRouteAlertsParseBusAlertTopic(t *testing.T) {
 	}
 	if got[0].routeType != "bus" || got[0].routeKey != "TPE10132" || got[0].id != "A1" || got[0].body != "因道路施工改道" {
 		t.Fatalf("alert = %+v", got[0])
+	}
+}
+
+// TestRouteAlertsParseBusAlertScope covers the TDX Bus/Alert shape where the
+// affected routes live in Scope.SubRoutes / Scope.Routes rather than at the
+// top level: one alert fans out to every route it scopes.
+func TestRouteAlertsParseBusAlertScope(t *testing.T) {
+	got := routeAlerts("v2/Bus/Alert/City/Taipei", []byte(`[{
+		"AlertID":"A1","Title":"停駛","Description":"因道路施工停駛",
+		"Scope":{"SubRoutes":[{"SubRouteID":"10132"},{"SubRouteUID":"TPE10133"}],"Routes":[{"RouteID":"10132"}]}
+	}]`))
+	keys := map[string]bool{}
+	for _, alert := range got {
+		keys[alert.routeKey] = true
+	}
+	if len(got) != 2 || !keys["10132"] || !keys["TPE10133"] {
+		t.Fatalf("alerts = %+v, want one per scoped route (deduped)", got)
+	}
+}
+
+// TestAlertItemsUnwrapEnvelope covers the metro/TRA authority envelope, which
+// carries several alerts per message instead of a bare array.
+func TestAlertItemsUnwrapEnvelope(t *testing.T) {
+	got := alertItems([]byte(`{"AuthorityCode":"TRTC","Alerts":[{"AlertID":"A1"},{"AlertID":"A2"}]}`))
+	if len(got) != 2 || got[1]["AlertID"] != "A2" {
+		t.Fatalf("items = %+v, want the two enveloped alerts", got)
+	}
+	if got := alertItems([]byte(`{"AlertID":"A1"}`)); len(got) != 1 {
+		t.Fatalf("bare object must parse as one alert: %+v", got)
 	}
 }
 
@@ -332,18 +383,44 @@ func TestInterCityVehicleMQTTUsesRESTCanonicalIdentity(t *testing.T) {
 	}
 }
 
-func TestRouteAlertStaysBusOnly(t *testing.T) {
-	// Service-alert pushes remain bus-only; a non-bus routeAlert is a no-op.
+// TestRouteAlertCoversEveryTransitType pins that disruption pushes reach all
+// four subscribable types, and that an unknown type stays a no-op.
+func TestRouteAlertCoversEveryTransitType(t *testing.T) {
+	for _, routeType := range []string{"bus", "mrt", "tra", "thsr"} {
+		store := &fakeNotificationStore{
+			tokens:        []deviceToken{{"token"}},
+			claimed:       map[string]bool{},
+			wantRouteType: routeType,
+			wantRouteKey:  "123",
+		}
+		sender := &fakeFCM{}
+		NewDispatcher(store, sender).routeAlert(context.Background(), routeType, "123", "延誤")
+		if len(sender.messages) != 1 {
+			t.Fatalf("%s route alert sent=%d, want 1", routeType, len(sender.messages))
+		}
+	}
+	store := &fakeNotificationStore{tokens: []deviceToken{{"token"}}, claimed: map[string]bool{}}
+	sender := &fakeFCM{}
+	NewDispatcher(store, sender).routeAlert(context.Background(), "ferry", "123", "延誤")
+	if len(sender.messages) != 0 {
+		t.Fatalf("unknown transit type sent=%d", len(sender.messages))
+	}
+}
+
+// TestLineWideAlertTitlesBroaderScope pins the empty-key path: a line-wide
+// disruption still dispatches (to every subscriber of that type) and is
+// labelled 營運通阻 rather than naming one route.
+func TestLineWideAlertTitlesBroaderScope(t *testing.T) {
 	store := &fakeNotificationStore{
 		tokens:        []deviceToken{{"token"}},
 		claimed:       map[string]bool{},
-		wantRouteType: "tra",
-		wantRouteKey:  "123",
+		wantRouteType: "thsr",
+		wantRouteKey:  "",
 	}
 	sender := &fakeFCM{}
-	NewDispatcher(store, sender).routeAlert(context.Background(), "tra", "123", "延誤")
-	if len(sender.messages) != 0 {
-		t.Fatalf("non-bus route alert sent=%d", len(sender.messages))
+	NewDispatcher(store, sender).routeAlert(context.Background(), "thsr", "", "全線延誤")
+	if len(sender.messages) != 1 || sender.messages[0].Notification.Title != "營運通阻" {
+		t.Fatalf("line-wide alert = %+v", sender.messages)
 	}
 }
 

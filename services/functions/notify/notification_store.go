@@ -32,9 +32,12 @@ type arrivalReminder struct {
 }
 
 // subscribedTokens returns the push-enabled device tokens subscribed to a
-// route's alerts, skipping devices with push disabled or an empty token.
+// route's alerts, skipping devices with push disabled or an empty token. An
+// empty routeKey matches every subscription of that transit type: line-wide
+// disruptions (THSR, metro) name no single route, so they reach everyone
+// subscribed to it.
 func (s Store) subscribedTokens(ctx context.Context, routeType, routeKey string) ([]deviceToken, error) {
-	rows, err := s.db.Query(ctx, `SELECT d.fcm_token FROM firebase_route_subscription s JOIN firebase_device d ON d.install_id=s.install_id WHERE s.route_type=$1 AND s.route_key=$2 AND d.push_enabled AND d.fcm_token<>''`, routeType, routeKey)
+	rows, err := s.db.Query(ctx, `SELECT d.fcm_token FROM firebase_route_subscription s JOIN firebase_device d ON d.install_id=s.install_id WHERE s.route_type=$1 AND ($2='' OR s.route_key=$2) AND d.push_enabled AND d.fcm_token<>''`, routeType, routeKey)
 	if err != nil {
 		return nil, err
 	}

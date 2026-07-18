@@ -91,7 +91,7 @@ func TestNotificationStoreFiltersRouteAndEnabledDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	db.ExpectQuery("FROM firebase_route_subscription.*s.route_type=\\$1 AND s.route_key=\\$2.*d.push_enabled").WithArgs("bus", "R1").WillReturnRows(pgxmock.NewRows([]string{"fcm_token"}).AddRow("token"))
+	db.ExpectQuery("FROM firebase_route_subscription.*s.route_type=\\$1 AND \\(\\$2='' OR s.route_key=\\$2\\).*d.push_enabled").WithArgs("bus", "R1").WillReturnRows(pgxmock.NewRows([]string{"fcm_token"}).AddRow("token"))
 	got, err := (Store{db: db}).subscribedTokens(context.Background(), "bus", "R1")
 	if err != nil || len(got) != 1 || got[0].token != "token" {
 		t.Fatalf("got=%v err=%v", got, err)

@@ -148,15 +148,29 @@ func TestBookingParamsPerVariant(t *testing.T) {
 			t.Error("hsr web must not send train_date")
 		}
 	})
-	t.Run("tra web takes departure_date in yyyy-mm-dd", func(t *testing.T) {
+	t.Run("tra web takes departure_date, a booking class and one count", func(t *testing.T) {
 		r := base
 		r.agency, r.kind = "tra", "web"
+		r.traClass, r.traCount = 2, 3
 		q := bookingParams(r)
 		if q["departure_date"] != "2026-07-18" || q["train_number"] != "309" {
 			t.Errorf("tra web params = %v", q)
 		}
+		// TRA's ticket_type is the booking class (2 = 騰雲座艙), unrelated to
+		// THSR's ticket_type, which is the trip type.
+		if q["ticket_type"] != "2" || q["ticket_count"] != "3" {
+			t.Errorf("tra ticket params = %v", q)
+		}
 		if _, ok := q["train_time"]; ok {
 			t.Error("tra must not send train_time")
+		}
+	})
+	t.Run("tra web defaults an unset class and count", func(t *testing.T) {
+		r := base
+		r.agency, r.kind = "tra", "web"
+		q := bookingParams(r)
+		if q["ticket_type"] != "1" || q["ticket_count"] != "1" {
+			t.Errorf("tra defaults = ticket_type %q count %q", q["ticket_type"], q["ticket_count"])
 		}
 	})
 	t.Run("tra direct takes train_date and no train_time", func(t *testing.T) {
@@ -194,6 +208,8 @@ func TestBookingDeeplinkBadRequests(t *testing.T) {
 		"agency=tra&kind=web&start_station=a&end_station=b&train_date=20260718&train_time=10%3A00&train_number=103",     // bad date
 		"agency=tra&kind=web&start_station=a&end_station=b&train_date=2026-07-18&train_time=10%3A00&train_number=abc",   // bad train
 		"agency=tra&kind=web&start_station=&end_station=b&train_date=2026-07-18&train_time=10%3A00&train_number=103",    // empty station
+		"agency=tra&kind=web&start_station=a&end_station=b&train_date=2026-07-18&train_number=103&ticket_count=10",     // over TRA's 9-ticket ceiling
+		"agency=tra&kind=web&start_station=a&end_station=b&train_date=2026-07-18&train_number=103&ticket_type=4",       // no such booking class
 	}
 	for _, q := range bad {
 		if rec := getBooking(r, q); rec.Code != http.StatusBadRequest {

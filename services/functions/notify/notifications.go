@@ -77,12 +77,13 @@ func notificationMessage(token, title, body string, data map[string]string) *mes
 	return &messaging.Message{Token: token, Data: data, Notification: &messaging.Notification{Title: title, Body: body}, Android: &messaging.AndroidConfig{Priority: "high", Notification: &messaging.AndroidNotification{Sound: "default"}}, APNS: &messaging.APNSConfig{Payload: &messaging.APNSPayload{Aps: &messaging.Aps{Sound: "default"}}}}
 }
 
-// routeAlert pushes a service-alert notification to every device subscribed to a
-// route. It is a no-op for a nil dispatcher, non-bus types, or an empty routeKey.
-// Tokens are deduped, and a send that reports an unregistered token invalidates
-// that token instead of retrying.
+// routeAlert pushes a service-disruption notification to every device
+// subscribed to a route. An empty routeKey is a line-wide disruption and
+// reaches every subscriber of that transit type. It is a no-op for a nil
+// dispatcher or an unknown transit type. Tokens are deduped, and a send that
+// reports an unregistered token invalidates that token instead of retrying.
 func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body string) {
-	if d == nil || routeType != "bus" || routeKey == "" {
+	if d == nil || !isAlertRouteType(routeType) {
 		return
 	}
 	tokens, err := d.store.subscribedTokens(ctx, routeType, routeKey)
@@ -96,13 +97,32 @@ func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body s
 			continue
 		}
 		seen[v.token] = struct{}{}
-		err = d.sender.Send(ctx, notificationMessage(v.token, "路線異常", body, map[string]string{"kind": "route_alert", "route_type": routeType, "route_key": routeKey}))
+		err = d.sender.Send(ctx, notificationMessage(v.token, alertTitle(routeKey), body, map[string]string{"kind": "route_alert", "route_type": routeType, "route_key": routeKey}))
 		if isInvalidFCMToken(err) {
 			_ = d.store.invalidate(ctx, v.token)
 		} else if err != nil {
 			log.Warnf("[FCM] action=route_alert event=send_failed route_type=%s route_key=%s error=%v", routeType, routeKey, err)
 		}
 	}
+}
+
+// isAlertRouteType reports whether a transit type can carry disruption alerts.
+// It mirrors the route_type CHECK constraint on firebase_route_subscription.
+func isAlertRouteType(routeType string) bool {
+	switch routeType {
+	case "bus", "mrt", "tra", "thsr":
+		return true
+	}
+	return false
+}
+
+// alertTitle labels a disruption by how wide it is: a keyed alert names one
+// route, an unkeyed one is line-wide.
+func alertTitle(routeKey string) string {
+	if routeKey == "" {
+		return "營運通阻"
+	}
+	return "路線異常"
 }
 
 // arrivalReminderBody renders the live-ETA reminder text. Zero minutes means
