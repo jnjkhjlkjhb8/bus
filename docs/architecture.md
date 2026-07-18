@@ -61,7 +61,7 @@ Redis 與 OSRM 僅對 localhost 開放，不對外暴露。
 ```
 # 靜態資料採兩階段
 TDX REST API ──03:00 ingestor（TDX 憑證僅 prod，無憑證時零請求）──→ raw_tdx（共用 schema）
-raw_tdx ──03:30（每個環境 functions）──→ PostgreSQL（該環境 PG_SCHEMA 靜態）
+raw_tdx ──03:30（每個環境 loader，ROLE=loader）──→ PostgreSQL（該環境 PG_SCHEMA 靜態）──changetovector（同一 loader 進程接續）──→ search_vector 嵌入（經 EMBED_URL/ollama；見 ADR-0013）
 
 TDX REST API ──即時排程──→ functions ──→ Redis（ETA 快取 + Pub/Sub）
 

@@ -91,6 +91,7 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 			return
 		}
 		_ = recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
+		runVectorRefresh(rawPool, db, rc, runDate)
 	})
 	if os.Getenv("LOAD_ON_BOOT") == "true" {
 		log.Infoln("[LOAD] action=boot event=enabled")
@@ -109,10 +110,42 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 				return
 			}
 			_ = recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
+			runVectorRefresh(rawPool, db, rc, runDate)
 		})
 	} else {
 		log.Warn("[LOAD] action=boot event=skipped")
 	}
+}
+
+// vectorRefreshTimeout bounds one changetovector attempt in the loader. It
+// mirrors the retry/resume budget the functions cron used before this stage
+// moved here: three attempts (runDailyWithRetry), each resumable because
+// freshVectorSkipSQL skips rows already embedded with unchanged content.
+const vectorRefreshTimeout = 10 * time.Minute
+
+// runVectorRefresh runs changetovector in the loader process immediately after a
+// successful load, then records its pipeline marker. Binding it to the loader
+// keeps the load->vector critical path inside one container: the functions
+// service no longer needs to be running (or to poll the "load" marker) for
+// search vectors to refresh. It acquires the static-pipeline advisory lock via
+// its own runner, after the load's runner has released it, so the two stages
+// stay serialized exactly as they were across processes. A run with no EMBED_URL
+// skips embedding but still records the marker (changeToVector returns nil for a
+// nil embedder), so the downstream computeTravelAvg stage is never stranded --
+// unchanged from the previous functions-hosted flow.
+func runVectorRefresh(rawPool, db *pgxpool.Pool, rc *redis.Client, runDate time.Time) {
+	job := vectorRefreshJob(rc, db, configuredEmbeddingClient())
+	runner := newStaticPipelineRunner(rawPool, vectorRefreshTimeout)
+	err := runDailyWithRetry(context.Background(), vectorRefreshTimeout, time.Minute, func(ctx context.Context) error {
+		return runner.Run(ctx, job)
+	})
+	if err != nil {
+		log.Errorf("[crontab] action=changetovector event=failed error=%v", err)
+		return
+	}
+	// Marker write is outside the job retry: a failed one-row upsert must not
+	// re-drive an already successful vector refresh.
+	_ = recordPipelineMarkerWithRetry(context.Background(), db, "changetovector", runDate)
 }
 
 // markerEarned reports whether a load run may publish its pipeline marker, the

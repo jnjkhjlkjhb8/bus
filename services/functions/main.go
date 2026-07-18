@@ -84,7 +84,7 @@ func main() {
 		switch os.Args[2] {
 		case "changetovector":
 			job := vectorRefreshJob(rc, db, configuredEmbeddingClient())
-			runner := newStaticPipelineRunner(rawPool, 10*time.Minute)
+			runner := newStaticPipelineRunner(rawPool, manualBackfillTimeout)
 			if err := runner.Run(context.Background(), job); err != nil {
 				log.Fatalf("changetovector failed: %v", err)
 			}
@@ -195,6 +195,11 @@ const (
 	staticPipelineAdvisoryKey    int64 = 0x6275737374617469
 	staticPipelineReleaseTimeout       = 5 * time.Second
 )
+
+// manualBackfillTimeout bounds the `functions run changetovector` one-shot. It
+// is deliberately far larger than the cron's per-attempt 10m budget so a cold
+// full-corpus backfill on a CPU/small-GPU embedder completes in one pass.
+const manualBackfillTimeout = 2 * time.Hour
 
 // staticPipelineLocker holds a cross-process lock until its release callback.
 // The PostgreSQL implementation below uses a transaction-scoped advisory lock;
@@ -456,28 +461,11 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	// on its historical clock offset (03:45 / 04:00) but first polls pipeline_runs
 	// for the upstream stage's durable completion marker (written by the loader/
 	// changetovector on success) instead of trusting the clock offset alone.
+	// changetovector now runs in the loader process immediately after the 03:30
+	// load (registerLoaderCrons -> runVectorRefresh), so this service no longer
+	// hosts it. markerReader stays: the computeTravelAvg cron below still polls
+	// the "changetovector" marker, now written by the loader.
 	markerReader := pgPipelineMarkerReader{db: db}
-	refreshVectors := vectorRefreshJob(rc, db, configuredEmbeddingClient())
-	vectorRunner := newStaticPipelineRunner(rawPool, 10*time.Minute)
-	_, _ = addStaticCron(r, "0 45 3 * * *", func() {
-		runDate := time.Now().In(taipei)
-		waitCtx, cancel := context.WithTimeout(context.Background(), pipelineMarkerPollDeadline+time.Minute)
-		defer cancel()
-		if err := waitForPipelineMarker(waitCtx, markerReader, "load", runDate, pipelineMarkerPollInterval, pipelineMarkerPollDeadline, time.Now, sleepCtx); err != nil {
-			log.Errorf("[PIPELINE] action=changetovector event=marker_wait_failed error=%v", err)
-			return
-		}
-		err := runDailyWithRetry(context.Background(), 10*time.Minute, time.Minute, func(ctx context.Context) error {
-			return vectorRunner.Run(ctx, refreshVectors)
-		})
-		if err != nil {
-			log.Errorf("[crontab] action=changetovector event=failed error=%v", err)
-			return
-		}
-		// Marker write is outside the job retry: a failed one-row upsert must
-		// not re-drive an already successful vector refresh.
-		_ = recordPipelineMarkerWithRetry(context.Background(), db, "changetovector", runDate)
-	})
 	registerLiveCrons(r, tdx, rc, db, dispatcher)
 	_, _ = addStaticCron(r, "@every 10m", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)

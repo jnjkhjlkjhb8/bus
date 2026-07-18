@@ -29,5 +29,6 @@ RUN apk add --no-cache ca-certificates tzdata && \
     adduser -D -u 10001 -G app -h /home/app app
 WORKDIR /home/app
 COPY --from=builder --chown=app:app /app/functions .
+RUN mkdir -p /spool && chown app:app /spool
 USER app:app
 ENTRYPOINT ["./functions"]

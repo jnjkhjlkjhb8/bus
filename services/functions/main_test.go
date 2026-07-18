@@ -57,6 +57,46 @@ func TestRunLegacyProdRoutesBootLoadThroughStaticGuard(t *testing.T) {
 	}
 }
 
+// TestChangeToVectorBoundToLoader guards the ownership move: changetovector must
+// run in the loader (registerLoaderCrons -> runVectorRefresh, once per the cron
+// and boot paths) and must no longer be hosted by the functions service
+// (runLegacyProd). If someone re-adds it to runLegacyProd or drops it from the
+// loader, the load->vector path silently depends on functions again.
+func TestChangeToVectorBoundToLoader(t *testing.T) {
+	countCalls := func(file, fnName, callee string) int {
+		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var target *ast.FuncDecl
+		for _, decl := range parsed.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == fnName {
+				target = fn
+				break
+			}
+		}
+		if target == nil {
+			t.Fatalf("%s declaration not found in %s", fnName, file)
+		}
+		n := 0
+		ast.Inspect(target.Body, func(node ast.Node) bool {
+			if call, ok := node.(*ast.CallExpr); ok {
+				if ident, ok := call.Fun.(*ast.Ident); ok && ident.Name == callee {
+					n++
+				}
+			}
+			return true
+		})
+		return n
+	}
+	if got := countCalls("loader_cron.go", "registerLoaderCrons", "runVectorRefresh"); got != 2 {
+		t.Fatalf("registerLoaderCrons runVectorRefresh calls = %d, want 2 (cron + boot)", got)
+	}
+	if got := countCalls("main.go", "runLegacyProd", "runVectorRefresh"); got != 0 {
+		t.Fatalf("runLegacyProd runVectorRefresh calls = %d, want 0 (moved to loader)", got)
+	}
+}
+
 func TestVectorRefreshJobPropagatesError(t *testing.T) {
 	wantErr := errors.New("watermark unavailable")
 	job := vectorRefreshJob(
