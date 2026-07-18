@@ -153,8 +153,13 @@ func TestBookingParamsPerVariant(t *testing.T) {
 		r.agency, r.kind = "tra", "web"
 		r.traClass, r.traCount = 2, 3
 		q := bookingParams(r)
-		if q["departure_date"] != "2026-07-18" || q["train_number"] != "309" {
+		// Same fields as the direct variant, different names — the number moves
+		// to departure_number while the date keeps its yyyy-mm-dd form.
+		if q["departure_date"] != "2026-07-18" || q["departure_number"] != "309" {
 			t.Errorf("tra web params = %v", q)
+		}
+		if _, ok := q["train_number"]; ok {
+			t.Error("tra web must not send train_number")
 		}
 		// TRA's ticket_type is the booking class (2 = 騰雲座艙), unrelated to
 		// THSR's ticket_type, which is the trip type.

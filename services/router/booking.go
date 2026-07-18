@@ -177,9 +177,10 @@ var thsrTicketParams = map[string]string{
 //     departure_number, ticket_type (trip type, S = one-way), carriage_type,
 //     and one count parameter per passenger category.
 //   - /direct/hsr: train_date (yyyy-mm-dd) plus a required train_time.
-//   - /web/tra: departure_date, plus a single ticket_count (1-9) and a
-//     ticket_type that means the booking class, not THSR's trip type.
-//   - /direct/tra: train_date, and no train_time.
+//   - /web/tra: departure_date (yyyy-mm-dd, unlike THSR's) and
+//     departure_number, plus a single ticket_count (1-9) and a ticket_type
+//     that means the booking class, not THSR's trip type.
+//   - /direct/tra: train_date and train_number, and no train_time.
 //
 // train_time is a THSR-only field: TRA takes none, so sending it there is at
 // best ignored and at worst another rejected exchange.
@@ -201,7 +202,11 @@ func bookingParams(r bookingRequest) map[string]string {
 		return q
 	}
 	if r.agency == "tra" && r.kind == "web" {
+		// Same fields as /direct/tra under different names: the date keeps its
+		// yyyy-mm-dd form here (unlike THSR's web variant) but the train number
+		// moves to departure_number.
 		q["departure_date"] = r.date
+		q["departure_number"] = r.train
 		class := r.traClass
 		if class < traClassStandard || class > traClassMax {
 			class = traClassStandard
@@ -212,9 +217,9 @@ func bookingParams(r bookingRequest) map[string]string {
 			count = 1
 		}
 		q["ticket_count"] = strconv.Itoa(count)
-	} else {
-		q["train_date"] = r.date
+		return q
 	}
+	q["train_date"] = r.date
 	if r.agency == "hsr" {
 		q["train_time"] = r.time
 	}
