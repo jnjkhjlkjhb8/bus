@@ -380,29 +380,17 @@ class _HorizontalTimelinePainter extends CustomPainter {
     // Every stop is a plain hollow dot; the live state (進站中 green, 即將進站
     // amber) is carried by the ring colour, and the approaching stop's radar
     // ping is drawn as an animated widget in the Stack above — no static halo.
-    // A service-over stop (末班已過 / 今日未營運) is a cross instead: nothing
-    // more is coming today, so it should not read as a stop still to serve.
-    canvas.drawCircle(Offset(cx, cy), 7, Paint()..color = surfaceColor);
-    if (stopState == TimelineStopState.ended) {
-      const arm = 5.0;
-      final crossPaint = Paint()
-        ..color = dotColor
-        ..strokeWidth = 2.0
-        ..strokeCap = StrokeCap.round;
-      canvas
-        ..drawLine(
-          Offset(cx - arm, cy - arm),
-          Offset(cx + arm, cy + arm),
-          crossPaint,
-        )
-        ..drawLine(
-          Offset(cx - arm, cy + arm),
-          Offset(cx + arm, cy - arm),
-          crossPaint,
-        );
-    } else {
-      canvas.drawCircle(Offset(cx, cy), 7, borderPaint..color = dotColor);
-    }
+    canvas
+      ..drawCircle(
+        Offset(cx, cy),
+        7,
+        Paint()..color = surfaceColor,
+      )
+      ..drawCircle(
+        Offset(cx, cy),
+        7,
+        borderPaint..color = dotColor,
+      );
 
     // Pick-mode: an ink ring marks the chosen alight target.
     if (isTarget) {

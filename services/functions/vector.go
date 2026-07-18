@@ -600,7 +600,7 @@ func (e *httpEmbedder) Embed(ctx context.Context, input []string) (embeddings []
 		return nil, fmt.Errorf("read embedding response: %w", err)
 	}
 	if !response.IsSuccess() {
-		return nil, fmt.Errorf("embedding endpoint returned HTTP %d", response.StatusCode())
+		return nil, fmt.Errorf("embedding endpoint returned HTTP %d: %s", response.StatusCode(), strings.TrimSpace(string(body)))
 	}
 	var result struct {
 		Embeddings [][]float32 `json:"embeddings"`

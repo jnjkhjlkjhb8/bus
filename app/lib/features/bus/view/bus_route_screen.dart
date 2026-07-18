@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -230,15 +232,24 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       if (st.lat == 0 && st.lon == 0) continue;
       final eta = _etaFor(s, st);
       final key =
-          '${_markerIsScheduled(eta)}:${_markerEta(eta)}:${st.lat},${st.lon}';
+          '${_markerIsScheduled(eta)}:${_markerIsEnded(eta)}:'
+          '${_markerEta(eta)}:${st.lat},${st.lon}';
       final cached = _markerCache[st.stopUid];
       if (cached != null && cached.key == key) {
         stopMarkers.add(cached.marker);
         continue;
       }
-      final icon = _markerIsScheduled(eta)
-          ? await MapMarkers.etaStopIcon(Icons.schedule_rounded, size: 32)
-          : await MapMarkers.etaStop(_markerEta(eta), size: 32);
+      final icon = switch (eta) {
+        _ when _markerIsEnded(eta) => await MapMarkers.etaStopIcon(
+          Icons.close_rounded,
+          size: 32,
+        ),
+        _ when _markerIsScheduled(eta) => await MapMarkers.etaStopIcon(
+          Icons.schedule_rounded,
+          size: 32,
+        ),
+        _ => await MapMarkers.etaStop(_markerEta(eta), size: 32),
+      };
       final stopUid = st.stopUid;
       final marker = Marker(
         markerId: MarkerId(stopUid),
@@ -661,6 +672,14 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                       mapToolbarEnabled: false,
                       markers: layer.markers,
                       polylines: layer.polylines,
+                      // Map shares a Stack with the draggable sheet; without an
+                      // eager recognizer the map loses the gesture arena, so
+                      // pan/pinch leak to the sheet instead of moving the map.
+                      gestureRecognizers: const {
+                        Factory<OneSequenceGestureRecognizer>(
+                          EagerGestureRecognizer.new,
+                        ),
+                      },
                       onMapCreated: (controller) {
                         _mapController = controller;
                         _maybeFit();

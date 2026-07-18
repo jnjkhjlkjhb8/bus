@@ -25,6 +25,14 @@ extension _HomeScreenScaffold on _HomeScreenState {
                       _scheduleNearbyForViewport(context);
                     },
                     markers: _markers,
+                    // Map shares a Stack with the draggable sheet; without an
+                    // eager recognizer the map loses the gesture arena, so
+                    // pan/pinch leak to the sheet instead of moving the map.
+                    gestureRecognizers: const {
+                      Factory<OneSequenceGestureRecognizer>(
+                        EagerGestureRecognizer.new,
+                      ),
+                    },
                     onCameraMove: (pos) {
                       _zoom = pos.zoom;
                       _camCenter = pos.target;

@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -1039,6 +1041,14 @@ class _GoScreenState extends State<GoScreen> {
             markers: {
               if (route != null) ..._overlayMarkers,
               if (navigating) ?_navPuck(Theme.of(context).colorScheme),
+            },
+            // Map shares a Stack with the draggable sheet; without an eager
+            // recognizer the map loses the gesture arena, so pan/pinch leak
+            // to the sheet instead of moving the map.
+            gestureRecognizers: const {
+              Factory<OneSequenceGestureRecognizer>(
+                EagerGestureRecognizer.new,
+              ),
             },
           ),
         ),

@@ -23,10 +23,6 @@ TimelineStopState timelineStopState(BusStopEtaViewModel? eta) {
   if (status == BusStopDisplayStatus.arriving) {
     return TimelineStopState.arriving;
   }
-  if (status == BusStopDisplayStatus.lastBusPassed ||
-      status == BusStopDisplayStatus.notOperating) {
-    return TimelineStopState.ended;
-  }
   return _approaching(eta)
       ? TimelineStopState.approaching
       : TimelineStopState.none;

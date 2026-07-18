@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
@@ -164,6 +166,14 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
                   myLocationEnabled: true,
                   myLocationButtonEnabled: false,
                   zoomControlsEnabled: false,
+                  // Map shares a Stack with the draggable sheet; without an
+                  // eager recognizer the map loses the gesture arena, so
+                  // pan/pinch leak to the sheet instead of moving the map.
+                  gestureRecognizers: const {
+                    Factory<OneSequenceGestureRecognizer>(
+                      EagerGestureRecognizer.new,
+                    ),
+                  },
                   onMapCreated: (c) {
                     _controller = c;
                     if (!hasStation) {

@@ -22,6 +22,18 @@ String _markerEta(BusStopEtaViewModel? eta) {
 bool _markerIsScheduled(BusStopEtaViewModel? eta) =>
     eta != null && eta.stopStatus == 1 && eta.nextBusTime.isNotEmpty;
 
+/// A stop whose service is over for the day (末班已過 / 今日未營運) — the map
+/// marker shows a cross instead of a countdown, since nothing more is coming.
+bool _markerIsEnded(BusStopEtaViewModel? eta) {
+  if (eta == null) return false;
+  final status = busStopDisplayStatus(
+    estimateSeconds: eta.estimateSeconds,
+    stopStatus: eta.stopStatus,
+  );
+  return status == BusStopDisplayStatus.lastBusPassed ||
+      status == BusStopDisplayStatus.notOperating;
+}
+
 List<BusVehiclePosition> _vehiclePositionsFor(BusRouteState s) {
   final byPlate = <String, BusVehiclePosition>{};
   for (final eta in s.etaMap.values) {

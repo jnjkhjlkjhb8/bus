@@ -43,7 +43,7 @@ COMPOSE_PROD := ENV_FILE=env/prod.env \
 # Empty (the default) follows every service in the environment.
 SERVICE ?=
 
-.PHONY: up-test up-staging up-prod up-ollama logs-test logs-staging logs-prod down-test down-staging down-prod migrations-check run-test run-staging build-prod test test-go test-flutter proto-go proto-dart verify render-env-test render-env-staging render-env-prod
+.PHONY: up-test up-staging up-prod up-ollama up-ollama-prod logs-test logs-staging logs-prod down-test down-staging down-prod migrations-check run-test run-staging build-prod test test-go test-flutter proto-go proto-dart verify render-env-test render-env-staging render-env-prod
 
 test: test-go test-flutter
 
@@ -117,6 +117,12 @@ down-prod:
 
 up-ollama:
 	$(COMPOSE) -p dev -f docker/docker-compose.yaml --profile gpu up -d --build ollama
+
+# up-ollama runs under -p dev, a separate compose project (network dev_backend),
+# so prod's `ollama` hostname never resolves. This starts ollama inside the prod
+# project instead, sharing prod_backend so EMBED_URL=http://ollama:11434 works.
+up-ollama-prod: render-env-prod
+	$(COMPOSE_PROD) --profile gpu up -d --build ollama
 
 migrations-check:
 	./scripts/check-migrations.sh
