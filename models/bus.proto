@@ -134,6 +134,7 @@ message Bus_RouteEstimate{
   repeated Bus_position Buses = 7;
   int32 StopSequence = 8;
   int64 arrival_unix = 9;
+  string plate_numb = 10;
 }
 message Bus_StopEstimate{
   string stop_uid = 1;

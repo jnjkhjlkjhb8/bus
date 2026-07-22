@@ -1,7 +1,7 @@
 syntax = "proto3";
 option go_package = "github.com/jnjkhjlkjhb8/wheres_the_car/models";
 service Thsr_timetable_service{
-  rpc fare(Ask_Thsr) returns (thsa_fare) {}
+  rpc fare(Ask_Thsr) returns (thsa_fares) {}
   rpc timetable(Ask_Thsr) returns (thsr_timetables) {}
   rpc available_seats(Ask_Thsr) returns (stream Resp_thsr_seats) {}
 }

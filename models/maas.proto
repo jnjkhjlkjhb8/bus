@@ -58,6 +58,11 @@ message Section {
   // Turn-by-turn walk steps for a walk section. Empty under the same
   // conditions as walkPath.
   repeated WalkStep walkSteps = 11;
+  // Rail-line geometry clipped to this section's stops (metro/TRA/THSR only;
+  // bus is out of scope). Empty when the section is not a rail leg, or the
+  // router could not snap the stops to a known line geometry — the app then
+  // falls back to a straight departure→intermediateStops→arrival line.
+  repeated Location transitPath = 12;
 }
 
 message WalkStep {

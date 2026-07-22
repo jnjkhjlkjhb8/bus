@@ -610,6 +610,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 			Buses:         busmap[positionKey],
 			StopSequence:  int32(b.StopSequence),
 			ArrivalUnix:   arrivalUnix,
+			PlateNumb:     normalizeArrivalPlate(eta.PlateNumb),
 		})
 	}
 	for groupUID, pb := range stations {

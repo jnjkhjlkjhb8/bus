@@ -27,7 +27,9 @@ func parseRailDate(s string) time.Time {
 // returns codes.NotFound rather than triggering a fetch.
 func (s *Tra_TimetableServer) traFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
 	log.Infof("[gRPC] action=tra_fare event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
-	key := fmt.Sprintf("TRA_Fare:%s:%s", in.OriginStationId, in.DestinationStationId)
+	// Key version (:v2) bumped when the payload widened from adult-only to every
+	// 票種; without it the deploy would serve adult-only sets for a further 8h.
+	key := fmt.Sprintf("TRA_Fare:v2:%s:%s", in.OriginStationId, in.DestinationStationId)
 	if b, err := s.rc.Get(key).Bytes(); err == nil {
 		return &pb.Resp_Data{Data: b}, nil
 	}
@@ -50,7 +52,9 @@ func (s *Tra_TimetableServer) traFare(ctx context.Context, in *pb.AskRoute) (*pb
 // result returns codes.NotFound.
 func (s *ThsrServer) thsrFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
 	log.Infof("[gRPC] action=thsr_fare event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
-	key := fmt.Sprintf("THSR_Fare:%s:%s", in.OriginStationId, in.DestinationStationId)
+	// Key version (:v2) bumped for the same reason as TRA_Fare: the payload now
+	// carries every fare class and cabin class, not just the standard adult seat.
+	key := fmt.Sprintf("THSR_Fare:v2:%s:%s", in.OriginStationId, in.DestinationStationId)
 	if b, err := s.rc.Get(key).Bytes(); err == nil {
 		return &pb.Resp_Data{Data: b}, nil
 	}

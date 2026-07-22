@@ -41,30 +41,42 @@ func TestThsrFarePayloadReadsFare(t *testing.T) {
 	}
 }
 
-// TestQueryThsrFaresPinsStandardAdultSeat pins all three fare axes in the query.
-// TDX prices a pair across ticket type, fare class (全票/半票) and cabin class
-// (對號/商務/自由座) — 南港→左營 alone lands eight rows — and the RPC quotes
-// Items[0], so leaving any axis open let the 半票自由座 row (740) stand in for the
-// standard adult fare (1530).
-func TestQueryThsrFaresPinsStandardAdultSeat(t *testing.T) {
+// TestQueryThsrFaresKeepsEveryClass pins which axes the query leaves open. Only
+// ticket_type is pinned (1 單程); fare class (全票/半票) and cabin class
+// (對號/商務/自由座) must both survive, because the app resolves the rider's
+// 票種 preference and seat against them. Re-pinning either axis to 1 silently
+// quotes 全票標準 to every rider, including a 敬老 one.
+func TestQueryThsrFaresKeepsEveryClass(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 
-	wantQuery := `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = 1 AND fare_class = 1 AND cabin_class = 1 ORDER BY price, ticket_type, fare_class, cabin_class;`
+	wantQuery := `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = 1 AND price > 0 ORDER BY cabin_class, fare_class, price;`
 	db.ExpectQuery(regexp.QuoteMeta(wantQuery)).
 		WithArgs("0990", "1070").
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "fare_class", "cabin_class", "price"}).
-			AddRow(uint8(1), uint8(1), uint8(1), int32(1530)))
+			AddRow(uint8(1), uint8(1), uint8(1), int32(1530)).
+			AddRow(uint8(1), uint8(9), uint8(1), int32(765)).
+			AddRow(uint8(1), uint8(1), uint8(2), int32(2000)).
+			AddRow(uint8(1), uint8(1), uint8(3), int32(1480)))
 
 	fares, err := queryThsrFares(context.Background(), db, "0990", "1070")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(fares) != 1 || fares[0].Price != 1530 {
-		t.Fatalf("fares = %+v, want the standard adult reserved seat at 1530", fares)
+	if len(fares) != 4 {
+		t.Fatalf("fares = %+v, want every fare class and cabin class", fares)
+	}
+	var halfStandard *models.ThsaFare
+	for _, fare := range fares {
+		if fare.FareClass == 9 && fare.CabinClas == 1 {
+			halfStandard = fare
+		}
+	}
+	if halfStandard == nil || halfStandard.Price != 765 {
+		t.Fatalf("fares = %+v, want the 半票標準 row at 765", fares)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

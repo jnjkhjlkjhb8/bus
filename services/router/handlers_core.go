@@ -398,10 +398,12 @@ func (s *Tra_DetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainServi
 	})
 }
 
-// Fare returns the standard adult reserved-seat THSR fare between two stations
-// (the only row thsrFare's query keeps), decoding the cached payload from
-// thsrFare. It returns NotFound when no fare exists.
-func (s *ThsrServer) Fare(ctx context.Context, in *pb.Ask_Thsr) (*pb.ThsaFare, error) {
+// Fare returns every THSR fare between two stations, one item per fare class
+// (全票/半票) × cabin class (標準/商務/自由座), decoding the cached payload from
+// thsrFare. The app picks the row matching the rider's 票種 preference and seat,
+// so quoting a single row here would erase both axes. It returns NotFound when
+// no fare exists.
+func (s *ThsrServer) Fare(ctx context.Context, in *pb.Ask_Thsr) (*pb.ThsaFares, error) {
 	req := &pb.AskRoute{
 		OriginStationId:      in.OriginStationId,
 		DestinationStationId: in.DestinationStationId,
@@ -417,7 +419,7 @@ func (s *ThsrServer) Fare(ctx context.Context, in *pb.Ask_Thsr) (*pb.ThsaFare, e
 	if len(items.Items) == 0 {
 		return nil, status.Error(codes.NotFound, "fare not found")
 	}
-	return items.Items[0], nil
+	return items, nil
 }
 
 // AvailableSeats streams THSR available-seat status for a date via the shared

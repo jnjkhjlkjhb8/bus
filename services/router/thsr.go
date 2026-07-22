@@ -40,10 +40,15 @@ type thsrfare struct {
 // marshaled ThsaFares proto. It is a pure read: an unlanded fare stays empty and
 // the router never fetches from TDX (ADR-0005).
 //
-// The three fare axes must all be pinned: TDX prices each pair across ticket
-// type, fare class (1 全票 / 9 半票) and cabin class (1 標準對號 / 2 商務 /
-// 3 自由座), so 南港→左營 alone lands eight rows from 740 to 2500. Only
-// (1, 1, 1) is the standard adult reserved-seat fare, 1530.
+// TDX prices each pair across three axes: ticket type, fare class (1 全票 /
+// 9 半票 — 孩童, 敬老 and 愛心 all ride at 半票) and cabin class (1 標準對號 /
+// 2 商務 / 3 自由座), so 南港→左營 alone lands eight rows from 740 to 2500.
+//
+// Only ticket_type is pinned, to 1 (單程): the return-trip types belong to a
+// booking flow, not a fare quote. The fare-class and cabin-class axes are left
+// open so the app can quote the rider's own 票種 and seat. The app selects the
+// row; leaving these axes open is only safe because no caller quotes Items[0]
+// as "the" fare (services/router/handlers_core.go returns the whole set).
 func thsrFarePayload(ctx context.Context, start, end string, db railDB) ([]byte, error) {
 	arr, err := queryThsrFares(ctx, db, start, end)
 	if err != nil {
@@ -60,7 +65,7 @@ func queryThsrFares(ctx context.Context, db railDB, start, end string) ([]*model
 	if err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(ctx, `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = 1 AND fare_class = 1 AND cabin_class = 1 ORDER BY price, ticket_type, fare_class, cabin_class;`, start, end)
+	rows, err := db.Query(ctx, `SELECT ticket_type, fare_class, cabin_class, price FROM thsr_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = 1 AND price > 0 ORDER BY cabin_class, fare_class, price;`, start, end)
 	if err != nil {
 		return nil, err
 	}

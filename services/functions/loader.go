@@ -528,6 +528,9 @@ func loaderTransforms(src loadSource) map[string]loaderBinding {
 		"thsr_fare":      {load: loadThsrFare},
 		"tra_timetable":  {load: loadTraTimetable},
 		"thsr_timetable": {load: loadThsrTimetable},
+		"tra_shape":      {load: loadRailShape("tra")},
+		"thsr_shape":     {load: loadRailShape("thsr")},
+		"metro_shape":    {load: loadRailShape("metro")},
 	}
 }
 

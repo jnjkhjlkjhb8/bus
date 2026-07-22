@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -467,6 +468,7 @@ func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxA
 	batchBusNotificationIdentities(ctx, db, refs)
 	batchSectionFares(ctx, db, refs)
 	enrichWalkSections(ctx, osrmClient, refs)
+	enrichTransitPaths(ctx, db, refs)
 	return out
 }
 
@@ -857,6 +859,249 @@ func isBusMode(mode string) bool {
 	return strings.EqualFold(mode, "bus") || strings.EqualFold(mode, "HighwayBus")
 }
 
+// maasTransitPathConcurrency bounds concurrent rail_shapes lookups the same
+// way maasOSRMConcurrency bounds OSRM lookups in enrichWalkSections.
+const maasTransitPathConcurrency = 4
+
+// railShapeSnapMeters is the maximum distance (in meters) a section's
+// departure/arrival stop may sit from a candidate line before that line is
+// rejected as a match. 500m tolerates the walk-in access point TDX sometimes
+// reports for a station without matching an unrelated line.
+const railShapeSnapMeters = 500.0
+
+// railShapeSimplifyTolerance is the ST_SimplifyPreserveTopology tolerance (in
+// degrees) applied to a clipped line before it is returned, trimming
+// coordinate density without visibly changing the drawn path.
+const railShapeSimplifyTolerance = 0.0001
+
+// transitPathClipSQL finds the rail_shapes line that best matches one stop
+// pair for a given mode and returns it clipped between the two stops.
+//
+// Matching is purely geometric (MaaS sections carry no LineID): "best" is the
+// line minimizing the larger of the two stop-to-line distances, computed over
+// ST_LineMerge(geom) so a MULTILINESTRING scores as one shape. Once a
+// candidate merged geometry is chosen, its individual components are dumped
+// (ST_Dump) so ST_LineLocatePoint/ST_LineSubstring — which require a simple
+// LINESTRING — operate on the one component whose distance to both stops is
+// within railShapeSnapMeters; a shape whose components each miss one stop
+// (no single component holds both) yields no row, so the caller falls back to
+// a straight line for that pair. ST_LineLocatePoint fractions are ordered
+// low-to-high before ST_LineSubstring, since the stop pair's travel direction
+// does not necessarily match the shape's digitized direction.
+const transitPathClipSQL = `
+WITH candidates AS (
+	SELECT ST_LineMerge(geom) AS merged
+	FROM rail_shapes
+	WHERE mode = $1
+), scored AS (
+	SELECT merged,
+		GREATEST(
+			ST_Distance(merged::geography, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography),
+			ST_Distance(merged::geography, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography)
+		) AS score
+	FROM candidates
+), best AS (
+	SELECT merged FROM scored ORDER BY score ASC LIMIT 1
+), components AS (
+	SELECT (ST_Dump(merged)).geom AS line FROM best
+), matched AS (
+	SELECT line,
+		ST_Distance(line::geography, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography) AS d1,
+		ST_Distance(line::geography, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography) AS d2
+	FROM components
+), chosen AS (
+	SELECT line FROM matched
+	WHERE d1 <= $6 AND d2 <= $6
+	ORDER BY GREATEST(d1, d2) ASC
+	LIMIT 1
+), located AS (
+	SELECT line,
+		ST_LineLocatePoint(line, ST_SetSRID(ST_MakePoint($2, $3), 4326)) AS f1,
+		ST_LineLocatePoint(line, ST_SetSRID(ST_MakePoint($4, $5), 4326)) AS f2
+	FROM chosen
+)
+SELECT ST_AsText(
+	ST_SimplifyPreserveTopology(
+		ST_LineSubstring(line, LEAST(f1, f2), GREATEST(f1, f2)),
+		$7
+	)
+)
+FROM located`
+
+// railShapeMode maps a MaaS transport mode string to the rail_shapes.mode
+// value it should be matched against, reusing the same mode classifiers
+// batchSectionFares uses. "" means the section is out of scope for transit-
+// path enrichment (bus and anything else).
+func railShapeMode(mode string) string {
+	switch {
+	case isMetroMode(mode):
+		return "metro"
+	case isThsrMode(mode):
+		return "thsr"
+	case isRailMode(mode):
+		return "tra"
+	default:
+		return ""
+	}
+}
+
+// transitStopPoint is one stop a transit section passes through, in travel
+// order.
+type transitStopPoint struct {
+	lat, lng float64
+}
+
+// sectionStopPoints returns a section's ordered stop points: departure, every
+// intermediate stop, then arrival. This is the sequence enrichTransitPaths
+// clips one rail_shapes line between, pair by pair.
+func sectionStopPoints(sec tdxSection) []transitStopPoint {
+	points := make([]transitStopPoint, 0, 2+len(sec.IntermediateStops))
+	points = append(points, transitStopPoint{sec.Departure.Place.Location.Lat, sec.Departure.Place.Location.Lng})
+	for _, stop := range sec.IntermediateStops {
+		points = append(points, transitStopPoint{stop.Departure.Place.Location.Lat, stop.Departure.Place.Location.Lng})
+	}
+	points = append(points, transitStopPoint{sec.Arrival.Place.Location.Lat, sec.Arrival.Place.Location.Lng})
+	return points
+}
+
+// appendTransitSegment appends seg to path, dropping seg's first point when
+// it duplicates path's current last point — the joint between two
+// consecutive stop-pair clips — so the assembled path has no repeated point
+// at each intermediate stop.
+func appendTransitSegment(path []*pb.Location, seg []*pb.Location) []*pb.Location {
+	if len(seg) == 0 {
+		return path
+	}
+	if len(path) > 0 {
+		last := path[len(path)-1]
+		if last.Lat == seg[0].Lat && last.Lng == seg[0].Lng {
+			seg = seg[1:]
+		}
+	}
+	return append(path, seg...)
+}
+
+// parseWKTLineString parses a PostGIS ST_AsText LINESTRING result into
+// Locations. It never encounters MULTILINESTRING or any other geometry type
+// since transitPathClipSQL always clips a single dumped component.
+func parseWKTLineString(wkt string) ([]*pb.Location, error) {
+	wkt = strings.TrimSpace(wkt)
+	open := strings.IndexByte(wkt, '(')
+	closeIdx := strings.LastIndexByte(wkt, ')')
+	if !strings.HasPrefix(strings.ToUpper(wkt), "LINESTRING") || open < 0 || closeIdx <= open {
+		return nil, fmt.Errorf("not a LINESTRING: %q", wkt)
+	}
+	body := wkt[open+1 : closeIdx]
+	if strings.TrimSpace(body) == "" {
+		return nil, fmt.Errorf("empty LINESTRING: %q", wkt)
+	}
+	pairs := strings.Split(body, ",")
+	points := make([]*pb.Location, 0, len(pairs))
+	for _, pair := range pairs {
+		fields := strings.Fields(strings.TrimSpace(pair))
+		if len(fields) < 2 {
+			return nil, fmt.Errorf("malformed coordinate %q in %q", pair, wkt)
+		}
+		lng, err := strconv.ParseFloat(fields[0], 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse lng %q: %w", fields[0], err)
+		}
+		lat, err := strconv.ParseFloat(fields[1], 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse lat %q: %w", fields[1], err)
+		}
+		points = append(points, &pb.Location{Lat: lat, Lng: lng})
+	}
+	return points, nil
+}
+
+// clipRailShape looks up and clips the rail_shapes line best matching one
+// stop pair. ok is false whenever the enrichment does not apply: missing
+// coordinates, a query error, no candidate line, or every candidate's snap
+// distance exceeding railShapeSnapMeters. The caller falls back to a straight
+// line between the two stops in every ok=false case.
+func clipRailShape(ctx context.Context, db maasDB, mode string, a, b transitStopPoint) ([]*pb.Location, bool) {
+	if db == nil {
+		return nil, false
+	}
+	if (a.lat == 0 && a.lng == 0) || (b.lat == 0 && b.lng == 0) {
+		return nil, false
+	}
+	rows, err := db.Query(ctx, transitPathClipSQL,
+		mode, a.lng, a.lat, b.lng, b.lat, railShapeSnapMeters, railShapeSimplifyTolerance)
+	if err != nil {
+		log.Warnf("[MAAS] action=transit_path event=query_error mode=%s error=%v", mode, err)
+		return nil, false
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return nil, false
+	}
+	var wkt string
+	if err := rows.Scan(&wkt); err != nil {
+		log.Warnf("[MAAS] action=transit_path event=scan_error mode=%s error=%v", mode, err)
+		return nil, false
+	}
+	points, err := parseWKTLineString(wkt)
+	if err != nil || len(points) < 2 {
+		log.Warnf("[MAAS] action=transit_path event=parse_error mode=%s error=%v", mode, err)
+		return nil, false
+	}
+	return points, true
+}
+
+// buildTransitPath assembles one section's full transitPath by clipping a
+// rail_shapes line between every consecutive stop pair (departure →
+// intermediate stops → arrival) and stitching the per-pair clips together. A
+// pair whose line does not resolve falls back to its two raw stop points, so
+// one unmatched pair degrades to a straight segment rather than emptying the
+// whole section's path.
+func buildTransitPath(ctx context.Context, db maasDB, mode string, sec tdxSection) []*pb.Location {
+	stops := sectionStopPoints(sec)
+	if len(stops) < 2 {
+		return nil
+	}
+	var path []*pb.Location
+	for i := 0; i+1 < len(stops); i++ {
+		a, b := stops[i], stops[i+1]
+		seg, ok := clipRailShape(ctx, db, mode, a, b)
+		if !ok {
+			seg = []*pb.Location{{Lat: a.lat, Lng: a.lng}, {Lat: b.lat, Lng: b.lng}}
+		}
+		path = appendTransitSegment(path, seg)
+	}
+	return path
+}
+
+// enrichTransitPaths is a pure enhancement, mirroring enrichWalkSections: any
+// SQL error, unmatched pair, or over-threshold snap leaves a section's
+// transitPath empty (or partially straight-line) rather than failing the
+// plan. Only rail/metro sections are enriched — buses are out of scope
+// (railShapeMode returns "" for them). Concurrency is bounded per section the
+// same way enrichWalkSections bounds per-section OSRM lookups.
+func enrichTransitPaths(ctx context.Context, db maasDB, refs []maasSectionRef) {
+	if db == nil {
+		return
+	}
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maasTransitPathConcurrency)
+	for _, ref := range refs {
+		mode := railShapeMode(ref.source.Transport.Mode)
+		if mode == "" {
+			continue
+		}
+		ref := ref
+		group.Go(func() error {
+			if err := groupCtx.Err(); err != nil {
+				return err
+			}
+			ref.target.TransitPath = buildTransitPath(groupCtx, db, mode, ref.source)
+			return nil
+		})
+	}
+	_ = group.Wait()
+}
+
 // clampInt returns v bounded to [min,max], or def when v is unset (0) and 0 is
 // outside the valid range — so old clients / cached zero-value requests fall
 // back to the TDX defaults rather than sending 0.
@@ -880,5 +1125,8 @@ func maasKey(req *pb.MaasPlanRequest) string {
 		req.Top, req.TransferTimeMin, req.TransferTimeMax,
 		req.FirstMileMode, req.FirstMileTime, req.LastMileMode, req.LastMileTime)
 	sum := sha256.Sum256([]byte(key))
-	return fmt.Sprintf("maas:plan:v3:%x", sum[:8])
+	// v4: Section now carries transitPath (rail-shape-clipped geometry, see
+	// enrichTransitPaths); bumped so a v3-cached response missing the new
+	// field is never served after this deploy.
+	return fmt.Sprintf("maas:plan:v4:%x", sum[:8])
 }

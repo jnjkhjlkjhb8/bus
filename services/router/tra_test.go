@@ -21,7 +21,7 @@ func TestTraFarePayloadReturnsRows(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery("SELECT ticket_type,price FROM tra_fares").
-		WithArgs("1000", "1040", traAdultTicketTypes).
+		WithArgs("1000", "1040", traTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}).AddRow("成自", int32(41)))
 
 	payload, err := traFarePayload(context.Background(), db, "1000", "1040")
@@ -40,12 +40,36 @@ func TestTraFarePayloadReturnsRows(t *testing.T) {
 	}
 }
 
-// TestTraFarePayloadKeepsAdultFarePerTrainClass pins the two things the Fare RPC
-// depends on: only the four adult ticket types are returned (the 孩/愛/折 rows are
-// not the full fare, and some are priced 0), and all four survive so the caller
-// can pick the one matching its train's class. Collapsing them to a single price
-// quoted the 自強 fare (成自) for a 區間車 — 桃園→臺北 showed 99 instead of 63.
-func TestTraFarePayloadKeepsAdultFarePerTrainClass(t *testing.T) {
+// TestTraTicketTypesCoverBothAxes pins the ticket-type set to the cross product
+// of 票種 and 車種. Dropping the 孩/敬/愛 prefixes leaves a rider whose preference
+// is 敬老 looking at the full adult fare; dropping a 車種 suffix leaves a whole
+// class of train unpriced.
+func TestTraTicketTypesCoverBothAxes(t *testing.T) {
+	present := map[string]bool{}
+	for _, ticketType := range traTicketTypes {
+		present[ticketType] = true
+	}
+	if len(traTicketTypes) != 16 {
+		t.Fatalf("traTicketTypes = %v, want 4 票種 × 4 車種", traTicketTypes)
+	}
+	for _, want := range []string{"成自", "成復", "孩自", "敬復", "愛普"} {
+		if !present[want] {
+			t.Fatalf("traTicketTypes = %v, missing %s", traTicketTypes, want)
+		}
+	}
+	for _, unwanted := range []string{"折自", "團自"} {
+		if present[unwanted] {
+			t.Fatalf("traTicketTypes = %v, must not carry %s", traTicketTypes, unwanted)
+		}
+	}
+}
+
+// TestTraFarePayloadKeepsFarePerTrainClass pins the two things the Fare RPC
+// depends on: every priced 票種 × 車種 row survives, so the caller can pick the
+// one matching its train's class *and* the rider's ticket type. Collapsing them
+// to a single price quoted the 自強 fare (成自) for a 區間車 — 桃園→臺北 showed 99
+// instead of 63 — and quoted 全票 to a 敬老 rider.
+func TestTraFarePayloadKeepsFarePerTrainClass(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -54,12 +78,14 @@ func TestTraFarePayloadKeepsAdultFarePerTrainClass(t *testing.T) {
 
 	wantQuery := `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = ANY($3) AND price > 0 ORDER BY price DESC, ticket_type;`
 	db.ExpectQuery(regexp.QuoteMeta(wantQuery)).
-		WithArgs("1080", "1000", traAdultTicketTypes).
+		WithArgs("1080", "1000", traTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}).
 			AddRow("成自", int32(99)).
 			AddRow("成莒", int32(76)).
 			AddRow("成復", int32(63)).
-			AddRow("成普", int32(31)))
+			AddRow("成普", int32(31)).
+			AddRow("敬自", int32(50)).
+			AddRow("敬復", int32(32)))
 
 	payload, err := traFarePayload(context.Background(), db, "1080", "1000")
 	if err != nil {
@@ -69,8 +95,8 @@ func TestTraFarePayloadKeepsAdultFarePerTrainClass(t *testing.T) {
 	if err := proto.Unmarshal(payload, &fares); err != nil {
 		t.Fatal(err)
 	}
-	if len(fares.Items) != 4 || fares.Items[0].TicketType != "成自" {
-		t.Fatalf("fares = %+v, want all four adult classes, priciest first", fares.Items)
+	if len(fares.Items) != 6 || fares.Items[0].TicketType != "成自" {
+		t.Fatalf("fares = %+v, want every priced row, priciest first", fares.Items)
 	}
 	byType := map[string]int32{}
 	for _, item := range fares.Items {
@@ -78,6 +104,9 @@ func TestTraFarePayloadKeepsAdultFarePerTrainClass(t *testing.T) {
 	}
 	if byType["成復"] != 63 || byType["成自"] != 99 {
 		t.Fatalf("fares = %+v, want 成復 63 and 成自 99", fares.Items)
+	}
+	if byType["敬復"] != 32 {
+		t.Fatalf("fares = %+v, want the 敬老區間車 fare 32 to survive", fares.Items)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -94,7 +123,7 @@ func TestTraFarePayloadEmptyOnNoRows(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery("SELECT ticket_type,price FROM tra_fares").
-		WithArgs("1000", "1040", traAdultTicketTypes).
+		WithArgs("1000", "1040", traTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}))
 
 	payload, err := traFarePayload(context.Background(), db, "1000", "1040")
