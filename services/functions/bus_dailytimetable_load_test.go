@@ -113,7 +113,7 @@ func TestLoadBusDailyTimetableRejectsInvalidIdentityTimeOrDirection(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			rc := unavailableRedisClient()
 			defer rc.Close()
-			err := loadBusDailyTimetable(context.Background(), decodeInto(tt.body), nil, rc, "Kaohsiung")
+			err := loadBusDailyTimetable(context.Background(), decodeInto(tt.body), nil, nil, rc, "Kaohsiung")
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("loadBusDailyTimetable error = %v, want %q", err, tt.want)
 			}
@@ -145,7 +145,7 @@ func TestLoadBusDailyTimetableRejectsInvalidCanonicalIdentityBeforeRedis(t *test
 		t.Run(tt.name, func(t *testing.T) {
 			rc := unavailableRedisClient()
 			defer rc.Close()
-			err := loadBusDailyTimetable(context.Background(), decodeInto(tt.body), nil, rc, tt.city)
+			err := loadBusDailyTimetable(context.Background(), decodeInto(tt.body), nil, nil, rc, tt.city)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("loadBusDailyTimetable error = %v, want pre-Redis %q validation", err, tt.want)
 			}
@@ -165,7 +165,7 @@ func TestLoadBusDailyTimetableMalformedSuffixWritesNoKeys(t *testing.T) {
 		{"SubRouteUID":"` + uid + `","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]},
 		{"SubRouteUID":
 	]`
-	err := loadBusDailyTimetable(context.Background(), decodeInto(body), nil, rc, "Kaohsiung")
+	err := loadBusDailyTimetable(context.Background(), decodeInto(body), nil, nil, rc, "Kaohsiung")
 	if err == nil || !strings.Contains(err.Error(), "element 1") {
 		t.Fatalf("loadBusDailyTimetable error = %v, want wrapped element 1 decode error", err)
 	}
@@ -178,7 +178,7 @@ func TestLoadBusDailyTimetableReturnsPipelineError(t *testing.T) {
 	rc := unavailableRedisClient()
 	defer rc.Close()
 	body := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]}]`
-	err := loadBusDailyTimetable(context.Background(), decodeInto(body), nil, rc, "Kaohsiung")
+	err := loadBusDailyTimetable(context.Background(), decodeInto(body), nil, nil, rc, "Kaohsiung")
 	if err == nil || !strings.Contains(err.Error(), "Redis transaction") {
 		t.Fatalf("loadBusDailyTimetable error = %v, want wrapped Redis transaction error", err)
 	}
@@ -192,7 +192,7 @@ func TestLoadBusDailyTimetableDuplicateTripPolicy(t *testing.T) {
 	defer func() { _ = rc.Del(key).Err() }()
 	trip := `{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}`
 	identical := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[` + trip + `,` + trip + `]}]`
-	if err := loadBusDailyTimetable(context.Background(), decodeInto(identical), nil, rc, "Kaohsiung"); err != nil {
+	if err := loadBusDailyTimetable(context.Background(), decodeInto(identical), nil, nil, rc, "Kaohsiung"); err != nil {
 		t.Fatalf("identical duplicate: %v", err)
 	}
 	bytes, err := rc.Get(key).Bytes()
@@ -211,7 +211,7 @@ func TestLoadBusDailyTimetableDuplicateTripPolicy(t *testing.T) {
 	}
 	other := `{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S2","ArrivalTime":"08:00","DepartureTime":"08:01"}]}`
 	divergent := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[` + trip + `,` + other + `]}]`
-	err = loadBusDailyTimetable(context.Background(), decodeInto(divergent), nil, rc, "Kaohsiung")
+	err = loadBusDailyTimetable(context.Background(), decodeInto(divergent), nil, nil, rc, "Kaohsiung")
 	if err == nil || !strings.Contains(err.Error(), "quarantine ratio exceeded") {
 		t.Fatalf("divergent duplicate error = %v, want quarantine ratio exceeded error", err)
 	}
@@ -232,7 +232,7 @@ func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
 	defer func() { _ = rc.Del(key).Err() }()
 	stop := `{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}`
 	identical := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[` + stop + `,` + stop + `]}]}]`
-	if err := loadBusDailyTimetable(context.Background(), decodeInto(identical), nil, rc, "Kaohsiung"); err != nil {
+	if err := loadBusDailyTimetable(context.Background(), decodeInto(identical), nil, nil, rc, "Kaohsiung"); err != nil {
 		t.Fatalf("identical duplicate stop: %v", err)
 	}
 	before, err := rc.Get(key).Bytes()
@@ -249,7 +249,7 @@ func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
 
 	other := `{"StopSequence":1,"StopUID":"S2","ArrivalTime":"08:00","DepartureTime":"08:01"}`
 	divergent := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[` + stop + `,` + other + `]}]}]`
-	err = loadBusDailyTimetable(context.Background(), decodeInto(divergent), nil, rc, "Kaohsiung")
+	err = loadBusDailyTimetable(context.Background(), decodeInto(divergent), nil, nil, rc, "Kaohsiung")
 	if err == nil || !strings.Contains(err.Error(), "quarantine ratio exceeded") {
 		t.Fatalf("divergent duplicate stop error = %v, want quarantine ratio exceeded", err)
 	}
@@ -259,6 +259,71 @@ func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
 	}
 	if string(after) != string(before) {
 		t.Fatal("divergent duplicate stop mutated Redis")
+	}
+}
+
+// TestLoadBusDailyTimetableFiltersMisfiledDirectionTrips models the Taoyuan
+// circular-route feed (e.g. TAO7010): TDX lists a direction's trips alongside
+// return-leg trips that depart the opposite direction's origin. Trips are kept
+// when they depart this direction's origin — by UID or by name (paired
+// roadside stops carry distinct UIDs) — and dropped when they depart the other
+// direction's origin. Without StopOfRoute data (nil src) everything is kept.
+func TestLoadBusDailyTimetableFiltersMisfiledDirectionTrips(t *testing.T) {
+	rc := dialTestRedis(t)
+	defer rc.Close()
+	key := shared.BusDailyTimetableKey("KHH1")
+	_ = rc.Del(key).Err()
+	defer func() { _ = rc.Del(key).Err() }()
+
+	src := &fakeLoadSource{
+		json: map[string][]byte{
+			"bus_stopofroute|Kaohsiung": []byte(`[
+				{"SubRouteUID":"KHH1","Direction":0,"Stops":[
+					{"StopSequence":1,"StopUID":"S1","StopName":{"Zh_tw":"醫院"}},
+					{"StopSequence":2,"StopUID":"S9","StopName":{"Zh_tw":"轉運站"}}]},
+				{"SubRouteUID":"KHH1","Direction":1,"Stops":[
+					{"StopSequence":1,"StopUID":"S9B","StopName":{"Zh_tw":"轉運站"}},
+					{"StopSequence":2,"StopUID":"S1B","StopName":{"Zh_tw":"醫院"}}]}
+			]`),
+		},
+		fetched: time.Now(),
+	}
+	body := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[
+		{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]},
+		{"TripID":"T2","StopTimes":[{"StopSequence":1,"StopUID":"S9B","ArrivalTime":"09:00","DepartureTime":"09:01"}]},
+		{"TripID":"T3","StopTimes":[{"StopSequence":1,"StopUID":"S1B","ArrivalTime":"10:00","DepartureTime":"10:01"}]}
+	]}]`
+	if err := loadBusDailyTimetable(context.Background(), decodeInto(body), src, nil, rc, "Kaohsiung"); err != nil {
+		t.Fatalf("loadBusDailyTimetable with origin filter: %v", err)
+	}
+	bytes, err := rc.Get(key).Bytes()
+	if err != nil {
+		t.Fatalf("read filtered timetable: %v", err)
+	}
+	var got models.Bus_DailyTimetables
+	if err := proto.Unmarshal(bytes, &got); err != nil {
+		t.Fatalf("unmarshal filtered timetable: %v", err)
+	}
+	var kept []string
+	for _, trip := range got.Direction[0].DailyTimetables {
+		kept = append(kept, trip.TripID)
+	}
+	if len(kept) != 2 || kept[0] != "T1" || kept[1] != "T3" {
+		t.Fatalf("kept trips = %v, want [T1 T3] (T2 departs the opposite origin)", kept)
+	}
+
+	if err := loadBusDailyTimetable(context.Background(), decodeInto(body), nil, nil, rc, "Kaohsiung"); err != nil {
+		t.Fatalf("loadBusDailyTimetable without src: %v", err)
+	}
+	bytes, err = rc.Get(key).Bytes()
+	if err != nil {
+		t.Fatalf("read unfiltered timetable: %v", err)
+	}
+	if err := proto.Unmarshal(bytes, &got); err != nil {
+		t.Fatalf("unmarshal unfiltered timetable: %v", err)
+	}
+	if n := len(got.Direction[0].DailyTimetables); n != 3 {
+		t.Fatalf("unfiltered trips = %d, want all 3 kept when StopOfRoute is unavailable", n)
 	}
 }
 
@@ -278,7 +343,7 @@ func TestLoadBusDailyTimetableObservesCancellationDuringRedisExec(t *testing.T) 
 	done := make(chan error, 1)
 	body := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]}]`
 	go func() {
-		done <- loadBusDailyTimetable(ctx, decodeInto(body), nil, rc, "Kaohsiung")
+		done <- loadBusDailyTimetable(ctx, decodeInto(body), nil, nil, rc, "Kaohsiung")
 	}()
 	select {
 	case <-entered:

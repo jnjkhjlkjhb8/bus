@@ -37,27 +37,47 @@ def load_data(conn):
         FROM bus_travel_avg WHERE sample_count > 0
     """, conn)
 
+    # Origin-stop departure per trip. Timetable rows are type=false with the
+    # TDX StopSequence; frequency rows (type=true, stopsequence=-1) carry no
+    # per-trip departure and are excluded. Mirrors batchNextDepartures in
+    # services/functions/predict.go.
     schedules = pd.read_sql("""
-        SELECT sub_route_uid, direction, "arrival_time/StartTime" AS dep_time
-        FROM bus_schedule WHERE type = true AND stopsequence = 0
-        ORDER BY sub_route_uid, direction, dep_time
+        SELECT DISTINCT ON (sub_route_uid, direction, tripid)
+               sub_route_uid, direction, service_day,
+               "arrival_time/StartTime" AS dep_time
+        FROM bus_schedule
+        WHERE type = false
+        ORDER BY sub_route_uid, direction, tripid, stopsequence
     """, conn)
 
     return crossings, avgs, schedules
 
 def compute_travel_seconds(crossings, schedules):
+    schedules = schedules.assign(
+        dep_secs=schedules["dep_time"].map(
+            lambda t: t.hour * 3600 + t.minute * 60 + t.second
+        )
+    ).sort_values("dep_secs")
+
     sched_map = {}
     for (uid, direction), grp in schedules.groupby(["sub_route_uid", "direction"]):
-        sched_map[(uid, direction)] = grp["dep_time"].dt.total_seconds().values
+        sched_map[(uid, direction)] = (
+            grp["dep_secs"].values,
+            grp["service_day"].values,
+        )
 
     rows = []
     for _, c in crossings.iterrows():
         key = (c["sub_route_uid"], c["direction"])
         if key not in sched_map:
             continue
-        times = sched_map[key]
+        times, masks = sched_map[key]
+        # service_day is a Monday=bit0..Sunday=bit6 mask; day_of_week follows
+        # Go's time.Weekday() (Sunday=0).
+        day_bit = 1 << ((int(c["day_of_week"]) + 6) % 7)
         tod = c["crossing_at"].hour * 3600 + c["crossing_at"].minute * 60 + c["crossing_at"].second
-        before = times[times <= tod]
+        serving = (masks & day_bit) != 0
+        before = times[serving & (times <= tod)]
         if len(before) == 0:
             continue
         dep_secs = before[-1]
@@ -73,6 +93,11 @@ def main():
     conn.close()
 
     df = compute_travel_seconds(crossings, schedules)
+    if df.empty:
+        raise SystemExit(
+            f"no matched arrivals: {len(crossings)} crossings, "
+            f"{len(schedules)} schedule trips, {len(avgs)} travel averages"
+        )
     df = df.merge(avgs, on=["sub_route_uid", "direction", "stop_uid", "hour", "day_of_week"], how="left")
     df = df.dropna(subset=["avg_seconds"])
     df["delay_seconds"] = df["actual_travel"] - df["avg_seconds"]

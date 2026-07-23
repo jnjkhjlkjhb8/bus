@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:wheres_the_car/data/models/bus_models.dart';
 import 'package:wheres_the_car/data/repositories/bus_repository.dart';
+import 'package:wheres_the_car/data/repositories/tra_repository.dart';
 import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
 
 typedef LegEtaStream = Stream<Duration?> Function(JourneyLeg leg);
@@ -20,19 +23,17 @@ Stream<Duration?> defaultLegEtaStream(JourneyLeg leg) {
   if (leg.kind == JourneyLegKind.bus &&
       leg.identity.supported &&
       stopKey.isNotEmpty) {
-    return BusRepository.instance
-        .stationEta('', stopKey)
-        .map((arrivals) {
-          for (final a in arrivals) {
-            if (leg.routeLabel.startsWith(a.routeName) && a.minutes != null) {
-              return Duration(minutes: a.minutes!);
-            }
-            if (leg.routeLabel.startsWith(a.routeName) && a.isArriving) {
-              return Duration.zero;
-            }
-          }
-          return null;
-        });
+    return BusRepository.instance.stationEta('', stopKey).map((arrivals) {
+      for (final a in arrivals) {
+        if (leg.routeLabel.startsWith(a.routeName) && a.minutes != null) {
+          return Duration(minutes: a.minutes!);
+        }
+        if (leg.routeLabel.startsWith(a.routeName) && a.isArriving) {
+          return Duration.zero;
+        }
+      }
+      return null;
+    });
   }
   // Synthetic identities from the in-app 追蹤 toggle (bus route screen) carry
   // the subroute uid in routeKey and the boarding stop uid in
@@ -76,4 +77,114 @@ Stream<Duration?> scheduledCountdown(
 
   yield remaining();
   yield* Stream.periodic(tick, (_) => remaining());
+}
+
+/// Train progress toward the alight stop (`schedule.last`) at [now], given the
+/// current live [delay]. `schedule` is board→alight inclusive, length >= 1.
+/// Everything the Live Activity needs for a rail track session comes from here:
+/// the remaining-stop count, the arrival ETA, the continuous progress fraction
+/// (inferred from the timetable + clock), and the true next-stop name.
+({int remainingStops, Duration etaToAlight, double progress, String nextStop})
+railProgress(List<RailStopSchedule> schedule, Duration delay, DateTime now) {
+  final n = schedule.length;
+  DateTime eff(int i) => schedule[i].scheduledArrival.add(delay);
+
+  // Stops whose effective time has passed (train has reached them).
+  var passed = 0;
+  for (var i = 0; i < n; i++) {
+    if (!eff(i).isAfter(now)) passed++;
+  }
+  final currentPos = passed == 0 ? 0 : passed - 1; // clamp to the board stop
+  final remaining = ((n - 1) - currentPos).clamp(0, n - 1);
+
+  final etaRaw = eff(n - 1).difference(now);
+  final eta = etaRaw.isNegative ? Duration.zero : etaRaw;
+
+  // Continuous position along the line. A delayed run keeps the same total
+  // span, shifted later — so the denominator is the scheduled span and the
+  // numerator starts at the delay-shifted board time.
+  final total = schedule.last.scheduledArrival.difference(
+    schedule.first.scheduledArrival,
+  );
+  final elapsed = now.difference(schedule.first.scheduledArrival.add(delay));
+  final progress = total.inSeconds <= 0
+      ? 1.0
+      : (elapsed.inSeconds / total.inSeconds).clamp(0.0, 1.0);
+
+  // The stop the train is heading to (the alight once it's the last hop).
+  final nextIdx = passed >= n ? n - 1 : (passed == 0 ? 0 : passed);
+
+  return (
+    remainingStops: remaining,
+    etaToAlight: eta,
+    progress: progress,
+    nextStop: schedule[nextIdx].name,
+  );
+}
+
+/// The record [defaultRailTrackStream] emits, mirroring [railProgress].
+typedef RailTrackFrame = ({
+  int remainingStops,
+  Duration etaToAlight,
+  double progress,
+  String nextStop,
+});
+
+typedef RailTrackStream = Stream<RailTrackFrame> Function(JourneyLeg leg);
+
+/// Live tracking frames for a rail trackOnly leg: re-derives [railProgress]
+/// from the leg's carried schedule on each 30 s tick and on every fresh TRA
+/// delay frame. THSR has no live delay, so it holds delay at zero and updates
+/// on the clock alone. Survives the rail screen being disposed — everything it
+/// needs lives on [leg].
+Stream<RailTrackFrame> defaultRailTrackStream(
+  JourneyLeg leg, {
+  Stream<Duration>? delaySource,
+  Duration tick = const Duration(seconds: 30),
+  DateTime Function() now = DateTime.now,
+}) {
+  final schedule = leg.railSchedule;
+  final delays = delaySource ?? _railDelayStream(leg);
+
+  var delay = Duration.zero;
+  late StreamController<RailTrackFrame> controller;
+  StreamSubscription<Duration>? delaySub;
+  Timer? timer;
+
+  void emit() => controller.add(railProgress(schedule, delay, now()));
+
+  controller = StreamController<RailTrackFrame>(
+    onListen: () {
+      emit(); // seed immediately so the card never starts blank
+      timer = Timer.periodic(tick, (_) => emit());
+      // Delay-stream error → keep the last delay; never blank the card.
+      delaySub = delays.listen(
+        (d) {
+          delay = d;
+          emit();
+        },
+        onError: (Object _) {},
+      );
+    },
+    onCancel: () async {
+      timer?.cancel();
+      await delaySub?.cancel();
+    },
+  );
+  return controller.stream;
+}
+
+/// TRA → the O/D-segment delay stream filtered to this train; THSR → constant
+/// zero (no live feed). Board/alight names come from the carried schedule.
+Stream<Duration> _railDelayStream(JourneyLeg leg) {
+  if (leg.kind != JourneyLegKind.tra || leg.railSchedule.length < 2) {
+    return const Stream<Duration>.empty(); // THSR / no segment: no live feed
+  }
+  final trainNo = leg.identity.routeKey;
+  final date = leg.identity.direction;
+  final origin = leg.railSchedule.first.name;
+  final dest = leg.railSchedule.last.name;
+  return TraRepository.instance
+      .delay(date, origin, dest)
+      .map((m) => Duration(minutes: m[trainNo] ?? 0));
 }

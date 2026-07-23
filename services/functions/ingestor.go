@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,17 +53,37 @@ var (
 
 const ingestTimeout = 20 * time.Minute
 
+// busDailyIngestTimeout bounds one hourly bus_dailytimetable landing. It is a
+// single dataset over ~23 city partitions, most of them answering 304, so it
+// needs far less than the full run's budget.
+const busDailyIngestTimeout = 10 * time.Minute
+
 // registerIngestorCrons schedules the daily 03:00 raw landing (under a 20-minute
-// timeout). When INGEST_ON_BOOT=true it also kicks off one landing immediately in
-// a goroutine, which is how a fresh deploy backfills raw_tdx without waiting for
-// the next 03:00 tick. boot tracks that goroutine so drainShutdown waits for it
-// instead of abandoning it mid-run on shutdown.
+// timeout) plus the hourly bus_dailytimetable landing. When INGEST_ON_BOOT=true
+// it also kicks off one full landing immediately in a goroutine, which is how a
+// fresh deploy backfills raw_tdx without waiting for the next 03:00 tick. boot
+// tracks that goroutine so drainShutdown waits for it instead of abandoning it
+// mid-run on shutdown.
 func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool.Pool, boot *sync.WaitGroup) {
 	runner := newStaticPipelineRunner(rawPool, ingestTimeout)
 	_, _ = addStaticCron(r, "0 0 3 * * *", func() {
 		runDaily("ingest", ingestTimeout, func(ctx context.Context) error {
 			return runner.Run(ctx, func(ctx context.Context) error {
 				return ingestRaw(ctx, tdx)
+			})
+		})
+	})
+	// bus_dailytimetable is the one static feed TDX revises through the service
+	// day, so it lands hourly on top of the 03:00 run instead of waiting a full
+	// day. The conditional GET carries the cost: an unchanged city answers 304
+	// and never touches raw_tdx. The static-pipeline lock inside runner.Run
+	// serializes this against the 03:00 landing and the loader's runs, so the
+	// 03:00 overlap needs no separate guard.
+	hourly := newStaticPipelineRunner(rawPool, busDailyIngestTimeout)
+	_, _ = addStaticCron(r, "0 0 * * * *", func() {
+		runDaily("ingest_bus_dailytimetable", busDailyIngestTimeout, func(ctx context.Context) error {
+			return hourly.Run(ctx, func(ctx context.Context) error {
+				return ingestRaw(ctx, tdx, "bus_dailytimetable")
 			})
 		})
 	})
@@ -85,7 +106,12 @@ func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool
 // jobs cover the registry's date window. Each raw_tdx write happens inside
 // fetchRaw's GetInto commit. Per-endpoint failures do not abort independent
 // fetches, but all are joined and returned to the daily retry wrapper.
-func ingestRaw(ctx context.Context, tdx rawFetcher) error {
+//
+// tables, when non-empty, restricts the run to those raw_tdx tables — the
+// hourly bus_dailytimetable landing is the one caller that lands a subset. An
+// unknown table name lands nothing rather than silently falling back to the
+// full run.
+func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	// Without TDX credentials every fetch would 401, so the ingestor would fire
 	// ~300+ unauthenticated requests (each retried) daily to no effect. Gate the
 	// whole run on non-empty credentials: the cron stays registered but is a true
@@ -97,7 +123,15 @@ func ingestRaw(ctx context.Context, tdx rawFetcher) error {
 		return nil
 	}
 
-	log.Infoln("[INGEST] action=raw event=start")
+	scope := "all"
+	only := map[string]bool{}
+	if len(tables) > 0 {
+		scope = strings.Join(tables, ",")
+		for _, t := range tables {
+			only[t] = true
+		}
+	}
+	log.Infof("[INGEST] action=raw event=start scope=%s", scope)
 	landingCycle, err := newRawLandingCycle()
 	if err != nil {
 		return fmt.Errorf("start raw landing cycle: %w", err)
@@ -113,6 +147,9 @@ func ingestRaw(ctx context.Context, tdx rawFetcher) error {
 	var jobs []job
 	for _, d := range datasetRegistry() {
 		if !d.fetched() {
+			continue
+		}
+		if len(only) > 0 && !only[d.rawTable] {
 			continue
 		}
 		for _, part := range d.partitions() {
@@ -140,7 +177,7 @@ func ingestRaw(ctx context.Context, tdx rawFetcher) error {
 	for err := range failures {
 		joined = append(joined, err)
 	}
-	log.Infoln("[INGEST] action=raw event=end")
+	log.Infof("[INGEST] action=raw event=end scope=%s", scope)
 	return errors.Join(joined...)
 }
 

@@ -18,6 +18,7 @@ services:
       OLLAMA_KEEP_ALIVE: 30m
       OLLAMA_NUM_PARALLEL: 2
       OLLAMA_MAX_LOADED_MODELS: 1
+      OLLAMA_LLM_LIBRARY: cuda_v12
     mem_limit: 4g
     pids_limit: 4096
     cpus: 2.0
@@ -325,8 +326,8 @@ services:
     pids_limit: 32
     cpus: 0.5
     entrypoint: ["/bin/sh", "-c"]
-    # Downloads to a same-directory temp file, verifies it against
-    # OSRM_PBF_MD5 before it is ever trusted, and only then renames it into
+    # Downloads to a same-directory temp file, verifies it against a
+    # checksum before it is ever trusted, and only then renames it into
     # place atomically (rename is atomic within one filesystem, so a reader
     # never observes a partial/corrupt PBF and a failed verify never
     # clobbers a good previous download). Geofabrik publishes MD5 checksums
@@ -334,16 +335,22 @@ services:
     # download.geofabrik.de/asia/taiwan-latest.osm.pbf.sha256 returning 404
     # while .md5 returns 200) — MD5 is the strongest integrity check
     # Geofabrik itself offers for this file, so that's what's verified here.
-    # OSRM_PBF_URL defaults to a dated snapshot (not the `-latest` alias) so
-    # the checksum stays valid across runs instead of drifting out from
-    # under a fixed hash; refresh OSRM_PBF_URL/OSRM_PBF_MD5 together to pick
-    # up new OSM data.
+    # OSRM_PBF_URL defaults to the `-latest` alias, and OSRM_PBF_MD5 (when
+    # unset) is fetched from that alias's `.md5` sidecar at run time — unlike
+    # `-latest.osm.pbf`, the `.md5` sidecar resolves directly (200, no
+    # redirect) so it always matches whatever `-latest` currently points to.
+    # This avoids pinning a dated snapshot filename, which 404s once
+    # Geofabrik rotates it out of their retention window. Set both
+    # OSRM_PBF_URL and OSRM_PBF_MD5 to pin a specific reproducible extract.
     command:
       - >
         set -e; cd /data;
         target="${OSRM_PBF_FILE:-taiwan.osm.pbf}";
-        url="${OSRM_PBF_URL:-https://download.geofabrik.de/asia/taiwan-260714.osm.pbf}";
-        expected_md5="${OSRM_PBF_MD5:-4306cfd1ccbbae2939f75078c9e5221b}";
+        url="${OSRM_PBF_URL:-https://download.geofabrik.de/asia/taiwan-latest.osm.pbf}";
+        expected_md5="${OSRM_PBF_MD5:-}";
+        if [ -z "$$expected_md5" ]; then
+          expected_md5="$$(wget -qO- "$$url.md5" | cut -d' ' -f1)";
+        fi;
         if [ -f "$$target" ] && [ "$$(md5sum "$$target" | cut -d' ' -f1)" = "$$expected_md5" ]; then
           echo "osrm-fetch: $$target already present and verified"; exit 0;
         fi;

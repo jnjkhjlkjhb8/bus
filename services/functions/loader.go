@@ -504,7 +504,7 @@ func loaderTransforms(src loadSource) map[string]loaderBinding {
 				{table: "bus_stations", textCols: []string{"station_name"}, geoCols: []string{"position"}},
 			}},
 		"bus_dailytimetable": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
-			return sink.loadBusDailyTimetable(ctx, dec, part)
+			return sink.loadBusDailyTimetable(ctx, dec, src, part)
 		}},
 		"bike": {load: loadBikeStations,
 			report: []qualityTarget{{table: "bike_stations", textCols: []string{"name", "address"}, geoCols: []string{"geom"}}}},
@@ -559,5 +559,17 @@ func loaderRegistry(src loadSource) []loadSpec {
 			staleOK:    d.staleOK,
 		})
 	}
+	// mrt_adjacency reads the same landed metro_s2straveltime table as
+	// mrt_trtc_traveltime but produces a different target (the same-line ride
+	// graph, ADR-0015). A raw_tdx table maps to one datasetRegistry entry (and
+	// thus one loadKey), so this second consumer is appended as a standalone
+	// loadSpec rather than a second dataset. TRTC only.
+	specs = append(specs, loadSpec{
+		key:        "mrt_adjacency",
+		table:      "metro_s2straveltime",
+		partCol:    "system",
+		partitions: func() []string { return []string{"TRTC"} },
+		load:       loadMrtAdjacency,
+	})
 	return specs
 }

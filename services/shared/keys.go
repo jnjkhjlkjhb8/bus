@@ -88,6 +88,20 @@ func MrtLivePattern() string {
 	return "mrt_live:*"
 }
 
+// MrtTrackKey holds the live state (a marshaled models.MrtTrackState) of one
+// metro alight-reminder session, keyed by its reminder/track ID. The router
+// writes the initial state at CreateTrack and reads it to seed a WatchTrack
+// stream; the functions tracker overwrites it each station hop (ADR-0015).
+func MrtTrackKey(trackID string) string {
+	return "mrt_track:state:" + trackID
+}
+
+// MrtTrackChannel publishes each new session state so an established WatchTrack
+// stream receives updates after seeding from MrtTrackKey.
+func MrtTrackChannel(trackID string) string {
+	return "mrt_track:events:" + trackID
+}
+
 // TraDelayHashKey is the hash of per-train delay minutes, keyed by train
 // number.
 const TraDelayHashKey = "tra:delay"

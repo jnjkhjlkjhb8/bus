@@ -467,6 +467,10 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	// the "changetovector" marker, now written by the loader.
 	markerReader := pgPipelineMarkerReader{db: db}
 	registerLiveCrons(r, tdx, rc, db, dispatcher)
+	// Metro alight-reminder tracker (ADR-0015): a 15s cron that advances active
+	// car-bound sessions from GetTrainInfo (event-driven, one call per hop). Not a
+	// liveSpec — it never touches TDX. Nil-safe dispatcher when push is disabled.
+	registerMrtTrackCron(r, rc, db, dispatcher)
 	_, _ = addStaticCron(r, "@every 10m", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
 		defer cancel()

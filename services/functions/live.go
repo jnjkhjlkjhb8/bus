@@ -432,9 +432,6 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 	bikeOwnedKey := func(fetchName string) string {
 		return shared.LiveOwnedKeysKey("bike", strings.TrimPrefix(fetchName, "bike_availability"))
 	}
-	mrtOwnedKey := func(fetchName string) string {
-		return shared.LiveOwnedKeysKey("mrt", strings.TrimPrefix(fetchName, "mrt_LiveBoard"))
-	}
 	traPatterns := func(string) []ttlPattern {
 		return []ttlPattern{
 			{pattern: shared.TraDelayAllKey, ttl: traLiveTTL},
@@ -461,9 +458,14 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				return busEta(ctx, fetch, sink, db, dispatcher)
 			}},
-		{key: "mrt", cadence: "@every 10s", ownedKey: mrtOwnedKey, ownedTTL: mrtLiveTTL,
+		// TDX Metro LiveBoard is paused for all four systems (ADR-0014): TRTC
+		// arrivals+congestion come from the Metro Taipei API on a 15s cadence;
+		// KRTC/KLRT/TYMC live keys simply expire. To resume TDX, restore the
+		// mrtEta spec ({key: "mrt", cadence: "@every 10s", ownedKey: mrtOwnedKey,
+		// ownedTTL: mrtLiveTTL, run: mrtEta}).
+		{key: "mrt", cadence: "@every 15s",
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				return mrtEta(ctx, fetch, sink, db)
+				return trtcEta(ctx, sink, db)
 			}},
 		{key: "tra", cadence: "@every 2m", ttlPatterns: traPatterns,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {

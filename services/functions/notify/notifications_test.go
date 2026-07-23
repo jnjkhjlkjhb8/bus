@@ -841,3 +841,51 @@ func TestInvalidTokenReturnsZeroRowReleaseFailure(t *testing.T) {
 		t.Fatalf("Arrivals() error = %v, want send and zero-row release failures", err)
 	}
 }
+
+func TestFireMrtVibrateSendsDataOnlyAndFiresOnce(t *testing.T) {
+	store := &fakeNotificationStore{claimed: map[string]bool{}}
+	sender := &fakeFCM{}
+	d := NewDispatcher(store, sender)
+
+	fired, err := d.FireMrtVibrate(context.Background(), MrtVibrateEvent{ReminderID: "r1", Token: "tok", TrackID: "r1"})
+	if err != nil || !fired {
+		t.Fatalf("FireMrtVibrate() = %v, %v", fired, err)
+	}
+	if len(sender.messages) != 1 {
+		t.Fatalf("sent=%d want 1", len(sender.messages))
+	}
+	msg := sender.messages[0]
+	if msg.Notification != nil {
+		t.Error("vibrate message must carry no notification payload")
+	}
+	if msg.Data["type"] != "mrt_vibrate" || msg.Data["track_id"] != "r1" {
+		t.Errorf("data = %v", msg.Data)
+	}
+	if msg.Android == nil || msg.Android.Priority != "high" {
+		t.Error("vibrate message must be android high priority")
+	}
+	if len(store.firedIDs) != 1 || store.firedIDs[0] != "r1" {
+		t.Errorf("firedIDs = %v", store.firedIDs)
+	}
+
+	// A second attempt loses the claim (already fired) and does not re-send.
+	fired, err = d.FireMrtVibrate(context.Background(), MrtVibrateEvent{ReminderID: "r1", Token: "tok", TrackID: "r1"})
+	if err != nil || fired {
+		t.Fatalf("second FireMrtVibrate() = %v, %v", fired, err)
+	}
+	if len(sender.messages) != 1 {
+		t.Errorf("second attempt sent again, total=%d", len(sender.messages))
+	}
+}
+
+func TestFireMrtVibrateNoTokenIsNoop(t *testing.T) {
+	store := &fakeNotificationStore{claimed: map[string]bool{}}
+	sender := &fakeFCM{}
+	fired, err := NewDispatcher(store, sender).FireMrtVibrate(context.Background(), MrtVibrateEvent{ReminderID: "r1", Token: "", TrackID: "r1"})
+	if err != nil || fired {
+		t.Fatalf("FireMrtVibrate() no token = %v, %v", fired, err)
+	}
+	if len(sender.messages) != 0 || len(store.claimIDs) != 0 {
+		t.Error("no-token vibrate must not claim or send")
+	}
+}

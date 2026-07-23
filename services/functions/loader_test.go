@@ -357,7 +357,7 @@ func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
 
 	body := []byte(`[{"SubRouteUID":"` + uid + `","Direction":0,"Timetables":[{"TripID":"T1","IsLowFloor":true,"StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]}]`)
 	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := loadBusDailyTimetable(context.Background(), dec, nil, rc, "Kaohsiung"); err != nil {
+	if err := loadBusDailyTimetable(context.Background(), dec, nil, nil, rc, "Kaohsiung"); err != nil {
 		t.Fatalf("loadBusDailyTimetable: %v", err)
 	}
 

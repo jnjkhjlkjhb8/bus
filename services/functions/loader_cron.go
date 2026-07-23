@@ -115,6 +115,7 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 	} else {
 		log.Warn("[LOAD] action=boot event=skipped")
 	}
+	registerBusDailyTimetableCron(r, rawPool, db, rc)
 }
 
 // vectorRefreshTimeout bounds one changetovector attempt in the loader. It

@@ -260,15 +260,31 @@ func specByKey(t *testing.T, key string) liveSpec {
 	return liveSpec{}
 }
 
-func TestMrtSpecRunWritesArrivals(t *testing.T) {
-	// The mrt spec, run against a fixture source and capture sink, must write one
-	// per-(station,line) key and publish per-station updates, with decoded
-	// protobuf matching the fixture. Only TRTC is seeded; the other systems 304.
-	src := &fakeLiveSource{fixtures: map[string][]byte{
-		"mrt_LiveBoardTRTC": readFixture(t, "tdx_mrt_liveboard_trtc.json"),
-	}}
+// trtcTestNames is the station-name fixture the TRTC live tests resolve
+// against (mrt_station is not available in unit tests).
+var trtcTestNames = map[string][]string{
+	"台北車站":  {"BL12", "R10"},
+	"南港展覽館": {"BL23", "BR24"},
+	"頂埔":    {"BL01"},
+}
+
+// trtcTestTracks: two arrivals at BL12 toward opposite BL terminals; train 215
+// has a congestion reading, train 222 does not.
+var trtcTestTracks = []trtcTrack{
+	{TrainNumber: "215", StationName: "台北車站", DestinationName: "南港展覽館站", CountDown: "02:00", NowDateTime: "2026-07-22 15:09:55"},
+	{TrainNumber: "222", StationName: "台北車站", DestinationName: "頂埔站", CountDown: "01:10", NowDateTime: "2026-07-22 15:09:55"},
+}
+
+func TestTrtcPublishWritesArrivals(t *testing.T) {
+	// The TRTC publish core must write one per-(station,line,dest) key and
+	// publish per-station updates, with the countdown parsed into EstimateTime
+	// and train 215's congestion paired on (congestion pairing, CONTEXT.md).
 	sink := &captureLiveSink{}
-	runLiveSpec(context.Background(), src, sink, specByKey(t, "mrt"))
+	exRows := []trtcWeightEx{{TrainNumber: "215", CN1: "163/164", StationID: "BL10",
+		Cart1L: "1", Cart2L: "2", Cart3L: "2", Cart4L: "2", Cart5L: "2", Cart6L: "1"}}
+	if err := trtcPublish(context.Background(), sink, trtcTestNames, nil, time.Now(), trtcTestTracks, exRows, nil); err != nil {
+		t.Fatalf("trtcPublish: %v", err)
+	}
 
 	key := shared.MrtLiveKey("TRTC", "BL12", "BL", "BL23")
 	sw := sink.setFor(key)
@@ -285,10 +301,25 @@ func TestMrtSpecRunWritesArrivals(t *testing.T) {
 	if got.System != "TRTC" || got.StationID != "BL12" || got.LineID != "BL" {
 		t.Fatalf("MrtLive identity = %+v", &got)
 	}
-	if got.EstimateTime != 120 || got.DestinationStationName != "南港展覽館" {
+	if got.EstimateTime != 120 || got.DestinationStationName != "南港展覽館" || got.CountDown != "02:00" {
 		t.Fatalf("MrtLive payload = %+v", &got)
 	}
-	// Both fixture rows share station BL12, so both publish the station channel.
+	if got.Weight == nil || got.Weight.Cart2L != "2" || got.CN1 != "163/164" {
+		t.Fatalf("MrtLive congestion = %+v", &got)
+	}
+	// The number-less pairing must not leak: train 222 has no congestion.
+	other := sink.setFor(shared.MrtLiveKey("TRTC", "BL12", "BL", "BL01"))
+	if other == nil {
+		t.Fatalf("expected SET for opposite destination; got keys %v", setKeys(sink))
+	}
+	var plain models.MrtLive
+	if err := proto.Unmarshal(other.value, &plain); err != nil {
+		t.Fatalf("unmarshal MrtLive: %v", err)
+	}
+	if plain.Weight != nil {
+		t.Fatalf("unpaired arrival carries congestion: %+v", &plain)
+	}
+	// Both rows share station BL12, so both publish the station channel.
 	ch := shared.MrtLiveChannel("TRTC", "BL12")
 	pubCount := 0
 	for _, p := range sink.publishs {
@@ -301,15 +332,10 @@ func TestMrtSpecRunWritesArrivals(t *testing.T) {
 	}
 }
 
-func TestMrtOppositeDestinationsUseDistinctRedisKeys(t *testing.T) {
-	src := &fakeLiveSource{fixtures: map[string][]byte{
-		"mrt_LiveBoardTRTC": readFixture(t, "tdx_mrt_liveboard_trtc.json"),
-	}}
+func TestTrtcOppositeDestinationsUseDistinctRedisKeys(t *testing.T) {
 	sink := &captureLiveSink{}
-	spec := specByKey(t, "mrt")
-
-	if err := spec.run(context.Background(), bindFetch(src, sink, spec), sink); err != nil {
-		t.Fatalf("mrt run: %v", err)
+	if err := trtcPublish(context.Background(), sink, trtcTestNames, nil, time.Now(), trtcTestTracks, nil, nil); err != nil {
+		t.Fatalf("trtcPublish: %v", err)
 	}
 	keys := map[string]struct{}{}
 	for _, write := range sink.sets {
@@ -584,7 +610,6 @@ func TestRealtimePipelineFailureDoesNotAcknowledge(t *testing.T) {
 		body    []byte
 	}{
 		{name: "bike", specKey: "bike", fixture: "bike_availabilityTaipei", body: readFixture(t, "tdx_bike_availability.json")},
-		{name: "mrt", specKey: "mrt", fixture: "mrt_LiveBoardTRTC", body: readFixture(t, "tdx_mrt_liveboard_trtc.json")},
 		{name: "tra", specKey: "tra", fixture: "tra_delay", body: readFixture(t, "tdx_tra_delay.json")},
 	}
 	for _, tt := range tests {
@@ -600,6 +625,17 @@ func TestRealtimePipelineFailureDoesNotAcknowledge(t *testing.T) {
 				t.Fatalf("pipeline failure acknowledged marker: %v", src.acked)
 			}
 		})
+	}
+}
+
+// The TRTC job has no TDX marker to (not) acknowledge, but the pipeline
+// invariant still holds: a failed Exec must surface as the job error.
+func TestTrtcPublishExecFailure(t *testing.T) {
+	wantErr := errors.New("redis pipeline failed")
+	sink := &captureLiveSink{execErr: wantErr}
+	err := trtcPublish(context.Background(), sink, trtcTestNames, nil, time.Now(), trtcTestTracks, nil, nil)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("pipeline error = %v, want wrapped %v", err, wantErr)
 	}
 }
 
@@ -629,9 +665,10 @@ func TestAllRealtimeWritersCancelDuringExecWithoutAck(t *testing.T) {
 			spec := specByKey(t, "bike")
 			return spec.run(ctx, bindFetch(src, sink, spec), sink)
 		}},
-		{name: "mrt", fixtures: map[string][]byte{"mrt_LiveBoardTRTC": readFixture(t, "tdx_mrt_liveboard_trtc.json")}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
-			spec := specByKey(t, "mrt")
-			return spec.run(ctx, bindFetch(src, sink, spec), sink)
+		// mrt is TRTC-sourced now (no TDX fetch/marker); it keeps the same
+		// cancel-during-Exec invariant via trtcPublish, driven fixture-direct.
+		{name: "mrt", fixtures: map[string][]byte{}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
+			return trtcPublish(ctx, sink, trtcTestNames, nil, time.Now(), trtcTestTracks, nil, nil)
 		}},
 		{name: "tra", fixtures: map[string][]byte{"tra_delay": readFixture(t, "tdx_tra_delay.json")}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
 			spec := specByKey(t, "tra")
@@ -1312,35 +1349,6 @@ func TestRedisLivePipelineRejectsUnboundedSocketWait(t *testing.T) {
 	pipe.Set("unreachable", "value", time.Minute)
 	if err := pipe.Exec(); err == nil || !strings.Contains(err.Error(), "finite Redis read timeout") {
 		t.Fatalf("Exec error = %v, want finite-timeout guard", err)
-	}
-}
-
-func TestMrt304RefreshesOnlyPartitionOwnedKeys(t *testing.T) {
-	src := &fakeLiveSource{fixtures: map[string][]byte{
-		"mrt_LiveBoardTRTC": readFixture(t, "tdx_mrt_liveboard_trtc.json"),
-	}}
-	sink := &captureLiveSink{}
-	spec := specByKey(t, "mrt")
-	if err := spec.run(context.Background(), bindFetch(src, sink, spec), sink); err != nil {
-		t.Fatalf("initial MRT update: %v", err)
-	}
-
-	src.fixtures = map[string][]byte{}
-	sink.refresh = nil
-	if err := spec.run(context.Background(), bindFetch(src, sink, spec), sink); err != nil {
-		t.Fatalf("MRT 304 update: %v", err)
-	}
-	want := map[string]bool{
-		shared.MrtLiveKey("TRTC", "BL12", "BL", "BL23"): true,
-		shared.MrtLiveKey("TRTC", "BL12", "BL", "BL01"): true,
-	}
-	if len(sink.refresh) != 1 || len(sink.refresh[0]) != len(want) {
-		t.Fatalf("MRT 304 refreshes = %+v, want TRTC-owned keys %v", sink.refresh, want)
-	}
-	for _, refresh := range sink.refresh[0] {
-		if !want[refresh.pattern] {
-			t.Fatalf("MRT 304 refreshed unowned key/pattern %q", refresh.pattern)
-		}
 	}
 }
 

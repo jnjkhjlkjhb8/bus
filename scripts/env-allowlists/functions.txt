@@ -22,6 +22,10 @@ MQTT_PASSWORD
 # `functions` service.
 TDX_CLIENT_ID
 TDX_CLIENT_SECRET
+# trtcEta polls the Metro Taipei SOAP API for TRTC arrivals + congestion
+# (ADR-0014). Empty credentials skip the job entirely (zero requests).
+TRTC_USERNAME
+TRTC_PASSWORD
 FIREBASE_ENABLED
 FIREBASE_PROJECT_ID
 GOOGLE_APPLICATION_CREDENTIALS

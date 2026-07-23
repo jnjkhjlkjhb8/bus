@@ -131,6 +131,54 @@ func (s Store) dueScheduledReminders(ctx context.Context, now time.Time) ([]arri
 	return out, rows.Err()
 }
 
+// MrtTrackReminder is one active metro alight-reminder session's row: its
+// reminder/track ID, the install's FCM token (empty when push is off or the
+// device is unknown — the tracker still advances the card, it just cannot
+// vibrate), and the stops-based lead reused into lead_minutes (ADR-0015).
+type MrtTrackReminder struct {
+	ID        string
+	Token     string
+	LeadStops int
+}
+
+// ActiveMrtTracks returns every live metro alight-reminder session for the
+// tracker to advance. It intentionally does NOT filter on push_enabled: a
+// session's card must keep updating even when the device cannot receive the
+// vibration, so the device token is LEFT JOINed and may be empty. 'fired' rows
+// stay active so the card continues to its arrival ending after the lead
+// vibration; router-cancelled and expired rows drop out. The Redis state key is
+// the source of position — this query only enumerates which sessions exist.
+func (s Store) ActiveMrtTracks(ctx context.Context, now time.Time) ([]MrtTrackReminder, error) {
+	rows, err := s.db.Query(ctx, `SELECT r.reminder_id, COALESCE(d.fcm_token, ''), r.lead_minutes
+		FROM firebase_arrival_reminder r
+		LEFT JOIN firebase_device d ON d.install_id = r.install_id AND d.push_enabled AND d.fcm_token <> ''
+		WHERE r.route_type = 'mrt' AND r.status IN ('pending', 'sending', 'fired') AND r.expires_at > $1`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MrtTrackReminder
+	for rows.Next() {
+		var v MrtTrackReminder
+		if err := rows.Scan(&v.ID, &v.Token, &v.LeadStops); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ExpireMrtTrack marks a still-'pending' (never-fired) metro session terminal so
+// ActiveMrtTracks stops returning it once its Redis state has ended or vanished.
+// It deliberately never touches a 'fired' row: fired_at is set there and the
+// table's CHECK(fired_at IS NULL OR status = 'fired') would reject the move, so
+// fired sessions age out on expires_at instead.
+func (s Store) ExpireMrtTrack(ctx context.Context, id string) error {
+	_, err := s.db.Exec(ctx, `UPDATE firebase_arrival_reminder SET status = 'expired', updated_at = NOW()
+		WHERE reminder_id = $1 AND status = 'pending'`, id)
+	return err
+}
+
 // rowsChanged reports whether a conditional UPDATE affected exactly its one
 // target row, which is how the claim/fire/release state transitions detect
 // whether they actually won the race. The input error is passed through.

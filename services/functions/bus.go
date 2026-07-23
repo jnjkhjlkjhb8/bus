@@ -344,13 +344,110 @@ func busDailyTimetableSkip(city string) bool {
 		city == "KinmenCounty" || city == "LienchiangCounty"
 }
 
+// busDailyOriginFilter indexes each subroute direction's origin stop from the
+// city's raw StopOfRoute landing so daily-timetable trips can be checked
+// against the direction they claim.
+type busDailyOriginFilter struct {
+	originUID  map[string]map[string]struct{} // uid\x00dir -> origin StopUIDs across operator variants
+	originName map[string]map[string]struct{} // uid\x00dir -> origin stop names
+	stopName   map[string]string              // StopUID -> name, over every route's stop list
+}
+
+func busDailyOriginKey(uid string, dir uint8) string {
+	return fmt.Sprintf("%s\x00%d", uid, dir)
+}
+
+// newBusDailyOriginFilter reads the city's raw StopOfRoute landing. A read or
+// decode failure returns nil (filtering disabled): an unfiltered timetable is
+// the pre-filter status quo, not worth failing the city's load over.
+func newBusDailyOriginFilter(ctx context.Context, src loadSource, city string) *busDailyOriginFilter {
+	if src == nil {
+		return nil
+	}
+	body, _, err := src.datasetJSON(ctx, "bus_stopofroute", "city", city)
+	if err != nil {
+		log.Warnf("[LOAD] action=bus_dailytimetable event=origin_filter_unavailable city=%s error=%v", city, err)
+		return nil
+	}
+	var variants []rawStopofroute
+	if err := json.Unmarshal(body, &variants); err != nil {
+		log.Warnf("[LOAD] action=bus_dailytimetable event=origin_filter_unavailable city=%s error=%v", city, err)
+		return nil
+	}
+	f := &busDailyOriginFilter{
+		originUID:  make(map[string]map[string]struct{}, len(variants)),
+		originName: make(map[string]map[string]struct{}, len(variants)),
+		stopName:   make(map[string]string, len(variants)*32),
+	}
+	for _, v := range variants {
+		if len(v.Stops) == 0 {
+			continue
+		}
+		uid, dir := shared.CanonicalSubroute(city, v.SubRouteUID, v.Direction)
+		first := v.Stops[0]
+		for _, s := range v.Stops {
+			if s.StopSequence < first.StopSequence {
+				first = s
+			}
+			f.stopName[s.StopUID] = s.StopName.Zhtw
+		}
+		key := busDailyOriginKey(uid, dir)
+		if f.originUID[key] == nil {
+			f.originUID[key] = make(map[string]struct{}, 1)
+			f.originName[key] = make(map[string]struct{}, 1)
+		}
+		f.originUID[key][first.StopUID] = struct{}{}
+		f.originName[key][first.StopName.Zhtw] = struct{}{}
+	}
+	return f
+}
+
+// keep reports whether a trip whose first timed stop is firstStopUID belongs
+// to (uid, dir). TDX registers a circular route's return-leg trips under both
+// direction arrays (Taoyuan does this route-wide), so a trip departing the
+// opposite direction's origin is a misfiled return trip, not a schedule.
+// Names decide, not UIDs: TDX gives paired roadside stops distinct UIDs.
+// Every uncertain case keeps the trip — unknown stop, no StopOfRoute entry,
+// or both termini sharing a name (a loop that starts and ends at one station).
+func (f *busDailyOriginFilter) keep(uid string, dir uint8, firstStopUID string) bool {
+	if f == nil {
+		return true
+	}
+	thisKey := busDailyOriginKey(uid, dir)
+	if _, ok := f.originUID[thisKey][firstStopUID]; ok {
+		return true
+	}
+	thisNames := f.originName[thisKey]
+	if len(thisNames) == 0 {
+		return true
+	}
+	otherNames := f.originName[busDailyOriginKey(uid, 1-dir)]
+	for n := range thisNames {
+		if _, ok := otherNames[n]; ok {
+			return true
+		}
+	}
+	name, ok := f.stopName[firstStopUID]
+	if !ok {
+		return true
+	}
+	if _, ok := thisNames[name]; ok {
+		return true
+	}
+	if _, ok := otherNames[name]; ok {
+		return false
+	}
+	return true
+}
+
 // loadBusDailyTimetable assembles one city's daily timetables from an opened
 // decoder and writes each subroute's protobuf into Redis under
 // bus_daily_timetable:<subRouteUID> (TTL 26h). It consumes the decoder from
 // the opening '[' onward; the loader hands it an unopened decoder over
-// reconstructed raw_tdx.bus_dailytimetable bytes. db is unused (this dataset is
-// Redis-only); the parameter keeps the loadSpec signature.
-func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Pool, rc *redis.Client, city string) error {
+// reconstructed raw_tdx.bus_dailytimetable bytes. src supplies the city's raw
+// StopOfRoute landing for the direction filter (nil disables it). db is unused
+// (this dataset is Redis-only); the parameter keeps the loadSpec signature.
+func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSource, _ *pgxpool.Pool, rc *redis.Client, city string) error {
 	if strings.TrimSpace(city) == "" {
 		return errors.New("bus daily timetable: city is required")
 	}
@@ -368,6 +465,12 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 			q.consider("stoptime", len(t.StopTimes))
 		}
 	}
+	filter := newBusDailyOriginFilter(ctx, src, city)
+	// Misfiled trips bypass the quarantine on purpose: Taoyuan misfiles ~40%
+	// of its trips (see keep), and quarantine's ratio gate would fail the
+	// whole city over an expected, correctly-filtered data shape.
+	misfiled := 0
+	misfiledSample := ""
 	mp := make(map[string]map[int32]*models.Bus_DirectionTimetable, 300)
 	seenTrips := make(map[string]*models.Bus_DailyTimetable)
 	for _, temp := range entries {
@@ -384,6 +487,19 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 			}
 		}
 		for _, t := range temp.Timetables {
+			firstStop := t.StopTimes[0]
+			for _, st := range t.StopTimes[1:] {
+				if st.StopSequence < firstStop.StopSequence {
+					firstStop = st
+				}
+			}
+			if !filter.keep(uid, dir, firstStop.StopUID) {
+				misfiled++
+				if misfiledSample == "" {
+					misfiledSample = fmt.Sprintf("TripID %q for %s/%d departs %s", t.TripID, uid, dir, firstStop.StopUID)
+				}
+				continue
+			}
 			stop := make([]*models.Bus_StopTime, 0, len(t.StopTimes))
 			seenStops := make(map[int64]*models.Bus_StopTime, len(t.StopTimes))
 			for _, st := range t.StopTimes {
@@ -421,6 +537,10 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, _ *pgxpool.Po
 			seenTrips[key] = timetable
 			mp[uid][int32(dir)].DailyTimetables = append(mp[uid][int32(dir)].DailyTimetables, timetable)
 		}
+	}
+	if misfiled > 0 {
+		log.Infof("[LOAD] action=bus_dailytimetable event=misfiled_direction_trips city=%s dropped=%d first=%s",
+			city, misfiled, logSafeDetail(misfiledSample))
 	}
 	// Past the ratio the city's timetable fails instead of publishing a gutted
 	// one; the previous load's Redis payload stays in place.

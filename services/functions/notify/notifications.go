@@ -77,6 +77,69 @@ func notificationMessage(token, title, body string, data map[string]string) *mes
 	return &messaging.Message{Token: token, Data: data, Notification: &messaging.Notification{Title: title, Body: body}, Android: &messaging.AndroidConfig{Priority: "high", Notification: &messaging.AndroidNotification{Sound: "default"}}, APNS: &messaging.APNSConfig{Payload: &messaging.APNSPayload{Aps: &messaging.Aps{Sound: "default"}}}}
 }
 
+// MrtVibrateEvent is one metro alight-reminder session reaching its lead: the
+// reminder/track ID to fire once and the device token to reach. TrackID is
+// echoed to the client so it can match the vibration to the session on screen.
+type MrtVibrateEvent struct {
+	ReminderID string
+	Token      string
+	TrackID    string
+}
+
+// vibrateMessage builds the alight-reminder push: a DATA-only, high-priority FCM
+// message with NO notification payload, so nothing enters the notification
+// center — the Android client wakes and vibrates (ADR-0015). iOS transport
+// (ActivityKit alerting) is out of scope for this phase; this message carries no
+// APNs config, so an iOS token receives a silent data message the client may
+// ignore until that seam is built.
+func vibrateMessage(token, trackID string) *messaging.Message {
+	return &messaging.Message{
+		Token:   token,
+		Data:    map[string]string{"type": "mrt_vibrate", "track_id": trackID},
+		Android: &messaging.AndroidConfig{Priority: "high"},
+	}
+}
+
+// FireMrtVibrate delivers the alight vibration exactly once, reusing the
+// reminder claim/fire machinery: claim moves the row pending→sending (losing the
+// race or an already-fired row yields false with no send), the data message is
+// sent, and fired finalizes it. A failed send releases the claim for a later
+// tick and invalidates an unregistered token. No-op — (false, nil) — for a nil
+// dispatcher or an empty token (push off / unknown device), so the tracker still
+// advances the card without vibrating.
+func (d *Dispatcher) FireMrtVibrate(ctx context.Context, event MrtVibrateEvent) (bool, error) {
+	if d == nil || event.Token == "" {
+		return false, nil
+	}
+	now := d.now()
+	claimed, err := d.store.claim(ctx, event.ReminderID, now)
+	if err != nil {
+		return false, fmt.Errorf("claim mrt track %s: %w", event.ReminderID, err)
+	}
+	if !claimed {
+		return false, nil
+	}
+	sendErr := d.sender.Send(ctx, vibrateMessage(event.Token, event.TrackID))
+	finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
+	defer cancelFinalization()
+	if sendErr != nil {
+		if isInvalidFCMToken(sendErr) {
+			if invalidateErr := d.store.invalidate(finalizationCtx, event.Token); invalidateErr != nil {
+				return false, errors.Join(fmt.Errorf("send mrt vibrate %s: %w", event.ReminderID, sendErr), invalidateErr)
+			}
+		}
+		if _, releaseErr := d.store.release(finalizationCtx, event.ReminderID); releaseErr != nil {
+			return false, errors.Join(fmt.Errorf("send mrt vibrate %s: %w", event.ReminderID, sendErr), releaseErr)
+		}
+		return false, fmt.Errorf("send mrt vibrate %s: %w", event.ReminderID, sendErr)
+	}
+	fired, err := d.store.fired(finalizationCtx, event.ReminderID, now)
+	if err != nil {
+		return false, fmt.Errorf("mark mrt track %s fired: %w", event.ReminderID, err)
+	}
+	return fired, nil
+}
+
 // routeAlert pushes a service-disruption notification to every device
 // subscribed to a route. An empty routeKey is a line-wide disruption and
 // reaches every subscriber of that transit type. It is a no-op for a nil

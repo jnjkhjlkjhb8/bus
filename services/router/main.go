@@ -91,14 +91,20 @@ type BikeServer struct {
 	live  liveSource
 }
 
-// MrtServer streams metro arrival boards from Redis. It seeds each stream by
-// scanning the current mrt_live keys before subscribing to live updates.
+// MrtServer streams metro arrival boards from Redis and hosts the metro
+// alight-reminder session RPCs (ADR-0015). It seeds each arrival stream by
+// scanning the current mrt_live keys before subscribing to live updates. store
+// persists sessions in the shared reminders table, trtc verifies a car binding
+// at creation, and now is an injectable clock for tests.
 type MrtServer struct {
 	pb.UnimplementedMrt_ServiceServer
-	mu   sync.Mutex
-	rc   *redis.Client
-	db   *pgxpool.Pool
-	live liveSource
+	mu    sync.Mutex
+	rc    *redis.Client
+	db    *pgxpool.Pool
+	live  liveSource
+	store mrtTrackStore
+	trtc  mrtTrainInfo
+	now   func() time.Time
 }
 
 // ThsrServer serves high-speed-rail fares, timetables, and available-seat
@@ -485,7 +491,12 @@ func run() error {
 		pb.RegisterBus_Route_ServiceServer(grpcServer, &BusRouteserver{db: db, rc: rc, cache: newTTLCache(), live: live})
 		pb.RegisterBus_Station_ServiceServer(grpcServer, &BusStationserver{db: db, rc: rc, live: live})
 		pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: newTTLCache(), live: live})
-		pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{db: db, rc: rc, live: live})
+		pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{
+			db: db, rc: rc, live: live,
+			store: newFirebaseStore(db),
+			trtc:  shared.NewTRTCTrainInfoClient(os.Getenv("TRTC_USERNAME"), os.Getenv("TRTC_PASSWORD")),
+			now:   time.Now,
+		})
 		pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, rc: rc, live: live})
 		pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc, live: live})
 		pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc, live: live})

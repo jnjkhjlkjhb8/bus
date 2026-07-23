@@ -48,7 +48,7 @@ func (f *fakeLoadSink) loadBusCity(_ context.Context, _ loadSource, part string)
 	return f.recordSemantic("bus city assembly", part)
 }
 
-func (f *fakeLoadSink) loadBusDailyTimetable(_ context.Context, _ *json.Decoder, part string) error {
+func (f *fakeLoadSink) loadBusDailyTimetable(_ context.Context, _ *json.Decoder, _ loadSource, part string) error {
 	return f.recordSemantic("bus daily timetable", part)
 }
 

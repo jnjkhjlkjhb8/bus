@@ -753,6 +753,94 @@ func loadMrtTrtcTravelTime(ctx context.Context, src loadSource, sink copyUpsertS
 	}, rows)
 }
 
+// mrtAdjacencyRow decodes one S2STravelTime element for the adjacency graph: the
+// line and its ordered adjacent-station segments. Only the line and the segment
+// endpoints matter here (times are loadMrtTrtcTravelTime's concern), and the
+// nested TravelTimes array — jsonb in raw_tdx — decodes with case-insensitive
+// struct tags. LineID is the element's top-level lineid.
+type mrtAdjacencyRow struct {
+	LineID      string `json:"LineID"`
+	TravelTimes []struct {
+		FromStationID string `json:"FromStationID"`
+		ToStationID   string `json:"ToStationID"`
+	} `json:"TravelTimes"`
+}
+
+// loadMrtAdjacency fills mrt_adjacency from a system's S2STravelTime segments
+// (ADR-0015): the same-line ride graph a metro alight-reminder session walks. It
+// stores both directions of every segment so the router's board→terminal BFS is
+// an undirected walk via directed-edge lookups. Interchange (LineTransfer) edges
+// are intentionally excluded — one train never crosses them, so joining two
+// lines into one component would let BFS route through a transfer a rider must
+// physically make. Rows are refreshed in place via an upsert; a system whose
+// feed is momentarily empty no-ops rather than deleting good edges.
+func loadMrtAdjacency(ctx context.Context, dec *json.Decoder, sink loadSink, system string) error {
+	if strings.TrimSpace(system) == "" {
+		return errors.New("mrt adjacency: system is required")
+	}
+	lines, err := decodeLoadArray[mrtAdjacencyRow](dec, "mrt adjacency "+system, func(_ int, line mrtAdjacencyRow) error {
+		if strings.TrimSpace(line.LineID) == "" {
+			return errors.New("LineID is required")
+		}
+		for i, seg := range line.TravelTimes {
+			if strings.TrimSpace(seg.FromStationID) == "" {
+				return fmt.Errorf("TravelTimes element %d FromStationID is required", i)
+			}
+			if strings.TrimSpace(seg.ToStationID) == "" {
+				return fmt.Errorf("TravelTimes element %d ToStationID is required", i)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	rows := mrtAdjacencyRows(lines, system)
+	if len(rows) == 0 {
+		log.Infof("[MRT] action=mrt_adjacency system=%s event=no_edges", system)
+		return nil
+	}
+	return sink.copyUpsert(ctx, copyUpsertSpec{
+		key: "mrt_adjacency",
+		createSQL: `CREATE TEMP TABLE temp_mrt_adjacency (
+			system text, line_id text, from_station_id text, to_station_id text
+		) ON COMMIT DROP`,
+		tempTable: "temp_mrt_adjacency",
+		copyCols:  []string{"system", "line_id", "from_station_id", "to_station_id"},
+		insertSQL: `INSERT INTO mrt_adjacency (system, line_id, from_station_id, to_station_id, updated_at)
+			SELECT system, line_id, from_station_id, to_station_id, NOW() FROM temp_mrt_adjacency
+			ON CONFLICT (system, from_station_id, to_station_id)
+			DO UPDATE SET line_id = EXCLUDED.line_id, updated_at = NOW()`,
+	}, rows)
+}
+
+// mrtAdjacencyRows flattens the decoded lines into both-direction edge rows,
+// keeping the first line seen for a (from, to) pair so the copy set has no
+// duplicate primary key. Split from loadMrtAdjacency so the flattening is
+// unit-testable without a database.
+func mrtAdjacencyRows(lines []mrtAdjacencyRow, system string) [][]any {
+	seen := map[string]bool{}
+	var rows [][]any
+	add := func(lineID, from, to string) {
+		key := from + "\x00" + to
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		rows = append(rows, []any{system, lineID, from, to})
+	}
+	for _, line := range lines {
+		for _, seg := range line.TravelTimes {
+			if seg.FromStationID == "" || seg.ToStationID == "" {
+				continue
+			}
+			add(line.LineID, seg.FromStationID, seg.ToStationID)
+			add(line.LineID, seg.ToStationID, seg.FromStationID)
+		}
+	}
+	return rows
+}
+
 const mrtGraphInf int64 = 1 << 62
 
 // mrtTravelGraph builds the undirected shortest-path distance matrix (seconds)

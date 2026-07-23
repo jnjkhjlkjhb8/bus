@@ -109,7 +109,7 @@ func errorWithout(err, target error) error {
 type loadSink interface {
 	copyUpsert(ctx context.Context, spec copyUpsertSpec, rows [][]any) error
 	loadBusCity(ctx context.Context, src loadSource, city string) error
-	loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, city string) error
+	loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSource, city string) error
 	loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, system string) error
 	loadMrtTravelTime(ctx context.Context, src loadSource, system string) error
 	loadThsrStations(ctx context.Context, dec *json.Decoder, part string) error
@@ -170,8 +170,8 @@ func (s pgLoadSink) loadBusCity(ctx context.Context, src loadSource, city string
 	return loadBus(ctx, src, s.db, s.rc, city)
 }
 
-func (s pgLoadSink) loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, city string) error {
-	return loadBusDailyTimetable(ctx, dec, s.db, s.rc, city)
+func (s pgLoadSink) loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSource, city string) error {
+	return loadBusDailyTimetable(ctx, dec, src, s.db, s.rc, city)
 }
 
 func (s pgLoadSink) loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, system string) error {
