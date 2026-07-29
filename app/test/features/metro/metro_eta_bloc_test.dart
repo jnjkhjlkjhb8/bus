@@ -2,11 +2,12 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grpc/grpc.dart';
-import 'package:wheres_the_car/data/models/metro_models.dart';
-import 'package:wheres_the_car/data/repositories/mrt_repository.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_eta_bloc.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_eta_event.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_eta_state.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/metro_models.dart';
+import 'package:wheres_the_bus/data/repositories/mrt_repository.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_eta_bloc.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_eta_event.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_eta_state.dart';
 
 void main() {
   test('MetroEtaBloc has empty arrivals initially', () {
@@ -30,7 +31,7 @@ void main() {
       bloc.add(const LoadMetroEta('TRTC', 'BL12'));
 
       final state = await bloc.stream.firstWhere((s) => s.error != null);
-      expect(state.error, isNotEmpty);
+      expect(state.error, isA<AppError>());
     },
   );
 
@@ -47,7 +48,7 @@ void main() {
         // Simulates the feed's onFailure firing after the resilient
         // subscription gives up, independent of exercising real backoff
         // timing.
-        ..add(const MetroEtaFailed('offline'));
+        ..add(const MetroEtaFailed(OfflineError()));
       await bloc.stream.firstWhere((s) => s.error != null);
 
       bloc.add(
@@ -55,8 +56,7 @@ void main() {
           MetroArrival(
             line: 'BL',
             destination: '南港展覽館',
-            estimateMinutes: 2,
-            approaching: false,
+            estimateSeconds: 120,
           ),
         ]),
       );
@@ -76,7 +76,7 @@ void main() {
 
     bloc
       ..add(const LoadMetroEta('TRTC', 'BL12'))
-      ..add(const MetroEtaFailed('offline'));
+      ..add(const MetroEtaFailed(OfflineError()));
     await bloc.stream.firstWhere((s) => s.error != null);
 
     bloc.add(const MetroEtaRecovered());
@@ -86,8 +86,8 @@ void main() {
   });
 
   test('MetroEtaFailed and MetroEtaRecovered carry the expected data', () {
-    const failed = MetroEtaFailed('offline');
-    expect(failed.message, 'offline');
+    const failed = MetroEtaFailed(OfflineError());
+    expect(failed.error, const OfflineError());
     const recovered = MetroEtaRecovered();
     expect(recovered.props, isEmpty);
   });
@@ -101,5 +101,8 @@ class _FakeMrtRepository extends MrtRepository {
   Stream<MetroLiveArrival> eta(String system, String stationId) => etaSource();
 
   @override
-  Future<List<MetroScheduleEntry>> schedule(String stationId) async => [];
+  Future<List<MetroScheduleEntry>> schedule(
+    String system,
+    String stationId,
+  ) async => [];
 }

@@ -1,27 +1,27 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:wheres_the_car/app/router/app_routes.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/eta_format.dart';
-import 'package:wheres_the_car/data/models/favorite.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_event.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/motion/stagger.dart';
-import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
-import 'package:wheres_the_car/shared/widgets/eta_list_tile.dart';
-import 'package:wheres_the_car/shared/widgets/sheet_detail_header.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/eta_format.dart';
+import 'package:wheres_the_bus/data/models/favorite.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_bloc.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_event.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_state.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/motion/stagger.dart';
+import 'package:wheres_the_bus/shared/widgets/error_state_view.dart';
+import 'package:wheres_the_bus/shared/widgets/eta_list_tile.dart';
+import 'package:wheres_the_bus/shared/widgets/sheet_detail_header.dart';
 
 part '../widgets/bus_stop_sheet_widgets.dart';
 part '../widgets/bus_stop_skeleton_widgets.dart';
@@ -83,7 +83,8 @@ class BusStopDetailView extends StatelessWidget {
       return BlocProvider<BusStopBloc>.value(value: existing, child: content);
     }
     return BlocProvider(
-      create: (_) => BusStopBloc(stopId: stopId, city: city),
+      create: (context) =>
+          BusStopBloc(i18n: AppI18n.of(context), stopId: stopId, city: city),
       child: content,
     );
   }

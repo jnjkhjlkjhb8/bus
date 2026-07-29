@@ -1,4 +1,4 @@
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
 
 abstract class JourneySessionEvent {
   const JourneySessionEvent();
@@ -62,5 +62,22 @@ class ProgressTicked extends JourneySessionEvent {
 class PinnedStopsUpdated extends JourneySessionEvent {
   const PinnedStopsUpdated(this.stopsRemaining, {required this.generation});
   final int? stopsRemaining;
+  final int generation;
+}
+
+/// Internal: a fresh rail tracking frame (schedule + live TRA delay derived).
+/// Carries everything the rail riding card needs. See [EtaTicked.generation].
+class RailTrackTicked extends JourneySessionEvent {
+  const RailTrackTicked({
+    required this.eta,
+    required this.remainingStops,
+    required this.progress,
+    required this.nextStop,
+    required this.generation,
+  });
+  final Duration eta;
+  final int remainingStops;
+  final double progress;
+  final String nextStop;
   final int generation;
 }

@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 )
 
 // predictionSource labels which prediction tier produced an ETA, so accuracy can
@@ -152,42 +152,124 @@ func aggregateMAE(errs []matchedError) []maeStat {
 	return out
 }
 
+// predictionMatchWindow bounds how long after a prediction an arrival may occur
+// and still be treated as the arrival that prediction was about. It replaces the
+// INTERVAL '30 minutes' the correlated UPDATE used to carry.
+const predictionMatchWindow = 30 * time.Minute
+
+// predictionLookback is how far back measurePredictionError considers still-open
+// predictions, and therefore how much arrival history it needs to load.
+const predictionLookback = 24 * time.Hour
+
+// loadOpenPredictions reads predictions from the last day that have no actual
+// yet. Postgres owns bus_eta_prediction_error; only the arrivals moved.
+func loadOpenPredictions(ctx context.Context, db *pgxpool.Pool) ([]predictionRecord, error) {
+	rows, err := db.Query(ctx, `
+		SELECT sub_route_uid, direction, stop_uid, source, predicted_at, predicted_seconds
+		FROM bus_eta_prediction_error
+		WHERE actual_seconds IS NULL AND predicted_at >= NOW() - INTERVAL '1 day'`)
+	if err != nil {
+		return nil, fmt.Errorf("query open predictions: %w", err)
+	}
+	defer rows.Close()
+	var out []predictionRecord
+	for rows.Next() {
+		var p predictionRecord
+		if err := rows.Scan(&p.subRouteUID, &p.direction, &p.stopUID, &p.source,
+			&p.predictedAt, &p.predictedSecs); err != nil {
+			return nil, fmt.Errorf("scan open prediction: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// writePredictionActuals fills actual_seconds for every matched prediction in
+// one statement. The rows are addressed by their natural key rather than by id,
+// which the matcher does not carry; source is part of that key because two
+// prediction tiers can describe the same stop at the same instant.
+func writePredictionActuals(ctx context.Context, db *pgxpool.Pool, matched []matchedError) (int64, error) {
+	if len(matched) == 0 {
+		return 0, nil
+	}
+	uids := make([]string, len(matched))
+	dirs := make([]int16, len(matched))
+	stops := make([]string, len(matched))
+	sources := make([]string, len(matched))
+	at := make([]time.Time, len(matched))
+	actual := make([]int32, len(matched))
+	for i, m := range matched {
+		uids[i], dirs[i], stops[i] = m.subRouteUID, m.direction, m.stopUID
+		sources[i], at[i], actual[i] = m.source, m.predictedAt, int32(m.actualSecs)
+	}
+	tag, err := db.Exec(ctx, `
+		UPDATE bus_eta_prediction_error pe
+		SET actual_seconds = v.actual_seconds
+		FROM unnest($1::text[], $2::smallint[], $3::text[], $4::text[],
+		            $5::timestamptz[], $6::int[])
+		       AS v(sub_route_uid, direction, stop_uid, source, predicted_at, actual_seconds)
+		WHERE pe.sub_route_uid = v.sub_route_uid
+		  AND pe.direction     = v.direction
+		  AND pe.stop_uid      = v.stop_uid
+		  AND pe.source        = v.source
+		  AND pe.predicted_at  = v.predicted_at
+		  AND pe.actual_seconds IS NULL`,
+		uids, dirs, stops, sources, at, actual)
+	if err != nil {
+		return 0, fmt.Errorf("write prediction actuals: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// fillPredictionActuals pairs still-open predictions with the arrivals they
+// predicted and writes the results back. A disabled history host leaves the
+// predictions open for a later run rather than failing the job.
+func fillPredictionActuals(ctx context.Context, db *pgxpool.Pool, hist historySource) (int64, error) {
+	if hist == nil {
+		log.Warnf("[ETA_ERROR] event=skipped_fill reason=history_disabled")
+		return 0, nil
+	}
+	preds, err := loadOpenPredictions(ctx, db)
+	if err != nil {
+		log.Errorf("[ETA_ERROR] load predictions error: %v", err)
+		return 0, obs.Transient(err)
+	}
+	if len(preds) == 0 {
+		return 0, nil
+	}
+	arrivals, err := hist.arrivals(ctx, time.Now().Add(-predictionLookback))
+	if err != nil {
+		log.Errorf("[ETA_ERROR] load arrivals error: %v", err)
+		return 0, obs.Transient(err)
+	}
+	n, err := writePredictionActuals(ctx, db, matchPredictionActual(preds, arrivals, predictionMatchWindow))
+	if err != nil {
+		log.Errorf("[ETA_ERROR] fill actuals error: %v", err)
+		return 0, obs.Transient(err)
+	}
+	return n, nil
+}
+
 // measurePredictionError is the daily cron body. It loads the last day's
-// predictions and observed arrivals from bus_eta_prediction_error /
-// bus_eta_history, fills in actuals for still-open predictions, and logs MAE per
-// route per source. It is measurement only — no dashboard, just numbers in the
-// log. Query failures are wrapped transient so runDaily retries.
-func measurePredictionError(ctx context.Context, db *pgxpool.Pool) error {
+// predictions from bus_eta_prediction_error (Postgres) and observed arrivals
+// from bus_eta_history (the MySQL history host), fills in actuals for
+// still-open predictions, and logs MAE per route per source. It is measurement
+// only — no dashboard, just numbers in the log. Query failures are wrapped
+// transient so runDaily retries.
+func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historySource) error {
 	log.Infof("[ETA_ERROR] start")
 
 	// Fill actual arrivals for predictions still missing one, by matching each to
 	// the first estimate-zero crossing at its stop after the prediction was made.
-	// One correlated UPDATE keeps the match logic in SQL (the pure matcher above
-	// covers the same rule and is unit-tested); the 30-minute window bounds it.
-	tag, err := db.Exec(ctx, `
-		UPDATE bus_eta_prediction_error pe
-		SET actual_seconds = sub.actual_seconds
-		FROM (
-			SELECT pe2.id,
-			       EXTRACT(EPOCH FROM MIN(h.recorded_at) - pe2.predicted_at)::int AS actual_seconds
-			FROM bus_eta_prediction_error pe2
-			JOIN bus_eta_history h
-			  ON h.sub_route_uid = pe2.sub_route_uid
-			 AND h.direction     = pe2.direction
-			 AND h.stop_uid      = pe2.stop_uid
-			 AND h.recorded_at   >= pe2.predicted_at
-			 AND h.recorded_at   <= pe2.predicted_at + INTERVAL '30 minutes'
-			 AND h.estimate      <= 0
-			WHERE pe2.actual_seconds IS NULL
-			  AND pe2.predicted_at >= NOW() - INTERVAL '1 day'
-			GROUP BY pe2.id, pe2.predicted_at
-		) sub
-		WHERE pe.id = sub.id`)
+	// This used to be one correlated UPDATE joining bus_eta_history; that table
+	// now lives on the MySQL history host, so the two sides are loaded separately
+	// and paired by matchPredictionActual — the same rule the SQL encoded, and
+	// the version that was already unit-tested.
+	filled, err := fillPredictionActuals(ctx, db, hist)
 	if err != nil {
-		log.Errorf("[ETA_ERROR] fill actuals error: %v", err)
-		return obs.Transient(fmt.Errorf("fill prediction actuals: %w", err))
+		return err
 	}
-	log.Infof("[ETA_ERROR] filled %d actuals", tag.RowsAffected())
+	log.Infof("[ETA_ERROR] filled %d actuals", filled)
 
 	rows, err := db.Query(ctx, `
 		SELECT sub_route_uid, source,

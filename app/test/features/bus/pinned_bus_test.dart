@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/features/bus/widgets/pinned_bus.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/features/bus/widgets/pinned_bus.dart';
 
 BusStopEtaViewModel _eta(
   String uid, {

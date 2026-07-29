@@ -1532,6 +1532,7 @@ class Bus_RouteEstimate extends $pb.GeneratedMessage {
     $core.Iterable<Bus_position>? buses,
     $core.int? stopSequence,
     $fixnum.Int64? arrivalUnix,
+    $core.String? plateNumb,
   }) {
     final result = create();
     if (stopUid != null) result.stopUid = stopUid;
@@ -1543,6 +1544,7 @@ class Bus_RouteEstimate extends $pb.GeneratedMessage {
     if (buses != null) result.buses.addAll(buses);
     if (stopSequence != null) result.stopSequence = stopSequence;
     if (arrivalUnix != null) result.arrivalUnix = arrivalUnix;
+    if (plateNumb != null) result.plateNumb = plateNumb;
     return result;
   }
 
@@ -1568,6 +1570,7 @@ class Bus_RouteEstimate extends $pb.GeneratedMessage {
         protoName: 'Buses', subBuilder: Bus_position.create)
     ..aI(8, _omitFieldNames ? '' : 'StopSequence', protoName: 'StopSequence')
     ..aInt64(9, _omitFieldNames ? '' : 'arrivalUnix')
+    ..aOS(10, _omitFieldNames ? '' : 'plateNumb')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -1663,6 +1666,15 @@ class Bus_RouteEstimate extends $pb.GeneratedMessage {
   $core.bool hasArrivalUnix() => $_has(8);
   @$pb.TagNumber(9)
   void clearArrivalUnix() => $_clearField(9);
+
+  @$pb.TagNumber(10)
+  $core.String get plateNumb => $_getSZ(9);
+  @$pb.TagNumber(10)
+  set plateNumb($core.String value) => $_setString(9, value);
+  @$pb.TagNumber(10)
+  $core.bool hasPlateNumb() => $_has(9);
+  @$pb.TagNumber(10)
+  void clearPlateNumb() => $_clearField(10);
 }
 
 class Bus_StopEstimate extends $pb.GeneratedMessage {

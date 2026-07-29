@@ -4,9 +4,9 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/metro_map_models.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/data/models/metro_map_models.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
 
 final RegExp _mapDigits = RegExp(r'\d+');
 
@@ -49,6 +49,14 @@ class MetroSvgMap extends StatefulWidget {
   static const double _mapW = 1080;
   static const double _mapH = 1920;
 
+  /// Slack allowed around the map beyond the viewport edges, so the edge
+  /// stations can be dragged clear of the sheet and the top controls.
+  static const double _boundaryMargin = 120;
+
+  /// Zoom the map opens at. Below 1 so the network reads as a whole on first
+  /// sight instead of filling the viewport edge to edge.
+  static const double _initialScale = .8;
+
   /// Starts rasterizing the current theme's map bitmap so it is ready before
   /// the user navigates here — the one-time ~400ms rasterization otherwise
   /// lands in the middle of the push transition. Safe to call repeatedly.
@@ -78,6 +86,9 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
   bool _semanticsReady = false;
   Timer? _deferTimer;
 
+  final _transform = TransformationController();
+  bool _framed = false;
+
   @override
   void initState() {
     super.initState();
@@ -89,6 +100,7 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
   @override
   void dispose() {
     _deferTimer?.cancel();
+    _transform.dispose();
     super.dispose();
   }
 
@@ -97,6 +109,16 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
     builder: (context, constraints) {
       final s = constraints.maxWidth / MetroSvgMap._mapW;
       final mapH = MetroSvgMap._mapH * s;
+
+      // Scale about the horizontal centre, once: after the first frame the
+      // transform belongs to the user's pan/zoom.
+      if (!_framed) {
+        _framed = true;
+        const k = MetroSvgMap._initialScale;
+        _transform.value = Matrix4.identity()
+          ..translateByDouble(constraints.maxWidth * (1 - k) / 2, 0, 0, 1)
+          ..scaleByDouble(k, k, k, 1);
+      }
       final isDark = Theme.of(context).brightness == Brightness.dark;
       final selectedStationId = widget.selectedStationId;
 
@@ -115,21 +137,31 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
         return (dist * 0.25).toInt().clamp(0, 600);
       }
 
+      // Selecting a station never moves the map: the user tapped where the
+      // station already is, and at high zoom a reframe would throw away the
+      // area they deliberately framed. The sheet drops to `peek` instead —
+      // the panel yields, not the content (see MetroScreen._selectStation).
       return InteractiveViewer(
+        transformationController: _transform,
         minScale: .45,
         maxScale: 4,
         constrained: false,
-        boundaryMargin: const EdgeInsets.all(120),
+        boundaryMargin: const EdgeInsets.all(MetroSvgMap._boundaryMargin),
         child: SizedBox(
           width: constraints.maxWidth,
           height: mapH,
           child: Stack(
             children: [
               Positioned.fill(
-                child: _RasterSvg(
-                  asset: isDark
-                      ? 'assets/mrt/TRTC_map_dark.svg'
-                      : 'assets/mrt/TRTC_map_light.svg',
+                // Isolates the static map raster from the marker/label
+                // layers above, which animate on selection — without this,
+                // every ping/label frame repaints the whole map bitmap too.
+                child: RepaintBoundary(
+                  child: _RasterSvg(
+                    asset: isDark
+                        ? 'assets/mrt/TRTC_map_dark.svg'
+                        : 'assets/mrt/TRTC_map_light.svg',
+                  ),
                 ),
               ),
               for (final station in metroMapStations)
@@ -303,10 +335,43 @@ class _RasterSvg extends StatefulWidget {
 }
 
 class _RasterSvgState extends State<_RasterSvg> {
-  // Images are cached for the app's lifetime (one per theme+size actually
-  // viewed, ~20-30MB each); revisit only if this ever shows up in memory
-  // profiling.
+  // Each entry is a GPU-resident texture, ~20-30MB (one per theme × width
+  // bucket). Unbounded, this leaks a new entry every time the device's
+  // effective width bucket changes (e.g. rotation, split-view, or a
+  // precache() call from a screen with a different MediaQuery). Eviction
+  // below keeps the cache from growing without bound while staying safe for
+  // the common case — quick light/dark toggling at a stable width, which
+  // this app never actually triggers mid-session, but precache() does
+  // populate ahead of the live entry.
+  //
+  // An entry is only evicted when the newly inserted key differs from it in
+  // *both* asset and width — i.e. a fully unrelated theme+size combination.
+  // That deliberately spares (a) the other theme at the same width, so a
+  // theme switch never re-rasterizes, and (b) the same theme at a different
+  // width. The residual risk: if some in-flight widget is still displaying
+  // an image whose key differs in both dimensions from the newly requested
+  // one (e.g. a stale precache from a since-resized window), eviction
+  // disposes a texture a live RawImage may still reference. In practice
+  // _RasterSvg only ever requests targetWidthFor(context) for the theme
+  // actually on screen, and old build's widgets are unmounted before a new
+  // width bucket is requested, so this shouldn't be reachable in normal
+  // navigation — flagging it as the one unverified edge.
   static final Map<String, Future<ui.Image>> _cache = {};
+
+  static void _evictStale(String keepAsset, int keepWidth) {
+    final staleKeys = _cache.keys.where((key) {
+      final at = key.lastIndexOf('@');
+      final asset = key.substring(0, at);
+      final width = int.parse(key.substring(at + 1));
+      return asset != keepAsset && width != keepWidth;
+    }).toList();
+    for (final key in staleKeys) {
+      final stale = _cache.remove(key);
+      if (stale != null) {
+        unawaited(stale.then((image) => image.dispose()));
+      }
+    }
+  }
 
   ui.Image? _image;
 
@@ -334,8 +399,15 @@ class _RasterSvgState extends State<_RasterSvg> {
           .round()
           .clamp(1080, 2304);
 
-  static Future<ui.Image> ensure(String asset, int targetW) =>
-      _cache.putIfAbsent('$asset@$targetW', () => _rasterize(asset, targetW));
+  static Future<ui.Image> ensure(String asset, int targetW) {
+    final key = '$asset@$targetW';
+    final cached = _cache[key];
+    if (cached != null) return cached;
+    final future = _rasterize(asset, targetW);
+    _cache[key] = future;
+    _evictStale(asset, targetW);
+    return future;
+  }
 
   void _load() {
     final asset = widget.asset;

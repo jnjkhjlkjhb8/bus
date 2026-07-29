@@ -1,7 +1,7 @@
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/generated/maas.pb.dart' as maas;
-import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/generated/maas.pb.dart' as maas;
+import 'package:wheres_the_bus/data/models/plan_models.dart';
 
 maas.Route _fixture({String endTime = '2026-07-11T08:30:00'}) => maas.Route(
   startTime: '2026-07-11T08:00:00',

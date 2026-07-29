@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -100,7 +100,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		return nil, err
 	}
 	if err := decodeStrictJSONArray(operatorBody, &operators); err != nil {
-		return nil, fmt.Errorf("%w: Operator: %v", errBusSnapshotInvalid, err)
+		return nil, fmt.Errorf("%w: Operator: %w", errBusSnapshotInvalid, err)
 	}
 	opByID := make(map[string]rawBusOperator, len(operators))
 	for i, op := range operators {
@@ -122,7 +122,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		return nil, err
 	}
 	if err := decodeStrictJSONArray(routeBody, &routes); err != nil {
-		return nil, fmt.Errorf("%w: Route: %v", errBusSnapshotInvalid, err)
+		return nil, fmt.Errorf("%w: Route: %w", errBusSnapshotInvalid, err)
 	}
 	snapshot := &busCitySnapshot{city: city, prefix: prefix, landingCycle: landingCycle, subroutes: make(map[string]*models.BusSubroute)}
 	operatorIDs := make([]string, 0, len(opByID))
@@ -256,13 +256,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		sort.Slice(sub.Operators, func(i, j int) bool {
 			return sub.Operators[i].OperatorId < sub.Operators[j].OperatorId
 		})
-		if outbound := sub.Directions[0]; outbound != nil {
-			sub.DepartureStopName = outbound.DepartureStopName
-			sub.DestinationStopName = outbound.DestinationStopName
-		} else if inbound := sub.Directions[1]; inbound != nil {
-			sub.DepartureStopName = inbound.DepartureStopName
-			sub.DestinationStopName = inbound.DestinationStopName
-		}
+		applySubrouteEndpoints(sub)
 	}
 
 	var stopVariants []rawStopofroute
@@ -271,7 +265,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		return nil, err
 	}
 	if err := decodeStrictJSONArray(stopBody, &stopVariants); err != nil {
-		return nil, fmt.Errorf("%w: StopOfRoute: %v", errBusSnapshotInvalid, err)
+		return nil, fmt.Errorf("%w: StopOfRoute: %w", errBusSnapshotInvalid, err)
 	}
 	q.consider("stopofroute", len(stopVariants))
 	seenStops := make(map[string]rawStopofroute)
@@ -295,14 +289,24 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			return nil, fmt.Errorf("%w: StopOfRoute[%d] has no stops", errBusSnapshotInvalid, i)
 		}
 		lastSequence := uint8(0)
+		unordered := false
 		for j, stop := range variant.Stops {
 			if strings.TrimSpace(stop.StopUID) == "" || strings.TrimSpace(stop.StopName.Zhtw) == "" || strings.TrimSpace(stop.StationID) == "" || stop.StopSequence == 0 || !validPosition(stop.StopPosition.PositionLon, stop.StopPosition.PositionLat) {
 				return nil, fmt.Errorf("%w: StopOfRoute[%d].Stops[%d] has invalid identity/sequence/position", errBusSnapshotInvalid, i, j)
 			}
 			if stop.StopSequence <= lastSequence {
-				return nil, fmt.Errorf("%w: StopOfRoute[%d] stop sequence %d is not strictly increasing", errBusSnapshotInvalid, i, stop.StopSequence)
+				// TDX publishes lists whose sequence repeats or restarts mid-list
+				// (a loop route renumbering, two segments concatenated). Nothing
+				// downstream can order those stops, so the variant goes rather
+				// than the city; the ratio gate decides if it is more than a tail.
+				q.drop("stopofroute", "stopofroute_unordered", fmt.Sprintf("StopOfRoute[%d] %s/%d seq=%d", i, uid, dir, stop.StopSequence))
+				unordered = true
+				break
 			}
 			lastSequence = stop.StopSequence
+		}
+		if unordered {
+			continue
 		}
 		key := fmt.Sprintf("%s/%d", uid, dir)
 		if prior, ok := seenStops[key]; ok {
@@ -324,12 +328,32 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			})
 		}
 	}
-	for uid, sub := range snapshot.subroutes {
-		for dir, direction := range sub.Directions {
-			if len(direction.Stops) == 0 {
-				return nil, fmt.Errorf("%w: canonical route %s/%d has no StopOfRoute", errBusSnapshotInvalid, uid, dir)
+	// A direction whose stop lists were all dropped above cannot be served, and a
+	// subroute that loses its last direction has nothing left to publish. Both go
+	// rather than the city — the ratio gate above decides whether this many
+	// missing lists means the whole payload is suspect.
+	for _, uid := range sortedKeys(snapshot.subroutes) {
+		sub := snapshot.subroutes[uid]
+		pruned := false
+		for _, dir := range []int32{0, 1} {
+			if direction := sub.Directions[dir]; direction != nil && len(direction.Stops) == 0 {
+				q.drop("stopofroute", "stopofroute_missing", fmt.Sprintf("%s/%d", uid, dir))
+				delete(sub.Directions, dir)
+				pruned = true
 			}
 		}
+		if !pruned {
+			continue
+		}
+		if len(sub.Directions) == 0 {
+			delete(snapshot.subroutes, uid)
+			continue
+		}
+		// The surviving direction now owns the subroute-level endpoints.
+		applySubrouteEndpoints(sub)
+	}
+	if len(snapshot.subroutes) == 0 {
+		return nil, fmt.Errorf("%w: every canonical subroute lost its StopOfRoute", errBusSnapshotInvalid)
 	}
 
 	var shapes []rawBusShape
@@ -338,7 +362,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		return nil, err
 	}
 	if err := decodeStrictJSONArray(shapeBody, &shapes); err != nil {
-		return nil, fmt.Errorf("%w: Shape: %v", errBusSnapshotInvalid, err)
+		return nil, fmt.Errorf("%w: Shape: %w", errBusSnapshotInvalid, err)
 	}
 	q.consider("shape", len(shapes))
 	seenShapes := make(map[string]string)
@@ -406,7 +430,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		return nil, err
 	}
 	if err := decodeStrictJSONArray(scheduleBody, &schedules); err != nil {
-		return nil, fmt.Errorf("%w: Schedule: %v", errBusSnapshotInvalid, err)
+		return nil, fmt.Errorf("%w: Schedule: %w", errBusSnapshotInvalid, err)
 	}
 	q.consider("schedule", len(schedules))
 	seenSchedules := make(map[string]rawBusSchedule)
@@ -452,7 +476,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		return nil, err
 	}
 	if err := decodeStrictJSONArray(stationBody, &stations); err != nil {
-		return nil, fmt.Errorf("%w: Station: %v", errBusSnapshotInvalid, err)
+		return nil, fmt.Errorf("%w: Station: %w", errBusSnapshotInvalid, err)
 	}
 	stationUIDs := make(map[string]struct{}, len(stations))
 	stationIDs := make(map[string]string, len(stations))
@@ -474,7 +498,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		stationUIDs[station.StationUID] = struct{}{}
 		stationIDs[station.StationID] = station.StationUID
 		snapshot.stationRows = append(snapshot.stationRows, []any{
-			station.StationUID, station.StationID, station.StationName.Zhtw,
+			station.StationUID, station.StationID, normalizeStationName(station.StationName.Zhtw),
 			station.StationPosition.PositionLon, station.StationPosition.PositionLat, station.StationGroupID,
 		})
 	}
@@ -506,7 +530,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		return nil, err
 	}
 	if err := decodeStrictJSONArray(groupBody, &groups); err != nil {
-		return nil, fmt.Errorf("%w: StationGroup: %v", errBusSnapshotInvalid, err)
+		return nil, fmt.Errorf("%w: StationGroup: %w", errBusSnapshotInvalid, err)
 	}
 	groupsByID := make(map[string]rawBusStationGroup)
 	groupsByUID := make(map[string]rawBusStationGroup)
@@ -526,7 +550,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		groupsByID[group.StationGroupID] = group
 		groupsByUID[group.StationGroupUID] = group
 		snapshot.groupRows = append(snapshot.groupRows, []any{
-			group.StationGroupUID, group.StationGroupID, group.StationGroupName.Zhtw,
+			group.StationGroupUID, group.StationGroupID, normalizeStationName(group.StationGroupName.Zhtw),
 			group.StationGroupPosition.PositionLon, group.StationGroupPosition.PositionLat, "tdx",
 		})
 	}
@@ -538,14 +562,15 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 	manualGroups := make(map[string]*manualGroupAggregate)
 	for _, station := range uniqueStations {
+		stationName := normalizeStationName(station.StationName.Zhtw)
 		groupUID := ""
 		if group, ok := groupsByID[station.StationGroupID]; ok {
 			groupUID = group.StationGroupUID
 		} else {
-			groupUID = manualGroupUID(city, station.StationName.Zhtw)
+			groupUID = manualGroupUID(city, stationName)
 			aggregate := manualGroups[groupUID]
 			if aggregate == nil {
-				aggregate = &manualGroupAggregate{name: station.StationName.Zhtw}
+				aggregate = &manualGroupAggregate{name: stationName}
 				manualGroups[groupUID] = aggregate
 			}
 			aggregate.lonSum += station.StationPosition.PositionLon
@@ -553,7 +578,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			aggregate.stationCnt++
 		}
 		snapshot.memberRows = append(snapshot.memberRows, []any{
-			station.StationUID, groupUID, station.StationID, station.StationName.Zhtw,
+			station.StationUID, groupUID, station.StationID, stationName,
 			station.StationPosition.PositionLon, station.StationPosition.PositionLat,
 		})
 	}
@@ -578,8 +603,9 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		return nil, err
 	}
 	if err := decodeStrictJSONArray(fareBody, &fares); err != nil {
-		return nil, fmt.Errorf("%w: RouteFare: %v", errBusSnapshotInvalid, err)
+		return nil, fmt.Errorf("%w: RouteFare: %w", errBusSnapshotInvalid, err)
 	}
+	q.consider("routefare", len(fares))
 	fareCandidates := make(map[string][]*models.Bus_Fare)
 	for i, rawFare := range fares {
 		fare := &models.Bus_Fare{
@@ -615,20 +641,34 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			fareCandidates[uid] = append(fareCandidates[uid], fare)
 		}
 	}
-	for uid, candidates := range fareCandidates {
+	for _, uid := range sortedKeys(fareCandidates) {
+		sub := snapshot.subroutes[uid]
+		if sub == nil {
+			// The subroute lost its stop lists above; nothing left to price.
+			q.drop("routefare", "routefare_dangling", uid)
+			continue
+		}
+		candidates := fareCandidates[uid]
 		for _, candidate := range candidates[1:] {
 			if !proto.Equal(candidates[0], candidate) {
-				return nil, fmt.Errorf("%w: canonical route %s has divergent fare offers; current wire model stores one fare", errBusSnapshotConflict, uid)
+				// TDX prices one canonical subroute several ways (segment fares,
+				// per-operator variants) and Bus_Fare holds one offer. First wins:
+				// the payload order is stable, so the pick is deterministic, and a
+				// route priced two ways beats a city frozen at its last snapshot.
+				// ponytail: one fare per subroute — repeated field in the wire
+				// model if the app ever has to show every offer.
+				q.drop("routefare", "routefare_divergent", uid)
+				break
 			}
 		}
-		snapshot.subroutes[uid].Fare = cloneBusFare(candidates[0])
+		sub.Fare = cloneBusFare(candidates[0])
 	}
 
 	// Quarantining a tail keeps the city current; quarantining a third of it
 	// ships a gutted city that looks fresh. Past the ratio the city fails
 	// instead, keeping the previous load's rows — stale but whole.
 	if err := q.exceeded(); err != nil {
-		return nil, fmt.Errorf("%w: %v", errBusSnapshotInvalid, err)
+		return nil, fmt.Errorf("%w: %w", errBusSnapshotInvalid, err)
 	}
 	if err := snapshot.buildWriteRows(); err != nil {
 		return nil, err
@@ -663,7 +703,7 @@ func (s *busCitySnapshot) buildWriteRows() error {
 		sub := s.subroutes[uid]
 		pb, err := (proto.MarshalOptions{Deterministic: true}).Marshal(sub)
 		if err != nil {
-			return fmt.Errorf("%w: marshal %s protobuf: %v", errBusSnapshotInvalid, uid, err)
+			return fmt.Errorf("%w: marshal %s protobuf: %w", errBusSnapshotInvalid, uid, err)
 		}
 		s.staticRows = append(s.staticRows, []any{sub.SubRouteName, sub.RouteName, sub.SubRouteUID, sub.RouteUID, sub.City, sub.DepartureStopName, sub.DestinationStopName, pb})
 		dirs := make([]int, 0, len(sub.Directions))
@@ -676,11 +716,11 @@ func (s *busCitySnapshot) buildWriteRows() error {
 			direction := sub.Directions[dir]
 			stops, err := json.Marshal(direction.Stops)
 			if err != nil {
-				return fmt.Errorf("%w: marshal %s/%d stops: %v", errBusSnapshotInvalid, uid, dir, err)
+				return fmt.Errorf("%w: marshal %s/%d stops: %w", errBusSnapshotInvalid, uid, dir, err)
 			}
 			schedules, err := json.Marshal(direction.Schedules)
 			if err != nil {
-				return fmt.Errorf("%w: marshal %s/%d schedules: %v", errBusSnapshotInvalid, uid, dir, err)
+				return fmt.Errorf("%w: marshal %s/%d schedules: %w", errBusSnapshotInvalid, uid, dir, err)
 			}
 			ops := make([]busOperatorJSON, 0, len(sub.Operators))
 			for _, op := range sub.Operators {
@@ -688,7 +728,7 @@ func (s *busCitySnapshot) buildWriteRows() error {
 			}
 			operators, err := json.Marshal(ops)
 			if err != nil {
-				return fmt.Errorf("%w: marshal %s operators: %v", errBusSnapshotInvalid, uid, err)
+				return fmt.Errorf("%w: marshal %s operators: %w", errBusSnapshotInvalid, uid, err)
 			}
 			s.subrouteRows = append(s.subrouteRows, []any{
 				sub.SubRouteUID, sub.RouteUID, dir, sub.RouteName, sub.SubRouteName, sub.City,
@@ -714,16 +754,32 @@ func buildScheduleRows(uid string, dir uint8, schedule rawBusSchedule) ([][]any,
 			return nil, nil, errors.New("timetable has empty TripID")
 		}
 		service := mask2(timetable.ServiceDay.Monday, timetable.ServiceDay.Tuesday, timetable.ServiceDay.Wednesday, timetable.ServiceDay.Thursday, timetable.ServiceDay.Friday, timetable.ServiceDay.Saturday, timetable.ServiceDay.Sunday)
+		// The DB keeps every stop of the trip (travel averages and ETA prediction
+		// read them); the proto payload carries only the origin, since the app's
+		// timetable board lists departures. TDX does not promise StopTimes are
+		// sorted, so the origin is the lowest StopSequence rather than the first
+		// element.
+		var origin *models.Bus_Schedule
+		var originSeq int
 		for _, stop := range timetable.StopTimes {
-			if stop.StopSequence <= 0 || stop.StopUID == "" || stop.StopName.Zhtw == "" || !validClock(stop.ArrivalTime) || !validClock(stop.DepartureTime) {
+			// The upper bound is the bus_schedule.stop_sequence SMALLINT column: an
+			// out-of-range sequence would wrap to a negative on the int16 cast below.
+			if stop.StopSequence <= 0 || stop.StopSequence > math.MaxInt16 || stop.StopUID == "" || stop.StopName.Zhtw == "" || !validClock(stop.ArrivalTime) || !validClock(stop.DepartureTime) {
 				return nil, nil, fmt.Errorf("trip %s has invalid stop identity/sequence/time", timetable.TripID)
 			}
 			rows = append(rows, []any{uid, int16(dir), false, timetable.TripID, timetable.IsLowFloor, int16(stop.StopSequence), stop.StopUID, stop.StopName.Zhtw, stop.ArrivalTime, stop.DepartureTime, int16(service)})
-			modelRows = append(modelRows, &models.Bus_Schedule{
+			if origin != nil && stop.StopSequence >= originSeq {
+				continue
+			}
+			originSeq = stop.StopSequence
+			origin = &models.Bus_Schedule{
 				IsTimetable: true, Tripid: timetable.TripID, Islowfloor: timetable.IsLowFloor,
 				MinHeadwayMinsArrivalTime: stop.ArrivalTime, MaxHeadwayMinsDepartureTime: stop.DepartureTime,
 				ServiceDay: int32(service),
-			})
+			}
+		}
+		if origin != nil {
+			modelRows = append(modelRows, origin)
 		}
 	}
 	for _, frequency := range schedule.Frequencys {
@@ -806,6 +862,32 @@ func prefixID(prefix, id string) string {
 
 func uidBelongsToPrefix(uid, prefix string) bool {
 	return uid != "" && prefix != "" && strings.HasPrefix(uid, prefix)
+}
+
+// applySubrouteEndpoints lifts the outbound direction's endpoints onto the
+// subroute, falling back to inbound for a subroute published in one direction
+// only. Called again whenever a direction is pruned, so the subroute-level names
+// never outlive the direction they came from.
+func applySubrouteEndpoints(sub *models.BusSubroute) {
+	direction := sub.Directions[0]
+	if direction == nil {
+		direction = sub.Directions[1]
+	}
+	if direction == nil {
+		return
+	}
+	sub.DepartureStopName = direction.DepartureStopName
+	sub.DestinationStopName = direction.DestinationStopName
+}
+
+// normalizeStationName strips TDX's "(市區公車)" station-name suffix. Keelung
+// tags its city-bus stations with it while the InterCity dataset names the same
+// physical pole without it, which breaks the same-name fold in the group-member
+// upsert (bus_writer.go) and surfaces one stop twice in the nearby list.
+// one known-noise suffix, not a general parenthesis strip — "(往北)",
+// "(捷運站)" and friends distinguish real stops.
+func normalizeStationName(name string) string {
+	return strings.TrimSuffix(name, "(市區公車)")
 }
 
 func manualGroupUID(city, name string) string {

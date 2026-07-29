@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 )
 
 var errFirebaseNotFound = errors.New("firebase record not found")
@@ -54,19 +54,16 @@ func newFirebaseStore(db *pgxpool.Pool) *firebaseStore { return &firebaseStore{d
 func (s *firebaseStore) UpsertDevice(ctx context.Context, identity *pb.DeviceIdentity, prefs *pb.DevicePrefs, secretHash []byte) (*pb.DeviceState, bool, error) {
 	result, err := s.db.Exec(ctx, `
 		INSERT INTO firebase_device
-			(install_id, fcm_token, platform, app_version, push_enabled, analytics_enabled, crashlytics_enabled, performance_enabled, install_secret_hash)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			(install_id, fcm_token, platform, app_version, push_enabled, install_secret_hash)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (install_id) DO UPDATE SET
 			fcm_token = EXCLUDED.fcm_token,
 			platform = EXCLUDED.platform,
 			app_version = EXCLUDED.app_version,
-			push_enabled = EXCLUDED.push_enabled,
-			analytics_enabled = EXCLUDED.analytics_enabled,
-			crashlytics_enabled = EXCLUDED.crashlytics_enabled,
-			performance_enabled = EXCLUDED.performance_enabled, updated_at = NOW()
+			push_enabled = EXCLUDED.push_enabled, updated_at = NOW()
 		WHERE firebase_device.install_secret_hash = EXCLUDED.install_secret_hash`,
 		identity.InstallId, identity.FcmToken, identity.Platform, identity.AppVersion,
-		prefs.PushEnabled, prefs.AnalyticsEnabled, prefs.CrashlyticsEnabled, prefs.PerformanceEnabled, secretHash,
+		prefs.PushEnabled, secretHash,
 	)
 	if err != nil {
 		return nil, false, err
@@ -93,21 +90,32 @@ func (s *firebaseStore) AuthorizeInstall(ctx context.Context, installID string, 
 	return len(storedHash) == len(secretHash) && subtle.ConstantTimeCompare(storedHash, secretHash) == 1, nil
 }
 
-// SetRouteSubscription toggles a device's push subscription for a route.
-// enabled=false deletes the row; enabled=true upserts it (touching updated_at on
-// conflict).
-func (s *firebaseStore) SetRouteSubscription(ctx context.Context, installID, routeType, routeKey string, enabled bool) error {
-	if !enabled {
-		_, err := s.db.Exec(ctx, `
-			DELETE FROM firebase_route_subscription
-			WHERE install_id = $1 AND route_type = $2 AND route_key = $3`, installID, routeType, routeKey)
-		return err
+// ReplaceRouteSubscriptions swaps a device's whole 訂閱範圍 for the one the app
+// derived from its 收藏: rows the new set does not contain are deleted, and the
+// new ones inserted. Both statements run against the same arrays so the set is
+// replaced as a unit, which is what stops the stored scope from drifting when a
+// 收藏 is removed somewhere that never told the server. An empty set clears the
+// device.
+func (s *firebaseStore) ReplaceRouteSubscriptions(ctx context.Context, installID string, subscriptions []*pb.RouteSubscription) error {
+	types := make([]string, len(subscriptions))
+	keys := make([]string, len(subscriptions))
+	for i, subscription := range subscriptions {
+		types[i], keys[i] = subscription.GetRouteType(), subscription.GetRouteKey()
 	}
 	_, err := s.db.Exec(ctx, `
+		WITH desired AS (
+			SELECT t AS route_type, k AS route_key
+			FROM unnest($2::text[], $3::text[]) AS pair(t, k)
+		), removed AS (
+			DELETE FROM firebase_route_subscription s
+			WHERE s.install_id = $1
+			  AND NOT EXISTS (
+			      SELECT 1 FROM desired d
+			      WHERE d.route_type = s.route_type AND d.route_key = s.route_key)
+		)
 		INSERT INTO firebase_route_subscription (install_id, route_type, route_key)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (install_id, route_type, route_key) DO UPDATE SET
-			updated_at = NOW()`, installID, routeType, routeKey)
+		SELECT $1, route_type, route_key FROM desired
+		ON CONFLICT (install_id, route_type, route_key) DO NOTHING`, installID, types, keys)
 	return err
 }
 
@@ -140,10 +148,9 @@ func (s *firebaseStore) CancelArrivalReminder(ctx context.Context, reminderID, i
 func (s *firebaseStore) ListDeviceState(ctx context.Context, installID string) (*pb.DeviceState, error) {
 	state := &pb.DeviceState{Identity: &pb.DeviceIdentity{InstallId: installID}, Prefs: &pb.DevicePrefs{}}
 	err := s.db.QueryRow(ctx, `
-		SELECT platform, app_version, push_enabled, analytics_enabled, crashlytics_enabled, performance_enabled
+		SELECT platform, app_version, push_enabled
 		FROM firebase_device WHERE install_id = $1`, installID).Scan(
-		&state.Identity.Platform, &state.Identity.AppVersion,
-		&state.Prefs.PushEnabled, &state.Prefs.AnalyticsEnabled, &state.Prefs.CrashlyticsEnabled, &state.Prefs.PerformanceEnabled,
+		&state.Identity.Platform, &state.Identity.AppVersion, &state.Prefs.PushEnabled,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errFirebaseNotFound

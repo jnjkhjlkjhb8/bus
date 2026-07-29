@@ -1,18 +1,21 @@
+import 'dart:convert' show base64;
+import 'dart:io' show X509Certificate;
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:grpc/grpc.dart';
-import 'package:wheres_the_car/core/grpc/grpc_deadline_interceptor.dart';
-import 'package:wheres_the_car/core/grpc/grpc_error_interceptor.dart';
-import 'package:wheres_the_car/data/generated/alert.pbgrpc.dart';
-import 'package:wheres_the_car/data/generated/bike.pbgrpc.dart';
-import 'package:wheres_the_car/data/generated/bus.pbgrpc.dart';
-import 'package:wheres_the_car/data/generated/firebase.pbgrpc.dart';
-import 'package:wheres_the_car/data/generated/maas.pbgrpc.dart';
-import 'package:wheres_the_car/data/generated/mrt.pbgrpc.dart';
-import 'package:wheres_the_car/data/generated/near.pbgrpc.dart';
-import 'package:wheres_the_car/data/generated/thsr.pbgrpc.dart';
-import 'package:wheres_the_car/data/generated/tra.pbgrpc.dart';
+import 'package:wheres_the_bus/core/grpc/grpc_deadline_interceptor.dart';
+import 'package:wheres_the_bus/core/grpc/grpc_error_interceptor.dart';
+import 'package:wheres_the_bus/data/generated/alert.pbgrpc.dart';
+import 'package:wheres_the_bus/data/generated/bike.pbgrpc.dart';
+import 'package:wheres_the_bus/data/generated/bus.pbgrpc.dart';
+import 'package:wheres_the_bus/data/generated/feedback.pbgrpc.dart';
+import 'package:wheres_the_bus/data/generated/firebase.pbgrpc.dart';
+import 'package:wheres_the_bus/data/generated/maas.pbgrpc.dart';
+import 'package:wheres_the_bus/data/generated/mrt.pbgrpc.dart';
+import 'package:wheres_the_bus/data/generated/near.pbgrpc.dart';
+import 'package:wheres_the_bus/data/generated/thsr.pbgrpc.dart';
+import 'package:wheres_the_bus/data/generated/tra.pbgrpc.dart';
 
 class GrpcClient {
   GrpcClient._();
@@ -27,6 +30,8 @@ class GrpcClient {
   // branch of validateConfig below, not silently masquerade as 'dev'.
   static const _appEnv = String.fromEnvironment('APP_ENV');
   static Uint8List? _caBytes;
+  // DER form of the pinned cert, used by _pinnedCertOnly below.
+  static Uint8List? _pinnedDer;
 
   /// Rejects a channel config that would silently fall back to loopback or
   /// unencrypted transport in a deployed environment (F43). Strict unless
@@ -65,8 +70,48 @@ class GrpcClient {
   /// `_channel` getter below now fails closed instead.
   static Future<void> init() async {
     validateConfig(appEnv: _appEnv, host: _host, tls: _tls);
-    if (!_tls) return;
+    if (!_tls) {
+      warmConnection();
+      return;
+    }
     _caBytes = (await rootBundle.load('assets/grpc.crt')).buffer.asUint8List();
+    _pinnedDer = _pemToDer(_caBytes!);
+    warmConnection();
+  }
+
+  /// Opens the connection now rather than on the first RPC.
+  ///
+  /// The channel is lazy, so without this the TCP connect and TLS handshake
+  /// land on home's first nearby query — which goes out ~120 ms after launch
+  /// and is the metric the whole startup path is measured by. Failure is
+  /// ignored on purpose: offline at launch is normal, and the next real RPC
+  /// reconnects on its own.
+  static void warmConnection() {
+    instance._channel.getConnection().ignore();
+  }
+
+  static Uint8List _pemToDer(Uint8List pem) {
+    final body = String.fromCharCodes(pem)
+        .replaceAll('-----BEGIN CERTIFICATE-----', '')
+        .replaceAll('-----END CERTIFICATE-----', '')
+        .replaceAll(RegExp(r'\s'), '');
+    return base64.decode(body);
+  }
+
+  /// dart:io only matches DNS-type SANs against the connection host, never
+  /// IP-address SANs. Reaching the router by raw IP therefore always fails
+  /// the default hostname check and lands here. Accept only when the presented
+  /// leaf is byte-identical to the pinned cert — this is full certificate
+  /// pinning, so man-in-the-middle protection is preserved, not weakened.
+  static bool _pinnedCertOnly(X509Certificate cert, String host) {
+    final pinned = _pinnedDer;
+    if (pinned == null) return false;
+    final der = cert.der;
+    if (der.length != pinned.length) return false;
+    for (var i = 0; i < der.length; i++) {
+      if (der[i] != pinned[i]) return false;
+    }
+    return true;
   }
 
   late final ClientChannel _channel = () {
@@ -81,7 +126,10 @@ class GrpcClient {
       port: _port,
       options: ChannelOptions(
         credentials: _tls
-            ? ChannelCredentials.secure(certificates: _caBytes)
+            ? ChannelCredentials.secure(
+                certificates: _caBytes,
+                onBadCertificate: _pinnedCertOnly,
+              )
             : const ChannelCredentials.insecure(),
       ),
     );
@@ -135,6 +183,10 @@ class GrpcClient {
     interceptors: _interceptors,
   );
   late final Firebase_ServiceClient firebase = Firebase_ServiceClient(
+    _channel,
+    interceptors: _interceptors,
+  );
+  late final Feedback_ServiceClient feedback = Feedback_ServiceClient(
     _channel,
     interceptors: _interceptors,
   );

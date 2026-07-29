@@ -50,36 +50,20 @@ const DevicePrefs$json = {
   '1': 'DevicePrefs',
   '2': [
     {'1': 'push_enabled', '3': 1, '4': 1, '5': 8, '10': 'pushEnabled'},
-    {
-      '1': 'analytics_enabled',
-      '3': 2,
-      '4': 1,
-      '5': 8,
-      '10': 'analyticsEnabled'
-    },
-    {
-      '1': 'crashlytics_enabled',
-      '3': 3,
-      '4': 1,
-      '5': 8,
-      '10': 'crashlyticsEnabled'
-    },
-    {
-      '1': 'performance_enabled',
-      '3': 4,
-      '4': 1,
-      '5': 8,
-      '10': 'performanceEnabled'
-    },
   ],
+  '9': [
+    {'1': 2, '2': 3},
+    {'1': 3, '2': 4},
+    {'1': 4, '2': 5},
+  ],
+  '10': ['analytics_enabled', 'crashlytics_enabled', 'performance_enabled'],
 };
 
 /// Descriptor for `DevicePrefs`. Decode as a `google.protobuf.DescriptorProto`.
 final $typed_data.Uint8List devicePrefsDescriptor = $convert.base64Decode(
-    'CgtEZXZpY2VQcmVmcxIhCgxwdXNoX2VuYWJsZWQYASABKAhSC3B1c2hFbmFibGVkEisKEWFuYW'
-    'x5dGljc19lbmFibGVkGAIgASgIUhBhbmFseXRpY3NFbmFibGVkEi8KE2NyYXNobHl0aWNzX2Vu'
-    'YWJsZWQYAyABKAhSEmNyYXNobHl0aWNzRW5hYmxlZBIvChNwZXJmb3JtYW5jZV9lbmFibGVkGA'
-    'QgASgIUhJwZXJmb3JtYW5jZUVuYWJsZWQ=');
+    'CgtEZXZpY2VQcmVmcxIhCgxwdXNoX2VuYWJsZWQYASABKAhSC3B1c2hFbmFibGVkSgQIAhADSg'
+    'QIAxAESgQIBBAFUhFhbmFseXRpY3NfZW5hYmxlZFITY3Jhc2hseXRpY3NfZW5hYmxlZFITcGVy'
+    'Zm9ybWFuY2VfZW5hYmxlZA==');
 
 @$core.Deprecated('Use upsertDeviceRequestDescriptor instead')
 const UpsertDeviceRequest$json = {
@@ -135,22 +119,41 @@ final $typed_data.Uint8List deviceStateDescriptor = $convert.base64Decode(
     'CgtEZXZpY2VTdGF0ZRIrCghpZGVudGl0eRgBIAEoCzIPLkRldmljZUlkZW50aXR5UghpZGVudG'
     'l0eRIiCgVwcmVmcxgCIAEoCzIMLkRldmljZVByZWZzUgVwcmVmcw==');
 
-@$core.Deprecated('Use routeSubscriptionRequestDescriptor instead')
-const RouteSubscriptionRequest$json = {
-  '1': 'RouteSubscriptionRequest',
+@$core.Deprecated('Use routeSubscriptionDescriptor instead')
+const RouteSubscription$json = {
+  '1': 'RouteSubscription',
   '2': [
-    {'1': 'install_id', '3': 1, '4': 1, '5': 9, '10': 'installId'},
-    {'1': 'route_type', '3': 2, '4': 1, '5': 9, '10': 'routeType'},
-    {'1': 'route_key', '3': 3, '4': 1, '5': 9, '10': 'routeKey'},
-    {'1': 'enabled', '3': 4, '4': 1, '5': 8, '10': 'enabled'},
+    {'1': 'route_type', '3': 1, '4': 1, '5': 9, '10': 'routeType'},
+    {'1': 'route_key', '3': 2, '4': 1, '5': 9, '10': 'routeKey'},
   ],
 };
 
-/// Descriptor for `RouteSubscriptionRequest`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List routeSubscriptionRequestDescriptor = $convert.base64Decode(
-    'ChhSb3V0ZVN1YnNjcmlwdGlvblJlcXVlc3QSHQoKaW5zdGFsbF9pZBgBIAEoCVIJaW5zdGFsbE'
-    'lkEh0KCnJvdXRlX3R5cGUYAiABKAlSCXJvdXRlVHlwZRIbCglyb3V0ZV9rZXkYAyABKAlSCHJv'
-    'dXRlS2V5EhgKB2VuYWJsZWQYBCABKAhSB2VuYWJsZWQ=');
+/// Descriptor for `RouteSubscription`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List routeSubscriptionDescriptor = $convert.base64Decode(
+    'ChFSb3V0ZVN1YnNjcmlwdGlvbhIdCgpyb3V0ZV90eXBlGAEgASgJUglyb3V0ZVR5cGUSGwoJcm'
+    '91dGVfa2V5GAIgASgJUghyb3V0ZUtleQ==');
+
+@$core.Deprecated('Use routeSubscriptionsRequestDescriptor instead')
+const RouteSubscriptionsRequest$json = {
+  '1': 'RouteSubscriptionsRequest',
+  '2': [
+    {'1': 'install_id', '3': 1, '4': 1, '5': 9, '10': 'installId'},
+    {
+      '1': 'subscriptions',
+      '3': 2,
+      '4': 3,
+      '5': 11,
+      '6': '.RouteSubscription',
+      '10': 'subscriptions'
+    },
+  ],
+};
+
+/// Descriptor for `RouteSubscriptionsRequest`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List routeSubscriptionsRequestDescriptor = $convert.base64Decode(
+    'ChlSb3V0ZVN1YnNjcmlwdGlvbnNSZXF1ZXN0Eh0KCmluc3RhbGxfaWQYASABKAlSCWluc3RhbG'
+    'xJZBI4Cg1zdWJzY3JpcHRpb25zGAIgAygLMhIuUm91dGVTdWJzY3JpcHRpb25SDXN1YnNjcmlw'
+    'dGlvbnM=');
 
 @$core.Deprecated('Use createArrivalReminderRequestDescriptor instead')
 const CreateArrivalReminderRequest$json = {

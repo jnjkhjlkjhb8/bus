@@ -15,6 +15,12 @@ class LiveActivityContent {
     this.walkMinutes = 0,
     this.plate,
     this.routeNumber,
+    this.lineCode,
+    this.lineColorHex,
+    this.stationCount,
+    this.targetIndex,
+    this.currentIndex,
+    this.endedStatus,
   });
 
   final String mode;
@@ -30,6 +36,20 @@ class LiveActivityContent {
   final int walkMinutes;
   final String? plate;
   final String? routeNumber;
+
+  /// Metro-only (`mode == "mrt_track"`, ADR-0015): the line roundel code + its
+  /// data colour, and the per-station progress line — [stationCount] dots with
+  /// [currentIndex] filled and [targetIndex] ringed as the alight stop. Null on
+  /// every non-metro surface.
+  final String? lineCode;
+  final String? lineColorHex;
+  final int? stationCount;
+  final int? targetIndex;
+  final int? currentIndex;
+
+  /// Metro-only terminal reading shown before dismissal: 'arrived' or 'lost'.
+  /// Null while the session is live and on every non-metro surface.
+  final String? endedStatus;
 
   Map<String, Object?> toArgs() => {
     'mode': mode,
@@ -47,6 +67,12 @@ class LiveActivityContent {
     'walkMinutes': walkMinutes,
     'plate': plate,
     'routeNumber': routeNumber,
+    'lineCode': lineCode,
+    'lineColorHex': lineColorHex,
+    'stationCount': stationCount,
+    'targetIndex': targetIndex,
+    'currentIndex': currentIndex,
+    'endedStatus': endedStatus,
   };
 }
 

@@ -1,8 +1,9 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/models/thsr_models.dart';
-import 'package:wheres_the_car/data/models/tra_models.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/rail_fare_quote.dart';
+import 'package:wheres_the_bus/data/models/thsr_models.dart';
+import 'package:wheres_the_bus/data/models/tra_models.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
 
 sealed class RailState extends Equatable {
   const RailState();
@@ -38,7 +39,7 @@ final class RailTimetableLoaded extends RailState {
     this.traItems = const [],
     this.thsrItems = const [],
     this.delays = const {},
-    this.fare,
+    this.fareQuote,
   });
   final RailSystem system;
   final String originName;
@@ -48,10 +49,18 @@ final class RailTimetableLoaded extends RailState {
   final List<ThsrTimetableItem> thsrItems;
   final Map<String, int> delays;
 
-  /// Adult (全票) fare in NT$ for this O/D pair, or null when the fare query
-  /// had no data. TRA/THSR fares are per O/D, not per train, so every card in
-  /// the list shares this value.
-  final int? fare;
+  /// Every fare this O/D pair prices, across fare class and cabin class; null
+  /// when the fare query had no data.
+  ///
+  /// THSR only: a THSR pair prices one journey, while a TRA pair is priced per
+  /// train class (桃園→臺北 is 63 on a 區間車, 99 on a 自強), so no single set
+  /// describes a mixed TRA list — those fares are quoted on the train detail
+  /// screen, which knows which train the user picked.
+  ///
+  /// Held unresolved so the view can apply the rider's ticket type at render
+  /// time; narrowing it here would freeze the quote to whatever the preference
+  /// was when the request ran.
+  final RailFareQuote? fareQuote;
 
   RailTimetableLoaded copyWith({
     RailSystem? system,
@@ -61,7 +70,7 @@ final class RailTimetableLoaded extends RailState {
     List<TraTimetableItem>? traItems,
     List<ThsrTimetableItem>? thsrItems,
     Map<String, int>? delays,
-    int? fare,
+    RailFareQuote? fareQuote,
   }) => RailTimetableLoaded(
     system: system ?? this.system,
     originName: originName ?? this.originName,
@@ -70,7 +79,7 @@ final class RailTimetableLoaded extends RailState {
     traItems: traItems ?? this.traItems,
     thsrItems: thsrItems ?? this.thsrItems,
     delays: delays ?? this.delays,
-    fare: fare ?? this.fare,
+    fareQuote: fareQuote ?? this.fareQuote,
   );
 
   @override
@@ -82,7 +91,7 @@ final class RailTimetableLoaded extends RailState {
     traItems,
     thsrItems,
     delays,
-    fare,
+    fareQuote,
   ];
 }
 

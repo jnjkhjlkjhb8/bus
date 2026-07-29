@@ -1,5 +1,5 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/data/generated/maas.pb.dart' as maas;
+import 'package:wheres_the_bus/data/generated/maas.pb.dart' as maas;
 
 class PlanResult extends Equatable {
   const PlanResult({required this.routes});
@@ -124,6 +124,7 @@ class PlanSection extends Equatable {
     this.fare = 0,
     this.walkPath = const [],
     this.walkSteps = const [],
+    this.transitPath = const [],
   });
 
   factory PlanSection.fromProto(maas.Section proto) => PlanSection(
@@ -139,6 +140,9 @@ class PlanSection extends Equatable {
     fare: proto.fare,
     walkPath: [for (final p in proto.walkPath) PlanPoint.fromProto(p)],
     walkSteps: [for (final s in proto.walkSteps) PlanWalkStep.fromProto(s)],
+    transitPath: [
+      for (final p in proto.transitPath) PlanPoint.fromProto(p),
+    ],
   );
 
   final String type;
@@ -160,6 +164,12 @@ class PlanSection extends Equatable {
   /// conditions as [walkPath].
   final List<PlanWalkStep> walkSteps;
 
+  /// Rail-line geometry clipped to this section's stops (metro/TRA/THSR
+  /// only); empty when not a rail section or the router could not snap the
+  /// stops to a known line (the map then draws a straight line through the
+  /// stops, same fallback as an unresolved [walkPath]).
+  final List<PlanPoint> transitPath;
+
   @override
   List<Object?> get props => [
     type,
@@ -172,6 +182,7 @@ class PlanSection extends Equatable {
     fare,
     walkPath,
     walkSteps,
+    transitPath,
   ];
 }
 

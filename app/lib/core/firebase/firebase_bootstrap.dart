@@ -8,13 +8,14 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_performance/firebase_performance.dart';
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
-import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
-import 'package:wheres_the_car/core/firebase/firebase_notifications.dart';
-import 'package:wheres_the_car/core/firebase/firebase_telemetry.dart';
-import 'package:wheres_the_car/core/firebase/remote_config.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
-import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
-import 'package:wheres_the_car/firebase_options.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_gate.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_notifications.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_telemetry.dart';
+import 'package:wheres_the_bus/core/firebase/remote_config.dart';
+import 'package:wheres_the_bus/core/firebase/subscription_sync.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/data/repositories/firebase_repository.dart';
+import 'package:wheres_the_bus/firebase_options.dart';
 
 class FirebaseTokenSyncGuard {
   String? _lastKey;
@@ -171,15 +172,11 @@ class FirebaseBootstrap {
     final remoteConfig = FirebaseRemoteConfig.instance;
     final messaging = FirebaseMessaging.instance;
     await runOptionalSteps([
-      () => FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(
-        HiveStore.analyticsEnabled,
-      ),
-      () => FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(
-        HiveStore.crashlyticsEnabled,
-      ),
-      () => FirebasePerformance.instance.setPerformanceCollectionEnabled(
-        HiveStore.performanceEnabled,
-      ),
+      // Telemetry is not user-configurable: analytics, crash and performance
+      // collection are always on, so there is no stored preference to read.
+      () => FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(true),
+      () => FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(true),
+      () => FirebasePerformance.instance.setPerformanceCollectionEnabled(true),
       () async {
         await remoteConfig.setConfigSettings(
           RemoteConfigSettings(
@@ -277,12 +274,13 @@ class FirebaseBootstrap {
     try {
       await _tokenSyncGuard.run(
         token,
-        '${HiveStore.pushEnabled}:${HiveStore.analyticsEnabled}:'
-        '${HiveStore.crashlyticsEnabled}:'
-        '${HiveStore.performanceEnabled}',
+        '${HiveStore.pushEnabled}',
         () async {
           await FirebaseRepository.instance.upsertDevice(fcmToken: token);
           debugPrint('[firebase-reg] upsertDevice ok');
+          // Only now: subscription rows reference the device row, so the
+          // first scope push has to follow the registration that creates it.
+          SubscriptionSync.instance.start();
         },
       );
     } on Object catch (error, stack) {

@@ -3,11 +3,11 @@ part of '../view/go_screen.dart';
 /// Destination label for the sheet header: the last section carrying a place
 /// name (the trailing walk often ends on an unnamed coordinate), else a
 /// generic fallback so the header always has both ends of the arrow.
-String _lastNamedArrival(List<PlanSection> sections) {
+String _lastNamedArrival(AppI18n i18n, List<PlanSection> sections) {
   for (final section in sections.reversed) {
     if (section.arrival.name.isNotEmpty) return section.arrival.name;
   }
-  return '目的地';
+  return i18n.goDestinationFallback;
 }
 
 /// A bus leg carries the notification identity's `bus` route type (mode is a
@@ -46,9 +46,10 @@ IconData _maneuverIcon(PlanWalkStep step) {
 
 /// Remaining distance for a walk step, split into value + unit so the unit can
 /// render smaller. ≥1km switches to 公里.
-(String, String) _stepDistanceParts(double meters) => meters >= 1000
-    ? ((meters / 1000).toStringAsFixed(1), '公里')
-    : ('${meters.round()}', '公尺');
+(String, String) _stepDistanceParts(AppI18n i18n, double meters) =>
+    meters >= 1000
+    ? ((meters / 1000).toStringAsFixed(1), i18n.goKilometres)
+    : ('${meters.round()}', i18n.goMetres);
 
 class _NavHeader extends StatelessWidget {
   const _NavHeader({
@@ -220,7 +221,7 @@ class _NavHeader extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     if (metersToManeuver == null) {
       return Text(
-        '即將抵達',
+        AppI18n.of(context).goArrivingSoon,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: AppTextStyles.bodyLarge.copyWith(
@@ -230,7 +231,10 @@ class _NavHeader extends StatelessWidget {
         ),
       );
     }
-    final (value, unit) = _stepDistanceParts(metersToManeuver);
+    final (value, unit) = _stepDistanceParts(
+      AppI18n.of(context),
+      metersToManeuver,
+    );
     return Text.rich(
       TextSpan(
         children: [
@@ -254,17 +258,21 @@ class _NavHeader extends StatelessWidget {
   // Transit legs and step-less walk fallbacks share a title + subtitle layout.
   Widget _titlePrimary(BuildContext context, PlanSection section, bool walk) {
     final cs = Theme.of(context).colorScheme;
+    final i18n = AppI18n.of(context);
     final headsign = section.transport.headsign.isEmpty
         ? section.arrival.name
         : section.transport.headsign;
     final String title;
     final String sub;
     if (walk) {
-      title = '步行前往${section.arrival.name}';
-      sub = '約 ${sectionMinutes(section)} 分';
+      title = i18n.walkToward(section.arrival.name);
+      sub = i18n.aboutMinutes(sectionMinutes(section));
     } else {
-      title = '搭乘${sectionLabel(section)}';
-      sub = '往$headsign · 剩 ${section.intermediateStops.length} 站';
+      title = i18n.rideVehicle(sectionLabel(i18n, section));
+      sub = i18n.towardsAndRemaining(
+        headsign,
+        section.intermediateStops.length,
+      );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -312,12 +320,14 @@ class _NavHeader extends StatelessWidget {
         js.eta != null) {
       // Ceil seconds to minutes (project rule); a due bus reads 進站中.
       final secs = js.eta!.inSeconds;
-      value = secs <= 0 ? '進站中' : '${(secs / 60).ceil()} 分';
-      label = '公車進站';
+      value = secs <= 0
+          ? AppI18n.of(context).etaArriving
+          : AppI18n.of(context).minutesValue((secs / 60).ceil());
+      label = AppI18n.of(context).goBusArriving;
       big = true;
     } else if (waiting && _isRailLeg(section)) {
       value = formatClock(section.departure.time);
-      label = '發車';
+      label = AppI18n.of(context).busDeparture;
     } else {
       // The active section's own arrival time; legs missing a time (e.g. a
       // trailing walk TDX left blank) fall back to the whole-route arrival.
@@ -325,7 +335,7 @@ class _NavHeader extends StatelessWidget {
       value = sectionArrival.isNotEmpty
           ? sectionArrival
           : formatClock(route.endTime);
-      label = '預計抵達';
+      label = AppI18n.of(context).goExpectedArrival;
     }
     if (value.isEmpty) return const SizedBox.shrink();
     return Padding(
@@ -380,7 +390,10 @@ class _NextStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final (dist, unit) = _stepDistanceParts(distanceMeters);
+    final (dist, unit) = _stepDistanceParts(
+      AppI18n.of(context),
+      distanceMeters,
+    );
     return AnimatedSwitcher(
       duration: reduce ? Duration.zero : AppMotion.micro,
       child: Container(
@@ -394,7 +407,7 @@ class _NextStrip extends StatelessWidget {
         child: Row(
           children: [
             Text(
-              '接著',
+              AppI18n.of(context).goNext,
               style: AppTextStyles.bodySmall.copyWith(
                 fontSize: 12.5,
                 color: cs.onSurfaceVariant,
@@ -414,7 +427,7 @@ class _NextStrip extends StatelessWidget {
                         color: cs.onSurface,
                       ),
                     ),
-                    TextSpan(text: '・$dist $unit'),
+                    TextSpan(text: '  $dist $unit'),
                   ],
                 ),
                 maxLines: 1,
@@ -462,66 +475,55 @@ class _NavSheet extends StatelessWidget {
     // final walk ends on a bare destination coordinate (no place name either);
     // fall back so the header never renders a lone arrow.
     final origin = sections.isEmpty || sections.first.departure.name.isEmpty
-        ? '目前位置'
+        ? AppI18n.of(context).goCurrentLocation
         : sections.first.departure.name;
-    final dest = _lastNamedArrival(sections);
+    final dest = _lastNamedArrival(AppI18n.of(context), sections);
     final isLast = activeLeg >= sections.length - 1;
-    return SheetViewport(
-      child: SheetExitGestureDetector(
-        onExit: onEnd,
-        child: Sheet(
-          controller: controller,
-          initialOffset: initialOffset,
-          snapGrid: AppSheetSnap.grid,
-          scrollConfiguration: const SheetScrollConfiguration(),
-          decoration: MaterialSheetDecoration(
-            size: SheetSize.stretch,
-            color: cs.surface,
-            borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(AppTheme.radiusBottomSheet),
+    return AppSheet(
+      controller: controller,
+      // 結束 lives in the sheet header; a hold must not end a live
+      // navigation (see AppSheet.onExit).
+      onExit: null,
+      initialOffset: initialOffset,
+      color: cs.surface,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SheetDragHandle(),
+          _NavSheetHeader(
+            origin: origin,
+            dest: dest,
+            progress: progress,
+            activeLeg: activeLeg,
+            total: sections.length,
+            arrival: formatClock(route.endTime),
+          ),
+          const DividerLine(),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
+              children: [
+                for (final (i, s) in sections.indexed)
+                  _StepRow(
+                    section: s,
+                    isFirst: i == 0,
+                    isLast: i == sections.length - 1,
+                    status: i < activeLeg
+                        ? _StepStatus.done
+                        : i == activeLeg
+                        ? _StepStatus.active
+                        : _StepStatus.upcoming,
+                  ),
+              ],
             ),
-            clipBehavior: Clip.antiAlias,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SheetDragHandle(),
-              _NavSheetHeader(
-                origin: origin,
-                dest: dest,
-                progress: progress,
-                activeLeg: activeLeg,
-                total: sections.length,
-                arrival: formatClock(route.endTime),
-              ),
-              const DividerLine(),
-              Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
-                  children: [
-                    for (final (i, s) in sections.indexed)
-                      _StepRow(
-                        section: s,
-                        isFirst: i == 0,
-                        isLast: i == sections.length - 1,
-                        status: i < activeLeg
-                            ? _StepStatus.done
-                            : i == activeLeg
-                            ? _StepStatus.active
-                            : _StepStatus.upcoming,
-                      ),
-                  ],
-                ),
-              ),
-              _NavFooter(
-                onAdvance: onAdvance,
-                onEnd: onEnd,
-                isLast: isLast,
-                showManualControls: showManualControls,
-              ),
-            ],
+          _NavFooter(
+            onAdvance: onAdvance,
+            onEnd: onEnd,
+            isLast: isLast,
+            showManualControls: showManualControls,
           ),
-        ),
+        ],
       ),
     );
   }
@@ -585,7 +587,7 @@ class JourneyControls extends StatelessWidget {
           const SizedBox(height: 10),
         ],
         _SheetButton(
-          label: '我上車了',
+          label: AppI18n.of(context).goBoarded,
           onTap: () =>
               context.read<JourneySessionBloc>().add(const BoardConfirmed()),
         ),
@@ -611,7 +613,9 @@ class JourneyControls extends StatelessWidget {
       children: [
         if (leg != null) ...[
           Text(
-            '於 ${leg.alightStop} 下車・剩 $remaining 站',
+            AppI18n.of(
+              context,
+            ).alightAtRemaining(leg.alightStop, remaining),
             textAlign: TextAlign.center,
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onSurfaceVariant,
@@ -620,7 +624,7 @@ class JourneyControls extends StatelessWidget {
           const SizedBox(height: 8),
         ],
         _SheetButton(
-          label: '我下車了',
+          label: AppI18n.of(context).goAlighted,
           onTap: () =>
               context.read<JourneySessionBloc>().add(const AlightConfirmed()),
         ),
@@ -704,7 +708,7 @@ class _DueCue extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(
-            '車來了——上車了嗎？',
+            AppI18n.of(context).goVehicleArrived,
             style: AppTextStyles.bodyRegular.copyWith(
               fontWeight: FontWeight.w700,
               color: cs.onSurface,
@@ -796,7 +800,7 @@ class _NavSheetHeader extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                '第 ${activeLeg + 1} / $total 段',
+                AppI18n.of(context).legProgress(activeLeg + 1, total),
                 style: AppTextStyles.bodyVerySmall.copyWith(
                   color: cs.onSurfaceVariant,
                 ),
@@ -806,7 +810,7 @@ class _NavSheetHeader extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      '抵達 ',
+                      AppI18n.of(context).goArriveLabel,
                       style: AppTextStyles.bodyVerySmall.copyWith(
                         color: cs.onSurface,
                         fontWeight: FontWeight.w600,
@@ -859,11 +863,11 @@ class _NavFooter extends StatelessWidget {
     final bottomInset = MediaQuery.viewPaddingOf(context).bottom;
     final endButton = Pressable(
       onTap: onEnd,
-      semanticLabel: '結束導航',
+      semanticLabel: AppI18n.of(context).goEndNavigation,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 8),
         child: Text(
-          '結束導航',
+          AppI18n.of(context).goEndNavigation,
           style: AppTextStyles.bodyRegular.copyWith(
             color: cs.error,
             fontWeight: FontWeight.w600,
@@ -890,7 +894,9 @@ class _NavFooter extends StatelessWidget {
                   children: [
                     const JourneyControls(),
                     _SheetButton(
-                      label: isLast ? '完成行程' : '完成此段，前往下一段',
+                      label: isLast
+                          ? AppI18n.of(context).goFinishJourney
+                          : AppI18n.of(context).goFinishLeg,
                       onTap: onAdvance,
                       filled: !hasPhaseAction,
                     ),
@@ -943,13 +949,17 @@ class _StepRow extends StatelessWidget {
     // "步行至 " trails off, so label it as the arrival instead.
     final title = walk
         ? (section.arrival.name.isEmpty
-              ? (isLast ? '抵達目的地' : '步行')
-              : '步行至 ${section.arrival.name}')
-        : '${sectionLabel(section)} → ${section.arrival.name}';
+              ? (isLast
+                    ? AppI18n.of(context).goArriveDestination
+                    : AppI18n.of(context).goWalk)
+              : AppI18n.of(context).walkTo(section.arrival.name))
+        : '${sectionLabel(AppI18n.of(context), section)} → ${section.arrival.name}';
     // Walk rows carry no boarding line; the right-hand minutes already state
     // the duration, so a "約 N 分" subtitle would only repeat it.
     final stops = section.intermediateStops.length;
-    final subtitle = walk ? null : '${section.departure.name} 上車 · $stops 站';
+    final subtitle = walk
+        ? null
+        : AppI18n.of(context).boardAt(section.departure.name, stops);
     final titleColor = done
         ? cs.onSurface.withValues(alpha: 0.5)
         : cs.onSurface;
@@ -1009,7 +1019,7 @@ class _StepRow extends StatelessWidget {
           Padding(
             padding: EdgeInsets.only(top: topPad),
             child: Text(
-              '${sectionMinutes(section)} 分',
+              AppI18n.of(context).minutesValue(sectionMinutes(section)),
               style: AppTextStyles.bodyRegular.copyWith(
                 fontWeight: FontWeight.w700,
                 color: active

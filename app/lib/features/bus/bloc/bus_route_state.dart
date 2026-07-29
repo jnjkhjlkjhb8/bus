@@ -1,7 +1,7 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/bus_route_detail.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
 
 class BusRouteState extends Equatable {
   const BusRouteState({
@@ -23,10 +23,11 @@ class BusRouteState extends Equatable {
   final Set<int> bufferSequences;
   final int direction;
 
-  /// Active arrival reminders on this route: stopUid -> server reminderId.
+  /// Active pinned arrival reminders on this route: stopUid -> server
+  /// reminderId. Armed while tracking a vehicle toward the rider's alight stop.
   ///
-  // Mirrored locally (RemindersRepository) so the bell survives navigation and
-  // restart.
+  // Mirrored locally (RemindersRepository) so a reminder survives navigation
+  // and restart.
   // Reminders stay one-shot: the backend marks one fired after sending the
   // push but never tells the app (no listReminders RPC), so a fired reminder
   // can still read as active until its local TTL lapses.

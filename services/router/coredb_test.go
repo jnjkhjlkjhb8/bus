@@ -172,10 +172,11 @@ func TestBikeStaticDataReturnsFields(t *testing.T) {
 	}
 	defer db.Close()
 
-	db.ExpectQuery("SELECT name,capacity,service_type,address FROM bike_stations").
+	lat, lon := 25.033, 121.565
+	db.ExpectQuery("SELECT name,capacity,service_type,address,ST_Y\\(geom\\),ST_X\\(geom\\) FROM bike_stations").
 		WithArgs("B-1").
-		WillReturnRows(pgxmock.NewRows([]string{"name", "capacity", "service_type", "address"}).
-			AddRow("YouBike Stop", int32(30), int32(2), "1 Main St"))
+		WillReturnRows(pgxmock.NewRows([]string{"name", "capacity", "service_type", "address", "lat", "lon"}).
+			AddRow("YouBike Stop", int32(30), int32(2), "1 Main St", &lat, &lon))
 
 	row, err := bikeStaticData(context.Background(), db, "B-1")
 	if err != nil {
@@ -183,6 +184,9 @@ func TestBikeStaticDataReturnsFields(t *testing.T) {
 	}
 	if row.Name != "YouBike Stop" || row.Capacity != 30 || row.ServiceType != 2 || row.Address != "1 Main St" {
 		t.Fatalf("row = %+v, want fields populated", row)
+	}
+	if row.Lat == nil || row.Lon == nil || *row.Lat != lat || *row.Lon != lon {
+		t.Fatalf("row lat/lon = %v/%v, want %v/%v", row.Lat, row.Lon, lat, lon)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -198,12 +202,43 @@ func TestBikeStaticDataMissing(t *testing.T) {
 	}
 	defer db.Close()
 
-	db.ExpectQuery("SELECT name,capacity,service_type,address FROM bike_stations").
+	db.ExpectQuery("SELECT name,capacity,service_type,address,ST_Y\\(geom\\),ST_X\\(geom\\) FROM bike_stations").
 		WithArgs("missing").
-		WillReturnRows(pgxmock.NewRows([]string{"name", "capacity", "service_type", "address"}))
+		WillReturnRows(
+			pgxmock.NewRows([]string{"name", "capacity", "service_type", "address", "lat", "lon"}),
+		)
 
 	if _, err := bikeStaticData(context.Background(), db, "missing"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("err = %v, want pgx.ErrNoRows", err)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestBikeStaticDataNullGeom verifies a station landed without a point scans as
+// nil rather than 0, so the handler leaves the proto's Lat/Lon empty instead of
+// reporting the null island off West Africa as the station's location.
+func TestBikeStaticDataNullGeom(t *testing.T) {
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	db.ExpectQuery("SELECT name,capacity,service_type,address,ST_Y\\(geom\\),ST_X\\(geom\\) FROM bike_stations").
+		WithArgs("B-2").
+		WillReturnRows(
+			pgxmock.NewRows([]string{"name", "capacity", "service_type", "address", "lat", "lon"}).
+				AddRow("No Geom", int32(10), int32(2), "", nil, nil),
+		)
+
+	row, err := bikeStaticData(context.Background(), db, "B-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Lat != nil || row.Lon != nil {
+		t.Fatalf("row lat/lon = %v/%v, want nil/nil", row.Lat, row.Lon)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

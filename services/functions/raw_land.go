@@ -13,8 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 )
 
 // ingestDB is the process-wide pool used by the raw_tdx landing path and by
@@ -501,7 +501,7 @@ const rawChunkBytes = 4 << 20
 func insertRawChunks(ctx context.Context, exec func(context.Context, string, ...any) (int64, error), table, inject string, body io.Reader) (int64, error) {
 	dec := json.NewDecoder(body)
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
-		return 0, fmt.Errorf("payload is not a JSON array (token %v): %v", tok, err)
+		return 0, fmt.Errorf("payload is not a JSON array (token %v): %w", tok, err)
 	}
 	sql := rawInsertSQL(table)
 	chunk := append(make([]byte, 0, rawChunkBytes+(1<<20)), '[')
@@ -519,7 +519,7 @@ func insertRawChunks(ctx context.Context, exec func(context.Context, string, ...
 	for dec.More() {
 		var elem json.RawMessage
 		if err := dec.Decode(&elem); err != nil {
-			return rows, fmt.Errorf("decode array element: %v", err)
+			return rows, fmt.Errorf("decode array element: %w", err)
 		}
 		if len(chunk) > 1 {
 			chunk = append(chunk, ',')

@@ -1,26 +1,42 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/location/location_service.dart';
-import 'package:wheres_the_car/data/repositories/place_recent_repository.dart';
-import 'package:wheres_the_car/data/repositories/places_repository.dart';
-import 'package:wheres_the_car/data/repositories/saved_place_repository.dart';
-import 'package:wheres_the_car/features/go/model/planned_place.dart';
-import 'package:wheres_the_car/features/go/model/saved_place_icons.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_button.dart';
-import 'package:wheres_the_car/shared/widgets/app_dialog.dart';
-import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
-import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/core/location/location_service.dart';
+import 'package:wheres_the_bus/data/repositories/place_recent_repository.dart';
+import 'package:wheres_the_bus/data/repositories/places_repository.dart';
+import 'package:wheres_the_bus/data/repositories/saved_place_repository.dart';
+import 'package:wheres_the_bus/features/go/model/planned_place.dart';
+import 'package:wheres_the_bus/features/go/model/saved_place_icons.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_button.dart';
+import 'package:wheres_the_bus/shared/widgets/app_dialog.dart';
+import 'package:wheres_the_bus/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_bus/shared/widgets/app_spinner.dart';
+import 'package:wheres_the_bus/shared/widgets/state_cards.dart';
 
-Future<PlannedPlace> resolveCurrentPlace() async {
-  final pos = await LocationService.instance.currentPosition();
+Future<PlannedPlace> resolveCurrentPlace(AppI18n i18n) async {
+  // A granted permission still fails here when the fix times out (indoors,
+  // cold GPS). The OS cached fix is accurate enough for an origin, so fall
+  // back to it and only report "no location" when that is missing too — which
+  // is also the case for a real denial, since lastKnownPosition returns null
+  // without permission.
+  Position pos;
+  try {
+    pos = await LocationService.instance.currentPosition();
+  } on Object {
+    final cached = await LocationService.instance.lastKnownPosition();
+    if (cached == null) rethrow;
+    pos = cached;
+  }
   return PlannedPlace(
-    name: '目前位置',
+    name: i18n.goCurrentLocation,
     latLng: LatLng(pos.latitude, pos.longitude),
     isCurrentLocation: true,
   );
@@ -74,41 +90,59 @@ class PlaceSearchScreen extends StatelessWidget {
   }
 }
 
+/// Builds the surface hosting the search field. [input] is the wired text field
+/// (with its own clear button); the builder decides where it sits — the
+/// plan-entry page drops it into the destination row of its origin/destination
+/// block, so typing happens on the same screen the planner opens at.
+typedef PlaceSearchHeaderBuilder =
+    Widget Function(BuildContext context, Widget input);
+
 /// The shared place-search body: current location, saved places, recent
 /// searches, and autocomplete-on-type — reused inline by the plan-entry page
-/// (input hidden, picking sets the destination) and by [PlaceSearchScreen]
-/// (input active, picking pops the page). It never navigates itself; picking a
-/// place only calls [onPicked].
+/// (its own header hosts the field, picking sets the destination) and by
+/// [PlaceSearchScreen] (plain input row, picking pops the page). It never
+/// navigates itself; picking a place only calls [onPicked].
 class PlaceSearchView extends StatefulWidget {
   const PlaceSearchView({
     required this.onPicked,
     this.showInput = false,
     this.autofocus = false,
-    this.fieldLabel = '搜尋地點',
+    this.fieldLabel,
     this.allowCurrentLocation = true,
     this.emptyHint,
-    this.footer,
+    this.header,
+    this.headerBuilder,
     this.onBack,
     super.key,
   });
 
   final ValueChanged<PlannedPlace> onPicked;
+
+  /// Whether the built-in input row is shown. Ignored when [headerBuilder] is
+  /// set — the host is then responsible for placing the field.
   final bool showInput;
   final bool autofocus;
-  final String fieldLabel;
+
+  /// Null takes the standard placeholder, which needs a locale to resolve —
+  /// and a const default has no context to resolve it with.
+  final String? fieldLabel;
   final bool allowCurrentLocation;
 
-  /// Shown (once) when there are no saved places and no recents to fill the
-  /// list — a quiet prompt rather than a blank surface. Used by the plan-entry
-  /// host; null on the search page (where the keyboard is already up).
+  /// Shown when there are no saved places and no recents to fill the list — a
+  /// quiet prompt rather than a blank surface.
   final String? emptyHint;
 
-  /// Appended below the shortcut list while the query is empty (hidden during
-  /// autocomplete). The plan-entry host uses it for the 路線箱 saved-routes
-  /// section; the search page leaves it null.
-  final Widget? footer;
+  /// Sits above the shortcut list while the query is empty (hidden during
+  /// autocomplete). The plan-entry host uses it for the 路線箱 saved routes:
+  /// a saved route is a whole answer in one tap, so it outranks the places
+  /// below it.
+  final Widget? header;
 
-  /// When set, a leading back button is shown in the input row.
+  /// Replaces the built-in input row, handing back the wired text field for the
+  /// host to place. When set, the field is focused on first frame.
+  final PlaceSearchHeaderBuilder? headerBuilder;
+
+  /// When set, a leading back button is shown in the built-in input row.
   final VoidCallback? onBack;
 
   @override
@@ -134,7 +168,11 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     super.initState();
     _recents = PlaceRecentRepository.instance.all();
     _saved = SavedPlaceRepository.instance.all();
-    if (widget.showInput && widget.autofocus) {
+    // A hosted field is the reason the screen exists, so it always takes focus.
+    // Deferred a frame: requesting focus during the route transition drops
+    // frames of the push the rider is watching.
+    final hosted = widget.headerBuilder != null;
+    if (hosted || (widget.showInput && widget.autofocus)) {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _focusNode.requestFocus(),
       );
@@ -186,14 +224,18 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     unawaited(HapticService.instance.lightTap());
     setState(() => _resolvingLocation = true);
     try {
-      final place = await resolveCurrentPlace();
+      final place = await resolveCurrentPlace(AppI18n.of(context));
       if (!mounted) return;
       widget.onPicked(place);
       if (mounted) setState(() => _resolvingLocation = false);
     } on Object catch (_) {
       if (!mounted) return;
       setState(() => _resolvingLocation = false);
-      AppSnackbar.show(context, '無法取得目前位置', type: SnackType.error);
+      AppSnackbar.show(
+        context,
+        AppI18n.of(context).goLocationUnavailable,
+        type: SnackType.error,
+      );
     }
   }
 
@@ -210,7 +252,11 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     } on Object catch (_) {
       if (!mounted) return;
       setState(() => _pickingId = null);
-      AppSnackbar.show(context, '無法取得地點資訊', type: SnackType.error);
+      AppSnackbar.show(
+        context,
+        AppI18n.of(context).goPlaceUnavailable,
+        type: SnackType.error,
+      );
     }
   }
 
@@ -228,8 +274,8 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     setState(() => _recents = PlaceRecentRepository.instance.all());
     AppSnackbar.show(
       context,
-      '已移除搜尋紀錄',
-      action: '復原',
+      AppI18n.of(context).goRecentRemoved,
+      action: AppI18n.of(context).commonUndo,
       onAction: () async {
         await PlaceRecentRepository.instance.add(place);
         if (!mounted) return;
@@ -248,7 +294,11 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     );
     if (!mounted) return;
     setState(() => _saved = SavedPlaceRepository.instance.all());
-    AppSnackbar.show(context, '已儲存地點', type: SnackType.success);
+    AppSnackbar.show(
+      context,
+      AppI18n.of(context).goPlaceSaved,
+      type: SnackType.success,
+    );
   }
 
   // A search result carries no coordinates, so resolve its details before
@@ -262,7 +312,11 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     } on Object catch (_) {
       if (!mounted) return;
       setState(() => _pickingId = null);
-      AppSnackbar.show(context, '無法取得地點資訊', type: SnackType.error);
+      AppSnackbar.show(
+        context,
+        AppI18n.of(context).goPlaceUnavailable,
+        type: SnackType.error,
+      );
       return;
     }
     if (!mounted) return;
@@ -291,8 +345,8 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     setState(() => _saved = SavedPlaceRepository.instance.all());
     AppSnackbar.show(
       context,
-      '已移除儲存地點',
-      action: '復原',
+      AppI18n.of(context).goSavedPlaceRemoved,
+      action: AppI18n.of(context).commonUndo,
       onAction: () async {
         await SavedPlaceRepository.instance.add(place);
         if (!mounted) return;
@@ -303,10 +357,58 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
 
   @override
   Widget build(BuildContext context) {
+    final headerBuilder = widget.headerBuilder;
     return Column(
       children: [
-        if (widget.showInput) _buildInputRow(context),
+        if (headerBuilder != null)
+          headerBuilder(context, _buildInput(context))
+        else if (widget.showInput)
+          _buildInputRow(context),
         Expanded(child: _buildList(context)),
+      ],
+    );
+  }
+
+  /// The text field itself plus its clear button — everything the host needs to
+  /// drop the search into a row of its own design.
+  Widget _buildInput(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            focusNode: _focusNode,
+            textInputAction: TextInputAction.search,
+            style: AppTextStyles.bodyLarge.copyWith(
+              color: cs.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+            decoration: InputDecoration(
+              isCollapsed: true,
+              border: InputBorder.none,
+              hintText: widget.fieldLabel,
+              hintStyle: AppTextStyles.bodyLarge.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+            onChanged: _onQueryChanged,
+          ),
+        ),
+        if (!_empty)
+          Pressable(
+            onTap: () {
+              _controller.clear();
+              _onQueryChanged('');
+            },
+            semanticLabel: AppI18n.of(context).commonClear,
+            minTapSize: 44,
+            child: Icon(
+              Icons.close_rounded,
+              size: 18,
+              color: cs.onSurfaceVariant,
+            ),
+          ),
       ],
     );
   }
@@ -320,7 +422,7 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
           if (widget.onBack != null)
             Pressable(
               onTap: widget.onBack,
-              semanticLabel: '返回',
+              semanticLabel: AppI18n.of(context).commonBack,
               child: SizedBox(
                 width: 40,
                 height: 44,
@@ -347,38 +449,7 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
                     color: cs.onSurfaceVariant,
                   ),
                   const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: _controller,
-                      focusNode: _focusNode,
-                      textInputAction: TextInputAction.search,
-                      style: AppTextStyles.bodyLarge.copyWith(
-                        color: cs.onSurface,
-                      ),
-                      decoration: InputDecoration(
-                        isCollapsed: true,
-                        border: InputBorder.none,
-                        hintText: widget.fieldLabel,
-                        hintStyle: AppTextStyles.bodyLarge.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                      ),
-                      onChanged: _onQueryChanged,
-                    ),
-                  ),
-                  if (!_empty)
-                    Pressable(
-                      onTap: () {
-                        _controller.clear();
-                        _onQueryChanged('');
-                      },
-                      semanticLabel: '清除',
-                      child: Icon(
-                        Icons.close_rounded,
-                        size: 18,
-                        color: cs.onSurfaceVariant,
-                      ),
-                    ),
+                  Expanded(child: _buildInput(context)),
                 ],
               ),
             ),
@@ -389,23 +460,54 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
   }
 
   Widget _buildList(BuildContext context) {
-    if (!_empty) {
-      if (_loading && _results.isEmpty) return const _PlaceSkeleton();
-      if (_results.isEmpty) return const _PlaceEmpty();
-      return ListView.builder(
-        padding: const EdgeInsets.only(bottom: 24),
-        itemCount: _results.length,
-        itemBuilder: (context, i) => _ResultRow(
-          result: _results[i],
-          loading: _pickingId == _results[i].placeId,
-          onTap: () => _pickResult(_results[i]),
-          onSave: () => _saveFromResult(_results[i]),
+    // Shortcuts and autocomplete are two readings of the same column, so they
+    // cross-fade rather than hard-swapping. Keyed by which list is showing, not
+    // by its contents: re-fading on every keystroke would strobe.
+    final reduce = MediaQuery.disableAnimationsOf(context);
+    return AnimatedSwitcher(
+      duration: reduce ? Duration.zero : AppMotion.micro,
+      switchInCurve: AppMotion.easeOut,
+      switchOutCurve: AppMotion.easeOut,
+      transitionBuilder: (child, animation) => FadeTransition(
+        opacity: animation,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0, 0.01),
+            end: Offset.zero,
+          ).animate(animation),
+          child: child,
         ),
-      );
-    }
+      ),
+      child: _empty
+          ? _buildShortcuts(context)
+          : KeyedSubtree(
+              key: const ValueKey('results'),
+              child: _buildResults(context),
+            ),
+    );
+  }
+
+  Widget _buildResults(BuildContext context) {
+    if (_loading && _results.isEmpty) return const _PlaceSkeleton();
+    if (_results.isEmpty) return const _PlaceEmpty();
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 24),
+      itemCount: _results.length,
+      itemBuilder: (context, i) => _ResultRow(
+        result: _results[i],
+        loading: _pickingId == _results[i].placeId,
+        onTap: () => _pickResult(_results[i]),
+        onSave: () => _saveFromResult(_results[i]),
+      ),
+    );
+  }
+
+  Widget _buildShortcuts(BuildContext context) {
     return ListView(
+      key: const ValueKey('shortcuts'),
       padding: const EdgeInsets.only(bottom: 24),
       children: [
+        if (widget.header != null) widget.header!,
         if (widget.allowCurrentLocation)
           _CurrentLocationRow(
             loading: _resolvingLocation,
@@ -414,8 +516,7 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
         if (_saved.isEmpty && _recents.isEmpty && widget.emptyHint != null)
           _EmptyHint(widget.emptyHint!),
         if (_saved.isNotEmpty) ...[
-          const _SectionDivider(),
-          const _SectionLabel('儲存地點'),
+          _SectionLabel(AppI18n.of(context).goSavedPlaces),
           for (final place in _saved)
             _SavedPlaceRow(
               key: ValueKey('saved-${_placeKey(place)}'),
@@ -426,8 +527,7 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
             ),
         ],
         if (_recents.isNotEmpty) ...[
-          const _SectionDivider(),
-          const _SectionLabel('最近搜尋'),
+          _SectionLabel(AppI18n.of(context).searchRecent),
           for (final place in _recents)
             _RecentPlaceRow(
               key: ValueKey('recent-${_placeKey(place)}'),
@@ -437,7 +537,6 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
               onRemove: () => _removeRecent(place),
             ),
         ],
-        if (widget.footer != null) widget.footer!,
       ],
     );
   }
@@ -467,6 +566,8 @@ class _EmptyHint extends StatelessWidget {
   }
 }
 
+/// Inset-grouped section header: a quiet label with air above it, in place of
+/// the full-bleed grey slab this list used to separate sections with.
 class _SectionLabel extends StatelessWidget {
   const _SectionLabel(this.text);
 
@@ -476,7 +577,7 @@ class _SectionLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 6),
       child: Text(
         text,
         style: AppTextStyles.bodySmall.copyWith(
@@ -485,16 +586,6 @@ class _SectionLabel extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-class _SectionDivider extends StatelessWidget {
-  const _SectionDivider();
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(height: 8, color: cs.surfaceContainerHigh);
   }
 }
 
@@ -509,7 +600,7 @@ class _CurrentLocationRow extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
       onTap: loading ? null : onTap,
-      semanticLabel: '使用目前位置',
+      semanticLabel: AppI18n.of(context).goUseCurrentLocation,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
         child: Row(
@@ -517,7 +608,7 @@ class _CurrentLocationRow extends StatelessWidget {
             Icon(Icons.my_location_rounded, size: 22, color: cs.primary),
             const SizedBox(width: 14),
             Text(
-              '目前位置',
+              AppI18n.of(context).goCurrentLocation,
               style: AppTextStyles.bodyLarge.copyWith(
                 color: cs.onSurface,
                 fontWeight: FontWeight.w600,
@@ -533,7 +624,7 @@ class _CurrentLocationRow extends StatelessWidget {
   }
 }
 
-// A row whose right-swipe reveals a neutral "儲存" affordance and whose
+// A row whose right-swipe reveals a neutral AppI18n.of(context).commonSave affordance and whose
 // left-swipe reveals a destructive action; a colored background is data here,
 // not decoration, so it stays within the achromatic UI (error red is the one
 // permitted semantic exception, used only for delete).
@@ -585,7 +676,7 @@ class _SwipeRow extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    '儲存',
+                    AppI18n.of(context).commonSave,
                     style: AppTextStyles.bodyRegular.copyWith(
                       color: cs.onSurface,
                       fontWeight: FontWeight.w600,
@@ -768,10 +859,11 @@ class _PlaceRow extends StatelessWidget {
       semanticLabel: title,
       child: Container(
         color: cs.surface,
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        constraints: const BoxConstraints(minHeight: 56),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
         child: Row(
           children: [
-            leading,
+            SizedBox(width: 22, child: Center(child: leading)),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
@@ -810,34 +902,9 @@ class _PlaceSkeleton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return Column(
       children: [
-        for (var i = 0; i < 5; i++)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-            child: Row(
-              children: [
-                Container(
-                  width: 22,
-                  height: 22,
-                  decoration: BoxDecoration(
-                    color: cs.surfaceContainerHighest,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Container(
-                  width: 160,
-                  height: 14,
-                  decoration: BoxDecoration(
-                    color: cs.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-                  ),
-                ),
-              ],
-            ),
-          ),
+        for (var i = 0; i < 5; i++) const ShimmerRow(height: 36),
       ],
     );
   }
@@ -856,7 +923,7 @@ class _PlaceEmpty extends StatelessWidget {
           Icon(Icons.search_off_rounded, size: 40, color: cs.outline),
           const SizedBox(height: 12),
           Text(
-            '找不到符合的地點',
+            AppI18n.of(context).goNoPlaceMatch,
             style: AppTextStyles.bodyRegular.copyWith(
               color: cs.onSurfaceVariant,
             ),
@@ -926,13 +993,13 @@ class _SavePlaceDialogState extends State<_SavePlaceDialog> {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return AppDialog(
-      title: '儲存地點',
+      title: AppI18n.of(context).goSavedPlaces,
       body: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '名稱',
+            AppI18n.of(context).commonName,
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onSurfaceVariant,
               fontWeight: FontWeight.w700,
@@ -966,7 +1033,7 @@ class _SavePlaceDialogState extends State<_SavePlaceDialog> {
           ),
           const SizedBox(height: 18),
           Text(
-            '圖示',
+            AppI18n.of(context).commonIcon,
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onSurfaceVariant,
               fontWeight: FontWeight.w700,
@@ -982,14 +1049,14 @@ class _SavePlaceDialogState extends State<_SavePlaceDialog> {
             children: [
               Expanded(
                 child: AppButton.outlined(
-                  label: '取消',
+                  label: AppI18n.of(context).commonCancel,
                   onPressed: () => Navigator.of(context).pop(),
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: AppButton(
-                  label: '儲存',
+                  label: AppI18n.of(context).commonSave,
                   onPressed: _name.text.trim().isEmpty ? null : _submit,
                 ),
               ),

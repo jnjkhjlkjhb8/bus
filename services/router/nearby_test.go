@@ -231,7 +231,7 @@ func TestReceiveNearbyModeResultPrefersCallerCancellationOverReadyDatabaseError(
 	if err != context.Canceled {
 		t.Fatalf("err = %v, want exact context.Canceled", err)
 	}
-	if result.mode != 0 || result.stations != nil || result.queryError != nil || result.error != nil {
+	if result.mode != 0 || result.candidates != nil || result.queryError != nil {
 		t.Fatalf("result = %+v, want zero value when caller context is canceled", result)
 	}
 }
@@ -273,6 +273,73 @@ func TestNearbyDiscoverySkipsRoutingForEmptyCandidates(t *testing.T) {
 	}
 	if router.calls != 0 {
 		t.Fatalf("routing calls = %d, want 0", router.calls)
+	}
+}
+
+// indexWalkingRouter answers with one metric per requested point, minute i for
+// point i, so a mis-sliced metric window shows up as a wrong Walk value.
+type indexWalkingRouter struct {
+	calls  int
+	points int
+}
+
+func (r *indexWalkingRouter) RouteMany(_ context.Context, _ geoPoint, points []geoPoint) ([]walkingMetric, error) {
+	r.calls++
+	r.points = len(points)
+	metrics := make([]walkingMetric, len(points))
+	for i := range points {
+		seconds := float64(i * 60)
+		metrics[i] = walkingMetric{DurationSeconds: &seconds}
+	}
+	return metrics, nil
+}
+
+func TestNearbyDiscoveryRoutesEveryModeInOneTableRequest(t *testing.T) {
+	store := fakeNearbyStore{rows: map[nearbyMode][]nearbyCandidate{
+		nearbyBus: {candidate(nearbyBus, "G-1", "Bus", 80), candidate(nearbyBus, "G-2", "Bus", 90)},
+		nearbyMRT: {candidate(nearbyMRT, "M-1", "MRT", 300)},
+	}, err: map[nearbyMode]error{}}
+	router := &indexWalkingRouter{}
+
+	got, err := newNearbyDiscovery(store, router).Discover(context.Background(), nearbyQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if router.calls != 1 || router.points != 3 {
+		t.Fatalf("routing calls = %d over %d points, want 1 call over 3", router.calls, router.points)
+	}
+	for id, wantWalk := range map[string]int32{"G-1": 0, "G-2": 1} {
+		if station := got.NearBusStations[id].NearStations[0]; station.Walk != wantWalk || !station.Routed {
+			t.Fatalf("bus %s = %+v, want walk %d routed", id, station, wantWalk)
+		}
+	}
+	// The MRT candidate sits at flat index 2, after both bus groups.
+	if station := got.NearMrtStations[0]; station.Walk != 2 || !station.Routed {
+		t.Fatalf("mrt station = %+v, want walk 2 routed", station)
+	}
+}
+
+func TestNearbyDiscoveryServesRepeatQueryFromCache(t *testing.T) {
+	store := fakeNearbyStore{rows: map[nearbyMode][]nearbyCandidate{
+		nearbyTRA: {candidate(nearbyTRA, "T-1", "TRA", 800)},
+	}, err: map[nearbyMode]error{}}
+	router := &indexWalkingRouter{}
+	discovery := newNearbyDiscovery(store, router)
+	query := nearbyQuery{Origin: geoPoint{Lon: 121.5, Lat: 25}, RadiusMeters: 670}
+
+	first, err := discovery.Discover(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := discovery.Discover(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if router.calls != 1 {
+		t.Fatalf("routing calls = %d, want 1 (second query cached)", router.calls)
+	}
+	if second.NearTraStations[0].StationID != first.NearTraStations[0].StationID {
+		t.Fatalf("cached response = %+v, want the same station as %+v", second, first)
 	}
 }
 

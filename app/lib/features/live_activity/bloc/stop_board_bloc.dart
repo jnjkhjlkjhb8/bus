@@ -1,13 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/repositories/bus_repository.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_state.dart';
+import 'package:wheres_the_bus/core/live_activity/live_activity_channel.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/repositories/bus_repository.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_state.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 /// Routes shown on the stop-board Live Activity, ranked soonest-first.
 const _maxBoardRows = 4;
@@ -23,11 +24,13 @@ const _maxBoardRows = 4;
 /// side lost the race is a no-op rather than clobbering the winner.
 class StopBoardBloc extends Bloc<StopBoardEvent, StopBoardState> {
   StopBoardBloc({
+    required AppI18n i18n,
     required LiveActivityChannel channel,
     required JourneySessionBloc session,
     Stream<List<BusStopArrival>> Function(String city, String stopKey)?
     etaSource,
-  }) : _channel = channel,
+  }) : _i18n = i18n,
+       _channel = channel,
        _session = session,
        _etaSource = etaSource ?? BusRepository.instance.stationEta,
        super(const StopBoardState()) {
@@ -36,6 +39,10 @@ class StopBoardBloc extends Bloc<StopBoardEvent, StopBoardState> {
     on<BoardArrivalsReceived>(_onArrivals);
   }
 
+  /// Captured at construction — see the note on `BusStopBloc._i18n`. The
+  /// board is re-pushed on every ETA frame, so a language change reaches the
+  /// Live Activity as soon as the provider above this bloc is rebuilt.
+  final AppI18n _i18n;
   final LiveActivityChannel _channel;
   final JourneySessionBloc _session;
   final Stream<List<BusStopArrival>> Function(String city, String stopKey)
@@ -107,8 +114,8 @@ class StopBoardBloc extends Bloc<StopBoardEvent, StopBoardState> {
       for (final a in sorted.take(_maxBoardRows))
         StopBoardRow(
           routeNumber: a.routeName,
-          destination: '往${a.destination}',
-          etaLabel: a.displayLabel ?? '—',
+          destination: _i18n.towards(a.destination),
+          etaLabel: a.displayLabelOf(_i18n) ?? '—',
         ),
     ];
   }

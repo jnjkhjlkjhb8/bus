@@ -44,6 +44,57 @@ class BusStopTime extends Equatable {
   List<Object?> get props => [stopSequence, departureTime, arrivalTime];
 }
 
+/// One entry of a sub-route's weekly service pattern (TDX Bus/Schedule), which
+/// unlike [BusDailyTimetable] says which weekdays a trip runs on. A route
+/// publishes either fixed departures ([isTimetable] true, one entry per trip's
+/// origin departure) or headway windows ([isTimetable] false, e.g. 06:00–22:00
+/// every 15–20 min); some publish both, and some publish neither.
+class BusServiceEntry extends Equatable {
+  const BusServiceEntry({
+    required this.isTimetable,
+    required this.serviceDay,
+    this.tripId = '',
+    this.isLowFloor = false,
+    this.departureTime = '',
+    this.startTime = '',
+    this.endTime = '',
+    this.minHeadwayMins = '',
+    this.maxHeadwayMins = '',
+  });
+
+  final bool isTimetable;
+
+  /// Weekday bitmask, bit 0 = Monday … bit 6 = Sunday (server-side `mask2`).
+  final int serviceDay;
+  final String tripId;
+  final bool isLowFloor;
+
+  /// Origin departure clock time, fixed-timetable entries only.
+  final String departureTime;
+
+  /// Window bounds and headway range, headway entries only.
+  final String startTime;
+  final String endTime;
+  final String minHeadwayMins;
+  final String maxHeadwayMins;
+
+  /// Whether this entry runs on [weekday], where 0 = Monday … 6 = Sunday.
+  bool runsOn(int weekday) => serviceDay & (1 << weekday) != 0;
+
+  @override
+  List<Object?> get props => [
+    isTimetable,
+    serviceDay,
+    tripId,
+    isLowFloor,
+    departureTime,
+    startTime,
+    endTime,
+    minHeadwayMins,
+    maxHeadwayMins,
+  ];
+}
+
 /// Validated fare info. The JSON payloads stay as raw bytes because the UI
 /// decodes them lazily (fare_decoder: decodeBufferSequences / decodeFareTable);
 /// the seam only guarantees they no longer arrive as a proto type.

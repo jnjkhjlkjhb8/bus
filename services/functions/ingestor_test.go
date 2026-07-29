@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 )
 
 type fakeRawFetcher struct {
@@ -184,8 +184,14 @@ func TestIngestRaw_FetchesAllBusCityAPIs(t *testing.T) {
 			} else {
 				path = "/v2/Bus/" + api + "/City/" + city
 			}
-			if got := seen[path]; got != 1 {
-				t.Fatalf("%s fetched %d times, want 1", path, got)
+			// DailyTimeTable is the one bus API TDX does not serve for every
+			// city; landing the unserved ones only yields HTTP 400.
+			want := 1
+			if api == "DailyTimeTable" && busDailyTimetableSkip(city) {
+				want = 0
+			}
+			if got := seen[path]; got != want {
+				t.Fatalf("%s fetched %d times, want %d", path, got, want)
 			}
 		}
 	}

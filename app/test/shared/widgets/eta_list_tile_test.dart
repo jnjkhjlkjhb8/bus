@@ -1,12 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/arrival_display.dart';
-import 'package:wheres_the_car/shared/widgets/eta_list_tile.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/data/models/arrival_display.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/widgets/eta_list_tile.dart';
 
 void main() {
   Future<void> pump(WidgetTester tester, Widget child) => tester.pumpWidget(
-    MaterialApp(theme: AppTheme.light, home: Scaffold(body: child)),
+    MaterialApp(
+      locale: const Locale('zh'),
+      localizationsDelegates: AppI18n.localizationsDelegates,
+      supportedLocales: AppI18n.supportedLocales,
+
+      theme: AppTheme.light,
+      home: Scaffold(body: child),
+    ),
   );
 
   const arriving = ArrivalDisplay(

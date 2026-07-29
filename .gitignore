@@ -71,6 +71,8 @@ app/lib/generated/
 app/lib/data/generated/
 models/*.pb.go
 models/*_grpc.pb.go
+app/lib/l10n/app_i18n*.dart
+app/i18n_missing.json
 .ds-sync/
 .claude/hooks/
 .claude/skills/

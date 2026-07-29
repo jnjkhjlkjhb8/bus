@@ -1,9 +1,9 @@
 import 'dart:async';
 
 import 'package:hive_ce_flutter/adapters.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
-import 'package:wheres_the_car/data/models/favorite.dart';
-import 'package:wheres_the_car/data/models/metro_map_models.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/data/models/favorite.dart';
+import 'package:wheres_the_bus/data/models/metro_map_models.dart';
 
 class FavoritesRepository {
   FavoritesRepository._();

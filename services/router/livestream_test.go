@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -236,8 +236,8 @@ func TestStreamLiveIncrementsStreamDisconnectOnEveryTermination(t *testing.T) {
 // streamLive's earliest return path (before any stream is established).
 type subscribeErrLiveSource struct{ err error }
 
-func (s *subscribeErrLiveSource) get(string) ([]byte, bool)     { return nil, false }
-func (s *subscribeErrLiveSource) scanKeys(string) []string      { return nil }
+func (s *subscribeErrLiveSource) get(string) ([]byte, bool) { return nil, false }
+func (s *subscribeErrLiveSource) scanKeys(string) []string  { return nil }
 func (s *subscribeErrLiveSource) subscribe(string) (<-chan []byte, func(), error) {
 	return nil, nil, s.err
 }

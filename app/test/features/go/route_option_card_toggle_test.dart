@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/features/go/widgets/route_option_card.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/features/go/widgets/route_option_card.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 PlanRoute _route() => const PlanRoute(
   travelTime: 600,
@@ -20,6 +21,10 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppI18n.localizationsDelegates,
+        supportedLocales: AppI18n.supportedLocales,
+
         home: Scaffold(
           body: RouteOptionCard(
             route: _route(),
@@ -48,6 +53,10 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppI18n.localizationsDelegates,
+        supportedLocales: AppI18n.supportedLocales,
+
         home: Scaffold(
           body: ListView(
             children: [

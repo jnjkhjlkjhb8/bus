@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:hive_ce_flutter/adapters.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class HiveStore {
   HiveStore._();
@@ -12,6 +14,11 @@ class HiveStore {
   static const _boxRecents = 'recent_searches';
   static const _boxReminders = 'arrival_reminders';
   static const _boxSavedPlans = 'saved_plans';
+  static const _boxStaticCache = 'static_cache';
+
+  /// Key holding the build number the cached entries were written by. A
+  /// mismatch truncates the whole box — see [pruneStaticCache].
+  static const _cacheEpochKey = '__epoch';
 
   static Future<void>? _initFuture;
 
@@ -38,28 +45,160 @@ class HiveStore {
 
   static Future<void> _open(Future<void> Function() initBinding) async {
     await initBinding();
+    // Only the boxes the splash path actually reads block startup. The
+    // rest (saved plans, reminders, board layout, recent queries) are opened
+    // lazily below so they stop contending for I/O during app launch —
+    // `recent_searches` alone measured ~410 ms of the ~470 ms splash, and its
+    // only reader is the rail query sheet.
     await Future.wait([
-      Hive.openBox<dynamic>(_boxLayout),
       Hive.openBox<dynamic>(_boxFavRoutes),
       Hive.openBox<dynamic>(_boxFavorites),
       Hive.openBox<dynamic>(_boxSettings),
-      Hive.openBox<dynamic>(_boxRecents),
-      Hive.openBox<dynamic>(_boxReminders),
-      Hive.openBox<dynamic>(_boxSavedPlans),
     ]);
+    unawaited(_openLazyBoxes());
   }
 
+  static Future<void>? _lazyFuture;
+
+  /// Opens the non-critical boxes. Kicked off unawaited right after the
+  /// critical boxes finish (see [_open]); callers that need one of these
+  /// boxes before it's open should check the matching `*Ready` getter, same
+  /// as the existing pattern for [favoritesReady]/[settingsReady].
+  static Future<void> _openLazyBoxes() {
+    return _lazyFuture ??=
+        Future.wait([
+          Hive.openBox<dynamic>(_boxLayout),
+          Hive.openBox<dynamic>(_boxReminders),
+          Hive.openBox<dynamic>(_boxSavedPlans),
+          Hive.openBox<dynamic>(_boxRecents),
+          Hive.openBox<dynamic>(_boxStaticCache),
+        ]).then((_) => pruneStaticCache()).catchError((Object _) {
+          // Unawaited by design: a lazy box that fails to open must not crash
+          // the zone. Clearing the memo lets a later init() retry re-attempt;
+          // until then the `*Ready` guards keep the affected features off.
+          _lazyFuture = null;
+        });
+  }
+
+  /// Drops offline-cache entries that can no longer be trusted (ADR-0017).
+  ///
+  /// Two independent rules, cheapest first:
+  ///
+  /// * The running build number is the cache epoch. Entries hold verbatim
+  ///   protobuf bytes (plus the write timestamp [getStaticFresh] reads), and a
+  ///   proto change ships app and backend together, so
+  ///   every wire-breaking change also changes the build number — a mismatch
+  ///   means the whole box may decode to garbage and is truncated.
+  /// * `d:<yyyy-MM-dd>:` entries are service-date scoped. Past dates are
+  ///   deleted; today and future dates are kept, because the rail query sheet
+  ///   can legitimately look up a timetable days ahead and that entry must
+  ///   survive the launches between caching it and travelling.
+  ///
+  /// [now] and [buildNumber] are injectable for tests only.
+  static Future<void> pruneStaticCache({
+    DateTime? now,
+    Future<String> Function()? buildNumber,
+  }) async {
+    if (!staticCacheReady) return;
+    final box = staticCache;
+    final build = await (buildNumber ?? _currentBuildNumber)();
+    if (box.get(_cacheEpochKey) != build) {
+      await box.clear();
+      await box.put(_cacheEpochKey, build);
+      return;
+    }
+    final today = dateStamp(now ?? DateTime.now());
+    // linear key scan. The box holds one entry per route/OD the rider has
+    // opened — hundreds at most. Split by prefix into its own box if that
+    // ever reaches thousands.
+    final stale = box.keys
+        .whereType<String>()
+        .where((k) => _isPastDateKey(k, today))
+        .toList();
+    if (stale.isNotEmpty) await box.deleteAll(stale);
+  }
+
+  static bool _isPastDateKey(String key, String today) {
+    if (!key.startsWith('d:')) return false;
+    final end = key.indexOf(':', 2);
+    if (end < 0) return false;
+    return key.substring(2, end).compareTo(today) < 0;
+  }
+
+  static Future<String> _currentBuildNumber() =>
+      PackageInfo.fromPlatform().then((i) => i.buildNumber);
+
+  /// Service-date stamp used by `d:` cache keys, matching the `yyyy-MM-dd`
+  /// the rail screens already send to the router. Zero-padded so keys sort
+  /// and compare lexicographically.
+  static String dateStamp(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  static bool get staticCacheReady => Hive.isBoxOpen(_boxStaticCache);
+  static Box<dynamic> get staticCache => Hive.box(_boxStaticCache);
+
+  /// Verbatim protobuf response bytes for [key], or null on a miss.
+  ///
+  /// [HiveStore] deliberately never decodes these: keeping the box opaque is
+  /// what lets generated proto types stay inside `app/lib/data/` as the
+  /// CONTEXT.md operating rule requires. Callers serialize and decode in
+  /// their repository.
+  static List<int>? getStatic(String key) =>
+      staticCacheReady ? _bytesOf(staticCache.get(key)) : null;
+
+  /// Same as [getStatic], but only when the entry was written less than
+  /// [maxAge] ago — the read a cache-first caller makes before touching the
+  /// network. An entry written by a build that predates the timestamp, or one
+  /// stamped in the future because the device clock moved backwards, counts as
+  /// expired: the safe direction is to refetch.
+  static List<int>? getStaticFresh(String key, Duration maxAge) {
+    if (!staticCacheReady) return null;
+    final value = staticCache.get(key);
+    if (value is! Map) return null;
+    final writtenAt = value['t'];
+    if (writtenAt is! int) return null;
+    final age = DateTime.now().millisecondsSinceEpoch - writtenAt;
+    if (age < 0 || age > maxAge.inMilliseconds) return null;
+    return _bytesOf(value);
+  }
+
+  static List<int>? _bytesOf(Object? value) {
+    final bytes = value is Map ? value['b'] : value;
+    return bytes is List ? bytes.cast<int>() : null;
+  }
+
+  static Future<void> putStatic(String key, List<int> bytes) {
+    if (!staticCacheReady) return Future<void>.value();
+    return staticCache.put(key, {
+      'b': bytes,
+      't': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  static Future<void> deleteStatic(String key) {
+    if (!staticCacheReady) return Future<void>.value();
+    return staticCache.delete(key);
+  }
+
+  static bool get layoutReady => Hive.isBoxOpen(_boxLayout);
   static Box<dynamic> get layout => Hive.box(_boxLayout);
   static Box<dynamic> get favRoutes => Hive.box(_boxFavRoutes);
+  static bool get recentsReady => Hive.isBoxOpen(_boxRecents);
   static Box<dynamic> get recents => Hive.box(_boxRecents);
 
-  static List<Map<String, dynamic>> get recentSearches =>
-      (recents.get('items', defaultValue: const <dynamic>[]) as List)
-          .cast<Map<dynamic, dynamic>>()
-          .map((m) => m.cast<String, dynamic>())
-          .toList();
+  /// Empty until the lazily-opened box is ready (see [recentsReady]).
+  static List<Map<String, dynamic>> get recentSearches {
+    if (!recentsReady) return const [];
+    return (recents.get('items', defaultValue: const <dynamic>[]) as List)
+        .cast<Map<dynamic, dynamic>>()
+        .map((m) => m.cast<String, dynamic>())
+        .toList();
+  }
 
   static Future<void> addRecentSearch(Map<String, dynamic> item) async {
+    if (!recentsReady) return;
     final items = recentSearches
       ..removeWhere(
         (e) => e['uid'] == item['uid'] && e['type'] == item['type'],
@@ -69,22 +208,79 @@ class HiveStore {
   }
 
   /// Recent rail train-number queries as `{system, trainNo}`, newest first.
-  static List<Map<String, dynamic>> get recentTrainQueries =>
-      (recents.get('train_queries', defaultValue: const <dynamic>[]) as List)
-          .cast<Map<dynamic, dynamic>>()
-          .map((m) => m.cast<String, dynamic>())
-          .toList();
+  /// Empty until the lazily-opened box is ready (see [recentsReady]).
+  static List<Map<String, dynamic>> get recentTrainQueries {
+    if (!recentsReady) return const [];
+    return (recents.get('train_queries', defaultValue: const <dynamic>[])
+            as List)
+        .cast<Map<dynamic, dynamic>>()
+        .map((m) => m.cast<String, dynamic>())
+        .toList();
+  }
 
   static Future<void> addRecentTrainQuery(
     String system,
     String trainNo,
   ) async {
+    if (!recentsReady) return;
     final items = recentTrainQueries
       ..removeWhere(
         (e) => e['system'] == system && e['trainNo'] == trainNo,
       )
       ..insert(0, {'system': system, 'trainNo': trainNo});
     await recents.put('train_queries', items.take(6).toList());
+  }
+
+  /// Recent rail origin/destination pairs as
+  /// `{system, originId, originName, destId, destName}`, newest first.
+  ///
+  /// User intent, not cache: this survives an app update, which is why it
+  /// lives here and not in the `static_cache` box that every release
+  /// truncates. Stored as a capped list even though only the newest entry per
+  /// system is read today, so a recent-pairs list can be added later without
+  /// migrating what riders already have.
+  static List<Map<String, dynamic>> get recentOdQueries {
+    if (!recentsReady) return const [];
+    return (recents.get('od_queries', defaultValue: const <dynamic>[]) as List)
+        .cast<Map<dynamic, dynamic>>()
+        .map((m) => m.cast<String, dynamic>())
+        .toList();
+  }
+
+  /// The newest origin/destination pair for [system], or null if the rider
+  /// has never queried that system. Scoped per system because TRA and THSR
+  /// station names do not overlap — a global "last pair" would prefill the
+  /// THSR screen with TRA stations.
+  static Map<String, dynamic>? lastOdQuery(String system) {
+    for (final entry in recentOdQueries) {
+      if (entry['system'] == system) return entry;
+    }
+    return null;
+  }
+
+  static Future<void> addRecentOdQuery({
+    required String system,
+    required String originId,
+    required String originName,
+    required String destId,
+    required String destName,
+  }) async {
+    if (!recentsReady) return;
+    final items = recentOdQueries
+      ..removeWhere(
+        (e) =>
+            e['system'] == system &&
+            e['originName'] == originName &&
+            e['destName'] == destName,
+      )
+      ..insert(0, {
+        'system': system,
+        'originId': originId,
+        'originName': originName,
+        'destId': destId,
+        'destName': destName,
+      });
+    await recents.put('od_queries', items.take(6).toList());
   }
 
   static Box<dynamic> get savedPlans => Hive.box(_boxSavedPlans);
@@ -116,21 +312,52 @@ class HiveStore {
   static bool get favoritesReady => Hive.isBoxOpen(_boxFavorites);
   static Box<dynamic> get settings => Hive.box(_boxSettings);
   static bool get settingsReady => Hive.isBoxOpen(_boxSettings);
+
+  /// Last position the OS actually reported for this device, as `[lat, lon]`.
+  ///
+  /// Seeds home's camera and its *first* nearby query on the next launch, so
+  /// neither waits on `getLastKnownPosition` — which costs ~700 ms cold, and
+  /// returns nothing at all on a device whose OS cache has been evicted, where
+  /// the fallback is a GPS fix several seconds out. Null before the first fix.
+  static List<double>? get lastDevicePosition {
+    if (!settingsReady) return null;
+    final raw = settings.get('last_device_position');
+    if (raw is! List || raw.length != 2) return null;
+    final [lat, lon] = raw;
+    if (lat is! num || lon is! num) return null;
+    return [lat.toDouble(), lon.toDouble()];
+  }
+
+  static Future<void> setLastDevicePosition(double lat, double lon) async {
+    if (!settingsReady) return;
+    await settings.put('last_device_position', [lat, lon]);
+  }
+
+  /// Mirrors `SettingsRepository.liveActivityEnabled`: Android is force-
+  /// disabled while the Live Update surface is paused.
   static bool get liveActivityEnabled =>
+      !Platform.isAndroid &&
       settings.get('live_activity_enabled', defaultValue: true) as bool;
 
   static set liveActivityEnabled(bool v) =>
       settings.put('live_activity_enabled', v);
 
-  static bool get devModeEnabled =>
-      settings.get('dev_mode_enabled', defaultValue: false) as bool;
+  /// The `latest_version` the rider last waved off, so the update nudge stays
+  /// silent across launches for that release only. Null before any dismissal.
+  ///
+  /// Guarded on [settingsReady] like every other read here: the gate's first
+  /// check can land before Hive's lazy boxes open, and an unopened box throws.
+  /// Null then just means "not dismissed", which nudges — the safe direction.
+  static String? get dismissedUpdateVersion {
+    if (!settingsReady) return null;
+    final raw = settings.get('dismissed_update_version');
+    return raw is String && raw.isNotEmpty ? raw : null;
+  }
 
-  static set devModeEnabled(bool v) => settings.put('dev_mode_enabled', v);
-
-  static bool get largeText =>
-      settings.get('large_text', defaultValue: false) as bool;
-
-  static set largeText(bool v) => settings.put('large_text', v);
+  static Future<void> setDismissedUpdateVersion(String v) async {
+    if (!settingsReady) return;
+    await settings.put('dismissed_update_version', v);
+  }
 
   // Defaults to false-until-asked: a brand-new install has no stored value,
   // and `FirebaseBootstrap.init` passes this straight through as the
@@ -146,23 +373,19 @@ class HiveStore {
 
   static set pushEnabled(bool value) => settings.put('push_enabled', value);
 
-  static bool get analyticsEnabled =>
-      settings.get('analytics_enabled', defaultValue: true) as bool;
+  /// The 北部/南部 half the rider last picked from in the TRA station picker,
+  /// so it reopens where they left off. Guarded like the other settings reads:
+  /// null means "no preference", and the picker falls back to its default.
+  static String? get traHemisphere {
+    if (!settingsReady) return null;
+    final raw = settings.get('tra_hemisphere');
+    return raw is String && raw.isNotEmpty ? raw : null;
+  }
 
-  static set analyticsEnabled(bool value) =>
-      settings.put('analytics_enabled', value);
-
-  static bool get crashlyticsEnabled =>
-      settings.get('crashlytics_enabled', defaultValue: true) as bool;
-
-  static set crashlyticsEnabled(bool value) =>
-      settings.put('crashlytics_enabled', value);
-
-  static bool get performanceEnabled =>
-      settings.get('performance_enabled', defaultValue: true) as bool;
-
-  static set performanceEnabled(bool value) =>
-      settings.put('performance_enabled', value);
+  static Future<void> setTraHemisphere(String v) async {
+    if (!settingsReady) return;
+    await settings.put('tra_hemisphere', v);
+  }
 
   static List<String> get favMetroStations => List<String>.from(
     settings.get('fav_metro_stations', defaultValue: <String>[]) as List,
@@ -170,6 +393,31 @@ class HiveStore {
 
   static set favMetroStations(List<String> list) =>
       settings.put('fav_metro_stations', list);
+
+  // Active metro alight-reminder session (ADR-0015). Persisted in the settings
+  // box (opened on the critical path) so the bell state, Live Activity, and
+  // re-watch survive an app restart. Only one session is active at a time.
+  static const _mrtTrackKey = 'mrt_track_session';
+  static const _mrtTrackFiredKey = 'mrt_track_fired_id';
+
+  static Map<String, dynamic>? get mrtTrackSession {
+    final raw = settings.get(_mrtTrackKey) as Map?;
+    return raw?.cast<String, dynamic>();
+  }
+
+  static Future<void> putMrtTrackSession(Map<String, dynamic> json) =>
+      settings.put(_mrtTrackKey, json);
+
+  static Future<void> clearMrtTrackSession() => settings.delete(_mrtTrackKey);
+
+  /// Whether the lead-fired vibration has already gone off for [trackId] —
+  /// guards against a double buzz when the WatchTrack stream and the FCM data
+  /// message both deliver the same lead_fired transition.
+  static bool isMrtTrackFired(String trackId) =>
+      trackId.isNotEmpty && settings.get(_mrtTrackFiredKey) == trackId;
+
+  static Future<void> markMrtTrackFired(String trackId) =>
+      settings.put(_mrtTrackFiredKey, trackId);
 
   // Local mirror of arrival reminders (routeUid -> { stopUid -> {id, exp} }) so
   // the bell survives navigation/restart — the server has no listReminders RPC

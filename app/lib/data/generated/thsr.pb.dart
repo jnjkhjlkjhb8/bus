@@ -16,6 +16,279 @@ import 'package:protobuf/protobuf.dart' as $pb;
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
 
+/// THSR's half of the station departure board. Shaped like tra_station_board
+/// but declared separately: the two protos share no imports, matching how
+/// every other rail message in this repo is duplicated per system.
+class thsr_ask_station_board extends $pb.GeneratedMessage {
+  factory thsr_ask_station_board({
+    $core.String? stationId,
+    $core.String? date,
+    $core.String? after,
+    $core.int? direction,
+    $core.int? limit,
+  }) {
+    final result = create();
+    if (stationId != null) result.stationId = stationId;
+    if (date != null) result.date = date;
+    if (after != null) result.after = after;
+    if (direction != null) result.direction = direction;
+    if (limit != null) result.limit = limit;
+    return result;
+  }
+
+  thsr_ask_station_board._();
+
+  factory thsr_ask_station_board.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory thsr_ask_station_board.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'thsr_ask_station_board',
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'stationId')
+    ..aOS(2, _omitFieldNames ? '' : 'date')
+    ..aOS(3, _omitFieldNames ? '' : 'after')
+    ..aI(4, _omitFieldNames ? '' : 'direction')
+    ..aI(5, _omitFieldNames ? '' : 'limit')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  thsr_ask_station_board clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  thsr_ask_station_board copyWith(
+          void Function(thsr_ask_station_board) updates) =>
+      super.copyWith((message) => updates(message as thsr_ask_station_board))
+          as thsr_ask_station_board;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static thsr_ask_station_board create() => thsr_ask_station_board._();
+  @$core.override
+  thsr_ask_station_board createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static thsr_ask_station_board getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<thsr_ask_station_board>(create);
+  static thsr_ask_station_board? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get stationId => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set stationId($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasStationId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearStationId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get date => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set date($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDate() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDate() => $_clearField(2);
+
+  /// Lower bound on departure time, `HH:mm:ss`, from the caller's clock. Empty
+  /// means the whole day.
+  @$pb.TagNumber(3)
+  $core.String get after => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set after($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAfter() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAfter() => $_clearField(3);
+
+  /// 0 南下 / 1 北上.
+  @$pb.TagNumber(4)
+  $core.int get direction => $_getIZ(3);
+  @$pb.TagNumber(4)
+  set direction($core.int value) => $_setSignedInt32(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasDirection() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearDirection() => $_clearField(4);
+
+  /// Departures to return. 0 means the default (20); the router caps it.
+  @$pb.TagNumber(5)
+  $core.int get limit => $_getIZ(4);
+  @$pb.TagNumber(5)
+  set limit($core.int value) => $_setSignedInt32(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasLimit() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearLimit() => $_clearField(5);
+}
+
+class thsr_station_board extends $pb.GeneratedMessage {
+  factory thsr_station_board({
+    $core.Iterable<thsr_station_departure>? items,
+  }) {
+    final result = create();
+    if (items != null) result.items.addAll(items);
+    return result;
+  }
+
+  thsr_station_board._();
+
+  factory thsr_station_board.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory thsr_station_board.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'thsr_station_board',
+      createEmptyInstance: create)
+    ..pPM<thsr_station_departure>(1, _omitFieldNames ? '' : 'items',
+        subBuilder: thsr_station_departure.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  thsr_station_board clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  thsr_station_board copyWith(void Function(thsr_station_board) updates) =>
+      super.copyWith((message) => updates(message as thsr_station_board))
+          as thsr_station_board;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static thsr_station_board create() => thsr_station_board._();
+  @$core.override
+  thsr_station_board createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static thsr_station_board getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<thsr_station_board>(create);
+  static thsr_station_board? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<thsr_station_departure> get items => $_getList(0);
+}
+
+class thsr_station_departure extends $pb.GeneratedMessage {
+  factory thsr_station_departure({
+    $core.String? trainDate,
+    $core.String? trainNo,
+    $core.String? destinationStationName,
+    $core.String? departureTime,
+    $core.int? direction,
+    $core.String? note,
+  }) {
+    final result = create();
+    if (trainDate != null) result.trainDate = trainDate;
+    if (trainNo != null) result.trainNo = trainNo;
+    if (destinationStationName != null)
+      result.destinationStationName = destinationStationName;
+    if (departureTime != null) result.departureTime = departureTime;
+    if (direction != null) result.direction = direction;
+    if (note != null) result.note = note;
+    return result;
+  }
+
+  thsr_station_departure._();
+
+  factory thsr_station_departure.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory thsr_station_departure.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'thsr_station_departure',
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'TrainDate', protoName: 'TrainDate')
+    ..aOS(2, _omitFieldNames ? '' : 'TrainNo', protoName: 'TrainNo')
+    ..aOS(3, _omitFieldNames ? '' : 'DestinationStationName',
+        protoName: 'Destination_Station_Name')
+    ..aOS(4, _omitFieldNames ? '' : 'DepartureTime', protoName: 'DepartureTime')
+    ..aI(5, _omitFieldNames ? '' : 'Direction', protoName: 'Direction')
+    ..aOS(6, _omitFieldNames ? '' : 'Note', protoName: 'Note')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  thsr_station_departure clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  thsr_station_departure copyWith(
+          void Function(thsr_station_departure) updates) =>
+      super.copyWith((message) => updates(message as thsr_station_departure))
+          as thsr_station_departure;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static thsr_station_departure create() => thsr_station_departure._();
+  @$core.override
+  thsr_station_departure createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static thsr_station_departure getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<thsr_station_departure>(create);
+  static thsr_station_departure? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get trainDate => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set trainDate($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTrainDate() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTrainDate() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get trainNo => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set trainNo($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasTrainNo() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearTrainNo() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get destinationStationName => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set destinationStationName($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasDestinationStationName() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearDestinationStationName() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get departureTime => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set departureTime($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasDepartureTime() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearDepartureTime() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.int get direction => $_getIZ(4);
+  @$pb.TagNumber(5)
+  set direction($core.int value) => $_setSignedInt32(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasDirection() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearDirection() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.String get note => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set note($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasNote() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearNote() => $_clearField(6);
+}
+
 class thsr_ask_detain extends $pb.GeneratedMessage {
   factory thsr_ask_detain({
     $core.String? date,

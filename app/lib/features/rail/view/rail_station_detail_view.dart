@@ -1,26 +1,47 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/data/models/favorite.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
-import 'package:wheres_the_car/features/rail/view/home_rail_query_sheet.dart';
-import 'package:wheres_the_car/features/rail/widgets/rail_query_sheet.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
-import 'package:wheres_the_car/shared/widgets/sheet_detail_header.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/data/models/favorite.dart';
+import 'package:wheres_the_bus/data/models/rail_station_board.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_station_board_bloc.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_station_board_event.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_station_board_state.dart';
+import 'package:wheres_the_bus/features/rail/view/home_rail_query_sheet.dart';
+import 'package:wheres_the_bus/features/rail/view/rail_train_screen.dart';
+import 'package:wheres_the_bus/features/rail/widgets/rail_query_sheet.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/motion/stagger.dart';
+import 'package:wheres_the_bus/shared/widgets/app_button.dart';
+import 'package:wheres_the_bus/shared/widgets/app_sliding_segment.dart';
+import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_bus/shared/widgets/error_state_view.dart';
+import 'package:wheres_the_bus/shared/widgets/sheet_detail_header.dart';
+import 'package:wheres_the_bus/shared/widgets/state_cards.dart';
+import 'package:wheres_the_bus/shared/widgets/train_type_chip.dart';
 
-/// Home sheet second-level view for a TRA/THSR station. Doesn't board trains
-/// itself — it seeds the shared query form with this station as the origin and
-/// pushes it onto the home sheet navigator.
+part '../widgets/rail_station_board_widgets.dart';
+
+/// Home sheet second-level view for a TRA/THSR station: the next departures
+/// from this station, in the direction the rider picks.
+///
+/// It answers the question a rider taps a station to ask — "when does the next
+/// train leave here" — without making them name a destination first. The
+/// origin/destination query it used to be is still one tap away at the bottom,
+/// because fares, arrival times and other dates only exist on that path.
 class RailStationDetailView extends StatelessWidget {
   const RailStationDetailView({
     required this.system,
     required this.stationId,
     required this.name,
+    this.bloc,
     super.key,
   });
 
@@ -28,53 +49,36 @@ class RailStationDetailView extends StatelessWidget {
   final String stationId;
   final String name;
 
+  /// An already-provided board, for callers that drive it themselves (tests,
+  /// and any future screen that needs the board's state outside this sheet).
+  /// Omitted, this widget builds and owns one.
+  final RailStationBoardBloc? bloc;
+
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(0, 0, 0, 40),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SheetDetailHeader(
-            title: name,
-            favorite: Favorite(
-              type: FavoriteType.railStation,
-              refId: stationId,
-              title: name,
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '查詢經過本站的班次時刻',
-                  style: AppTextStyles.bodyRegular.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                _QueryButton(
-                  system: system,
-                  stationId: stationId,
-                  name: name,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+    final content = _StationBoard(
+      system: system,
+      stationId: stationId,
+      name: name,
+    );
+    final existing = bloc;
+    if (existing != null) {
+      return BlocProvider<RailStationBoardBloc>.value(
+        value: existing,
+        child: content,
+      );
+    }
+    return BlocProvider(
+      create: (_) =>
+          RailStationBoardBloc(system: system, stationId: stationId)
+            ..add(const RailStationBoardRequested(RailBoardDirection.forward)),
+      child: content,
     );
   }
 }
 
-/// Opens the query form pre-seeded with this station on the enclosing (home
-/// sheet) navigator. Matches rail_result_card's primary button style: filled,
-/// 44 high.
-class _QueryButton extends StatelessWidget {
-  const _QueryButton({
+class _StationBoard extends StatelessWidget {
+  const _StationBoard({
     required this.system,
     required this.stationId,
     required this.name,
@@ -84,50 +88,64 @@ class _QueryButton extends StatelessWidget {
   final String stationId;
   final String name;
 
-  void _handleTap(BuildContext context) {
-    unawaited(HapticService.instance.lightTap());
-    unawaited(
-      Navigator.of(context).push(
-        PagedSheetRoute<void>(
-          scrollConfiguration: const SheetScrollConfiguration(),
-          initialOffset: AppSheetSnap.tall,
-          snapGrid: const SheetSnapGrid(
-            snaps: [AppSheetSnap.peek, AppSheetSnap.tall, AppSheetSnap.full],
-          ),
-          builder: (_) => HomeRailQuerySheet(
-            preset: RailQueryPreset(
-              system: system,
-              originName: name,
-              originId: stationId,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  /// 台鐵 labels its two directions 順行/逆行 and 高鐵 labels them 南下/北上.
+  /// Each keeps its own operator's wording rather than being forced into one
+  /// shared pair — the row's 往<終點站> is what tells the rider which is theirs.
+  Map<RailBoardDirection, String> _directions(AppI18n i18n) =>
+      system == RailSystem.tra
+      ? {
+          RailBoardDirection.forward: i18n.railDirectionForward,
+          RailBoardDirection.reverse: i18n.railDirectionReverse,
+        }
+      : {
+          RailBoardDirection.forward: i18n.railDirectionSouthbound,
+          RailBoardDirection.reverse: i18n.railDirectionNorthbound,
+        };
 
   @override
   Widget build(BuildContext context) {
+    final i18n = AppI18n.of(context);
     final cs = Theme.of(context).colorScheme;
-    return Pressable(
-      onTap: () => _handleTap(context),
-      semanticLabel: '查班次',
-      child: Container(
-        height: 44,
-        width: double.infinity,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: cs.primary,
-          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-        ),
-        child: Text(
-          '查班次',
-          style: AppTextStyles.bodyRegular.copyWith(
-            color: cs.onPrimary,
-            fontWeight: FontWeight.w600,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      // Stretch, not start: the segment, the footer button and the empty-state
+      // notice all want the sheet's full width. Left to shrink-wrap they hug
+      // their content and drift to the left edge.
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SheetDetailHeader(
+          title: name,
+          subtitle: Text(
+            '${system == RailSystem.tra ? i18n.modeTra : i18n.modeThsr}'
+            ' · ${i18n.railStationBoard}',
+            style: AppTextStyles.bodySmall.copyWith(
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+          favorite: Favorite(
+            type: FavoriteType.railStation,
+            refId: stationId,
+            title: name,
           ),
         ),
-      ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+          child: BlocBuilder<RailStationBoardBloc, RailStationBoardState>(
+            buildWhen: (p, n) => p.direction != n.direction,
+            builder: (context, state) => AppSlidingSegment<RailBoardDirection>(
+              options: _directions(i18n),
+              value: state.direction,
+              onChanged: (direction) => context
+                  .read<RailStationBoardBloc>()
+                  .add(RailStationBoardRequested(direction)),
+            ),
+          ),
+        ),
+        Flexible(
+          child: _BoardBody(system: system),
+        ),
+        _QueryFooter(system: system, stationId: stationId, name: name),
+      ],
     );
   }
 }

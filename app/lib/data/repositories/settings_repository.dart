@@ -1,5 +1,8 @@
-import 'package:flutter/material.dart' show ThemeMode;
-import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'dart:io' show Platform;
+
+import 'package:flutter/material.dart' show Locale, ThemeMode;
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/data/models/fare_type.dart';
 
 /// Key-value backing store for [SettingsRepository].
 ///
@@ -27,17 +30,48 @@ class SettingsRepository {
   bool _boolValue(String key, {required bool defaultValue}) =>
       _store.get(key, defaultValue: defaultValue) as bool? ?? defaultValue;
 
+  /// Guarded on [SettingsStore.ready] because it is read on the Live Activity
+  /// session-start path, which can run before the settings box opens and must
+  /// not throw. Written as `||` rather than the ternary used by [fareType] and
+  /// [appearanceMode] because `avoid_bool_literals_in_conditional_expressions`
+  /// rejects a ternary yielding a bool literal; the `true` fallback is this
+  /// setting's declared default.
+  /// Android is force-disabled: the Live Update notification surface is
+  /// paused, so every session/board/track start path short-circuits here
+  /// rather than being torn out of each feature.
   bool get liveActivityEnabled =>
-      _boolValue('live_activity_enabled', defaultValue: true);
+      !Platform.isAndroid &&
+      (!_store.ready ||
+          _boolValue('live_activity_enabled', defaultValue: true));
   set liveActivityEnabled(bool value) =>
       _store.put('live_activity_enabled', value);
 
-  bool get devModeEnabled =>
-      _boolValue('dev_mode_enabled', defaultValue: false);
-  set devModeEnabled(bool value) => _store.put('dev_mode_enabled', value);
+  /// Whether shaking the phone offers to open the report form.
+  ///
+  /// Guarded on [SettingsStore.ready] like [liveActivityEnabled]: the listener
+  /// that owns the accelerometer subscription starts with the first frame,
+  /// which can precede the settings box opening.
+  bool get shakeToReport =>
+      !_store.ready || _boolValue(shakeToReportKey, defaultValue: true);
+  set shakeToReport(bool value) => _store.put(shakeToReportKey, value);
 
-  bool get largeText => _boolValue('large_text', defaultValue: false);
-  set largeText(bool value) => _store.put('large_text', value);
+  /// Settings-box key behind [shakeToReport]. Exposed so the shake listener
+  /// can watch this key alone and attach or drop the accelerometer stream the
+  /// instant the rider flips the switch.
+  static const String shakeToReportKey = 'shake_to_report';
+
+  /// The rider's own ticket type, applied to every fare the app quotes. Read
+  /// on every fare render (bus and rail), so it is guarded on
+  /// [SettingsStore.ready] the same way [appearanceMode] is.
+  FareType get fareType => _store.ready
+      ? FareType.fromKey(_store.get(fareTypeKey) as String?)
+      : FareType.full;
+  set fareType(FareType value) => _store.put(fareTypeKey, value.key);
+
+  /// Settings-box key behind [fareType]. Exposed so fare widgets can listen to
+  /// this key alone and re-render the instant the preference changes, instead
+  /// of showing the old ticket type until the screen is rebuilt.
+  static const String fareTypeKey = 'fare_type';
 
   /// Persisted appearance preference: 'system', 'light', or 'dark'.
   /// Guarded on [SettingsStore.ready] so it is safe to read before the box
@@ -54,22 +88,30 @@ class SettingsRepository {
     _ => ThemeMode.system,
   };
 
+  /// Persisted language preference: 'system', 'zh', 'zh_CN' or 'en'. Guarded on
+  /// [SettingsStore.ready] like [appearanceMode] — it is read while building
+  /// the root `MaterialApp`, which can happen before the box opens.
+  String get languageCode => _store.ready
+      ? (_store.get(languageKey, defaultValue: 'system') as String? ?? 'system')
+      : 'system';
+  set languageCode(String value) => _store.put(languageKey, value);
+
+  /// Settings-box key behind [languageCode]. Exposed so the root app can
+  /// listen on this key alone and re-resolve the locale the instant the
+  /// rider picks a language, with no restart.
+  static const String languageKey = 'language';
+
+  /// Locale for `MaterialApp.locale`. Null is the answer for 'system', not a
+  /// missing one: it is what hands resolution back to the device.
+  Locale? get locale => switch (languageCode) {
+    'zh' => const Locale('zh'),
+    'zh_CN' => const Locale('zh', 'CN'),
+    'en' => const Locale('en'),
+    _ => null,
+  };
+
   bool get pushEnabled => _boolValue('push_enabled', defaultValue: true);
   set pushEnabled(bool value) => _store.put('push_enabled', value);
-
-  bool get analyticsEnabled =>
-      _boolValue('analytics_enabled', defaultValue: true);
-  set analyticsEnabled(bool value) => _store.put('analytics_enabled', value);
-
-  bool get crashlyticsEnabled =>
-      _boolValue('crashlytics_enabled', defaultValue: true);
-  set crashlyticsEnabled(bool value) =>
-      _store.put('crashlytics_enabled', value);
-
-  bool get performanceEnabled =>
-      _boolValue('performance_enabled', defaultValue: true);
-  set performanceEnabled(bool value) =>
-      _store.put('performance_enabled', value);
 
   List<String> get favMetroStations => List<String>.from(
     _store.get('fav_metro_stations', defaultValue: const <String>[]) as List? ??

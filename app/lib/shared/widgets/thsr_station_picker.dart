@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/shared/widgets/app_button.dart';
-import 'package:wheres_the_car/shared/widgets/app_dialog.dart';
-import 'package:wheres_the_car/shared/widgets/clock_dial.dart';
-import 'package:wheres_the_car/shared/widgets/station_display_field.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/widgets/app_button.dart';
+import 'package:wheres_the_bus/shared/widgets/app_dialog.dart';
+import 'package:wheres_the_bus/shared/widgets/clock_dial.dart';
+import 'package:wheres_the_bus/shared/widgets/station_display_field.dart';
 
 const _thsrStations = [
   '南港',
@@ -24,7 +25,7 @@ const _thsrStations = [
 Future<String?> showTHSRStationPicker(BuildContext context) {
   return showAppModal<String>(
     context: context,
-    barrierLabel: '選擇車站',
+    barrierLabel: AppI18n.of(context).commonChooseStation,
     builder: (_) => const _THSRPickerDialog(),
   );
 }
@@ -55,7 +56,7 @@ class _THSRPickerDialogState extends State<_THSRPickerDialog> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '選擇車站',
+              AppI18n.of(context).commonChooseStation,
               style: AppTextStyles.bodyRegular.copyWith(
                 fontWeight: FontWeight.w600,
                 color: cs.onSurfaceVariant,
@@ -82,12 +83,12 @@ class _THSRPickerDialogState extends State<_THSRPickerDialog> {
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 AppButton.text(
-                  label: '取消',
+                  label: AppI18n.of(context).commonCancel,
                   onPressed: () => Navigator.of(context).pop(),
                 ),
                 const SizedBox(width: 8),
                 AppButton.text(
-                  label: '確定',
+                  label: AppI18n.of(context).commonConfirm,
                   onPressed: () =>
                       Navigator.of(context).pop(_thsrStations[_selectedIndex]),
                 ),

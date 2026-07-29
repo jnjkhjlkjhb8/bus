@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -28,6 +28,14 @@ type thsrStopsRow struct {
 	Stationname   string `db:"stationname"`
 	Arrivaltime   string `db:"arrivaltime"`
 	Departuretime string `db:"departuretime"`
+}
+type thsrStationBoardRow struct {
+	Train_date          time.Time `db:"train_date"`
+	Trainno             string    `db:"trainno"`
+	Ending_station_name string    `db:"ending_station_name"`
+	Departuretime       string    `db:"departuretime"`
+	Direction           int32     `db:"direction"`
+	Note                string    `db:"note"`
 }
 type thsrfare struct {
 	TicketType uint8 `db:"ticket_type"`
@@ -114,6 +122,38 @@ func thsrStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr strin
 		return nil, 0, err
 	}
 	return b, len(row), nil
+}
+
+// thsrStationBoardPayload is traStationBoardPayload's THSR half: the whole day
+// of departures from one station in one direction, terminating services
+// excluded, sliced by the handler rather than here. Never fetched from TDX
+// (ADR-0005).
+func thsrStationBoardPayload(ctx context.Context, db railDB, station string, date time.Time, direction int32) ([]*models.ThsrStationDeparture, error) {
+	station, err := resolveRailStationID(ctx, db, "thsr_stations", station)
+	if err != nil {
+		return nil, err
+	}
+	const q = `SELECT train_date,trainno,ending_station_name,departuretime,direction,note FROM thsr_timetable WHERE stationid = $1 AND train_date = $2 AND direction = $3 AND stationid <> ending_station_id ORDER BY departuretime;`
+	rows, err := db.Query(ctx, q, station, date.Format(time.DateOnly), direction)
+	if err != nil {
+		return nil, err
+	}
+	row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[thsrStationBoardRow])
+	if err != nil {
+		return nil, err
+	}
+	arr := make([]*models.ThsrStationDeparture, 0, len(row))
+	for _, temp := range row {
+		arr = append(arr, &models.ThsrStationDeparture{
+			TrainDate:                temp.Train_date.Format(time.DateOnly),
+			TrainNo:                  temp.Trainno,
+			Destination_Station_Name: temp.Ending_station_name,
+			DepartureTime:            temp.Departuretime,
+			Direction:                temp.Direction,
+			Note:                     temp.Note,
+		})
+	}
+	return arr, nil
 }
 
 // thsrTimetablePayload reads THSR services calling at both the origin and

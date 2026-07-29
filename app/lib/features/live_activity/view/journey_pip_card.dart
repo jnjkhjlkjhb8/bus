@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 /// Compact card rendered as the whole UI while Android PiP is active.
 class JourneyPipCard extends StatelessWidget {
@@ -31,7 +32,9 @@ class JourneyPipCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              waiting ? '下一班 ${leg.routeLabel}' : leg.routeLabel,
+              waiting
+                  ? AppI18n.of(context).nextRunIs(leg.routeLabel)
+                  : leg.routeLabel,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.titleMedium,
@@ -41,7 +44,9 @@ class JourneyPipCard extends StatelessWidget {
               children: [
                 Expanded(
                   child: Text(
-                    waiting ? '於 $nextName 上車' : '下一站 $nextName',
+                    waiting
+                        ? AppI18n.of(context).boardAtStop(nextName)
+                        : AppI18n.of(context).nextStopIs(nextName),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodySmall,
@@ -49,7 +54,7 @@ class JourneyPipCard extends StatelessWidget {
                 ),
                 if (waiting && s.eta != null)
                   Text(
-                    '${s.eta!.inMinutes}分',
+                    AppI18n.of(context).minutesTight(s.eta!.inMinutes),
                     style: AppTextStyles.memo.copyWith(
                       fontSize: 24,
                       fontWeight: FontWeight.w700,

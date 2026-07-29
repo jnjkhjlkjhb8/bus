@@ -33,51 +33,44 @@ class _PreviewSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     final sections = route.sections;
     final firstDeparture = sections.isEmpty
         ? ''
         : sections.first.departure.name;
-    final originName = _firstNonEmpty([origin, firstDeparture, '出發地']);
+    final originName = _firstNonEmpty([
+      origin,
+      firstDeparture,
+      AppI18n.of(context).goOriginFallback,
+    ]);
     // _lastNamedArrival always resolves (falls back to 目的地).
-    final destName = _firstNonEmpty([dest, _lastNamedArrival(sections)]);
-    return SheetViewport(
-      child: SheetExitGestureDetector(
-        onExit: onBack,
-        child: Sheet(
-          controller: controller,
-          initialOffset: initialOffset,
-          snapGrid: AppSheetSnap.grid,
-          scrollConfiguration: const SheetScrollConfiguration(),
-          decoration: MaterialSheetDecoration(
-            size: SheetSize.stretch,
-            color: cs.surfaceContainerLow,
-            borderRadius: const BorderRadius.vertical(
-              top: Radius.circular(AppTheme.radiusBottomSheet),
-            ),
-            clipBehavior: Clip.antiAlias,
+    final destName = _firstNonEmpty([
+      dest,
+      _lastNamedArrival(AppI18n.of(context), sections),
+    ]);
+    return AppSheet(
+      controller: controller,
+      // The header's own back button is the way out (see AppSheet.onExit).
+      onExit: null,
+      initialOffset: initialOffset,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SheetDragHandle(),
+          _PreviewSummaryHeader(
+            route: route,
+            originName: originName,
+            destName: destName,
+            isFastest: isFastest,
+            isSaved: isSaved,
+            onBack: onBack,
+            onToggleSave: onToggleSave,
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SheetDragHandle(),
-              _PreviewSummaryHeader(
-                route: route,
-                originName: originName,
-                destName: destName,
-                isFastest: isFastest,
-                isSaved: isSaved,
-                onBack: onBack,
-                onToggleSave: onToggleSave,
-              ),
-              const DividerLine(),
-              Expanded(
-                child: _PreviewItinerary(route: route, destName: destName),
-              ),
-              _PreviewFooter(onStartNavigation: onStartNavigation),
-            ],
+          const DividerLine(),
+          Expanded(
+            child: _PreviewItinerary(route: route, destName: destName),
           ),
-        ),
+          _PreviewFooter(onStartNavigation: onStartNavigation),
+        ],
       ),
     );
   }
@@ -124,7 +117,7 @@ class _PreviewSummaryHeader extends StatelessWidget {
             children: [
               Pressable(
                 onTap: onBack,
-                semanticLabel: '返回路線列表',
+                semanticLabel: AppI18n.of(context).goBackToRouteList,
                 child: SizedBox(
                   width: 40,
                   height: 40,
@@ -200,7 +193,7 @@ class _PreviewSummaryHeader extends StatelessWidget {
                           Padding(
                             padding: const EdgeInsets.only(bottom: 2),
                             child: Text(
-                              '分',
+                              AppI18n.of(context).goMinutesUnit,
                               style: AppTextStyles.bodySmall.copyWith(
                                 color: cs.onSurfaceVariant,
                               ),
@@ -208,7 +201,9 @@ class _PreviewSummaryHeader extends StatelessWidget {
                           ),
                           if (isFastest) ...[
                             const SizedBox(width: 8),
-                            const _PreviewBadge(label: '最快'),
+                            _PreviewBadge(
+                              label: AppI18n.of(context).goBadgeFastest,
+                            ),
                           ],
                         ],
                       ),
@@ -222,12 +217,12 @@ class _PreviewSummaryHeader extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     _PreviewClock(
-                      label: '出發',
+                      label: AppI18n.of(context).busDepart,
                       value: formatClock(route.startTime),
                     ),
                     const SizedBox(height: 4),
                     _PreviewClock(
-                      label: '抵達',
+                      label: AppI18n.of(context).railColArrive,
                       value: formatClock(route.endTime),
                     ),
                   ],
@@ -259,7 +254,7 @@ class _PreviewMeta extends StatelessWidget {
         ),
         const SizedBox(width: 4),
         Text(
-          '步行 ${walkMinutes(route)} 分',
+          AppI18n.of(context).walkMinutes(walkMinutes(route)),
           style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
         ),
         if (route.totalFare > 0) ...[
@@ -354,7 +349,9 @@ class _PreviewSaveButton extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
       onTap: onTap,
-      semanticLabel: saved ? '取消保存路線' : '保存路線',
+      semanticLabel: saved
+          ? AppI18n.of(context).goUnsaveRoute
+          : AppI18n.of(context).goSaveRoute,
       child: SizedBox(
         width: 40,
         height: 40,
@@ -427,7 +424,7 @@ class _PreviewItinerary extends StatelessWidget {
             if (formatClock(route.endTime).isNotEmpty) ...[
               const SizedBox(height: 2),
               Text(
-                '預計 ${formatClock(route.endTime)} 抵達',
+                AppI18n.of(context).arriveAtTime(formatClock(route.endTime)),
                 style: AppTextStyles.bodySmall.copyWith(
                   color: cs.onSurfaceVariant,
                   fontFeatures: AppTextStyles.tabularFigures,
@@ -464,7 +461,7 @@ class _PreviewItinerary extends StatelessWidget {
         : '';
     final target = _firstNonEmpty([s.arrival.name, nextBoard, destName]);
     return Text(
-      '步行至 $target',
+      AppI18n.of(context).walkTo(target),
       maxLines: 2,
       overflow: TextOverflow.ellipsis,
       style: AppTextStyles.bodyRegular.copyWith(
@@ -479,12 +476,13 @@ class _PreviewItinerary extends StatelessWidget {
     final color = transitColor(s.transport, cs);
     final rideStops = s.intermediateStops.length + 1;
     final headsign = s.transport.headsign;
-    final legLine =
-        '搭 $rideStops 站${headsign.isNotEmpty ? ' · 往$headsign' : ''}';
+    final legLine = headsign.isNotEmpty
+        ? AppI18n.of(context).rideStopsTowards(rideStops, headsign)
+        : AppI18n.of(context).rideStops(rideStops);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        AppBadge(label: sectionLabel(s), color: color),
+        AppBadge(label: sectionLabel(AppI18n.of(context), s), color: color),
         const SizedBox(height: 6),
         Text(
           '${s.departure.name} → ${s.arrival.name}',
@@ -563,7 +561,7 @@ class _PreviewRow extends StatelessWidget {
           if (minutes != null) ...[
             const SizedBox(width: 12),
             Text(
-              '$minutes 分',
+              AppI18n.of(context).minutesValue(minutes!),
               style: AppTextStyles.memo.copyWith(
                 fontSize: AppTextStyles.bodyRegular.fontSize,
                 fontWeight: FontWeight.w700,
@@ -626,7 +624,10 @@ class _PreviewFooter extends StatelessWidget {
       padding: EdgeInsets.fromLTRB(20, 12, 20, 12 + bottomInset),
       child: SizedBox(
         width: double.infinity,
-        child: AppButton(label: '開始導航', onPressed: onStartNavigation),
+        child: AppButton(
+          label: AppI18n.of(context).goStartNavigation,
+          onPressed: onStartNavigation,
+        ),
       ),
     );
   }

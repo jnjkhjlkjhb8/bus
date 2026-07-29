@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/decoders/tra_decoder.dart';
-import 'package:wheres_the_car/data/generated/tra.pb.dart';
+import 'package:wheres_the_bus/data/decoders/tra_decoder.dart';
+import 'package:wheres_the_bus/data/generated/tra.pb.dart';
+import 'package:wheres_the_bus/data/models/tra_models.dart';
 
 const TraDecoder _decoder = TraDecoder.instance;
 
@@ -35,10 +36,12 @@ void main() {
     // the fallback `?? 0` fires. This silently drops a valid travel time to
     // 0 rather than parsing the hour. Pinning current (wrong-looking)
     // behavior -- see findings, not fixed here.
-    test("'1時30分' (hour+minute suffix form) is not parsed and falls back to 0",
-        () {
-      expect(_travelMinutesFor('1時30分'), 0);
-    });
+    test(
+      "'1時30分' (hour+minute suffix form) is not parsed and falls back to 0",
+      () {
+        expect(_travelMinutesFor('1時30分'), 0);
+      },
+    );
 
     test('empty string does not throw and yields 0', () {
       expect(_travelMinutesFor(''), 0);
@@ -93,6 +96,58 @@ void main() {
 
     test('empty timetable yields an empty list without throwing', () {
       expect(_decoder.decodeTimetable(tra_timetables()), isEmpty);
+    });
+  });
+
+  group('mask bits via decodeTimetable', () {
+    // Bit positions are set by railMask() in services/functions/rail.go, in
+    // struct field order: wheel, pack, dining, bike, breast, daily, service,
+    // suspended. Reading one bit off by one silently mislabels every train in
+    // the list — 停駛 shown as 每日行駛 — so pin the whole map, not a sample.
+    TraTimetableItem decodeWithMask(int mask) => _decoder
+        .decodeTimetable(
+          tra_timetables(
+            items: [tra_timetable(trainNo: 'T1', mask: mask)],
+          ),
+        )
+        .single;
+
+    test('each bit lands on its own flag', () {
+      expect(decodeWithMask(1 << 0).isDisabledFriendly, isTrue);
+      expect(decodeWithMask(1 << 2).hasDiningCar, isTrue);
+      expect(decodeWithMask(1 << 3).hasBike, isTrue);
+      expect(decodeWithMask(1 << 4).hasBreastfeeding, isTrue);
+      expect(decodeWithMask(1 << 5).runsDaily, isTrue);
+      expect(decodeWithMask(1 << 6).isAddedService, isTrue);
+      expect(decodeWithMask(1 << 7).isSuspended, isTrue);
+    });
+
+    test('bit 1 (行李服務) sets nothing — it has no icon and no UI', () {
+      final item = decodeWithMask(1 << 1);
+      expect(item.isDisabledFriendly, isFalse);
+      expect(item.hasDiningCar, isFalse);
+      expect(item.hasBike, isFalse);
+      expect(item.hasBreastfeeding, isFalse);
+      expect(item.runsDaily, isFalse);
+      expect(item.isAddedService, isFalse);
+      expect(item.isSuspended, isFalse);
+    });
+
+    test('a suspended train with amenities keeps both readings', () {
+      // 133 = wheel | dining | suspended, the combination load_sink_test.go
+      // pins on the Go side.
+      final item = decodeWithMask(133);
+      expect(item.isDisabledFriendly, isTrue);
+      expect(item.hasDiningCar, isTrue);
+      expect(item.isSuspended, isTrue);
+      expect(item.hasBike, isFalse);
+    });
+
+    test('mask 0 leaves every flag clear', () {
+      final item = decodeWithMask(0);
+      expect(item.isDisabledFriendly, isFalse);
+      expect(item.isSuspended, isFalse);
+      expect(item.runsDaily, isFalse);
     });
   });
 

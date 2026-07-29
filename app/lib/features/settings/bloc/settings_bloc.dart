@@ -1,22 +1,17 @@
 import 'dart:async';
 
-import 'package:firebase_analytics/firebase_analytics.dart';
-import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/firebase/firebase_bootstrap.dart';
-import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
-import 'package:wheres_the_car/core/powersync/powersync_service.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_event.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_state.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_bootstrap.dart';
+import 'package:wheres_the_bus/core/firebase/remote_config.dart';
+import 'package:wheres_the_bus/core/powersync/powersync_service.dart';
+import 'package:wheres_the_bus/core/update/update_status.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_event.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_state.dart';
 
 /// Applies the requested push preference and returns the effective state.
 typedef PushUpdater = Future<bool> Function({required bool requested});
-
-/// Number of version-row taps that unlocks developer mode.
-const _devModeTapThreshold = 5;
 
 class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
   SettingsBloc({
@@ -24,11 +19,15 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
     PushUpdater? updatePushPreference,
     Future<PackageInfo> Function()? packageInfoLoader,
     DateTime? Function()? lastSyncedAtOf,
+    Future<bool> Function()? refreshConfig,
+    String Function()? latestVersionOf,
   }) : this._(
          settings ?? SettingsRepository.instance,
          updatePushPreference ?? FirebaseBootstrap.updatePushPreference,
          packageInfoLoader ?? PackageInfo.fromPlatform,
          lastSyncedAtOf ?? (() => PowerSyncService.instance.lastSyncedAt),
+         refreshConfig ?? AppConfig.refresh,
+         latestVersionOf ?? (() => AppConfig.getString('latest_version')),
        );
 
   SettingsBloc._(
@@ -36,15 +35,16 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
     this._updatePush,
     this._packageInfoLoader,
     this._lastSyncedAtOf,
+    this._refreshConfig,
+    this._latestVersionOf,
   ) : super(_initialState(_settings)) {
     on<AppearanceSelected>(_onAppearanceSelected);
     on<LanguageSelected>(_onLanguageSelected);
-    on<LargeTextToggled>(_onLargeTextToggled);
+    on<FareTypeSelected>(_onFareTypeSelected);
     on<LiveActivityToggled>(_onLiveActivityToggled);
+    on<ShakeToReportToggled>(_onShakeToReportToggled);
     on<PushToggled>(_onPushToggled);
-    on<AnalyticsToggled>(_onAnalyticsToggled);
-    on<CrashlyticsToggled>(_onCrashlyticsToggled);
-    on<VersionTapped>(_onVersionTapped);
+    on<UpdateCheckRequested>(_onUpdateCheckRequested);
     on<AppMetadataLoaded>(_onAppMetadataLoaded);
     unawaited(_loadMetadata());
   }
@@ -53,6 +53,8 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
   final PushUpdater _updatePush;
   final Future<PackageInfo> Function() _packageInfoLoader;
   final DateTime? Function() _lastSyncedAtOf;
+  final Future<bool> Function() _refreshConfig;
+  final String Function() _latestVersionOf;
 
   /// Reads the real app version and PowerSync freshness (F46) and emits them
   /// once both are known. Each loader is guarded independently so, e.g., a
@@ -95,12 +97,11 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
 
   static SettingsState _initialState(SettingsRepository s) => SettingsState(
     appearance: Appearance.fromKey(s.appearanceMode),
-    devMode: s.devModeEnabled,
+    language: Language.fromKey(s.languageCode),
     pushEnabled: s.pushEnabled,
-    analyticsEnabled: s.analyticsEnabled,
-    crashlyticsEnabled: s.crashlyticsEnabled,
-    largeText: s.largeText,
+    fareType: s.fareType,
     liveActivityEnabled: s.liveActivityEnabled,
+    shakeToReport: s.shakeToReport,
   );
 
   void _onAppearanceSelected(
@@ -111,14 +112,20 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
     emit(state.copyWith(appearance: e.appearance));
   }
 
-  // Language is UI-only state; it is not persisted.
+  /// Writes through to the settings box before emitting: the root app listens
+  /// on [SettingsRepository.languageKey] and re-resolves the locale from that
+  /// write, so the whole UI switches language on the same frame as the row.
   void _onLanguageSelected(LanguageSelected e, Emitter<SettingsState> emit) {
+    _settings.languageCode = e.language.key;
     emit(state.copyWith(language: e.language));
   }
 
-  void _onLargeTextToggled(LargeTextToggled e, Emitter<SettingsState> emit) {
-    _settings.largeText = e.value;
-    emit(state.copyWith(largeText: e.value));
+  void _onFareTypeSelected(FareTypeSelected e, Emitter<SettingsState> emit) {
+    // Fare widgets read the persisted value through a Hive listenable rather
+    // than this bloc, so the write is what re-renders them — this emit only
+    // updates the settings row itself.
+    _settings.fareType = e.fareType;
+    emit(state.copyWith(fareType: e.fareType));
   }
 
   void _onLiveActivityToggled(
@@ -127,6 +134,17 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
   ) {
     _settings.liveActivityEnabled = e.value;
     emit(state.copyWith(liveActivityEnabled: e.value));
+  }
+
+  /// The write is what matters: the shake listener watches the settings box on
+  /// this key and attaches or drops the accelerometer stream from it, so the
+  /// emit below only updates the row itself.
+  void _onShakeToReportToggled(
+    ShakeToReportToggled e,
+    Emitter<SettingsState> emit,
+  ) {
+    _settings.shakeToReport = e.value;
+    emit(state.copyWith(shakeToReport: e.value));
   }
 
   Future<void> _onPushToggled(
@@ -151,43 +169,41 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
     }
   }
 
-  Future<void> _onAnalyticsToggled(
-    AnalyticsToggled e,
+  /// Pulls a fresh Remote Config revision, then re-resolves the running build
+  /// against the `latest_version` it carries.
+  ///
+  /// The refresh also bumps `AppConfig.version`, so `UpdateGate` re-runs its
+  /// own check off the same fetch — a rider who finds an update here gets the
+  /// rail nudge for it too, instead of two surfaces disagreeing.
+  ///
+  /// Only compares against `latest_version`: a build below the *floor* never
+  /// reaches this screen, because the gate has already replaced the whole app
+  /// with the blocking interstitial.
+  Future<void> _onUpdateCheckRequested(
+    UpdateCheckRequested e,
     Emitter<SettingsState> emit,
   ) async {
-    _settings.analyticsEnabled = e.value;
-    emit(state.copyWith(analyticsEnabled: e.value));
-    if (!FirebaseGate.enabled) return;
-    try {
-      await FirebaseAnalytics.instance.setAnalyticsCollectionEnabled(e.value);
-    } on Object catch (err, s) {
-      CrashReporter.record(err, s);
-    }
-  }
-
-  Future<void> _onCrashlyticsToggled(
-    CrashlyticsToggled e,
-    Emitter<SettingsState> emit,
-  ) async {
-    _settings.crashlyticsEnabled = e.value;
-    emit(state.copyWith(crashlyticsEnabled: e.value));
-    if (!FirebaseGate.enabled) return;
-    try {
-      await FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(
-        e.value,
-      );
-    } on Object catch (err, s) {
-      CrashReporter.record(err, s);
-    }
-  }
-
-  void _onVersionTapped(VersionTapped e, Emitter<SettingsState> emit) {
-    final taps = state.versionTaps + 1;
-    if (taps >= _devModeTapThreshold && !state.devMode) {
-      _settings.devModeEnabled = true;
-      emit(state.copyWith(devMode: true, versionTaps: 0));
+    if (state.updateCheck == UpdateCheck.checking) return;
+    emit(state.copyWith(updateCheck: UpdateCheck.checking));
+    final refreshed = await _refreshConfig();
+    final current = state.appVersion;
+    // No fresh fetch, or no version to compare, means no answer. Say that
+    // rather than reporting the stale read as a clean bill of health.
+    if (!refreshed || current.isEmpty) {
+      emit(state.copyWith(updateCheck: UpdateCheck.failed, latestVersion: ''));
       return;
     }
-    emit(state.copyWith(versionTaps: taps));
+    final latest = _latestVersionOf();
+    emit(
+      isBelowVersion(current, latest)
+          ? state.copyWith(
+              updateCheck: UpdateCheck.available,
+              latestVersion: latest,
+            )
+          : state.copyWith(
+              updateCheck: UpdateCheck.upToDate,
+              latestVersion: '',
+            ),
+    );
   }
 }

@@ -1,5 +1,5 @@
 # Build context: ./docker/docker-compose.yaml
-# docker build -f services/functions/Dockerfile -t wheres_the_car-functions .
+# docker build -f services/functions/Dockerfile -t wheres_the_bus-functions .
 
 ARG PROTOC_GEN_GO_VERSION=v1.36.11
 ARG PROTOC_GEN_GO_GRPC_VERSION=v1.6.2

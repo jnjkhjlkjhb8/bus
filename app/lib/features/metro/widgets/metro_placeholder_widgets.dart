@@ -3,10 +3,15 @@ part of '../view/metro_screen.dart';
 class _MetroPlaceholderSheet extends StatefulWidget {
   const _MetroPlaceholderSheet({
     required this.onStationSelect,
+    required this.sheetController,
     super.key,
   });
 
   final ValueChanged<MetroMapStation> onStationSelect;
+
+  /// Drives the parent `Sheet`'s detent so the search field isn't left
+  /// covered by the keyboard (B2) — see `_onSearchFocusChange`.
+  final SheetController sheetController;
 
   @override
   State<_MetroPlaceholderSheet> createState() => _MetroPlaceholderSheetState();
@@ -14,23 +19,53 @@ class _MetroPlaceholderSheet extends StatefulWidget {
 
 class _MetroPlaceholderSheetState extends State<_MetroPlaceholderSheet> {
   late final TextEditingController _searchCtrl;
+  late final FocusNode _searchFocus;
   String _query = '';
 
   @override
   void initState() {
     super.initState();
     _searchCtrl = TextEditingController();
+    _searchFocus = FocusNode()..addListener(_onSearchFocusChange);
   }
 
   @override
   void dispose() {
+    _searchFocus
+      ..removeListener(_onSearchFocusChange)
+      ..dispose();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  // Focusing the search field brings up the keyboard, which otherwise covers
+  // roughly the bottom third of the sheet at its `half` detent — under two
+  // result rows of clearance. Move to `tall` so results have room above the
+  // keyboard; the sheet doesn't react to the keyboard on its own (B2).
+  void _onSearchFocusChange() {
+    // A focus change can still be delivered while an ancestor is being torn
+    // down, after this State is defunct — both the MediaQuery lookup and the
+    // sheet animation below would throw on a dead element.
+    if (!mounted) return;
+    if (!_searchFocus.hasFocus) return;
+    unawaited(
+      widget.sheetController.animateToDetent(
+        AppSheetSnap.tall,
+        reduced: AppMotion.reduced(context),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    // surfaceContainerHigh and surfaceContainerLow are both pure white in
+    // the light scheme and the sheet background is surfaceContainerLow, so
+    // the field needs the light-scheme surface tone instead to read as a
+    // distinct control (mirrors _SystemPill's brightness split).
+    final fieldFill = cs.brightness == Brightness.light
+        ? cs.surface
+        : cs.surfaceContainerHigh;
     final favIds = context
         .watch<FavoritesBloc>()
         .state
@@ -57,11 +92,15 @@ class _MetroPlaceholderSheetState extends State<_MetroPlaceholderSheet> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: TextField(
             controller: _searchCtrl,
+            focusNode: _searchFocus,
             onChanged: (val) => setState(() => _query = val),
             style: AppTextStyles.bodyLarge,
             decoration: InputDecoration(
-              hintText: '搜尋捷運車站...',
-              prefixIcon: Icon(Icons.search_rounded, color: cs.outline),
+              hintText: AppI18n.of(context).metroSearchHint,
+              prefixIcon: Icon(
+                Icons.search_rounded,
+                color: cs.onSurfaceVariant,
+              ),
               suffixIcon: _query.isNotEmpty
                   ? IconButton(
                       icon: const Icon(Icons.clear_rounded),
@@ -76,7 +115,7 @@ class _MetroPlaceholderSheetState extends State<_MetroPlaceholderSheet> {
                 vertical: 12,
               ),
               filled: true,
-              fillColor: cs.surfaceContainerHigh,
+              fillColor: fieldFill,
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
                 borderSide: BorderSide.none,
@@ -124,7 +163,7 @@ class _MetroPlaceholderSheetState extends State<_MetroPlaceholderSheet> {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    _lineName(station.id),
+                    _lineName(AppI18n.of(context), station.id),
                     style: AppTextStyles.bodySmall.copyWith(
                       color: cs.onSurfaceVariant,
                     ),
@@ -141,21 +180,46 @@ class _MetroPlaceholderSheetState extends State<_MetroPlaceholderSheet> {
 
   Widget _buildSearchResults(ColorScheme cs, List<MetroMapStation> results) {
     if (results.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Text(
-            '找不到符合的車站',
-            style: AppTextStyles.bodyRegular.copyWith(
-              color: cs.onSurfaceVariant,
+      // The parent Sheet's content box is SheetSize.stretch — full viewport
+      // height — while the sheet itself only rests at the `half` detent, so
+      // a Center here lands well below the visible sheet area. Top-align
+      // instead; don't reintroduce Center/Expanded for this branch.
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(32, 24, 32, 32),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              AppI18n.of(context).metroNoStationMatch(_query),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: AppTextStyles.bodyRegular.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
             ),
-          ),
+            const SizedBox(height: 4),
+            Text(
+              AppI18n.of(context).metroSearchNoMatchHint,
+              style: AppTextStyles.bodySmall.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+          ],
         ),
       );
     }
 
     return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+      // Keyboard clearance: the sheet doesn't resize for the keyboard on its
+      // own, so without this the last row(s) can sit permanently behind it
+      // (B2).
+      padding: EdgeInsets.fromLTRB(
+        16,
+        0,
+        16,
+        32 + MediaQuery.viewInsetsOf(context).bottom,
+      ),
       itemCount: results.length,
       separatorBuilder: (_, _) =>
           Divider(height: 1, color: cs.outlineVariant.withValues(alpha: 0.3)),
@@ -174,7 +238,7 @@ class _MetroPlaceholderSheetState extends State<_MetroPlaceholderSheet> {
               Icon(Icons.bookmark_rounded, size: 18, color: cs.primary),
               const SizedBox(width: 6),
               Text(
-                '我的收藏車站',
+                AppI18n.of(context).metroFavoriteStations,
                 style: AppTextStyles.bodyRegular.copyWith(
                   fontWeight: FontWeight.w700,
                   color: cs.onSurfaceVariant,
@@ -185,12 +249,12 @@ class _MetroPlaceholderSheetState extends State<_MetroPlaceholderSheet> {
         ),
         Expanded(
           child: favs.isEmpty
-              ? Center(
+              ? Align(
+                  alignment: Alignment.topLeft,
                   child: Padding(
-                    padding: const EdgeInsets.all(32),
+                    padding: const EdgeInsets.fromLTRB(32, 24, 32, 32),
                     child: Text(
-                      '尚無收藏的車站\n在地圖上選擇車站後點選右上角 [ 收藏 ] 以新增',
-                      textAlign: TextAlign.center,
+                      AppI18n.of(context).metroNoFavoriteStations,
                       style: AppTextStyles.bodySmall.copyWith(
                         color: cs.onSurfaceVariant,
                         height: 1.5,
@@ -199,7 +263,13 @@ class _MetroPlaceholderSheetState extends State<_MetroPlaceholderSheet> {
                   ),
                 )
               : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+                  // Keyboard clearance, same as the search results list (B2).
+                  padding: EdgeInsets.fromLTRB(
+                    16,
+                    0,
+                    16,
+                    32 + MediaQuery.viewInsetsOf(context).bottom,
+                  ),
                   itemCount: favs.length,
                   separatorBuilder: (_, _) => Divider(
                     height: 1,

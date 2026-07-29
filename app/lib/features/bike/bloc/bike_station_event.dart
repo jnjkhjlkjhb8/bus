@@ -1,4 +1,5 @@
 import 'package:equatable/equatable.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
 
 sealed class BikeStationEvent extends Equatable {
   const BikeStationEvent();
@@ -35,10 +36,14 @@ final class BikeStationEtaUpdated extends BikeStationEvent {
 /// clears them), so this is what lets the UI tell a confirmed zero from a
 /// silently stale one (F27).
 final class BikeStationEtaFailed extends BikeStationEvent {
-  const BikeStationEtaFailed(this.message);
-  final String message;
+  const BikeStationEtaFailed(this.error);
+
+  /// The error itself, not a rendered sentence: the bloc has no `BuildContext`
+  /// and so no locale, and resolving the copy here would freeze it in the
+  /// language that happened to be active when the stream died.
+  final AppError error;
   @override
-  List<Object?> get props => [message];
+  List<Object?> get props => [error];
 }
 
 /// Emitted when the live availability stream recovers after a prior failure.

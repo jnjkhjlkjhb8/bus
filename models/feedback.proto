@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+option go_package = "github.com/jnjkhjlkjhb8/wheres_the_bus/models";
+
+// Rider-to-ops reporting. One-way in this phase: the app opens a thread, ops
+// read it out of band. Replies land on feedback_message with author='ops' and
+// are delivered separately, so no read RPC exists here yet.
+service Feedback_Service {
+  rpc postFeedback(PostFeedbackRequest) returns (ReportReceipt) {}
+}
+
+// What the app knew about itself when the report was written. Collected by the
+// client and shown to the reporter before submit, so nothing here is a secret
+// the rider hasn't seen: no location, no account, no device identifiers beyond
+// the install_id the device already sends on every call.
+message ReportDiagnostics {
+  string app_version = 1;
+  string platform = 2;
+  string os_version = 3;
+  // Router location the reporter was on before opening the sheet (e.g.
+  // "/bus/route/:subRouteUid"). The path pattern, never a resolved id, so it
+  // says which screen misbehaved without carrying what the rider was looking
+  // at.
+  string screen = 4;
+  string locale = 5;
+}
+
+// category is one of "route_data" | "eta" | "crash" | "suggestion"; the server
+// rejects anything else so the ops-side grouping can't drift with app releases.
+message PostFeedbackRequest {
+  string install_id = 1;
+  string category = 2;
+  string body = 3;
+  ReportDiagnostics diagnostics = 4;
+}
+
+// thread_id is a UUID. The app shows its first eight characters as the case
+// number a rider can quote back, which is why the full value is returned
+// rather than a separate short code that would have to stay in sync.
+message ReportReceipt {
+  string thread_id = 1;
+  int64 created_at_unix = 2;
+}

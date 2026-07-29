@@ -1,4 +1,4 @@
-import 'package:wheres_the_car/core/powersync/local_db.dart';
+import 'package:wheres_the_bus/core/powersync/local_db.dart';
 
 /// In-memory [LocalDb] that returns canned rows per query, so repository tests
 /// exercise their SQL-to-domain mapping without initializing PowerSync.
@@ -11,9 +11,7 @@ class FakeLocalDb implements LocalDb {
   /// A [LocalDb] whose every [getAll] call throws [error], e.g. to simulate
   /// `no such table` before PowerSync has synced, or a DB that never
   /// initialized. `_rowsByKey` is unused in this mode.
-  FakeLocalDb.throwing(Object error)
-    : _error = error,
-      _rowsByKey = const {};
+  FakeLocalDb.throwing(Object error) : _error = error, _rowsByKey = const {};
 
   /// Maps the first query parameter to the rows that query should return.
   final Map<Object?, List<Map<String, dynamic>>> _rowsByKey;

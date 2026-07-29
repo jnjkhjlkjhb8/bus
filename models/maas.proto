@@ -1,8 +1,21 @@
 syntax = "proto3";
-option go_package = "github.com/jnjkhjlkjhb8/wheres_the_car/models";
+option go_package = "github.com/jnjkhjlkjhb8/wheres_the_bus/models";
 
 service MaasService {
   rpc plan(MaasPlanRequest) returns (MaasPlanResponse) {}
+  // Same query as plan, delivered in stages: the routes land as soon as TDX
+  // and the fare/notification lookups resolve, and a second message follows
+  // with the map geometry (walkPath / transitPath) filled in. The first
+  // message is already usable — the app falls back to straight lines for a
+  // section whose path is empty.
+  rpc planStream(MaasPlanRequest) returns (stream MaasPlanUpdate) {}
+}
+
+message MaasPlanUpdate {
+  MaasPlanResponse plan = 1;
+  // False on the routes-only message, true on the last message of the stream.
+  // A cache hit sends a single message with complete = true.
+  bool complete = 2;
 }
 
 message MaasPlanRequest {

@@ -1,26 +1,26 @@
 import 'dart:async';
 
 import 'package:geolocator/geolocator.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
-import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart'
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_event.dart';
+import 'package:wheres_the_bus/features/go/widgets/transit_visuals.dart'
     show isWalk;
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
 
 typedef PipNavigationSetter = Future<void> Function({required bool navigating});
 
-// ponytail: GPS-noise tunables for decideNavAction. Bump these if real-world
+// GPS-noise tunables for decideNavAction. Bump these if real-world
 // testing shows false triggers; the ceiling is "wide enough to fire near a
 // stop, narrow enough not to fire from the next block over".
 const _kWalkArrivalRadiusMeters = 40.0;
 const _kBoardDepartRadiusMeters = 80.0;
 const _kAlightArrivalRadiusMeters = 60.0;
 
-// ponytail: display-only radius for advancing the current turn-by-turn walk
+// display-only radius for advancing the current turn-by-turn walk
 // step to the next maneuver. Deliberately tighter than the leg-arrival radius:
 // tuning it only changes which instruction line shows, never leg progress.
 const _kWalkStepAdvanceRadiusMeters = 20.0;
@@ -90,9 +90,9 @@ int advanceWalkStep({
   return distance <= _kWalkStepAdvanceRadiusMeters ? current + 1 : current;
 }
 
-// ponytail: compass-throttle tunables for shouldApplyHeading. A heading only
-// reaches the camera when it turns the map by more than _kHeadingMinDeltaDeg
-// AND at least _kHeadingMinInterval has elapsed since the last applied one —
+// compass-throttle tunables for shouldApplyHeading. A heading only reaches
+// the camera when it turns the map by more than _kHeadingMinDeltaDeg AND
+// at least _kHeadingMinInterval has elapsed since the last applied one —
 // enough to read as continuous rotation without flooding moveCamera (~5/sec
 // ceiling). Widen the delta if the map jitters while the phone sits still;
 // shorten the interval if in-place rotation feels laggy.

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -206,10 +206,10 @@ func validateTraTimetable(timetable raw_tra_timetable, partitionDate string) err
 		return errors.New("EndingStationID is required")
 	}
 	if info.Direction == nil {
-		return errors.New("Direction is required")
+		return errors.New("missing Direction")
 	}
 	if *info.Direction > 1 {
-		return fmt.Errorf("Direction must be 0 or 1, got %d", *info.Direction)
+		return fmt.Errorf("invalid Direction %d, want 0 or 1", *info.Direction)
 	}
 	for _, flag := range []struct {
 		name  string
@@ -269,13 +269,13 @@ func validateThsrTimetable(timetable raw_thsr_timetable, partitionDate string) e
 		return errors.New("EndingStationID is required")
 	}
 	if info.Direction == nil {
-		return errors.New("Direction is required")
+		return errors.New("missing Direction")
 	}
 	if *info.Direction > 1 {
-		return fmt.Errorf("Direction must be 0 or 1, got %d", *info.Direction)
+		return fmt.Errorf("invalid Direction %d, want 0 or 1", *info.Direction)
 	}
 	if info.Overnight == nil {
-		return errors.New("Overnight is required")
+		return errors.New("missing Overnight")
 	}
 	if len(timetable.StopTimes) == 0 {
 		return errors.New("StopTimes must not be empty")
@@ -641,14 +641,14 @@ func loadTraFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ string
 			return errors.New("DestinationStationID is required")
 		}
 		if len(fare.Fares) == 0 {
-			return errors.New("Fares must not be empty")
+			return errors.New("missing Fares")
 		}
 		for index, item := range fare.Fares {
 			if strings.TrimSpace(item.TicketType) == "" {
-				return fmt.Errorf("Fares element %d TicketType is required", index)
+				return fmt.Errorf("fares element %d missing TicketType", index)
 			}
 			if item.Price < 0 {
-				return fmt.Errorf("Fares element %d Price must be non-negative", index)
+				return fmt.Errorf("fares element %d Price must be non-negative", index)
 			}
 		}
 		return nil
@@ -707,17 +707,17 @@ func loadThsrFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ strin
 			return errors.New("DestinationStationID is required")
 		}
 		if len(fare.Fares) == 0 {
-			return errors.New("Fares must not be empty")
+			return errors.New("missing Fares")
 		}
 		for index, item := range fare.Fares {
 			if item.TicketType == 0 {
-				return fmt.Errorf("Fares element %d TicketType is required", index)
+				return fmt.Errorf("fares element %d missing TicketType", index)
 			}
 			if item.FareClass == 0 {
-				return fmt.Errorf("Fares element %d FareClass is required", index)
+				return fmt.Errorf("fares element %d missing FareClass", index)
 			}
 			if item.CabinClass == 0 {
-				return fmt.Errorf("Fares element %d CabinClass is required", index)
+				return fmt.Errorf("fares element %d missing CabinClass", index)
 			}
 		}
 		return nil

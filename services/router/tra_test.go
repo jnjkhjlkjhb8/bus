@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/pashagolub/pgxmock/v4"
 	"google.golang.org/protobuf/proto"
 )

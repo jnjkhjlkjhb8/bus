@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/bootstrap/app_bootstrap.dart';
+import 'package:wheres_the_bus/core/bootstrap/app_bootstrap.dart';
 
 void main() {
   group('AppBootstrapController', () {

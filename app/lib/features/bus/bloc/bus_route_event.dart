@@ -1,7 +1,7 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/bus_route_detail.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
 
 sealed class BusRouteEvent extends Equatable {
   const BusRouteEvent();
@@ -35,17 +35,10 @@ class BusRouteDetailsUpdated extends BusRouteEvent {
   List<Object?> get props => [daily, fare];
 }
 
-class BusRouteReminderToggled extends BusRouteEvent {
-  const BusRouteReminderToggled(this.stopUid);
-  final String stopUid;
-  @override
-  List<Object?> get props => [stopUid];
-}
-
 /// Arms a pinned arrival reminder on [stopUid] (the trigger stop resolved from
 /// the picked alight stop + 提前站數) carrying the pinned vehicle's [plate].
-/// Distinct from [BusRouteReminderToggled] because it always arms (never
-/// toggles off), fires one stop-ahead, and matches a single vehicle.
+/// Always arms (never toggles off), fires one stop-ahead, and matches a single
+/// vehicle.
 class BusRoutePinnedReminderArmed extends BusRouteEvent {
   const BusRoutePinnedReminderArmed({
     required this.stopUid,

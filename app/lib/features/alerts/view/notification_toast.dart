@@ -3,17 +3,18 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/app/router/app_router.dart';
-import 'package:wheres_the_car/app/theme/app_shadows.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/alert_models.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
-import 'package:wheres_the_car/features/alerts/view/alert_source_chip.dart';
-import 'package:wheres_the_car/features/alerts/view/notification_sheet.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/app/router/app_router.dart';
+import 'package:wheres_the_bus/app/theme/app_shadows.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/data/models/alert_models.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_bloc.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_state.dart';
+import 'package:wheres_the_bus/features/alerts/view/alert_source_chip.dart';
+import 'package:wheres_the_bus/features/alerts/view/notification_sheet.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
 
 class NotificationToastHost extends StatefulWidget {
   const NotificationToastHost({required this.child, super.key});
@@ -47,6 +48,12 @@ class _NotificationToastHostState extends State<NotificationToastHost>
     _controller.dispose();
     super.dispose();
   }
+
+  /// Home presents arriving disruptions itself, in the map capsule that sits
+  /// between its floating controls. Toasting the same notice on top of it
+  /// would announce one event twice and cover the capsule doing it.
+  bool get _homeOwnsInterrupt =>
+      AppRouter.router.routerDelegate.currentConfiguration.uri.path == '/';
 
   void _present(AlertViewModel alert) {
     _timer?.cancel();
@@ -98,7 +105,10 @@ class _NotificationToastHostState extends State<NotificationToastHost>
             .toList();
         if (fresh.isEmpty) return;
         final latest = fresh.last;
+        // Marked shown either way: once home's capsule has announced a
+        // notice, walking to another screen must not replay it as a toast.
         _shown.add(latest.message);
+        if (_homeOwnsInterrupt) return;
         _present(latest);
       },
       child: Stack(
@@ -309,7 +319,7 @@ class _ToastLayerState extends State<_ToastLayer> {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              '剛剛 · 服務中斷',
+                              AppI18n.of(context).alertJustNowDisruption,
                               style: AppTextStyles.memo.copyWith(
                                 fontSize: 11,
                                 color: cs.onSurfaceVariant,

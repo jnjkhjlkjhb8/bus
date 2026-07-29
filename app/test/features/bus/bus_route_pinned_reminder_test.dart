@@ -1,9 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/firebase_models.dart';
-import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
-import 'package:wheres_the_car/data/repositories/reminders_repository.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
+import 'package:wheres_the_bus/data/models/firebase_models.dart';
+import 'package:wheres_the_bus/data/repositories/firebase_repository.dart';
+import 'package:wheres_the_bus/data/repositories/reminders_repository.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_route_bloc.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_route_event.dart';
 
 import '../../support/helpers/in_memory_reminders_store.dart';
 

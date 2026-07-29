@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hive_ce_flutter/adapters.dart';
-import 'package:wheres_the_car/app/app.dart';
-import 'package:wheres_the_car/core/bootstrap/app_bootstrap.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
-import 'package:wheres_the_car/features/alerts/view/notification_toast.dart';
+import 'package:wheres_the_bus/app/app.dart';
+import 'package:wheres_the_bus/core/bootstrap/app_bootstrap.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/features/alerts/view/notification_toast.dart';
 
 /// Covers: `app.dart` must gate on the real
 /// [AppBootstrapState] — `initializing`/`failed` never mount the router or

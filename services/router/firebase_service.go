@@ -13,7 +13,7 @@ import (
 
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/appcheck"
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -30,7 +30,7 @@ const (
 type firebasePersistence interface {
 	UpsertDevice(context.Context, *pb.DeviceIdentity, *pb.DevicePrefs, []byte) (*pb.DeviceState, bool, error)
 	AuthorizeInstall(context.Context, string, []byte) (bool, error)
-	SetRouteSubscription(context.Context, string, string, string, bool) error
+	ReplaceRouteSubscriptions(context.Context, string, []*pb.RouteSubscription) error
 	CreateArrivalReminder(context.Context, firebaseArrivalReminder) error
 	CancelArrivalReminder(context.Context, string, string) (bool, error)
 	ListDeviceState(context.Context, string) (*pb.DeviceState, error)
@@ -57,6 +57,9 @@ func (s *FirebaseServer) UpsertDevice(ctx context.Context, request *pb.UpsertDev
 	if identity == nil || prefs == nil || !validText(identity.GetInstallId(), 128) || !validText(identity.GetPlatform(), 16) {
 		return nil, status.Error(codes.InvalidArgument, "identity and preferences are required")
 	}
+	// Clients have sent mixed case here (Dart's TargetPlatform.iOS.name is
+	// "iOS"); the firebase_device CHECK constraint only accepts lowercase.
+	identity.Platform = strings.ToLower(identity.Platform)
 	if identity.Platform != "android" && identity.Platform != "ios" {
 		return nil, status.Error(codes.InvalidArgument, "platform must be android or ios")
 	}
@@ -78,23 +81,48 @@ func (s *FirebaseServer) UpsertDevice(ctx context.Context, request *pb.UpsertDev
 	return state, nil
 }
 
-// SetRouteSubscription enables or disables push subscription for one route.
-// Only bus routes are accepted; any other route_type returns FailedPrecondition.
-// The caller is authorized against its install secret before the store is touched.
-func (s *FirebaseServer) SetRouteSubscription(ctx context.Context, request *pb.RouteSubscriptionRequest) (*pb.Ack, error) {
-	if !validText(request.GetInstallId(), 128) || !validRoute(request.GetRouteType()) || !validText(request.GetRouteKey(), 256) {
-		return nil, status.Error(codes.InvalidArgument, "install_id, route_type, and route_key are required")
+// maxRouteSubscriptions bounds one device's 訂閱範圍. It is far above any
+// plausible 收藏 list and exists only so a malformed or hostile client cannot
+// make the server build an unbounded array.
+const maxRouteSubscriptions = 1000
+
+// ReplaceRouteSubscriptions stores the device's whole 訂閱範圍, replacing
+// whatever was there. The app derives the set from its 收藏 and resends all of
+// it on every change, so this is the only write path — there is no per-route
+// toggle to drift out of sync with. An empty list is valid and clears the
+// device. The caller is authorized against its install secret before the store
+// is touched.
+func (s *FirebaseServer) ReplaceRouteSubscriptions(ctx context.Context, request *pb.RouteSubscriptionsRequest) (*pb.Ack, error) {
+	if !validText(request.GetInstallId(), 128) {
+		return nil, status.Error(codes.InvalidArgument, "install_id is required")
 	}
-	if request.RouteType != "bus" {
-		return nil, status.Error(codes.FailedPrecondition, "route subscriptions are supported for bus routes only")
+	subscriptions := request.GetSubscriptions()
+	if len(subscriptions) > maxRouteSubscriptions {
+		return nil, status.Errorf(codes.InvalidArgument, "at most %d subscriptions", maxRouteSubscriptions)
+	}
+	for _, subscription := range subscriptions {
+		if !validAlertRoute(subscription.GetRouteType()) || !validText(subscription.GetRouteKey(), 256) {
+			return nil, status.Error(codes.InvalidArgument, "each subscription needs a known route_type and a route_key")
+		}
 	}
 	if err := s.authorizeInstall(ctx, request.InstallId); err != nil {
 		return nil, err
 	}
-	if err := s.store.SetRouteSubscription(ctx, request.InstallId, request.RouteType, request.RouteKey, request.Enabled); err != nil {
-		return nil, status.Error(codes.Internal, "failed to save route subscription")
+	if err := s.store.ReplaceRouteSubscriptions(ctx, request.InstallId, subscriptions); err != nil {
+		return nil, status.Error(codes.Internal, "failed to save route subscriptions")
 	}
 	return &pb.Ack{Ok: true}, nil
+}
+
+// validAlertRoute reports whether a transit type can carry disruption alerts.
+// It mirrors the route_type CHECK on firebase_route_subscription, so a bad
+// value is rejected here rather than surfacing as a constraint violation.
+func validAlertRoute(routeType string) bool {
+	switch routeType {
+	case "bus", "mrt", "tra", "thsr":
+		return true
+	}
+	return false
 }
 
 // CreateArrivalReminder registers a one-shot arrival reminder for a bus stop.
@@ -132,7 +160,7 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	if err := s.authorizeInstall(ctx, request.InstallId); err != nil {
 		return nil, err
 	}
-	reminderID, err := newReminderID()
+	reminderID, err := newUUIDv4()
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to create reminder ID")
 	}
@@ -200,11 +228,18 @@ func (s *FirebaseServer) ListDeviceState(ctx context.Context, request *pb.Device
 }
 
 func (s *FirebaseServer) authorizeInstall(ctx context.Context, installID string) error {
+	return authorizeInstallation(ctx, s.store, installID)
+}
+
+// authorizeInstallation checks the caller's install secret against the stored
+// hash. It is shared by every device-scoped service, so one credential check
+// covers them all rather than each re-deriving the same three failure modes.
+func authorizeInstallation(ctx context.Context, devices installAuthorizer, installID string) error {
 	secretHash, err := installationSecretHash(ctx, installID)
 	if err != nil {
 		return err
 	}
-	authorized, err := s.store.AuthorizeInstall(ctx, installID, secretHash)
+	authorized, err := devices.AuthorizeInstall(ctx, installID, secretHash)
 	if err != nil {
 		return status.Error(codes.Internal, "failed to verify installation credential")
 	}
@@ -236,8 +271,8 @@ func installationCallerID(ctx context.Context) (string, bool) {
 	return values[0], true
 }
 
-func validText(value string, max int) bool {
-	return value != "" && len(value) <= max && strings.TrimSpace(value) == value
+func validText(value string, limit int) bool {
+	return value != "" && len(value) <= limit && strings.TrimSpace(value) == value
 }
 
 func validNormalizedPlate(plate string) bool {
@@ -270,7 +305,7 @@ func validRoute(routeType string) bool {
 	}
 }
 
-func newReminderID() (string, error) {
+func newUUIDv4() (string, error) {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		return "", err

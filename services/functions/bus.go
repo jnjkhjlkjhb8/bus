@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 
 	"context"
 	"encoding/json"
@@ -14,7 +14,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -599,23 +599,23 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSourc
 
 func validateBusDailyTimetable(timetable rawBusDailytimetable) error {
 	if strings.TrimSpace(timetable.SubRouteUID) == "" {
-		return errors.New("SubRouteUID is required")
+		return errors.New("missing SubRouteUID")
 	}
 	if timetable.Direction == nil {
-		return errors.New("Direction is required")
+		return errors.New("missing Direction")
 	}
 	if *timetable.Direction > 1 {
-		return fmt.Errorf("Direction must be 0 or 1, got %d", *timetable.Direction)
+		return fmt.Errorf("invalid Direction %d, want 0 or 1", *timetable.Direction)
 	}
 	if len(timetable.Timetables) == 0 {
-		return errors.New("Timetables must not be empty")
+		return errors.New("missing Timetables")
 	}
 	for timetableIndex, trip := range timetable.Timetables {
 		if strings.TrimSpace(trip.TripID) == "" {
-			return fmt.Errorf("Timetables element %d TripID is required", timetableIndex)
+			return fmt.Errorf("timetables element %d missing TripID", timetableIndex)
 		}
 		if len(trip.StopTimes) == 0 {
-			return fmt.Errorf("Timetables element %d StopTimes must not be empty", timetableIndex)
+			return fmt.Errorf("timetables element %d missing StopTimes", timetableIndex)
 		}
 		for stopIndex, stop := range trip.StopTimes {
 			prefix := fmt.Sprintf("Timetables element %d StopTimes element %d", timetableIndex, stopIndex)

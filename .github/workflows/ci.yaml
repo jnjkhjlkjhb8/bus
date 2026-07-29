@@ -52,7 +52,7 @@ jobs:
       - name: generate pinned protobuf stubs
         run: make proto-go
       - run: go install gotest.tools/gotestsum@v1.12.3
-      - name: go vet + go test
+      - name: golangci-lint + go test
         env:
           GO_JUNIT_FILE: junit.xml
           GO_TEST_ARGS: -coverprofile=coverage.out

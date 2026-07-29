@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	pgxmock "github.com/pashagolub/pgxmock/v4"
 )
 
@@ -20,15 +20,15 @@ func TestFirebaseStoreSQL(t *testing.T) {
 	secretHash := []byte("01234567890123456789012345678901")
 
 	identity := &pb.DeviceIdentity{InstallId: "install-1", FcmToken: "token-1", Platform: "android", AppVersion: "1.0"}
-	prefs := &pb.DevicePrefs{PushEnabled: true, AnalyticsEnabled: true, CrashlyticsEnabled: true, PerformanceEnabled: true}
+	prefs := &pb.DevicePrefs{PushEnabled: true}
 	mock.ExpectExec("INSERT INTO firebase_device.*WHERE firebase_device.install_secret_hash = EXCLUDED.install_secret_hash").
-		WithArgs("install-1", "token-1", "android", "1.0", true, true, true, true, secretHash).
+		WithArgs("install-1", "token-1", "android", "1.0", true, secretHash).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	if _, authorized, err := store.UpsertDevice(ctx, identity, prefs, secretHash); err != nil || !authorized {
 		t.Fatal(err)
 	}
 	mock.ExpectExec("INSERT INTO firebase_device.*WHERE firebase_device.install_secret_hash = EXCLUDED.install_secret_hash").
-		WithArgs("install-1", "token-1", "android", "1.0", true, true, true, true, []byte("wrong")).
+		WithArgs("install-1", "token-1", "android", "1.0", true, []byte("wrong")).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	if _, authorized, err := store.UpsertDevice(ctx, identity, prefs, []byte("wrong")); err != nil || authorized {
 		t.Fatalf("conflicting upsert authorized=%v error=%v", authorized, err)
@@ -49,23 +49,29 @@ func TestFirebaseStoreSQL(t *testing.T) {
 	mock.ExpectQuery("SELECT platform, app_version.*FROM firebase_device").
 		WithArgs("install-1").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"platform", "app_version", "push_enabled", "analytics_enabled", "crashlytics_enabled", "performance_enabled",
-		}).AddRow("android", "1.0", true, true, true, true))
+			"platform", "app_version", "push_enabled",
+		}).AddRow("android", "1.0", true))
 	state, err := store.ListDeviceState(ctx, "install-1")
 	if err != nil || state.GetIdentity().GetFcmToken() != "" {
 		t.Fatalf("ListDeviceState() = (%v, %v)", state, err)
 	}
 
-	mock.ExpectExec("INSERT INTO firebase_route_subscription").
-		WithArgs("install-1", "bus", "route-1").
-		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	if err := store.SetRouteSubscription(ctx, "install-1", "bus", "route-1", true); err != nil {
+	// The whole scope goes down as two parallel arrays in one statement, so the
+	// delete of what is gone and the insert of what is new cannot half-apply.
+	mock.ExpectExec("DELETE FROM firebase_route_subscription.*INSERT INTO firebase_route_subscription").
+		WithArgs("install-1", []string{"bus", "tra"}, []string{"route-1", "*"}).
+		WillReturnResult(pgxmock.NewResult("INSERT", 2))
+	if err := store.ReplaceRouteSubscriptions(ctx, "install-1", []*pb.RouteSubscription{
+		{RouteType: "bus", RouteKey: "route-1"},
+		{RouteType: "tra", RouteKey: "*"},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	mock.ExpectExec("DELETE FROM firebase_route_subscription").
-		WithArgs("install-1", "bus", "route-1").
-		WillReturnResult(pgxmock.NewResult("DELETE", 1))
-	if err := store.SetRouteSubscription(ctx, "install-1", "bus", "route-1", false); err != nil {
+	// An empty scope still runs: the delete is what clears the device.
+	mock.ExpectExec("DELETE FROM firebase_route_subscription.*INSERT INTO firebase_route_subscription").
+		WithArgs("install-1", []string{}, []string{}).
+		WillReturnResult(pgxmock.NewResult("INSERT", 0))
+	if err := store.ReplaceRouteSubscriptions(ctx, "install-1", nil); err != nil {
 		t.Fatal(err)
 	}
 

@@ -1,92 +1,60 @@
-import 'package:flutter/foundation.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/http/http_client.dart';
-import 'package:wheres_the_car/core/powersync/local_db.dart';
-import 'package:wheres_the_car/core/powersync/powersync_service.dart';
-import 'package:wheres_the_car/data/models/search_models.dart';
+import 'dart:collection';
 
-/// Fetches ranked/semantic results from the router's `/api/search`. Optional:
-/// [SearchRepository.search] merges these in on top of the local PowerSync
-/// results, and swallows any failure (offline, timeout, 5xx) so a dead
-/// network never blocks a search that the local mirror can already answer.
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/http/http_client.dart';
+import 'package:wheres_the_bus/data/models/city_names.dart';
+import 'package:wheres_the_bus/data/models/search_models.dart';
+
+/// Fetches ranked/semantic results from the router's `/api/search`.
 typedef SearchHttpFetch =
-    Future<List<SearchResult>> Function(String query, int limit);
+    Future<List<SearchResult>> Function(String query, int limit, String? city);
+
+/// How many query→results pairs stay in memory. Sized for the shape of a
+/// single search session — type, backspace, retype, toggle a city filter and
+/// back — not for offline coverage.
+const int _memoLimit = 24;
 
 class SearchRepository {
-  SearchRepository({LocalDb? localDb, SearchHttpFetch? httpFetch})
-    : _localDb = localDb,
-      _httpFetch = httpFetch ?? _fetchFromRouter;
+  SearchRepository({SearchHttpFetch? httpFetch})
+    : _httpFetch = httpFetch ?? _fetchFromRouter;
 
   static final SearchRepository instance = SearchRepository();
 
-  // Resolved lazily so tests that never touch the local DB can construct the
-  // repository without initializing PowerSync.
-  LocalDb? _localDb;
-  LocalDb get _db => _localDb ??= PowerSyncService.instance;
-
   final SearchHttpFetch _httpFetch;
 
-  /// Local-first: static transport data synced via PowerSync (`search_vector`)
-  /// answers the query offline. The router call is optional enrichment —
-  /// ranked/semantic matches and live entities (bus routes/stations, bike
-  /// stations) the local mirror doesn't carry — merged in when it succeeds.
+  /// Insertion-ordered, so the oldest key is always the first one — enough to
+  /// evict by without tracking access order. Backspacing to a query typed two
+  /// keystrokes ago is the case this exists for, and that key is still recent
+  /// by insertion too.
+  final LinkedHashMap<String, List<SearchResult>> _memo = LinkedHashMap();
+
+  /// Queries the router. [city] is a TDX city code (see [kCityNames]); null
+  /// searches every city.
   ///
-  /// The local query can throw before PowerSync has synced at least once
-  /// (`no such table: search_vector`) or before [PowerSyncService.init] has
-  /// completed (`StateError`). Either is caught here so it degrades to the
-  /// HTTP path instead of aborting the whole search; if HTTP also fails (or
-  /// the device is offline), [search] returns an empty list rather than
-  /// letting the exception propagate to the caller.
-  Future<List<SearchResult>> search(String query, {int limit = 20}) async {
-    final local = await _searchLocal(query, limit);
-    List<SearchResult> remote;
+  /// The filter is applied by the router rather than over the returned list:
+  /// the response is capped at [limit], so filtering here would show a city's
+  /// share of that page instead of what the city actually has.
+  ///
+  /// A failure is rethrown as [AppError] — there is no local mirror to fall
+  /// back to, and an empty list would render as "no results found", which is
+  /// a different claim than "we couldn't reach the server".
+  Future<List<SearchResult>> search(
+    String query, {
+    int limit = 20,
+    String? city,
+  }) async {
+    final key = '${city ?? ''}|$limit|$query';
+    final cached = _memo[key];
+    if (cached != null) return cached;
+    final List<SearchResult> results;
     try {
-      remote = await _httpFetch(query, limit);
-    } on Object {
-      remote = const [];
+      results = await _httpFetch(query, limit, city);
+    } on Object catch (e) {
+      throw AppError.from(e);
     }
-    return _merge(local, remote, limit);
-  }
-
-  Future<List<SearchResult>> _searchLocal(String query, int limit) async {
-    final like = '%$query%';
-    List<Map<String, dynamic>> rows;
-    try {
-      rows = await _db.getAll(
-        'SELECT type, uid, name, city, depart, destin '
-        'FROM search_vector '
-        'WHERE uid = ?1 OR name LIKE ?2 OR depart LIKE ?2 OR destin LIKE ?2 '
-        'ORDER BY name LIMIT ?3',
-        [query, like, limit],
-      );
-    } on Object catch (e, s) {
-      CrashReporter.record(e, s);
-      if (kDebugMode) {
-        debugPrint('[Search] local query failed, falling back to HTTP: $e');
-      }
-      return const [];
-    }
-    final results = <SearchResult>[];
-    for (final row in rows) {
-      final result = _fromRow(row);
-      if (result != null) results.add(result);
-    }
+    _memo[key] = results;
+    if (_memo.length > _memoLimit) _memo.remove(_memo.keys.first);
     return results;
-  }
-
-  static List<SearchResult> _merge(
-    List<SearchResult> local,
-    List<SearchResult> remote,
-    int limit,
-  ) {
-    final seen = <String>{for (final r in local) '${r.type}:${r.uid}'};
-    final merged = [...local];
-    for (final r in remote) {
-      if (merged.length >= limit) break;
-      final key = '${r.type}:${r.uid}';
-      if (seen.add(key)) merged.add(r);
-    }
-    return merged.length > limit ? merged.sublist(0, limit) : merged;
   }
 
   static SearchResult? _fromRow(Map<String, dynamic> row) {
@@ -99,7 +67,8 @@ class SearchRepository {
     final city = row['city'] as String?;
     final subtitle = depart.isNotEmpty && destin.isNotEmpty
         ? '$depart → $destin'
-        : (city ?? '');
+        // The row carries the raw TDX code; the reader gets the city's name.
+        : (city == null || city.isEmpty ? '' : cityName(city));
     return SearchResult(
       type: _parseType(rawType),
       uid: row['uid'] as String? ?? '',
@@ -124,10 +93,11 @@ class SearchRepository {
   static Future<List<SearchResult>> _fetchFromRouter(
     String query,
     int limit,
+    String? city,
   ) async {
     final res = await HttpClient.instance.dio.get<Map<String, dynamic>>(
       '/api/search',
-      queryParameters: {'q': query, 'limit': limit},
+      queryParameters: {'q': query, 'limit': limit, 'city': ?city},
     );
     final list = (res.data?['results'] as List?) ?? [];
     final results = <SearchResult>[];

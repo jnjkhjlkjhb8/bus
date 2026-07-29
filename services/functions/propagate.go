@@ -62,7 +62,7 @@ func decayDelay(delay float64, seqGap int) float64 {
 		return delay
 	}
 	factor := 1.0
-	for i := 0; i < seqGap; i++ {
+	for range seqGap {
 		factor *= delayDecayBase
 	}
 	return delay * factor

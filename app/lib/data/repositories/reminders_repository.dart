@@ -1,4 +1,4 @@
-import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
 
 /// Local mirror of active arrival reminders, keyed by route then stop.
 ///

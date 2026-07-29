@@ -15,17 +15,24 @@ made by claude
   - `bike_availability:{station_uid}`
 - MRT
   - `mrt_live:{system}:{station_id}`
+  - `mrt_track:events:{track_id}`（捷運下車提醒 session 的即時狀態更新；functions tracker 每站 PUBLISH，router 的 `WatchTrack` SUBSCRIBE。builder：`shared.MrtTrackChannel`；ADR-0015）
 - TRA
   - `tra:delay:all`
   - `tra:delay:{train_no}`
-- MQTT Alert（由 TDX MQTT 訂閱寫入）
+- MQTT Alert（由 TDX MQTT 訂閱寫入；內容為正規化後的 `models.Alert_Msg`
+  protojson，非 TDX 原始 payload——ADR-0016。每次寫入都是該 channel 的當前快照，
+  解析失敗的 payload 會被丟棄而不覆蓋上一份，否則會清空所有人的告警清單）
   - `mqtt:v2:Bus:News:City:{city}`
   - `mqtt:v2:Bus:News:InterCity`
+  - `mqtt:v2:Bus:Alert:City:{city}`
+  - `mqtt:v2:Bus:Alert:InterCity`
   - `mqtt:v2:Rail:Metro:Alert:{system}`
   - `mqtt:v3:Rail:TRA:Alert`
   - `mqtt:v2:Rail:THSR:AlertInfo`
 
 ## 快取 key
+- MRT 下車提醒（ADR-0015）
+  - `mrt_track:state:{track_id}`（一個 session 的即時位置狀態，`models.MrtTrackState` proto；router 的 `CreateTrack` 初始化並供 `WatchTrack` seed，functions tracker 每站覆寫。builder：`shared.MrtTrackKey`）
 - Bus ETA Prediction
   - `weather:{city}`（天氣快照 JSON，`weatherSync` 寫入）
 - Bus
@@ -34,10 +41,12 @@ made by claude
   - `TRA_Fare:{origin_station_id}:{destination_station_id}`
   - `TRA_timetable:{date}:{origin_station_id}:{destination_station_id}`
   - `TRA_Stoptimes:{date}:{train_no}`
+  - `TRA_StationBoard:{date}:{station_id}:{direction}`（一站一方向的整個服務日發車看板；時間窗由 handler 切，空的一天不寫入快取）
 - THSR
   - `THSR_Fare:{origin_station_id}:{destination_station_id}`
   - `THSR_timetable:{date}:{origin_station_id}:{destination_station_id}`
   - `THSR_Stoptimes:{date}:{train_no}`
+  - `THSR_StationBoard:{date}:{station_id}:{direction}`
   - `thsr_seats:{date}:{train_no}`（即時 AvailableSeatStatus 快照；由 `services/functions` 的 `thsr_seats` live job 每 10 分鐘寫入。builder：`shared.ThsrSeatsKey`）
   - `thsr_seats:{date}:*`（每日一個 Pub/Sub 頻道字串：live job 以此字串 PUBLISH 每列車快照，router 的 `AvailableSeats` 以同字串 SUBSCRIBE 並用它 SCAN 上面的 per-train key 做 seed。此處「`*`」是雙方共用的字面頻道名，非 glob。builder：`shared.ThsrSeatsPattern`）
 - TDX 用戶端（`shared/tdx.go` 的 `TDXClient` 使用；key builder 在 `shared/keys.go`）
@@ -53,6 +62,8 @@ made by claude
 ## MQTT 快取 key
 - `mqtt:v2:Bus:News:City:{city}`
 - `mqtt:v2:Bus:News:InterCity`
+- `mqtt:v2:Bus:Alert:City:{city}`
+- `mqtt:v2:Bus:Alert:InterCity`
 - `mqtt:v2:Rail:Metro:Alert:{system}`
 - `mqtt:v3:Rail:TRA:Alert`
 - `mqtt:v2:Rail:THSR:AlertInfo`
@@ -65,6 +76,8 @@ made by claude
   - `bike_availability:*`：120 秒
 - MRT LiveBoard
   - `mrt_live:*`：120 秒
+- MRT 下車提醒 session 狀態（ADR-0015）
+  - `mrt_track:state:*`：進行中 3 小時（對齊 reminder 的 `expires_at`），結束（arrived/lost/stale/cancelled）後縮為 60 秒讓已連線的 watcher 收到最終狀態後過期
 - TRA Delay
   - `tra:delay:all`：180 秒  ← Pub/Sub channel（A5 已修正 _all → :all）
   - `tra:delay`：180 秒（hash，trainNo → delay 秒數）
@@ -73,9 +86,14 @@ made by claude
 - MQTT Alert
   - `mqtt:v2:Bus:News:*`：5 分鐘
   - `mqtt:v2:Bus:News:InterCity`：5 分鐘
+  - `mqtt:v2:Bus:Alert:*`：5 分鐘
   - `mqtt:v2:Rail:Metro:Alert:*`：5 分鐘
   - `mqtt:v3:Rail:TRA:Alert`：5 分鐘
   - `mqtt:v2:Rail:THSR:AlertInfo`：5 分鐘
+- 告警推播去重（`fcm:alert:{route_type}\0{route_key}\0{body hash}`）
+  - 24 小時。TDX 會把同一則持續中的災情反覆重發、斷線重連也會重收 retained
+    訊息，窗口若短於災情本身就會重複通知；鍵取內容雜湊而非 TDX 的
+    `AlertID`/`UpdateTime`，後者在文字沒變時仍會改變（ADR-0016）
 - Fares/Timetables
   - `TRA_Fare:*`：8 小時
   - `THSR_Fare:*`：1 小時
@@ -83,6 +101,8 @@ made by claude
   - `THSR_timetable:*`：1 小時
   - `TRA_Stoptimes:*`：1 小時
   - `THSR_Stoptimes:*`：1 小時
+  - `TRA_StationBoard:*`：1 小時
+  - `THSR_StationBoard:*`：1 小時
   - `thsr_seats:*`：15 分鐘
 - TDX token / If-Modified-Since
   - `shared:tdx:access_token`：6 小時

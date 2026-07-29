@@ -3,18 +3,19 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:material_symbols_icons/symbols.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/data/models/favorite.dart';
-import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
-import 'package:wheres_the_car/features/favorites/bloc/favorites_event.dart';
-import 'package:wheres_the_car/features/favorites/bloc/favorites_state.dart';
-import 'package:wheres_the_car/features/favorites/favorite_actions.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_bars.dart';
-import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
-import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/data/models/favorite.dart';
+import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
+import 'package:wheres_the_bus/features/favorites/bloc/favorites_event.dart';
+import 'package:wheres_the_bus/features/favorites/bloc/favorites_state.dart';
+import 'package:wheres_the_bus/features/favorites/favorite_actions.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
+import 'package:wheres_the_bus/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_bus/shared/widgets/transport_icon.dart';
 
 class FavoritesScreen extends StatelessWidget {
   const FavoritesScreen({super.key});
@@ -29,10 +30,12 @@ class FavoritesScreen extends StatelessWidget {
           return Column(
             children: [
               DetailAppBar(
-                title: '我的收藏',
+                title: AppI18n.of(context).favoritesTitle,
                 subtitle: items.isEmpty
                     ? null
-                    : '${items.length} 個收藏 · $pinnedCount 已釘選',
+                    : AppI18n.of(
+                        context,
+                      ).favoritesSummary(items.length, pinnedCount),
               ),
               Expanded(
                 child: AnimatedSwitcher(
@@ -111,8 +114,8 @@ class _FavoriteListRow extends StatelessWidget {
           ..add(FavoriteRemoved(fav.id));
         AppSnackbar.show(
           context,
-          '已移除收藏',
-          action: '復原',
+          AppI18n.of(context).favoritesRemoved,
+          action: AppI18n.of(context).commonUndo,
           onAction: () => bloc.add(FavoriteToggled(fav)),
         );
       },
@@ -206,7 +209,9 @@ class _PinButton extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Semantics(
       button: true,
-      label: fav.pinned ? '取消釘選' : '釘選至首頁',
+      label: fav.pinned
+          ? AppI18n.of(context).favoritesUnpin
+          : AppI18n.of(context).favoritesPin,
       child: IconButton(
         visualDensity: VisualDensity.compact,
         icon: Icon(
@@ -241,7 +246,7 @@ class _FavoritesEmpty extends StatelessWidget {
             Icon(Symbols.bookmark_rounded, size: 44, color: cs.outline),
             const SizedBox(height: 16),
             Text(
-              '尚無收藏',
+              AppI18n.of(context).favoritesEmpty,
               style: AppTextStyles.bodyLarge.copyWith(
                 fontWeight: FontWeight.w600,
                 color: cs.onSurface,
@@ -249,7 +254,7 @@ class _FavoritesEmpty extends StatelessWidget {
             ),
             const SizedBox(height: 6),
             Text(
-              '在站牌或路線頁點收藏即可加入，釘選後會顯示在首頁',
+              AppI18n.of(context).favoritesEmptyHint,
               textAlign: TextAlign.center,
               style: AppTextStyles.bodySmall.copyWith(
                 color: cs.onSurfaceVariant,

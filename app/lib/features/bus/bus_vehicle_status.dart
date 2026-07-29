@@ -1,4 +1,5 @@
-import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 /// Severity lane for a vehicle's headline status, mapped to a theme color by
 /// the view. Kept separate from the label so the palette stays in one place.
@@ -10,22 +11,24 @@ typedef BusVehicleStatus = ({String label, BusStatusTone tone});
 /// 勤務狀態 (dutyStatus) and 行車狀況 (busStatus) into one headline. Ending duty
 /// wins over the driving state — the bus is leaving service, which matters more
 /// to a waiting rider than whatever it is doing right now.
-BusVehicleStatus busVehicleStatus(BusVehiclePosition v) {
-  if (v.dutyStatus == 2) return (label: '收班中', tone: BusStatusTone.muted);
+BusVehicleStatus busVehicleStatus(AppI18n i18n, BusVehiclePosition v) {
+  if (v.dutyStatus == 2) {
+    return (label: i18n.busStatusEndingDuty, tone: BusStatusTone.muted);
+  }
   return switch (v.busStatus) {
-    0 => (label: '營運中', tone: BusStatusTone.normal),
-    1 => (label: '車禍', tone: BusStatusTone.warning),
-    2 => (label: '故障', tone: BusStatusTone.warning),
-    3 => (label: '塞車', tone: BusStatusTone.notice),
-    4 => (label: '緊急', tone: BusStatusTone.warning),
-    5 => (label: '加油', tone: BusStatusTone.muted),
-    98 => (label: '偏移路線', tone: BusStatusTone.notice),
-    99 => (label: '非營運', tone: BusStatusTone.muted),
-    100 => (label: '客滿', tone: BusStatusTone.notice),
-    101 => (label: '包車', tone: BusStatusTone.muted),
+    0 => (label: i18n.busStatusOperating, tone: BusStatusTone.normal),
+    1 => (label: i18n.busStatusAccident, tone: BusStatusTone.warning),
+    2 => (label: i18n.busStatusBreakdown, tone: BusStatusTone.warning),
+    3 => (label: i18n.busStatusTraffic, tone: BusStatusTone.notice),
+    4 => (label: i18n.busStatusEmergency, tone: BusStatusTone.warning),
+    5 => (label: i18n.busStatusRefuelling, tone: BusStatusTone.muted),
+    98 => (label: i18n.busStatusOffRoute, tone: BusStatusTone.notice),
+    99 => (label: i18n.busStatusNotInService, tone: BusStatusTone.muted),
+    100 => (label: i18n.busStatusFull, tone: BusStatusTone.notice),
+    101 => (label: i18n.busStatusChartered, tone: BusStatusTone.muted),
     // 90/91/255 不明/未知: the bus is reporting a position, so read it as
     // operating rather than surfacing an alarming "unknown" on every marker.
-    _ => (label: '營運中', tone: BusStatusTone.normal),
+    _ => (label: i18n.busStatusOperating, tone: BusStatusTone.normal),
   };
 }
 
@@ -34,12 +37,12 @@ typedef BusGpsAge = ({String text, bool stale});
 /// How fresh the vehicle's GPS fix is, for the bubble's second line.
 /// [gpsUnix] is the fix time in epoch seconds (0 when TDX sent none). Beyond
 /// 3 minutes the position is treated as stale — likely a bus whose GPS dropped.
-BusGpsAge busGpsAge(int gpsUnix, DateTime now) {
-  if (gpsUnix <= 0) return (text: '無定位', stale: true);
+BusGpsAge busGpsAge(AppI18n i18n, int gpsUnix, DateTime now) {
+  if (gpsUnix <= 0) return (text: i18n.busGpsNone, stale: true);
   final age = now.millisecondsSinceEpoch ~/ 1000 - gpsUnix;
-  if (age >= 180) return (text: '定位延遲', stale: true);
+  if (age >= 180) return (text: i18n.busGpsStale, stale: true);
   // Clock skew can put the fix slightly ahead of the device clock; read fresh.
-  if (age < 15) return (text: '剛剛', stale: false);
-  if (age < 60) return (text: '$age秒前', stale: false);
-  return (text: '${age ~/ 60}分前', stale: false);
+  if (age < 15) return (text: i18n.commonJustNow, stale: false);
+  if (age < 60) return (text: i18n.busGpsSecondsAgo(age), stale: false);
+  return (text: i18n.busGpsMinutesAgo(age ~/ 60), stale: false);
 }

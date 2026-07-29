@@ -14,9 +14,9 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -259,13 +259,13 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 	if !cached {
 		var err error
 		mp, err = j.store.staticStops(ctx, prefix)
-		if err != nil || len(mp) <= 0 {
+		if err != nil || len(mp) == 0 {
 			log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
 			return err
 		}
 		storeBusStaticMapIn(&busStaticMapCache, prefix, mp, generation, j.now())
 	}
-	if len(mp) <= 0 {
+	if len(mp) == 0 {
 		log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
 		return nil
 	}
@@ -491,7 +491,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) error {
 				int16(b.StopSequence), int16(ts), est, nextBusTimePtr, srcTime,
 				city, int16(now.Hour()), int16(now.Weekday()), holiday,
 				weatherTemp, weatherPrecip, weatherWind, weatherHumid,
-				plateNumb, busSpeed, busDist,
+				plateNumb, busSpeed, busDist, now,
 			})
 		}
 		if status == 1 && eta.NextBusTime == "" {

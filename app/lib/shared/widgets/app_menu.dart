@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
 
 class AppMenuItem {
   const AppMenuItem({
@@ -28,7 +29,7 @@ class AppMenuButton extends StatefulWidget {
   final List<AppMenuItem> items;
   final Widget? child;
 
-  /// Accessible label / tooltip for the trigger. Defaults to "更多選項".
+  /// Accessible label / tooltip for the trigger. Defaults to AppI18n.of(context).commonMoreOptions.
   final String? tooltip;
 
   @override
@@ -41,7 +42,7 @@ class _AppMenuButtonState extends State<AppMenuButton> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final tooltip = widget.tooltip ?? '更多選項';
+    final tooltip = widget.tooltip ?? AppI18n.of(context).commonMoreOptions;
     return Pressable(
       onTap: () => _menuKey.currentState?.showButtonMenu(),
       semanticLabel: tooltip,

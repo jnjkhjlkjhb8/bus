@@ -5,30 +5,29 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
-import 'package:wheres_the_car/app/theme/app_shadows.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/location/location_service.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
-import 'package:wheres_the_car/features/alerts/view/alert_banner.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
-import 'package:wheres_the_car/features/bus/view/bus_stop_detail_view.dart';
-import 'package:wheres_the_car/features/bus/widgets/stop_board_toggle.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_state.dart';
-import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
-import 'package:wheres_the_car/shared/map/marker_factory.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_bars.dart';
-import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
-import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_bus/app/theme/app_shadows.dart';
+import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/core/location/location_service.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/alerts/view/inline_notice.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_bloc.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_state.dart';
+import 'package:wheres_the_bus/features/bus/view/bus_stop_detail_view.dart';
+import 'package:wheres_the_bus/features/bus/widgets/stop_board_toggle.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_state.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
+import 'package:wheres_the_bus/shared/map/marker_factory.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
+import 'package:wheres_the_bus/shared/widgets/app_spinner.dart';
+import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
 
 const _kDefaultPos = LatLng(25.0330, 121.5654);
 
@@ -37,11 +36,20 @@ class BusStopScreen extends StatefulWidget {
     required this.stopName,
     this.stopId,
     this.city,
+    this.lat,
+    this.lon,
     super.key,
   });
   final String stopName;
   final String? stopId;
   final String? city;
+
+  /// Caller-supplied coordinates of the stop, when known (search results carry
+  /// them). They let the map open on the stop instead of the GPS fallback,
+  /// with no network round-trip; the station-group fetch refines the position
+  /// and markers when it lands.
+  final double? lat;
+  final double? lon;
 
   @override
   State<BusStopScreen> createState() => _BusStopScreenState();
@@ -50,7 +58,11 @@ class BusStopScreen extends StatefulWidget {
 class _BusStopScreenState extends State<BusStopScreen> {
   GoogleMapController? _controller;
   late final SheetController _sheetController;
-  late final BusStopBloc _bloc;
+  BusStopBloc? _blocOrNull;
+
+  /// Non-null from the first `didChangeDependencies` on, which runs before
+  /// any build or lifecycle callback that reaches for it.
+  BusStopBloc get _bloc => _blocOrNull!;
   BitmapDescriptor? _busIcon;
   bool _locating = false;
 
@@ -59,14 +71,34 @@ class _BusStopScreenState extends State<BusStopScreen> {
   /// they don't each fire their own `currentPosition()` call.
   Future<Position>? _initialPosition;
 
+  /// The stop's coordinates as supplied by the caller, if any.
+  LatLng? get _hint => widget.lat != null && widget.lon != null
+      ? LatLng(widget.lat!, widget.lon!)
+      : null;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Built here, not in initState: resolving the locale reads an inherited
+    // widget, which initState is too early for.
+    _blocOrNull ??= BusStopBloc(
+      i18n: AppI18n.of(context),
+      stopId: widget.stopId,
+      city: widget.city,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
     _sheetController = SheetController();
-    _bloc = BusStopBloc(stopId: widget.stopId, city: widget.city);
     unawaited(_loadMarkerIcon());
-    _initialPosition = LocationService.instance.currentPosition();
-    unawaited(_moveToInitialLocation());
+    // With a hint the camera already opens on the stop, so the GPS fallback —
+    // and its permission/fix latency — is not needed at all.
+    if (_hint == null) {
+      _initialPosition = LocationService.instance.currentPosition();
+      unawaited(_moveToInitialLocation());
+    }
   }
 
   Future<void> _loadMarkerIcon() async {
@@ -89,9 +121,13 @@ class _BusStopScreenState extends State<BusStopScreen> {
     super.dispose();
   }
 
+  /// Falls back to a GPS pan only until the stop's own coordinates are known
+  /// (hint or member stops); once they land, the camera target comes from the
+  /// stop, not the user's location.
   Future<void> _moveToInitialLocation() async {
     final initial = _initialPosition;
     if (initial == null) return;
+    if (_bloc.state.members.isNotEmpty) return;
     try {
       final pos = await initial;
       final controller = _controller;
@@ -166,11 +202,27 @@ class _BusStopScreenState extends State<BusStopScreen> {
         body: Stack(
           children: [
             Positioned.fill(
-              child: BlocBuilder<BusStopBloc, BusStopState>(
+              child: BlocConsumer<BusStopBloc, BusStopState>(
+                listenWhen: (prev, next) =>
+                    prev.members.isEmpty && next.members.isNotEmpty,
+                // The station-group fetch can land after the map is already up
+                // (its initial camera target was only the hint or the GPS
+                // fallback); once the member stops arrive, pan to them
+                // explicitly since `initialCameraPosition` never re-applies
+                // post-creation.
+                listener: (context, state) {
+                  final first = state.members.first;
+                  unawaited(
+                    _controller?.animateCamera(
+                      CameraUpdate.newLatLng(LatLng(first.lat, first.lon)),
+                    ),
+                  );
+                },
                 buildWhen: (prev, next) => prev.members != next.members,
                 builder: (context, state) {
+                  final hint = _hint;
                   final target = state.members.isEmpty
-                      ? _kDefaultPos
+                      ? (hint ?? _kDefaultPos)
                       : LatLng(
                           state.members.first.lat,
                           state.members.first.lon,
@@ -182,6 +234,16 @@ class _BusStopScreenState extends State<BusStopScreen> {
                       zoom: 16,
                     ),
                     markers: {
+                      // Stand-in pin so the stop is visible immediately; the
+                      // real member markers replace it when they arrive.
+                      if (state.members.isEmpty && hint != null)
+                        Marker(
+                          markerId: const MarkerId('_hint'),
+                          position: hint,
+                          icon: _busIcon ?? BitmapDescriptor.defaultMarker,
+                          anchor: const Offset(0.5, 0.5),
+                          infoWindow: InfoWindow(title: widget.stopName),
+                        ),
                       for (final m in state.members)
                         Marker(
                           markerId: MarkerId(m.stationUid),
@@ -204,7 +266,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
                     },
                     onMapCreated: (c) {
                       _controller = c;
-                      if (state.members.isEmpty) {
+                      if (state.members.isEmpty && hint == null) {
                         unawaited(_moveToInitialLocation());
                       }
                     },
@@ -212,58 +274,47 @@ class _BusStopScreenState extends State<BusStopScreen> {
                 },
               ),
             ),
-            SafeArea(
-              bottom: false,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    child: Row(
-                      children: [
-                        AppBarCircleButton(
-                          onTap: context.pop,
-                          semanticLabel: '返回',
-                          child: Icon(
-                            Icons.arrow_back_ios_new_rounded,
-                            size: 18,
-                            color: cs.onSurface,
-                          ),
-                        ),
-                        const Spacer(),
-                        if (SettingsRepository.instance.liveActivityEnabled &&
-                            (widget.stopId?.isNotEmpty ?? false))
-                          BlocBuilder<StopBoardBloc, StopBoardState>(
-                            builder: (context, state) {
-                              final isActive = isStopBoardActive(
-                                state,
-                                widget.stopName,
-                              );
-                              return AppBarCircleButton(
-                                onTap: () => _toggleBoard(isActive),
-                                semanticLabel: isActive
-                                    ? '關閉站牌即時動態'
-                                    : '開啟站牌即時動態',
-                                child: Icon(
-                                  isActive
-                                      ? Icons.wifi_tethering_rounded
-                                      : Icons.wifi_tethering_off_rounded,
-                                  size: 18,
-                                  color: cs.onSurface,
-                                ),
-                              );
-                            },
-                          ),
-                      ],
-                    ),
-                  ),
-                  const MapAlertStrip(),
-                ],
-              ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FloatingAppBar(
+                  trailing:
+                      SettingsRepository.instance.liveActivityEnabled &&
+                          (widget.stopId?.isNotEmpty ?? false)
+                      ? BlocBuilder<StopBoardBloc, StopBoardState>(
+                          builder: (context, state) {
+                            final isActive = isStopBoardActive(
+                              state,
+                              widget.stopName,
+                            );
+                            return AppBarCircleButton(
+                              onTap: () => _toggleBoard(isActive),
+                              semanticLabel: isActive
+                                  ? AppI18n.of(context).busLiveActivityOff
+                                  : AppI18n.of(context).busLiveActivityOn,
+                              child: Icon(
+                                isActive
+                                    ? Icons.wifi_tethering_rounded
+                                    : Icons.wifi_tethering_off_rounded,
+                                size: AppBarMetrics.icon,
+                                color: cs.onSurface,
+                              ),
+                            );
+                          },
+                        )
+                      : null,
+                ),
+                // Scoped to the routes this stop actually serves: a
+                // disruption on a line that doesn't stop here is not this
+                // screen's business.
+                BlocSelector<BusStopBloc, BusStopState, Set<String>>(
+                  selector: (state) =>
+                      state.displays.map((d) => d.subRouteUid).toSet(),
+                  builder: (context, routeKeys) =>
+                      InlineNotice(routeType: 'bus', routeKeys: routeKeys),
+                ),
+              ],
             ),
 
             ValueListenableBuilder<double?>(
@@ -278,7 +329,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
               },
               child: Pressable(
                 onTap: _recenterMap,
-                semanticLabel: '定位目前位置',
+                semanticLabel: AppI18n.of(context).commonLocateMe,
                 child: Container(
                   width: 44,
                   height: 44,
@@ -309,38 +360,16 @@ class _BusStopScreenState extends State<BusStopScreen> {
               ),
             ),
 
-            NotificationListener<SheetNotification>(
-              onNotification: (notification) {
-                if (notification is SheetDragEndNotification) {
-                  unawaited(HapticService.instance.lightTap());
-                }
-                return false;
-              },
-              child: SheetViewport(
-                child: SheetExitGestureDetector(
-                  onExit: () => context.pop(),
-                  child: Sheet(
-                    controller: _sheetController,
-                    initialOffset: AppSheetSnap.half,
-                    snapGrid: AppSheetSnap.grid,
-                    scrollConfiguration: const SheetScrollConfiguration(),
-                    decoration: MaterialSheetDecoration(
-                      size: SheetSize.stretch,
-                      color: cs.surfaceContainerLow,
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(AppTheme.radiusBottomSheet),
-                      ),
-                      clipBehavior: Clip.antiAlias,
-                    ),
-                    child: BusStopDetailView(
-                      stopName: widget.stopName,
-                      stopId: widget.stopId,
-                      city: widget.city,
-                      bloc: _bloc,
-                      onFocusStation: _focusStation,
-                    ),
-                  ),
-                ),
+            AppSheet(
+              controller: _sheetController,
+              // Back button in the app bar above (see AppSheet.onExit).
+              onExit: null,
+              child: BusStopDetailView(
+                stopName: widget.stopName,
+                stopId: widget.stopId,
+                city: widget.city,
+                bloc: _bloc,
+                onFocusStation: _focusStation,
               ),
             ),
           ],

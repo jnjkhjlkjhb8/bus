@@ -12,90 +12,22 @@ class _MapModeChip extends StatelessWidget {
   final _MapMode mode;
   final ValueChanged<_MapMode> onChanged;
 
-  static const _labels = <_MapMode, String>{
-    _MapMode.time: '時間',
-    _MapMode.fare: '票價',
-  };
-
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final reduceMotion = MediaQuery.disableAnimationsOf(context);
-    final duration = reduceMotion ? Duration.zero : AppMotion.medium;
-    return Container(
-      height: 44,
-      padding: const EdgeInsets.all(4),
-      decoration: AppTheme.floatingControl(
-        cs,
-        borderRadius: const BorderRadius.all(Radius.circular(999)),
-      ),
-      child: Stack(
-        children: [
-          // Thumb slides between the two options (both are 2 CJK chars, so the
-          // segments are equal-width and a half-width thumb lands on each). It
-          // sits behind the labels; the Row's GestureDetectors take the taps.
-          Positioned.fill(
-            child: AnimatedAlign(
-              duration: duration,
-              curve: AppMotion.easeOut,
-              alignment: mode == _MapMode.time
-                  ? Alignment.centerLeft
-                  : Alignment.centerRight,
-              child: FractionallySizedBox(
-                widthFactor: 0.5,
-                heightFactor: 1,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: cs.onSurface,
-                    borderRadius: const BorderRadius.all(Radius.circular(999)),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (final entry in _labels.entries)
-                _segment(cs, duration, entry.key, entry.value),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _segment(
-    ColorScheme cs,
-    Duration duration,
-    _MapMode value,
-    String label,
-  ) {
-    final selected = value == mode;
-    return Semantics(
-      button: true,
-      selected: selected,
-      child: Pressable(
-        onTap: () {
-          if (selected) return;
-          unawaited(HapticService.instance.lightTap());
-          onChanged(value);
-        },
-        child: Container(
-          height: 36,
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: AnimatedDefaultTextStyle(
-            duration: duration,
-            curve: AppMotion.easeOut,
-            style: AppTextStyles.bodyRegular.copyWith(
-              fontWeight: FontWeight.w600,
-              color: selected ? cs.surface : cs.onSurfaceVariant,
-            ),
-            child: Text(label),
-          ),
-        ),
-      ),
+    final i18n = AppI18n.of(context);
+    return AppSlidingSegment<_MapMode>(
+      style: AppSegmentStyle.floating,
+      // Hugs its labels rather than stretching: it floats beside the system
+      // pill over the map, where a full-width control would cover the network.
+      fill: false,
+      // Built per call rather than held in a static: the labels follow the
+      // rider's language, which a `static const` would freeze at first load.
+      options: {
+        _MapMode.time: i18n.metroMapModeTime,
+        _MapMode.fare: i18n.metroMapModeFare,
+      },
+      value: mode,
+      onChanged: onChanged,
     );
   }
 }
@@ -108,34 +40,40 @@ class _SystemPill extends StatefulWidget {
 }
 
 class _SystemPillState extends State<_SystemPill> {
-  static const _others = ['高雄捷運', '桃園機捷', '高雄輕軌'];
+  /// Resolved per build rather than held in a static: the labels follow the
+  /// rider's language, which a `static const` would freeze at first load.
+  List<String> _others(AppI18n i18n) => [
+    i18n.metroSystemKrtc,
+    i18n.metroSystemTymc,
+    i18n.metroSystemKlrt,
+  ];
   bool _isPickerOpen = false;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final surface = cs.brightness == Brightness.light
-        ? Colors.white
-        : cs.surfaceContainerHigh;
     return Semantics(
-      label: '切換捷運系統',
+      label: AppI18n.of(context).metroSwitchSystem,
       button: true,
       child: Pressable(
         onTap: () => _showPicker(context),
         child: Container(
           height: 44,
           padding: const EdgeInsets.symmetric(horizontal: 14),
-          decoration: BoxDecoration(
-            color: surface,
-            borderRadius: const BorderRadius.all(Radius.circular(999)),
-            boxShadow: AppShadows.floating,
+          // Same skin as the back button and the time/fare segment beside it:
+          // hand-rolling it here drifted (shadow in dark mode, no hairline).
+          decoration: AppTheme.floatingControl(
+            cs,
+            borderRadius: const BorderRadius.all(
+              Radius.circular(AppTheme.radiusStadium),
+            ),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             spacing: 4,
             children: [
               Text(
-                '台北捷運',
+                AppI18n.of(context).metroSystemTrtc,
                 style: AppTextStyles.bodyLarge.copyWith(
                   fontWeight: FontWeight.w600,
                   color: cs.onSurface,
@@ -181,7 +119,7 @@ class _SystemPillState extends State<_SystemPill> {
           pos.dx + box.size.width,
           0,
         ),
-        items: _others
+        items: _others(AppI18n.of(context))
             .map(
               (s) => PopupMenuItem(
                 value: s,
@@ -201,7 +139,7 @@ class _SystemPillState extends State<_SystemPill> {
           setState(() => _isPickerOpen = false);
         }
         if (value != null && context.mounted) {
-          AppSnackbar.show(context, '$value 尚未支援');
+          AppSnackbar.show(context, AppI18n.of(context).comingSoonValue(value));
         }
       }),
     );

@@ -1,7 +1,7 @@
 import 'dart:async';
 
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/core/grpc/resilient_stream.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/grpc/resilient_stream.dart';
 
 /// Merges a fresh server frame into the current list, returning the next list.
 /// Returning the same instance as `current` signals "no change" so the feed

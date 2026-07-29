@@ -118,28 +118,23 @@ func mustParseClock(t *testing.T, s string) time.Time {
 	return tm
 }
 
-// TestCleanupBusHistoryCapsDeleteBatches guards the retention rewrite: a
+// TestCleanupPredictionErrorsCapsDeleteBatches guards the retention rewrite: a
 // single unbounded 30-day DELETE is replaced with capped batches. With more
-// stale rows than one batch holds, cleanupBusHistory must issue more than one
-// DELETE against bus_eta_history, each bounded by the batch-size argument.
-func TestCleanupBusHistoryCapsDeleteBatches(t *testing.T) {
+// stale rows than one batch holds, cleanupPredictionErrors must issue more than
+// one DELETE, each bounded by the batch-size argument.
+func TestCleanupPredictionErrorsCapsDeleteBatches(t *testing.T) {
 	db := newTravelAvgMock(t)
-
-	historyDelete := regexp.QuoteMeta("bus_eta_history")
-	db.ExpectExec(historyDelete).
-		WithArgs(cleanupBatchSize).
-		WillReturnResult(pgxmock.NewResult("DELETE", int64(cleanupBatchSize)))
-	db.ExpectExec(historyDelete).
-		WithArgs(cleanupBatchSize).
-		WillReturnResult(pgxmock.NewResult("DELETE", 37))
 
 	perrDelete := regexp.QuoteMeta("bus_eta_prediction_error")
 	db.ExpectExec(perrDelete).
 		WithArgs(cleanupBatchSize).
-		WillReturnResult(pgxmock.NewResult("DELETE", 0))
+		WillReturnResult(pgxmock.NewResult("DELETE", int64(cleanupBatchSize)))
+	db.ExpectExec(perrDelete).
+		WithArgs(cleanupBatchSize).
+		WillReturnResult(pgxmock.NewResult("DELETE", 37))
 
-	if err := cleanupBusHistory(context.Background(), db); err != nil {
-		t.Fatalf("cleanupBusHistory: %v", err)
+	if err := cleanupPredictionErrors(context.Background(), db); err != nil {
+		t.Fatalf("cleanupPredictionErrors: %v", err)
 	}
 }
 
@@ -163,57 +158,45 @@ func (d *cancelAfterExec) Exec(ctx context.Context, sql string, args ...any) (pg
 	return tag, err
 }
 
-// TestCleanupBusHistoryStopsOnContextCancellation proves the batch loop checks
-// ctx between batches instead of looping until the table is empty regardless
-// of cancellation, and that the cancellation surfaces as an error rather than
-// being reported as a clean success.
-func TestCleanupBusHistoryStopsOnContextCancellation(t *testing.T) {
+// TestCleanupPredictionErrorsStopsOnContextCancellation proves the batch loop
+// checks ctx between batches instead of looping until the table is empty
+// regardless of cancellation, and that the cancellation surfaces as an error
+// rather than being reported as a clean success.
+func TestCleanupPredictionErrorsStopsOnContextCancellation(t *testing.T) {
 	db := newTravelAvgMock(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	wrapped := &cancelAfterExec{PgxPoolIface: db, cancel: cancel, cancelAt: 1}
 
-	// First bus_eta_history batch reports a full batch (the loop wants to
-	// continue); cancellation lands immediately after, so the second batch of
-	// bus_eta_history, and the bus_eta_prediction_error cleanup entirely, must
-	// never issue an Exec.
-	historyDelete := regexp.QuoteMeta("bus_eta_history")
-	db.ExpectExec(historyDelete).
+	// The first batch reports a full batch, so the loop wants to continue;
+	// cancellation lands immediately after, so no second Exec may issue.
+	db.ExpectExec(regexp.QuoteMeta("bus_eta_prediction_error")).
 		WithArgs(cleanupBatchSize).
 		WillReturnResult(pgxmock.NewResult("DELETE", int64(cleanupBatchSize)))
 
-	err := cleanupBusHistory(ctx, wrapped)
+	err := cleanupPredictionErrors(ctx, wrapped)
 	if err == nil {
-		t.Fatal("cleanupBusHistory: want error on context cancellation, got nil")
+		t.Fatal("cleanupPredictionErrors: want error on context cancellation, got nil")
 	}
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("cleanupBusHistory error = %v, want context.Canceled in chain", err)
+		t.Errorf("cleanupPredictionErrors error = %v, want context.Canceled in chain", err)
 	}
 }
 
-// TestCleanupBusHistoryReportsPartialFailure proves a failure deleting the
-// prediction-error table is not swallowed just because bus_eta_history's
-// cleanup succeeded: both are independent retention targets and a caller
-// relying on the returned error to gate a completion marker must see it.
-func TestCleanupBusHistoryReportsPartialFailure(t *testing.T) {
+// A delete failure must reach the caller: runDaily gates its retry on the
+// returned error, so swallowing it would silently stop retention.
+func TestCleanupPredictionErrorsReportsFailure(t *testing.T) {
 	db := newTravelAvgMock(t)
-
-	historyDelete := regexp.QuoteMeta("bus_eta_history")
-	db.ExpectExec(historyDelete).
-		WithArgs(cleanupBatchSize).
-		WillReturnResult(pgxmock.NewResult("DELETE", 5))
-
-	perrDelete := regexp.QuoteMeta("bus_eta_prediction_error")
 	wantErr := errors.New("connection reset")
-	db.ExpectExec(perrDelete).
+	db.ExpectExec(regexp.QuoteMeta("bus_eta_prediction_error")).
 		WithArgs(cleanupBatchSize).
 		WillReturnError(wantErr)
 
-	err := cleanupBusHistory(context.Background(), db)
+	err := cleanupPredictionErrors(context.Background(), db)
 	if err == nil {
-		t.Fatal("cleanupBusHistory: want error when prediction-error cleanup fails, got nil")
+		t.Fatal("cleanupPredictionErrors: want error when the delete fails, got nil")
 	}
 	if !errors.Is(err, wantErr) {
-		t.Errorf("cleanupBusHistory error = %v, want to wrap %v", err, wantErr)
+		t.Errorf("cleanupPredictionErrors error = %v, want to wrap %v", err, wantErr)
 	}
 }

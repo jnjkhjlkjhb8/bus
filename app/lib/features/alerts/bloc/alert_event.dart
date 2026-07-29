@@ -1,6 +1,6 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/models/alert_models.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/alert_models.dart';
 
 sealed class AlertEvent extends Equatable {
   const AlertEvent();
@@ -12,11 +12,24 @@ class AlertStarted extends AlertEvent {
   const AlertStarted();
 }
 
+/// One source's current set of alerts. Each message from a stream carries that
+/// channel's whole snapshot, so this replaces what the source reported before
+/// rather than adding to it — that is how a resolved disruption disappears.
 class AlertReceived extends AlertEvent {
-  const AlertReceived(this.alert);
-  final AlertViewModel alert;
+  const AlertReceived(this.source, this.alerts);
+  final AlertSourceId source;
+  final List<AlertViewModel> alerts;
   @override
-  List<Object?> get props => [alert];
+  List<Object?> get props => [source, alerts];
+}
+
+/// The rider's 訂閱範圍 changed, because 收藏 changed. Only the filter moves;
+/// nothing is resubscribed and no alert is refetched.
+class AlertScopeChanged extends AlertEvent {
+  const AlertScopeChanged(this.scope);
+  final Set<String> scope;
+  @override
+  List<Object?> get props => [scope];
 }
 
 class AlertDismissed extends AlertEvent {

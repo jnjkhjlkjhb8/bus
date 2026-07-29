@@ -5,47 +5,51 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:wheres_the_car/app/theme/app_shadows.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/data/decoders/fare_decoder.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/bus_route_detail.dart';
-import 'package:wheres_the_car/data/models/eta_format.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/data/models/timeline_stop.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_route_bloc.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_route_event.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_route_state.dart';
-import 'package:wheres_the_car/features/bus/bus_vehicle_status.dart';
-import 'package:wheres_the_car/features/bus/widgets/bus_timeline_stops.dart';
-import 'package:wheres_the_car/features/bus/widgets/pinned_bus.dart';
-import 'package:wheres_the_car/features/bus/widgets/track_trigger_stop.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
-import 'package:wheres_the_car/shared/map/bus_sprite.dart';
-import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
-import 'package:wheres_the_car/shared/map/marker_factory.dart';
-import 'package:wheres_the_car/shared/map/wkt.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_accordion.dart';
-import 'package:wheres_the_car/shared/widgets/app_bars.dart';
-import 'package:wheres_the_car/shared/widgets/app_card.dart';
-import 'package:wheres_the_car/shared/widgets/app_input.dart';
-import 'package:wheres_the_car/shared/widgets/app_sliding_segment.dart';
-import 'package:wheres_the_car/shared/widgets/bookmark_button.dart';
-import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
-import 'package:wheres_the_car/shared/widgets/divider_line.dart';
-import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
-import 'package:wheres_the_car/shared/widgets/route_tab_bar.dart';
+import 'package:wheres_the_bus/app/theme/app_shadows.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/data/decoders/fare_decoder.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
+import 'package:wheres_the_bus/data/models/eta_format.dart';
+import 'package:wheres_the_bus/data/models/fare_type.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/models/timeline_stop.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_route_bloc.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_route_event.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_route_state.dart';
+import 'package:wheres_the_bus/features/bus/bus_vehicle_status.dart';
+import 'package:wheres_the_bus/features/bus/widgets/bus_timeline_stops.dart';
+import 'package:wheres_the_bus/features/bus/widgets/bus_timetable_day.dart';
+import 'package:wheres_the_bus/features/bus/widgets/pinned_bus.dart';
+import 'package:wheres_the_bus/features/bus/widgets/track_trigger_stop.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/map/bus_sprite.dart';
+import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
+import 'package:wheres_the_bus/shared/map/marker_factory.dart';
+import 'package:wheres_the_bus/shared/map/wkt.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_accordion.dart';
+import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
+import 'package:wheres_the_bus/shared/widgets/app_card.dart';
+import 'package:wheres_the_bus/shared/widgets/app_input.dart';
+import 'package:wheres_the_bus/shared/widgets/app_sliding_segment.dart';
+import 'package:wheres_the_bus/shared/widgets/bookmark_button.dart';
+import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_bus/shared/widgets/divider_line.dart';
+import 'package:wheres_the_bus/shared/widgets/error_state_view.dart';
+import 'package:wheres_the_bus/shared/widgets/fare_preference.dart';
+import 'package:wheres_the_bus/shared/widgets/route_tab_bar.dart';
+import 'package:wheres_the_bus/shared/widgets/transit_timeline.dart';
 
 part '../widgets/bus_route_data_helpers.dart';
 part '../widgets/bus_route_chrome_widgets.dart';
@@ -63,6 +67,14 @@ const _kDefaultCamera = CameraPosition(
 // bar inserts above the timeline and would clip it, so the sheet lifts to this
 // slightly taller detent while picking and drops back to peek afterwards.
 const _kPickSheetOffset = SheetOffset.proportionalToViewport(0.35);
+
+// Route sheet drops the shared grid's half detent: at half the timeline is
+// already fully visible and the tab content below it is still cut off, so the
+// stop is a stall on the way to full rather than a height anyone rests at.
+const _kRouteSnapGrid = SheetSnapGrid(
+  snaps: [AppSheetSnap.peek, AppSheetSnap.full],
+  minFlingSpeed: AppSheetSnap.flingSpeed,
+);
 
 // Map overlays repaint on live ETA/vehicle churn; holding them in a notifier
 // keeps that repaint scoped to the GoogleMap layer instead of the whole screen.
@@ -116,10 +128,16 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   /// Stop uids of the current direction, in list order — lets a marker tap map
   /// a stopUid to its row index for scroll-to.
   List<String> _stopUidsInOrder = const [];
+
   /// The stop briefly highlighted after its marker was tapped; cleared by
   /// [_flashTimer] after a few seconds.
   String? _flashStopUid;
   Timer? _flashTimer;
+
+  /// The one stop showing its name as a capsule on the map. Outlives
+  /// [_flashStopUid]'s few seconds — a name you are still reading shouldn't
+  /// expire — and is cleared by tapping the marker again or the bare map.
+  String? _selectedStopUid;
 
   // "Pin a bus, pick your alight stop" state. [_pinnedPlate] is the selected
   // vehicle (null = none); [_pickingStop] is true from selection until a stop
@@ -143,6 +161,17 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   String? _geomSig;
   List<List<LatLng>> _geomLines = const [];
   bool _fitted = false;
+  // didChangeDependencies fires for reasons other than a brightness flip (text
+  // scale, locale, ...); this tracks the last-seen value so only an actual
+  // light/dark change forces a resync.
+  Brightness? _lastBrightness;
+  // Sampled at 12pt, the size the marker bitmaps are scaled from.
+  double? _lastTextScale;
+  // Bumped at the start of every _syncMap call; a call whose value no longer
+  // matches this field by the time it reaches the commit point was superseded
+  // by a newer one started while it was still awaiting bitmaps, and bails
+  // instead of overwriting the newer frame with stale markers.
+  int _syncGeneration = 0;
 
   // Vehicle markers slide between live frames; stops/polylines stay static, so
   // a glide tick only repaints the bus + bubble layer on top of them.
@@ -170,6 +199,28 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     );
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // _syncMap only runs from the bloc listener, so a theme flip or a text-size
+    // change with no new bloc state would otherwise leave every marker bitmap
+    // (and the route Polyline color) painted for the brightness and text scale
+    // that were active when they were last built. Forcing a resync here is what
+    // makes the map repaint for a light/dark switch or a Dynamic Type change at
+    // all. Both are tracked rather than resyncing on every dependency change,
+    // because that also fires for keyboard insets and locale.
+    final brightness = Theme.of(context).colorScheme.brightness;
+    final textScale = MediaQuery.textScalerOf(context).scale(12);
+    if ((_lastBrightness != null && _lastBrightness != brightness) ||
+        (_lastTextScale != null && _lastTextScale != textScale)) {
+      _markerCache.clear();
+      _mapSig = '';
+      unawaited(_syncMap(_bloc.state));
+    }
+    _lastBrightness = brightness;
+    _lastTextScale = textScale;
+  }
+
   BusStopEtaViewModel? _etaFor(BusRouteState s, BusStopModel st) =>
       s.etaMap['seq:${s.direction}:${st.sequence}'] ??
       s.etaMap['uid:${st.stopUid}'];
@@ -179,6 +230,11 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     if (route == null) return;
     final stops = s.direction == 0 ? route.stopsGo : route.stopsReturn;
     if (stops.isEmpty) return;
+    // Resolved before the first await: every caller reaches this from
+    // didChangeDependencies or later, so the locale is readable here, and
+    // holding it avoids touching `context` across an async gap.
+    final i18n = AppI18n.of(context);
+    final generation = ++_syncGeneration;
     _stopUidsInOrder = [for (final st in stops) st.stopUid];
 
     final vehicles = _vehiclePositionsFor(s);
@@ -186,10 +242,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     // reading, so including it here refreshes that label each frame.
     final sig =
         '${route.subRouteUid}:${s.direction}:${stops.length}:'
-        '${stops.map((st) => _markerEta(_etaFor(s, st))).join(',')}:'
+        '${stops.map((st) => _markerEta(i18n, _etaFor(s, st))).join(',')}:'
         '${vehicles.map(
-          (v) =>
-              '${v.plate}@${v.lat},${v.lon},${v.azimuth},${v.dutyStatus},'
+          (v) => '${v.plate}@${v.lat},${v.lon},${v.azimuth},${v.dutyStatus},'
               '${v.busStatus},${v.gpsTimeUnix}',
         ).join(';')}';
     if (sig == _mapSig) return;
@@ -212,6 +267,13 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     }
 
     final cs = Theme.of(context).colorScheme;
+    final isDark = cs.brightness == Brightness.dark;
+    // cs.onSurface already flips between near-black (light) and near-white
+    // (dark) — checked against both basemap styles in map_color_scheme.dart,
+    // it reads at high contrast on the light default style and on the dark
+    // style's #242f3e/#38414e geometry alike, so no extra token is needed
+    // here beyond making sure this rebuilds when the theme does (see
+    // didChangeDependencies).
     final polylines = <Polyline>{
       for (var i = 0; i < _geomLines.length; i++)
         Polyline(
@@ -225,49 +287,31 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         ),
     };
 
-    // Stop markers are static between frames; reuse any whose rendered inputs
-    // are unchanged so a frame costs O(changed) icon lookups, not O(stops).
-    final stopMarkers = <Marker>{};
-    for (final st in stops) {
-      if (st.lat == 0 && st.lon == 0) continue;
-      final eta = _etaFor(s, st);
-      final key =
-          '${_markerIsScheduled(eta)}:${_markerIsEnded(eta)}:'
-          '${_markerEta(eta)}:${st.lat},${st.lon}';
-      final cached = _markerCache[st.stopUid];
-      if (cached != null && cached.key == key) {
-        stopMarkers.add(cached.marker);
-        continue;
-      }
-      final icon = switch (eta) {
-        _ when _markerIsEnded(eta) => await MapMarkers.etaStopIcon(
-          Icons.close_rounded,
-          size: 32,
-        ),
-        _ when _markerIsScheduled(eta) => await MapMarkers.etaStopIcon(
-          Icons.schedule_rounded,
-          size: 32,
-        ),
-        _ => await MapMarkers.etaStop(_markerEta(eta), size: 32),
-      };
-      final stopUid = st.stopUid;
-      final marker = Marker(
-        markerId: MarkerId(stopUid),
-        position: LatLng(st.lat, st.lon),
-        icon: icon,
-        anchor: const Offset(0.5, 0.5),
-        infoWindow: InfoWindow(title: st.stopName),
-        onTap: () => _flashStop(stopUid),
-      );
-      _markerCache[st.stopUid] = (key: key, marker: marker);
-      stopMarkers.add(marker);
-    }
+    // Mid-longitude of the route: a selected stop's name leans away from it.
+    final bounds = stopPts.isEmpty ? null : _boundsOf(stopPts);
+    final stopMarkers = await _buildStopMarkers(
+      stops: stops,
+      etaFor: (st) => _etaFor(s, st),
+      cs: cs,
+      i18n: i18n,
+      selectedUid: _selectedStopUid,
+      midLon: bounds == null
+          ? 0
+          : (bounds.southwest.longitude + bounds.northeast.longitude) / 2,
+      cache: _markerCache,
+      onTap: _flashStop,
+    );
+
+    // A newer frame may have started (and finished) while this one was still
+    // awaiting bitmap lookups above; yield to it rather than spend more time
+    // building vehicle bitmaps for a frame that's about to be discarded.
+    if (generation != _syncGeneration) return;
 
     // Resolve each vehicle's (heading-snapped) sprite + bubble bitmaps, then
     // hand the new position to the glide controller. Every glide starts from
     // where the marker sits *right now* — mid-glide included — so a fresh frame
     // retargets smoothly instead of snapping back to the last reported point.
-    final isLight = cs.brightness == Brightness.light;
+    final isLight = !isDark;
     final now = DateTime.now();
     final t = _busGlideCurve.value;
     final nextGlides = <String, _BusGlide>{};
@@ -279,7 +323,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       // Always-on bubble above the sprite: the vehicle's own 勤務／行車狀況 as
       // the headline, plate + GPS freshness below — replacing the former
       // next-stop + ETA content and the tap-only default InfoWindow.
-      final status = busVehicleStatus(v);
+      final status = busVehicleStatus(i18n, v);
       final statusColor = switch (status.tone) {
         BusStatusTone.normal => cs.onSurface,
         BusStatusTone.notice =>
@@ -293,11 +337,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         inkSecondary: cs.onSurfaceVariant,
         statusLabel: status.label,
         statusColor: statusColor,
-        gpsText: busGpsAge(v.gpsTimeUnix, now).text,
+        gpsText: busGpsAge(i18n, v.gpsTimeUnix, now).text,
         // ＋ while choosing the alight stop, ✓ once tracking is armed.
-        trackGlyph: _pinnedPlate == v.plate
-            ? (_pickingStop ? '＋' : '✓')
-            : null,
+        trackGlyph: _pinnedPlate == v.plate ? (_pickingStop ? '＋' : '✓') : null,
       );
 
       final target = LatLng(v.lat, v.lon);
@@ -313,7 +355,10 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       );
     }
 
-    if (!mounted) return;
+    // Same supersede check as above, now guarding the actual commit: this is
+    // the write finding 5 targets, so a stale call must not reach it even if
+    // everything above it finished.
+    if (!mounted || generation != _syncGeneration) return;
     _stopMarkers = stopMarkers;
     _polylines = polylines;
     _glides
@@ -353,7 +398,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
             icon: g.icon,
             anchor: const Offset(0.5, 0.5),
             alpha: alpha,
-            zIndexInt: 1,
+            // Above every stop plate, selected capsule included: the live bus
+            // is the one thing on this map that outranks the rider's own tap.
+            zIndexInt: 4,
             onTap: () => _togglePin(plate),
           ),
         )
@@ -363,12 +410,12 @@ class _BusRouteScreenState extends State<BusRouteScreen>
             position: pos,
             icon: g.bubbleIcon,
             alpha: alpha,
-            zIndexInt: 2,
+            zIndexInt: 5,
           ),
         );
     });
-    // ponytail: repaints the whole marker Set per tick — fine for a handful of
-    // buses; batch/diff the marker channel if a route ever shows dozens.
+    // repaints the whole marker Set per tick — fine for a handful of buses;
+    // batch/diff the marker channel if a route ever shows dozens.
     _mapLayer.value = (
       markers: {..._stopMarkers, ...vehicleMarkers},
       polylines: _polylines,
@@ -404,15 +451,20 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   /// Scrolls the stop list to [stopUid] and highlights that row for a few
   /// seconds. Row heights vary, so the target offset is estimated and clamped
   /// to the scroll extent — it lands the stop near the top, not pixel-exact.
-  // ponytail: index × estimated row height; move to scrollable_positioned_list
+  // index × estimated row height; move to scrollable_positioned_list
   // only if pixel-exact landing is ever needed.
   void _flashStop(String stopUid) {
     unawaited(HapticService.instance.lightTap());
+    _selectStop(_selectedStopUid == stopUid ? null : stopUid);
     final index = _stopUidsInOrder.indexOf(stopUid);
     if (index >= 0) {
       // Vertical stop list: rows vary in height, so the offset is an estimate.
       if (_scrollController.hasClients) {
-        const estRowHeight = 64.0;
+        // Matches _StopListItem's BoxConstraints(minHeight: 54) in
+        // bus_route_stop_list_widgets.dart — rows can grow taller than this
+        // (secondary label line, text scale), so it's a floor, not an exact
+        // row height; keep it in sync if that minHeight ever changes.
+        const estRowHeight = 54.0;
         final target = (index * estRowHeight).clamp(
           0.0,
           _scrollController.position.maxScrollExtent,
@@ -429,9 +481,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       if (_timelineController.hasClients) {
         const cellWidth = 120.0;
         final pos = _timelineController.position;
-        final target = (index * cellWidth + cellWidth / 2 -
-                pos.viewportDimension / 2)
-            .clamp(0.0, pos.maxScrollExtent);
+        final target =
+            (index * cellWidth + cellWidth / 2 - pos.viewportDimension / 2)
+                .clamp(0.0, pos.maxScrollExtent);
         unawaited(
           _timelineController.animateTo(
             target,
@@ -448,47 +500,99 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     });
   }
 
+  /// Opens (or closes) the stop capsule. Nothing animates: a [BitmapDescriptor]
+  /// can't be tweened, so the capsule appears at full size rather than being
+  /// faked with an overlay that would shake through every pan
+  /// (`marker_factory.dart`). Reduce-motion is therefore already satisfied.
+  void _selectStop(String? stopUid) {
+    if (_selectedStopUid == stopUid) return;
+    _selectedStopUid = stopUid;
+    _repaintPins();
+  }
+
+  /// Unpins the bus and leaves pick-mode, cancelling any armed tracking
+  /// session. Reached both by re-tapping the pinned marker and by the pick
+  /// bar's explicit 取消選站 control — the marker alone was undiscoverable as
+  /// the only way out.
+  void _cancelPick() {
+    context.read<JourneySessionBloc>().add(const JourneyCancelled());
+    setState(() {
+      _pinnedPlate = null;
+      _pickingStop = false;
+      _pinnedNextStopIndex = null;
+      _targetStopUid = null;
+    });
+    _repaintPins();
+    _liftSheet(false);
+  }
+
   /// Selects/deselects the bus marker [plate]. Selecting enters pick-mode
   /// (＋, "selected, not yet tracking"); tapping the pinned bus again unpins and
   /// cancels any armed tracking session.
   void _togglePin(String plate) {
-    final session = context.read<JourneySessionBloc>();
     if (_pinnedPlate == plate) {
-      session.add(const JourneyCancelled());
-      setState(() {
-        _pinnedPlate = null;
-        _pickingStop = false;
-        _pinnedNextStopIndex = null;
-        _targetStopUid = null;
-      });
-      _repaintPins();
-      _liftSheet(false);
+      _cancelPick();
       return;
     }
     final s = _bloc.state;
     unawaited(HapticService.instance.mediumTap());
+    // Snapshot the bus's position so the passed/downstream split holds still
+    // while the rider picks, instead of shifting under each live frame.
+    final nextStopIndex = pinnedBusNextStopIndex(
+      etas: s.etaMap.values,
+      stopUidsInOrder: _stopUidsInOrder,
+      direction: s.direction,
+      plate: plate,
+    );
     setState(() {
       _pinnedPlate = plate;
       _pickingStop = true;
-      // Snapshot the bus's position so the passed/downstream split holds still
-      // while the rider picks, instead of shifting under each live frame.
-      _pinnedNextStopIndex = pinnedBusNextStopIndex(
-        etas: s.etaMap.values,
-        stopUidsInOrder: _stopUidsInOrder,
-        direction: s.direction,
-        plate: plate,
-      );
+      _pinnedNextStopIndex = nextStopIndex;
       _targetStopUid = null;
       _leadStops = 2;
     });
     _repaintPins();
     _liftSheet(true);
+    // Entering pick-mode dims and IgnorePointers every stop before
+    // nextStopIndex; without this the timeline can open scrolled to a point
+    // where every visible cell is a passed, un-tappable stop and nothing on
+    // screen hints that more stops exist further along.
+    _centerTimelineOnPick(nextStopIndex);
+  }
+
+  /// Scrolls the horizontal timeline so the first pickable alight stop sits
+  /// centred, using the same fixed-120px-cell centring math as [_flashStop].
+  void _centerTimelineOnPick(int? nextStopIndex) {
+    if (!_timelineController.hasClients) return;
+    final index = firstAlightIndex(nextStopIndex);
+    const cellWidth = 120.0;
+    final pos = _timelineController.position;
+    final target =
+        (index * cellWidth + cellWidth / 2 - pos.viewportDimension / 2).clamp(
+          0.0,
+          pos.maxScrollExtent,
+        );
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _timelineController.jumpTo(target);
+    } else {
+      unawaited(
+        _timelineController.animateTo(
+          target,
+          duration: const Duration(milliseconds: 320),
+          curve: AppMotion.easeInOut,
+        ),
+      );
+    }
   }
 
   /// Raises the sheet to [_kPickSheetOffset] while picking so the pick bar has
   /// room above the timeline, and drops it back to peek when picking ends.
+  /// Also what back collapses to, since the resting detent differs by mode.
   void _liftSheet(bool picking) => unawaited(
-    _sheetController.animateTo(picking ? _kPickSheetOffset : AppSheetSnap.peek),
+    _sheetController.animateToDetent(
+      picking ? _kPickSheetOffset : AppSheetSnap.peek,
+      reduced: AppMotion.reduced(context),
+    ),
   );
 
   // Pin state lives in [State], not the map signature, so a select/confirm
@@ -632,6 +736,13 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       initialValue: 0,
     );
 
+    // Pixel height of the peek detent — the resting state whenever the sheet
+    // isn't being dragged. Shared by the camera fit (finding 2, keeps the
+    // route's tail from landing under the sheet) and the recenter FAB fade
+    // (finding 6, keeps it off the app bar mid-drag).
+    final sheetPeekPx =
+        MediaQuery.sizeOf(context).height * AppSheetSnap.peekFrac;
+
     return BlocProvider<BusRouteBloc>.value(
       value: _bloc,
       child: BlocConsumer<BusRouteBloc, BusRouteState>(
@@ -644,140 +755,226 @@ class _BusRouteScreenState extends State<BusRouteScreen>
             prev.fare != curr.fare ||
             prev.bufferSequences != curr.bufferSequences ||
             prev.daily != curr.daily ||
-            prev.reminders != curr.reminders ||
             prev.loading != curr.loading ||
             prev.error != curr.error,
         listener: (context, state) => _syncMap(state),
         builder: (context, state) {
-          final routeName = state.route?.routeName ?? widget.subRouteUid;
+          // subRouteUid is an internal identifier (e.g. "TPE..."), never a
+          // user-facing name — while the route hasn't loaded (still loading,
+          // or failed; see the error banner below) the pill shows blank
+          // rather than leak it into the header.
+          final routeName = state.route?.routeName ?? '';
           final dirNames = [
             state.route?.headsignGo ?? '',
             state.route?.headsignReturn ?? '',
           ];
           final dirName = state.direction == 0 ? dirNames[0] : dirNames[1];
 
-          return Scaffold(
-            resizeToAvoidBottomInset: false,
-            body: Stack(
-              children: [
-                Positioned.fill(
-                  child: ValueListenableBuilder<_MapLayer>(
-                    valueListenable: _mapLayer,
-                    builder: (context, layer, _) => GoogleMap(
-                      style: mapStyleOf(context),
-                      initialCameraPosition: _kDefaultCamera,
-                      myLocationEnabled: true,
-                      myLocationButtonEnabled: false,
-                      zoomControlsEnabled: false,
-                      mapToolbarEnabled: false,
-                      markers: layer.markers,
-                      polylines: layer.polylines,
-                      // Map shares a Stack with the draggable sheet; without an
-                      // eager recognizer the map loses the gesture arena, so
-                      // pan/pinch leak to the sheet instead of moving the map.
-                      gestureRecognizers: const {
-                        Factory<OneSequenceGestureRecognizer>(
-                          EagerGestureRecognizer.new,
-                        ),
-                      },
-                      onMapCreated: (controller) {
-                        _mapController = controller;
-                        _maybeFit();
-                      },
-                    ),
-                  ),
-                ),
-
-                _FloatingAppBar(
-                  subRouteUid: widget.subRouteUid,
-                  routeName: routeName,
-                  dirName: dirName,
-                  direction: state.direction,
-                  onBookmarkTapped: HapticService.instance.mediumTap,
-                ),
-
-                ValueListenableBuilder<double?>(
-                  valueListenable: _sheetController,
-                  builder: (context, offset, child) {
-                    final currentOffset = offset ?? 0.0;
-                    return Positioned(
-                      right: 16,
-                      bottom: currentOffset + 16,
-                      child: child!,
-                    );
-                  },
-                  child: Pressable(
-                    onTap: _recenterMap,
-                    semanticLabel: '定位目前位置',
-                    child: Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: cs.brightness == Brightness.light
-                            ? Colors.white
-                            : cs.surfaceContainerHigh,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: AppShadows.floating,
-                      ),
-                      child: Center(
-                        child: Icon(
-                          Icons.gps_fixed_rounded,
-                          size: 20,
-                          color: cs.onSurface,
-                        ),
+          // Back unwinds the sheet before it unwinds the page, the same way
+          // home does: a raised sheet collapses to its resting detent first,
+          // and only a sheet already down leaves the route. `canPop` tracks
+          // that so the platform keeps its own back gesture (and predictive
+          // preview) for the step that really does depart. Rebuilding on every
+          // sheet tick is cheap here — only the PopScope is inside the builder.
+          return ValueListenableBuilder<double?>(
+            valueListenable: _sheetController,
+            builder: (context, offset, child) {
+              // minOffset rather than the peek fraction: the resting detent is
+              // the pick offset mid-pick, and metrics stay honest either way.
+              final metrics = _sheetController.metrics;
+              final atRest =
+                  metrics == null ||
+                  offset == null ||
+                  offset <= metrics.minOffset + 1;
+              return PopScope(
+                canPop: atRest,
+                onPopInvokedWithResult: (didPop, _) {
+                  if (!didPop) _liftSheet(_pickingStop);
+                },
+                child: child!,
+              );
+            },
+            child: Scaffold(
+              resizeToAvoidBottomInset: false,
+              body: Stack(
+                children: [
+                  Positioned.fill(
+                    child: ValueListenableBuilder<_MapLayer>(
+                      valueListenable: _mapLayer,
+                      builder: (context, layer, _) => GoogleMap(
+                        style: mapStyleOf(context),
+                        initialCameraPosition: _kDefaultCamera,
+                        myLocationEnabled: true,
+                        myLocationButtonEnabled: false,
+                        zoomControlsEnabled: false,
+                        mapToolbarEnabled: false,
+                        markers: layer.markers,
+                        polylines: layer.polylines,
+                        // Reserves the peek sheet's footprint so
+                        // newLatLngBounds (in _fitUpdate) fits the route into
+                        // the visible area above it instead of the full
+                        // viewport — otherwise the route's tail lands hidden
+                        // under the sheet.
+                        padding: EdgeInsets.only(bottom: sheetPeekPx),
+                        // Map shares a Stack with the draggable sheet; without
+                        // an eager recognizer the map loses the gesture arena,
+                        // so pan/pinch leak to the sheet instead of the map.
+                        gestureRecognizers: const {
+                          Factory<OneSequenceGestureRecognizer>(
+                            EagerGestureRecognizer.new,
+                          ),
+                        },
+                        // The marker toggles its own capsule, but a rider who
+                        // has moved on shouldn't have to find it again to
+                        // close it.
+                        onTap: (_) => _selectStop(null),
+                        onMapCreated: (controller) {
+                          _mapController = controller;
+                          _maybeFit();
+                        },
                       ),
                     ),
                   ),
-                ),
 
-                NotificationListener<SheetNotification>(
-                  onNotification: (notification) {
-                    if (notification is SheetDragEndNotification) {
-                      unawaited(HapticService.instance.lightTap());
-                    }
-                    return false;
-                  },
-                  child: SheetViewport(
-                    child: _RouteSheet(
-                      tabController: _tabController,
-                      sheetController: _sheetController,
-                      scrollController: _scrollController,
-                      timelineController: _timelineController,
-                      flashStopUid: _flashStopUid,
-                      vehicles: const [],
-                      direction: state.direction,
-                      isLoading: state.loading,
-                      onDirectionChanged: (dir) {
-                        if (state.direction == dir) return;
-                        unawaited(HapticService.instance.lightTap());
-                        context.read<BusRouteBloc>().add(
-                          BusRouteDirectionToggled(dir),
+                  if (state.error != null)
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: sheetPeekPx,
+                      // Otherwise a load failure leaves the peek detent showing
+                      // a blank map above a blank timeline with no explanation
+                      // — ErrorStateView already covers this inside the 站牌列表
+                      // tab, but that tab sits well below the fold at peek.
+                      child: AnimatedBuilder(
+                        animation: sheetAnimation,
+                        builder: (context, child) {
+                          // Mirrors the timeline's own fade curve in
+                          // _RouteSheet so this recedes as the sheet rises past
+                          // peek, instead of lingering behind it.
+                          final progress = sheetAnimation.value;
+                          final opacity = (1.0 - progress * 1.6).clamp(
+                            0.0,
+                            1.0,
+                          );
+                          return Opacity(
+                            opacity: opacity,
+                            child: IgnorePointer(
+                              ignoring: progress > 0.5,
+                              child: child,
+                            ),
+                          );
+                        },
+                        child: SafeArea(
+                          bottom: false,
+                          // Clears the floating app bar row (44px buttons + 8px
+                          // top/bottom padding) so back/bookmark stay reachable.
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 60),
+                            child: ErrorStateView(
+                              error: state.error!,
+                              onRetry: () => context.read<BusRouteBloc>().add(
+                                const BusRouteStarted(),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  _FloatingAppBar(
+                    subRouteUid: widget.subRouteUid,
+                    routeName: routeName,
+                    dirName: dirName,
+                    direction: state.direction,
+                    onBookmarkTapped: HapticService.instance.mediumTap,
+                  ),
+
+                  if (state.error == null)
+                    ValueListenableBuilder<double?>(
+                      valueListenable: _sheetController,
+                      builder: (context, offset, child) {
+                        final currentOffset = offset ?? 0.0;
+                        // Past the peek detent the sheet keeps climbing toward
+                        // the 收藏 bookmark button in the app bar; clamping the
+                        // travel stops the FAB there, and fading it out over
+                        // the same range means it's not just stuck, it's gone
+                        // before it would ever collide.
+                        const fadeRange = 80.0;
+                        final overshoot = currentOffset - sheetPeekPx;
+                        final opacity = (1.0 - overshoot / fadeRange).clamp(
+                          0.0,
+                          1.0,
                         );
-                        if (_scrollController.hasClients) {
-                          _scrollController.jumpTo(0);
-                        }
+                        return Positioned(
+                          right: 16,
+                          bottom: currentOffset.clamp(0.0, sheetPeekPx) + 16,
+                          child: IgnorePointer(
+                            ignoring: opacity == 0,
+                            child: Opacity(opacity: opacity, child: child),
+                          ),
+                        );
                       },
-                      sheetAnimation: sheetAnimation,
-                      routeName: routeName,
-                      dirNames: dirNames,
-                      routeState: state,
-                      reminders: state.reminders,
-                      onReminderToggled: (uid) => context
-                          .read<BusRouteBloc>()
-                          .add(BusRouteReminderToggled(uid)),
-                      pickingStop: _pickingStop,
-                      pinnedNextStopIndex: _pinnedNextStopIndex,
-                      targetStopUid: _targetStopUid,
-                      leadStops: _leadStops,
-                      onPickStop: _onPickStop,
-                      onLeadChanged: (v) =>
-                          setState(() => _leadStops = clampLeadStops(v)),
-                      onConfirmPick: _confirmPick,
-                      onSkipPick: _skipPick,
+                      child: Pressable(
+                        onTap: _recenterMap,
+                        semanticLabel: AppI18n.of(context).commonLocateMe,
+                        child: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: cs.brightness == Brightness.light
+                                ? Colors.white
+                                : cs.surfaceContainerHigh,
+                            borderRadius: BorderRadius.circular(12),
+                            boxShadow: AppShadows.floating,
+                          ),
+                          child: Center(
+                            child: Icon(
+                              Icons.gps_fixed_rounded,
+                              size: 20,
+                              color: cs.onSurface,
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
+
+                  _RouteSheet(
+                    tabController: _tabController,
+                    sheetController: _sheetController,
+                    scrollController: _scrollController,
+                    timelineController: _timelineController,
+                    flashStopUid: _flashStopUid,
+                    vehicles: const [],
+                    direction: state.direction,
+                    isLoading: state.loading,
+                    onDirectionChanged: (dir) {
+                      if (state.direction == dir) return;
+                      unawaited(HapticService.instance.lightTap());
+                      context.read<BusRouteBloc>().add(
+                        BusRouteDirectionToggled(dir),
+                      );
+                      if (_scrollController.hasClients) {
+                        _scrollController.jumpTo(0);
+                      }
+                    },
+                    sheetAnimation: sheetAnimation,
+                    routeName: routeName,
+                    dirNames: dirNames,
+                    routeState: state,
+                    pickingStop: _pickingStop,
+                    pinnedNextStopIndex: _pinnedNextStopIndex,
+                    targetStopUid: _targetStopUid,
+                    leadStops: _leadStops,
+                    onPickStop: _onPickStop,
+                    onLeadChanged: (v) =>
+                        setState(() => _leadStops = clampLeadStops(v)),
+                    onConfirmPick: _confirmPick,
+                    onSkipPick: _skipPick,
+                    onCancelPick: _cancelPick,
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           );
         },

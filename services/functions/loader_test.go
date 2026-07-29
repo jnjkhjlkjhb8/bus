@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -117,7 +117,7 @@ func TestRawSourcePoolHonorsCanceledContext(t *testing.T) {
 
 func TestRawSourcePoolNormalizesNilContext(t *testing.T) {
 	t.Setenv("RAW_DATABASE_URL", "postgres://test:test@127.0.0.1:1/test?connect_timeout=1")
-	pool, cleanup, err := rawSourcePool(nil, nil)
+	pool, cleanup, err := rawSourcePool(nil, nil) //nolint:staticcheck // SA1012: the nil context is the input under test
 	if cleanup != nil {
 		cleanup()
 	}
@@ -400,7 +400,7 @@ func (f fixtureSource) datasetJSON(_ context.Context, table, _, _ string) ([]byt
 	if err != nil {
 		// Absent fixture → empty array, treated as fresh so the transform runs on
 		// zero rows rather than being staleness-skipped.
-		return []byte("[]"), f.fetched, nil
+		return []byte("[]"), f.fetched, nil //nolint:nilerr // a missing fixture is the empty-dataset case, not a failure
 	}
 	return b, f.fetched, nil
 }
@@ -542,7 +542,7 @@ func TestLoadQuarantineRatioGate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			q := newLoadQuarantine("bus", "Taipei")
 			q.consider("shape", tt.seen)
-			for i := 0; i < tt.drops; i++ {
+			for i := range tt.drops {
 				q.drop("shape", "shape_unknown_direction", fmt.Sprintf("Shape[%d]", i))
 			}
 			err := q.exceeded()
@@ -562,7 +562,7 @@ func TestLoadQuarantineRatioGateIsPerKind(t *testing.T) {
 	q := newLoadQuarantine("bus", "Taipei")
 	q.consider("shape", 400)
 	q.consider("subroute", 4000)
-	for i := 0; i < 223; i++ {
+	for i := range 223 {
 		q.drop("shape", "shape_unknown_direction", fmt.Sprintf("Shape[%d]", i))
 	}
 	err := q.exceeded()

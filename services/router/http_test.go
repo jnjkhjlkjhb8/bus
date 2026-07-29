@@ -21,7 +21,7 @@ import (
 
 	"github.com/getsentry/sentry-go"
 	"github.com/gin-gonic/gin"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 )
 
 func testKey(t *testing.T) *rsa.PrivateKey {

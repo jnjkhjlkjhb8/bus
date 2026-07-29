@@ -14,7 +14,6 @@ sealed class GenUiNode {
           badges: ((json['badges'] as List?) ?? const [])
               .map((e) => e.toString())
               .toList(),
-          etaText: json['etaText'] as String? ?? '',
           refUid: _refUid(json),
         );
       case 'step':
@@ -60,16 +59,14 @@ class GenUiText extends GenUiNode {
   final String text;
 }
 
+/// A route or stop the model is pointing at. Deliberately carries no time
+/// value: the search tool returns static names only, so any arrival time the
+/// model wrote here could only be invented. The card reads its own ETA from
+/// the live stream behind [refUid] instead.
 class GenUiRoute extends GenUiNode {
-  const GenUiRoute({
-    required this.title,
-    required this.badges,
-    required this.etaText,
-    this.refUid,
-  });
+  const GenUiRoute({required this.title, required this.badges, this.refUid});
   final String title;
   final List<String> badges;
-  final String etaText;
   final String? refUid;
 }
 

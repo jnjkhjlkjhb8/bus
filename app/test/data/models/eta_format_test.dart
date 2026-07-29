@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/eta_format.dart';
+import 'package:wheres_the_bus/data/models/eta_format.dart';
+
+import '../../support/helpers/i18n.dart';
 
 void main() {
   group('etaRemainingSeconds', () {
@@ -157,6 +159,7 @@ void main() {
     test('minutes label uses ceil', () {
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: 61,
           stopStatus: 0,
           nextBusTime: '',
@@ -166,13 +169,19 @@ void main() {
     });
     test('arriving label', () {
       expect(
-        busStopDisplayLabel(estimateSeconds: 0, stopStatus: 0, nextBusTime: ''),
+        busStopDisplayLabel(
+          i18n: zhStrings,
+          estimateSeconds: 0,
+          stopStatus: 0,
+          nextBusTime: '',
+        ),
         '進站中',
       );
     });
     test('clock label parsed from nextBusTime', () {
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: -1,
           stopStatus: 1,
           nextBusTime: '2026-06-18T08:15:00+08:00',
@@ -181,6 +190,7 @@ void main() {
       );
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: -1,
           stopStatus: 1,
           nextBusTime: '8:05:00',
@@ -193,6 +203,7 @@ void main() {
         'derived countdown', () {
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: 300,
           stopStatus: 1,
           nextBusTime: '08:15',
@@ -201,6 +212,7 @@ void main() {
       );
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: 0,
           stopStatus: 1,
           nextBusTime: '08:15',
@@ -212,6 +224,7 @@ void main() {
     test('clock label passes through an already-padded HH:MM', () {
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: 0,
           stopStatus: 1,
           nextBusTime: '23:30',
@@ -223,6 +236,7 @@ void main() {
     test('clock label left-pads a single-digit hour', () {
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: 0,
           stopStatus: 1,
           nextBusTime: '7:05',
@@ -246,6 +260,7 @@ void main() {
       () {
         expect(
           busStopDisplayLabel(
+            i18n: zhStrings,
             estimateSeconds: 0,
             stopStatus: 1,
             nextBusTime: '2026-07-07T23:30:00+08:00',
@@ -258,6 +273,7 @@ void main() {
     test('empty nextBusTime with no clock falls back to status label', () {
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: 0,
           stopStatus: 1,
           nextBusTime: '',
@@ -269,6 +285,7 @@ void main() {
     test('unparseable nextBusTime falls back to status label', () {
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: 0,
           stopStatus: 1,
           nextBusTime: 'garbage',
@@ -280,6 +297,7 @@ void main() {
     test('status label when no estimate and no clock', () {
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: -1,
           stopStatus: 3,
           nextBusTime: '',
@@ -288,6 +306,7 @@ void main() {
       );
       expect(
         busStopDisplayLabel(
+          i18n: zhStrings,
           estimateSeconds: -1,
           stopStatus: 9,
           nextBusTime: '',

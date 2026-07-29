@@ -1,18 +1,22 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 class ComingSoonStopBanner extends StatelessWidget {
   const ComingSoonStopBanner({
     required this.name,
     this.time,
-    this.label = '即將抵達',
+    this.label,
     super.key,
   });
 
   final String name;
   final String? time;
-  final String label;
+
+  /// Null takes the standard wording, which can only be resolved against a
+  /// locale — and this constructor has no context to resolve it with.
+  final String? label;
 
   @override
   Widget build(BuildContext context) {
@@ -27,7 +31,7 @@ class ComingSoonStopBanner extends StatelessWidget {
       child: Row(
         children: [
           Text(
-            label,
+            label ?? AppI18n.of(context).etaArrivingSoon,
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onPrimaryContainer,
             ),

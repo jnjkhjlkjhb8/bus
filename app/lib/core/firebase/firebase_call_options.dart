@@ -1,7 +1,7 @@
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:grpc/grpc.dart';
-import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
-import 'package:wheres_the_car/core/firebase/install_identity.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_gate.dart';
+import 'package:wheres_the_bus/core/firebase/install_identity.dart';
 
 class FirebaseCallOptions {
   FirebaseCallOptions._();

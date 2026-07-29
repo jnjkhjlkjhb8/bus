@@ -1,26 +1,27 @@
+import 'dart:async';
+
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/reminders/reminder_toggle.dart';
-import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
-import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
-import 'package:wheres_the_car/data/repositories/tra_repository.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_train_event.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_train_state.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/rail_fare_quote.dart';
+import 'package:wheres_the_bus/data/repositories/thsr_repository.dart';
+import 'package:wheres_the_bus/data/repositories/tra_repository.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_train_event.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_train_state.dart';
 
 class RailTrainBloc extends Bloc<RailTrainEvent, RailTrainState> {
   RailTrainBloc({
     required this.type,
     required this.trainNo,
     required this.date,
+    this.userOrigin,
+    this.userDest,
     TraRepository? tra,
     ThsrRepository? thsr,
-    FirebaseRepository? firebase,
   }) : _tra = tra ?? TraRepository.instance,
        _thsr = thsr ?? ThsrRepository.instance,
-       _firebase = firebase ?? FirebaseRepository.instance,
        super(const RailTrainState()) {
     on<RailTrainStarted>(_onStarted);
-    on<RailTrainReminderToggled>(_onReminderToggled);
+    on<RailTrainDelayUpdated>(_onDelayUpdated);
   }
 
   final String type;
@@ -29,45 +30,23 @@ class RailTrainBloc extends Bloc<RailTrainEvent, RailTrainState> {
   /// Service date in `yyyy-MM-dd`.
   final String date;
 
+  /// The stations the caller actually searched for, when this train was
+  /// opened from an O/D timetable result rather than by train number alone.
+  /// Drives which fare is fetched and treated as primary — see [_loadFares].
+  final String? userOrigin;
+  final String? userDest;
+
   final TraRepository _tra;
   final ThsrRepository _thsr;
-  final FirebaseRepository _firebase;
-
-  // Lead fixed at 3 min, matching the bus reminder. Read the
-  // 'arrival_lead_minutes' remote-config and add a picker if per-user leads
-  // are ever needed.
-  static const _leadMinutes = 3;
+  StreamSubscription<Map<String, int>>? _delaySub;
 
   bool get _isThsr => type == '高鐵';
-  String get _routeType => _isThsr ? 'thsr' : 'tra';
-
-  // Same optimistic toggle choreography as the bus route, minus the local
-  // mirror and telemetry: rail arms against the stop's scheduled arrival and
-  // keeps no persistent copy.
-  late final ReminderToggle _reminderToggle = ReminderToggle(
-    createReminder: ({
-      required stopKey,
-      required direction,
-      required expiresAt,
-    }) async {
-      final reminder = await _firebase.createArrivalReminder(
-        routeType: _routeType,
-        routeKey: trainNo,
-        stopKey: stopKey,
-        direction: direction,
-        leadMinutes: _leadMinutes,
-        expiresAt: expiresAt,
-      );
-      return reminder.reminderId;
-    },
-    cancelReminder: _firebase.cancelArrivalReminder,
-  );
 
   Future<void> _onStarted(
     RailTrainStarted event,
     Emitter<RailTrainState> emit,
   ) async {
-    emit(RailTrainState(reminders: state.reminders));
+    emit(const RailTrainState());
     try {
       final List<RailTrainStop> stops;
       if (_isThsr) {
@@ -95,23 +74,37 @@ class RailTrainBloc extends Bloc<RailTrainEvent, RailTrainState> {
       }
 
       if (stops.isEmpty) {
-        emit(
-          RailTrainState(
-            status: RailTrainStatus.empty,
-            reminders: state.reminders,
-          ),
-        );
+        emit(const RailTrainState(status: RailTrainStatus.empty));
         return;
       }
 
+      final (fullFare, userFare) = await _loadFares(stops);
       emit(
         RailTrainState(
           status: RailTrainStatus.loaded,
           stops: stops,
-          fullFare: await _loadFare(stops.first.name, stops.last.name),
-          reminders: state.reminders,
+          fullFare: fullFare,
+          userFare: userFare,
         ),
       );
+
+      // Live 誤點 for the on-screen timetable + position marker. TRA only —
+      // THSR exposes no delay feed. The router seeds from cache, so the first
+      // frame lands almost immediately; until then the screen shows the
+      // snapshot the caller navigated in with.
+      // Guard against the screen being left mid-load: close() runs during the
+      // awaits above, before _delaySub is assigned, so it cancels nothing.
+      // Skip subscribing once closed, and re-check before each add — otherwise
+      // a delay frame lands on the closed bloc (root-zone "add after close").
+      if (!_isThsr && stops.length >= 2 && !isClosed) {
+        unawaited(_delaySub?.cancel());
+        _delaySub = _tra.delay(date, stops.first.name, stops.last.name).listen(
+          (m) {
+            if (!isClosed) add(RailTrainDelayUpdated(m[trainNo] ?? 0));
+          },
+          onError: (Object _) {}, // keep last value; never surface as error
+        );
+      }
     } on Object catch (e) {
       // NotFound is a normal outcome (ADR-0005): a date beyond the landed
       // window or an unknown train renders the calm empty state, not an error.
@@ -122,68 +115,82 @@ class RailTrainBloc extends Bloc<RailTrainEvent, RailTrainState> {
               ? RailTrainStatus.empty
               : RailTrainStatus.error,
           error: error,
-          reminders: state.reminders,
         ),
       );
     }
   }
 
-  /// Best-effort adult fare for the origin→destination pair. Returns null on
-  /// any failure so the timetable still renders without a fare card.
-  Future<int?> _loadFare(String originName, String destName) async {
+  /// Loads the train's full-run fare and, when the caller searched a
+  /// specific segment ([userOrigin]/[userDest] both set), that segment's
+  /// fare too — fetched concurrently so a slow or failing one doesn't delay
+  /// the other. Both are independently best-effort (null on failure).
+  ///
+  /// The two used to collapse into one RPC scoped to the full run, which is
+  /// how the fare card ended up quoting a different price than the O/D
+  /// result list for what the user read as the same trip (the list already
+  /// showed the segment fare). The segment fare is now fetched — and
+  /// surfaced by the screen — as the primary number; the full-run fare is
+  /// kept only as clearly-labelled secondary context.
+  Future<(RailFareQuote?, RailFareQuote?)> _loadFares(
+    List<RailTrainStop> stops,
+  ) async {
+    final originName = stops.first.name;
+    final destName = stops.last.name;
+    final hasUserSegment = userOrigin != null && userDest != null;
+
+    if (!hasUserSegment) {
+      return (await _loadFare(originName, destName), null);
+    }
+    // The user's segment can coincide with the train's full run (they
+    // searched its terminal stations) — avoid quoting the same fare via two
+    // separate RPCs in that case.
+    if (userOrigin == originName && userDest == destName) {
+      final fare = await _loadFare(originName, destName);
+      return (fare, fare);
+    }
+    final results = await Future.wait([
+      _loadFare(originName, destName),
+      _loadFare(userOrigin!, userDest!),
+    ]);
+    return (results[0], results[1]);
+  }
+
+  /// Best-effort fares for the origin→destination pair on *this* train, left
+  /// unresolved for the view to price against the rider's ticket type. Returns
+  /// null on any failure so the timetable still renders without a fare card.
+  ///
+  /// TRA prices a pair per train class, so the quote carries [type] — the
+  /// train's class — to select the right tier: quoting the pair's cheapest or
+  /// priciest row instead showed 桃園→臺北 as 99 (自強) on a 區間車 that costs 63.
+  Future<RailFareQuote?> _loadFare(String originName, String destName) async {
     try {
       // The router resolves station names to ids, so the stop names go straight
       // to the fare RPC — the app no longer keeps a local station table.
       if (_isThsr) {
-        final fare = await _thsr.fare(date, originName, destName);
-        return fare.price;
+        return RailFareQuote.thsr(
+          fares: await _thsr.fares(date, originName, destName),
+        );
       }
-      final fare = await _tra.fare(originName, destName);
-      return fare.price;
+      return RailFareQuote.tra(
+        fares: await _tra.fares(originName, destName),
+        trainType: type,
+      );
     } on Object {
       return null;
     }
   }
 
-  Future<void> _onReminderToggled(
-    RailTrainReminderToggled event,
+  void _onDelayUpdated(
+    RailTrainDelayUpdated event,
     Emitter<RailTrainState> emit,
-  ) => _reminderToggle.run(
-    readReminders: () => state.reminders,
-    emit: (next) => emit(state.copyWith(reminders: next)),
-    isDone: () => emit.isDone,
-    key: event.stopName,
-    direction: '0',
-    armAt: _arrivalDateTime(event.stopName),
-  );
+  ) {
+    if (state.status != RailTrainStatus.loaded) return;
+    emit(state.copyWith(liveDelayMinutes: event.minutes));
+  }
 
-  /// The stop's scheduled arrival (falling back to departure) as a local
-  /// DateTime on the service [date], or null when it can't be parsed.
-  DateTime? _arrivalDateTime(String stopName) {
-    RailTrainStop? stop;
-    for (final s in state.stops) {
-      if (s.name == stopName) {
-        stop = s;
-        break;
-      }
-    }
-    if (stop == null) return null;
-    final time = stop.arrive.isNotEmpty ? stop.arrive : stop.depart;
-    final d = date.split('-');
-    final hm = time.split(':');
-    if (d.length != 3 || hm.length < 2) return null;
-    final year = int.tryParse(d[0]);
-    final month = int.tryParse(d[1]);
-    final day = int.tryParse(d[2]);
-    final hour = int.tryParse(hm[0]);
-    final minute = int.tryParse(hm[1]);
-    if (year == null ||
-        month == null ||
-        day == null ||
-        hour == null ||
-        minute == null) {
-      return null;
-    }
-    return DateTime(year, month, day, hour, minute);
+  @override
+  Future<void> close() {
+    unawaited(_delaySub?.cancel());
+    return super.close();
   }
 }

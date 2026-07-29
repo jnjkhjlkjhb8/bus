@@ -58,8 +58,17 @@ void main() {
       r'''^\s*(?:static\s+)?([\w$][\w$<>,.?\s]*?)\s+([A-Za-z]\w*)\s*\(''',
     );
     const nonMethodNames = <String>{
-      'if', 'for', 'while', 'switch', 'return', 'catch', 'assert', 'await',
-      'yield', 'get', 'set',
+      'if',
+      'for',
+      'while',
+      'switch',
+      'return',
+      'catch',
+      'assert',
+      'await',
+      'yield',
+      'get',
+      'set',
     };
 
     final offenders = <String>[];

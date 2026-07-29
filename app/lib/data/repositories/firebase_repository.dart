@@ -1,15 +1,18 @@
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter/foundation.dart';
-import 'package:wheres_the_car/core/firebase/firebase_call_options.dart';
-import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
-import 'package:wheres_the_car/core/firebase/install_identity.dart';
-import 'package:wheres_the_car/core/grpc/grpc_client.dart';
-import 'package:wheres_the_car/data/decoders/firebase_decoder.dart';
-import 'package:wheres_the_car/data/generated/firebase.pbgrpc.dart';
-import 'package:wheres_the_car/data/models/firebase_models.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_call_options.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_gate.dart';
+import 'package:wheres_the_bus/core/firebase/install_identity.dart';
+import 'package:wheres_the_bus/core/grpc/grpc_client.dart';
+import 'package:wheres_the_bus/data/decoders/firebase_decoder.dart';
+import 'package:wheres_the_bus/data/generated/firebase.pbgrpc.dart';
+import 'package:wheres_the_bus/data/models/firebase_models.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
 
-bool isFirebaseRouteType(String value) => value == 'bus';
+/// The platform string the server and the `firebase_device` CHECK constraint
+/// accept. `TargetPlatform.iOS.name` is `'iOS'`, which both reject, so the
+/// value is always lowercased before it leaves the app.
+String devicePlatform() => defaultTargetPlatform.name.toLowerCase();
 
 bool isArrivalReminderRouteType(String value) =>
     value == 'bus' || value == 'tra' || value == 'thsr';
@@ -36,41 +39,40 @@ class FirebaseRepository {
         identity: DeviceIdentity(
           installId: installId,
           fcmToken: fcmToken,
-          platform: defaultTargetPlatform.name,
+          platform: devicePlatform(),
           appVersion: const String.fromEnvironment(
             'APP_VERSION',
             defaultValue: '1.0.0',
           ),
         ),
-        prefs: DevicePrefs(
-          pushEnabled: _settings.pushEnabled,
-          analyticsEnabled: _settings.analyticsEnabled,
-          crashlyticsEnabled: _settings.crashlyticsEnabled,
-          performanceEnabled: _settings.performanceEnabled,
-        ),
+        prefs: DevicePrefs(pushEnabled: _settings.pushEnabled),
       ),
       options: await FirebaseCallOptions.build(),
     );
     return FirebaseDecoder.instance.decodeDeviceState(state);
   }
 
-  Future<FirebaseAck> setRouteSubscription({
-    required String routeType,
-    required String routeKey,
-    required bool enabled,
-  }) async {
-    if (!isFirebaseRouteType(routeType) || routeKey.isEmpty) {
-      throw ArgumentError('invalid canonical route identity');
-    }
+  /// Stores the device's whole 訂閱範圍, replacing whatever the server held.
+  /// [scope] entries are `'<route_type>:<route_key>'`, as produced by
+  /// `subscriptionScope`. An empty set is valid and unsubscribes the device.
+  ///
+  /// There is deliberately no per-route toggle: the set is only ever sent as a
+  /// whole, so a 收藏 removed on a screen that never notified the server, or
+  /// restored on a fresh install, cannot leave the stored scope stale.
+  Future<FirebaseAck> replaceRouteSubscriptions(Set<String> scope) async {
     if (!FirebaseGate.enabled) {
       return const FirebaseAck(ok: true, message: 'disabled');
     }
-    final ack = await _grpc.setRouteSubscription(
-      RouteSubscriptionRequest(
+    final ack = await _grpc.replaceRouteSubscriptions(
+      RouteSubscriptionsRequest(
         installId: await InstallIdentity.getOrCreate(),
-        routeType: routeType,
-        routeKey: routeKey,
-        enabled: enabled,
+        subscriptions: [
+          for (final entry in scope)
+            RouteSubscription(
+              routeType: entry.substring(0, entry.indexOf(':')),
+              routeKey: entry.substring(entry.indexOf(':') + 1),
+            ),
+        ],
       ),
       options: await FirebaseCallOptions.build(),
     );

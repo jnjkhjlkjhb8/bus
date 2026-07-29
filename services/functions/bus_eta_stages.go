@@ -3,8 +3,8 @@ package main
 import (
 	"time"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 )
 
 // This file holds the pure stages of processBusEtaCity (bus_eta.go): each is a
@@ -92,27 +92,6 @@ func buildBusEtaMap(city string, eat []rawBusEsimated, mp []busStationmap) map[e
 		put(etaKey{uid, dir, e.StopUID}, e)
 	}
 	return etamap
-}
-
-// buildBusPositionMap groups live vehicle positions by canonical subroute UID, so
-// the emit loop can attach a route's buses (and pick the nearest) to each stop.
-func buildBusPositionMap(city string, posit []rawBusPosition) map[string][]*models.BusPosition {
-	busmap := make(map[string][]*models.BusPosition)
-	for _, b := range posit {
-		uid, _ := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
-		pb := &models.BusPosition{
-			PlateNumb:   b.PlateNumb,
-			PositionLon: b.BusPosition.PositionLon,
-			PositionLat: b.BusPosition.PositionLat,
-			Speed:       int32(b.Speed),
-			Azimuth:     int32(b.Azimuth),
-			DutyStatus:  int32(b.DutyStatus),
-			BusStatus:   int32(b.BusStatus),
-			GpsTimeUnix: parseGPSTimeUnix(b.GPSTime),
-		}
-		busmap[uid] = append(busmap[uid], pb)
-	}
-	return busmap
 }
 
 // parseGPSTimeUnix converts a TDX GPSTime string to epoch seconds. TDX usually

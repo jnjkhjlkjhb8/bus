@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/go-redis/redis"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 )
 
 // liveSource is the seam between live-stream handlers and Redis. Two adapters
@@ -110,7 +110,7 @@ func (r redisLiveSource) get(key string) ([]byte, bool) {
 	if err != nil {
 		// redis.Nil means the key is simply absent -- expected traffic, not a
 		// Redis health signal -- so only a real failure counts here.
-		if err != redis.Nil {
+		if !errors.Is(err, redis.Nil) {
 			obs.IncRedisError()
 		}
 		return nil, false

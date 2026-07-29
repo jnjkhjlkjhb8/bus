@@ -137,3 +137,18 @@ const metroMapStations = <MetroMapStation>[
   MetroMapStation(id: 'Y19', name: '幸福', x: 202, y: 1041),
   MetroMapStation(id: 'Y20', name: '新北產業園區', x: 202, y: 982),
 ];
+
+/// Station name for a single TDX station code (e.g. `R02` → 象山), or null for
+/// a code outside the TRTC network.
+///
+/// TDX reports first/last-train destinations as bare codes; the map station
+/// list is already the app's offline copy of the TRTC network, so the names it
+/// carries are what turn those codes back into something readable without a
+/// round trip. Interchange entries hold a combined id (`BL12_R10`), so each
+/// component code is indexed to the same name.
+String? metroStationName(String code) => _stationNamesByCode[code];
+
+final Map<String, String> _stationNamesByCode = {
+  for (final station in metroMapStations)
+    for (final code in station.id.split('_')) code: station.name,
+};

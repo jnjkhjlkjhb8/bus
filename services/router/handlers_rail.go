@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -19,6 +19,182 @@ func parseRailDate(s string) time.Time {
 	}
 	t, _ := time.Parse(time.RFC3339, s)
 	return t
+}
+
+const (
+	// A station board is a glance, not a timetable: enough rows to cover the
+	// next stretch at a busy station without making the rider wait for a day.
+	stationBoardDefaultLimit = 20
+	stationBoardMaxLimit     = 50
+)
+
+func stationBoardLimit(requested int32) int {
+	switch {
+	case requested <= 0:
+		return stationBoardDefaultLimit
+	case requested > stationBoardMaxLimit:
+		return stationBoardMaxLimit
+	default:
+		return int(requested)
+	}
+}
+
+// departuresAfter keeps the departures at or after the `HH:mm:ss` bound, which
+// compares chronologically as a string because the field is zero-padded. An
+// empty bound keeps the whole day. It always returns a fresh slice: the input
+// is usually the cached day, and the caller appends to the result.
+func departuresAfter[T interface{ GetDepartureTime() string }](items []T, after string) []T {
+	out := make([]T, 0, len(items))
+	for _, item := range items {
+		if after == "" || item.GetDepartureTime() >= after {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// stationBoardWindow cuts the rider's window out of one service day, reaching
+// for nextDay only when that day runs out before the limit — at 23:50 the two
+// departures left are not an answer. A nextDay that fails is reported but not
+// fatal: a short board beats an error the rider cannot act on.
+func stationBoardWindow[T interface{ GetDepartureTime() string }](
+	day []T,
+	after string,
+	limit int,
+	nextDay func() ([]T, error),
+) ([]T, error) {
+	items := departuresAfter(day, after)
+	var topUpErr error
+	if len(items) < limit {
+		next, err := nextDay()
+		if err != nil {
+			topUpErr = err
+		} else {
+			items = append(items, next...)
+		}
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, topUpErr
+}
+
+// traStationBoardDay serves one station/date/direction board from Redis,
+// falling back to the loaded env schema on a miss. The cache holds the whole
+// service day, so riders arriving at the station a minute apart share one
+// entry and the window is cut per request. An empty day is not cached: it
+// usually means the date has not landed yet, and a 1h negative entry would
+// keep serving nothing for an hour after the loader fixes that.
+func (s *Tra_TimetableServer) traStationBoardDay(ctx context.Context, station string, day time.Time, direction int32) ([]*pb.TraStationDeparture, error) {
+	key := fmt.Sprintf("TRA_StationBoard:%s:%s:%d", day.Format(time.DateOnly), station, direction)
+	if b, err := s.rc.Get(key).Bytes(); err == nil {
+		board := &pb.TraStationBoard{}
+		if err := proto.Unmarshal(b, board); err == nil {
+			return board.Items, nil
+		}
+	}
+	items, err := traStationBoardPayload(ctx, s.db, station, day, direction)
+	if err != nil || len(items) == 0 {
+		return nil, err
+	}
+	b, err := proto.Marshal(&pb.TraStationBoard{Items: items})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.rc.Set(key, b, 1*time.Hour).Err(); err != nil {
+		log.Errorf("[gRPC] action=tra_station_board event=cache_error error=%v", err)
+	}
+	return items, nil
+}
+
+// StationBoard returns the next departures from one TRA station in one
+// direction. When the requested day is nearly out of trains it tops the list up
+// from the next service date: at 23:50 the two departures left are not an
+// answer. Every row carries its own TrainDate, so the app can tell the days
+// apart. An empty result is NotFound (ADR-0005); it never fetches from TDX.
+func (s *Tra_TimetableServer) StationBoard(ctx context.Context, in *pb.AskStationBoard) (*pb.TraStationBoard, error) {
+	log.Infof("[gRPC] action=tra_station_board event=call station=%s direction=%d", in.StationId, in.Direction)
+	if in.StationId == "" {
+		return nil, status.Error(codes.InvalidArgument, "station is required")
+	}
+	day := parseRailDate(in.Date)
+	if day.IsZero() {
+		return nil, status.Error(codes.InvalidArgument, "date is required")
+	}
+	limit := stationBoardLimit(in.Limit)
+	today, err := s.traStationBoardDay(ctx, in.StationId, day, in.Direction)
+	if err != nil {
+		log.Errorf("[gRPC] action=tra_station_board event=query_failed error=%v", err)
+		return nil, grpcStatusFor(err, "station board not found")
+	}
+	items, topUpErr := stationBoardWindow(today, in.After, limit, func() ([]*pb.TraStationDeparture, error) {
+		return s.traStationBoardDay(ctx, in.StationId, day.AddDate(0, 0, 1), in.Direction)
+	})
+	if topUpErr != nil {
+		log.Errorf("[gRPC] action=tra_station_board event=topup_failed error=%v", topUpErr)
+	}
+	// NotFound means the day is not landed, not "no trains left": a landed day
+	// whose remaining departures have all gone is a real answer of zero, and
+	// the app tells the rider the day is over rather than that it is broken.
+	if len(today) == 0 && len(items) == 0 {
+		return nil, status.Error(codes.NotFound, "station board not found")
+	}
+	return &pb.TraStationBoard{Items: items}, nil
+}
+
+// thsrStationBoardDay is traStationBoardDay's THSR half; see it for why the
+// whole day is cached and why an empty day is not.
+func (s *ThsrServer) thsrStationBoardDay(ctx context.Context, station string, day time.Time, direction int32) ([]*pb.ThsrStationDeparture, error) {
+	key := fmt.Sprintf("THSR_StationBoard:%s:%s:%d", day.Format(time.DateOnly), station, direction)
+	if b, err := s.rc.Get(key).Bytes(); err == nil {
+		board := &pb.ThsrStationBoard{}
+		if err := proto.Unmarshal(b, board); err == nil {
+			return board.Items, nil
+		}
+	}
+	items, err := thsrStationBoardPayload(ctx, s.db, station, day, direction)
+	if err != nil || len(items) == 0 {
+		return nil, err
+	}
+	b, err := proto.Marshal(&pb.ThsrStationBoard{Items: items})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.rc.Set(key, b, 1*time.Hour).Err(); err != nil {
+		log.Errorf("[gRPC] action=thsr_station_board event=cache_error error=%v", err)
+	}
+	return items, nil
+}
+
+// StationBoard returns the next departures from one THSR station in one
+// direction, with the same next-day top-up as the TRA board.
+func (s *ThsrServer) StationBoard(ctx context.Context, in *pb.ThsrAskStationBoard) (*pb.ThsrStationBoard, error) {
+	log.Infof("[gRPC] action=thsr_station_board event=call station=%s direction=%d", in.StationId, in.Direction)
+	if in.StationId == "" {
+		return nil, status.Error(codes.InvalidArgument, "station is required")
+	}
+	day := parseRailDate(in.Date)
+	if day.IsZero() {
+		return nil, status.Error(codes.InvalidArgument, "date is required")
+	}
+	limit := stationBoardLimit(in.Limit)
+	today, err := s.thsrStationBoardDay(ctx, in.StationId, day, in.Direction)
+	if err != nil {
+		log.Errorf("[gRPC] action=thsr_station_board event=query_failed error=%v", err)
+		return nil, grpcStatusFor(err, "station board not found")
+	}
+	items, topUpErr := stationBoardWindow(today, in.After, limit, func() ([]*pb.ThsrStationDeparture, error) {
+		return s.thsrStationBoardDay(ctx, in.StationId, day.AddDate(0, 0, 1), in.Direction)
+	})
+	if topUpErr != nil {
+		log.Errorf("[gRPC] action=thsr_station_board event=topup_failed error=%v", topUpErr)
+	}
+	// See the TRA board: NotFound is "not landed", an empty board is "the day
+	// is over".
+	if len(today) == 0 && len(items) == 0 {
+		return nil, status.Error(codes.NotFound, "station board not found")
+	}
+	return &pb.ThsrStationBoard{Items: items}, nil
 }
 
 // traFare serves a TRA fare from Redis, falling back to the loaded env schema on

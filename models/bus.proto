@@ -1,5 +1,5 @@
 syntax = "proto3";
-option go_package = "github.com/jnjkhjlkjhb8/wheres_the_car/models";
+option go_package = "github.com/jnjkhjlkjhb8/wheres_the_bus/models";
 service Bus_Route_Service{
   rpc static(Bus_Ask_Route) returns (Resp_Bus_static) {}
   rpc daily(Bus_Ask_Route) returns (Resp_Bus_daily_timetable) {}

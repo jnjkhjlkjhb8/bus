@@ -4,44 +4,48 @@ import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
-import 'package:wheres_the_car/app/theme/app_shadows.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/data/models/favorite.dart';
-import 'package:wheres_the_car/data/models/journey_info.dart';
-import 'package:wheres_the_car/data/models/metro_map_models.dart';
-import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_bloc.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_event.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_state.dart';
-import 'package:wheres_the_car/features/metro/view/metro_station_detail_view.dart';
-import 'package:wheres_the_car/features/metro/widgets/metro_svg_map.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_bars.dart';
-import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
-import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
-import 'package:wheres_the_car/shared/widgets/error_state_view.dart';
-import 'package:wheres_the_car/shared/widgets/transport_icon.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/data/models/favorite.dart';
+import 'package:wheres_the_bus/data/models/journey_info.dart';
+import 'package:wheres_the_bus/data/models/metro_map_models.dart';
+import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_bloc.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_event.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_state.dart';
+import 'package:wheres_the_bus/features/metro/view/metro_station_detail_view.dart';
+import 'package:wheres_the_bus/features/metro/widgets/metro_svg_map.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
+import 'package:wheres_the_bus/shared/widgets/app_sliding_segment.dart';
+import 'package:wheres_the_bus/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_bus/shared/widgets/error_state_view.dart';
+import 'package:wheres_the_bus/shared/widgets/transport_icon.dart';
 
 part '../widgets/metro_placeholder_widgets.dart';
 part '../widgets/metro_system_widgets.dart';
 
-const _kLineNames = <String, String>{
-  'BL': '板南線',
-  'R': '淡水信義線',
-  'G': '松山新店線',
-  'BR': '文湖線',
-  'O': '中和新蘆線',
-  'Y': '環狀線',
+// Built per call rather than held in a const map: line names follow the
+// rider's language.
+Map<String, String> _kLineNames(AppI18n i18n) => {
+  'BL': i18n.metroLineBannan,
+  'R': i18n.metroLineTamsuiXinyi,
+  'G': i18n.metroLineSongshanXindian,
+  'BR': i18n.metroLineWenhu,
+  'O': i18n.metroLineZhongheXinlu,
+  'Y': i18n.metroLineCircular,
 };
 
 final RegExp _digits = RegExp(r'\d+');
 
 String _lineCode(String id) => id.split('_').first.replaceAll(_digits, '');
 
-String _lineName(String id) => _kLineNames[_lineCode(id)] ?? _lineCode(id);
+String _lineName(AppI18n i18n, String id) =>
+    _kLineNames(i18n)[_lineCode(id)] ?? _lineCode(id);
 
 TransportType _getTransportType(String line) {
   switch (line) {
@@ -125,6 +129,7 @@ class _MetroScreenState extends State<MetroScreen> {
   MetroMapStation? _prevSelected;
   _MapMode _mode = _MapMode.time;
   final _metroBloc = MetroBloc();
+  final _sheetController = SheetController();
 
   @override
   void initState() {
@@ -144,6 +149,7 @@ class _MetroScreenState extends State<MetroScreen> {
   @override
   void dispose() {
     unawaited(_metroBloc.close());
+    _sheetController.dispose();
     super.dispose();
   }
 
@@ -156,11 +162,23 @@ class _MetroScreenState extends State<MetroScreen> {
   }
 
   void _selectStation(MetroMapStation station) {
+    unawaited(HapticService.instance.lightTap());
     setState(() {
       _prevSelected = _selected;
       _selected = station;
     });
     _metroBloc.add(MetroStationTapped(stationId: station.id));
+    // Selecting a station turns the whole map into the answer — every other
+    // station gets a travel-time/fare label. At `half` the sheet covers the
+    // southern third of the network, so it yields to `peek` and lets the map
+    // be read; pulling it back up is one drag. The map itself never moves,
+    // so a station tapped while zoomed in stays exactly under the finger.
+    unawaited(
+      _sheetController.animateToDetent(
+        AppSheetSnap.peek,
+        reduced: AppMotion.reduced(context),
+      ),
+    );
   }
 
   Map<String, String> _buildLabels(
@@ -188,27 +206,31 @@ class _MetroScreenState extends State<MetroScreen> {
   }
 
   Widget _buildBottomSheetWidget(BuildContext context, ColorScheme cs) {
-    return Sheet(
-      initialOffset: AppSheetSnap.half,
+    return AppSheet(
+      controller: _sheetController,
+      // The station card's close button and the app bar's back button both
+      // stay (see AppSheet.onExit).
+      onExit: null,
       // Capped at `tall`, not `full`: keeps the line map peeking above the
       // sheet (metro is not a map-front page — the map is the content).
-      snapGrid: const SheetSnapGrid(
-        snaps: [AppSheetSnap.peek, AppSheetSnap.half, AppSheetSnap.tall],
-      ),
-      scrollConfiguration: const SheetScrollConfiguration(),
-      decoration: MaterialSheetDecoration(
-        size: SheetSize.stretch,
-        color: cs.surfaceContainerLow,
-        borderRadius: const BorderRadius.vertical(
-          top: Radius.circular(AppTheme.radiusBottomSheet),
+      // Capped a second time at the content's own height: a station with no
+      // live arrivals is a short card, and without this the rider can drag it
+      // to `tall` and pull a screenful of blank surface up behind it.
+      snapGrid: const ContentCappedSnapGrid(
+        base: SheetSnapGrid(
+          snaps: [AppSheetSnap.peek, AppSheetSnap.half, AppSheetSnap.tall],
+          minFlingSpeed: AppSheetSnap.flingSpeed,
         ),
-        clipBehavior: Clip.antiAlias,
       ),
+      // Sizes to its content (no Expanded, and the pages inside shrink-wrap)
+      // so the grid above has a content height to clamp against. Pages whose
+      // own content fills the sheet — the station list — still do.
       child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
           const SheetDragHandle(),
           const SizedBox(height: 12),
-          Expanded(
+          Flexible(
             child: BlocBuilder<MetroBloc, MetroState>(
               builder: (context, state) => AnimatedSwitcher(
                 duration: AppMotion.short,
@@ -224,15 +246,21 @@ class _MetroScreenState extends State<MetroScreen> {
                     child: child,
                   ),
                 ),
-                layoutBuilder: (currentChild, previousChildren) {
-                  return Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      ...previousChildren,
-                      ?currentChild,
-                    ],
-                  );
-                },
+                // Only the incoming page sizes the sheet: the outgoing one is
+                // positioned, so it fills whatever height the new page asks
+                // for instead of holding the sheet at its own. The station
+                // list fills the viewport, so leaving it unpositioned kept the
+                // sheet full-height for the length of the fade — a blank band
+                // under a short station card on every tap. Top-aligned rather
+                // than the default centre so the header stays put mid-fade.
+                layoutBuilder: (currentChild, previousChildren) => Stack(
+                  alignment: Alignment.topCenter,
+                  children: [
+                    for (final child in previousChildren)
+                      Positioned.fill(child: child),
+                    ?currentChild,
+                  ],
+                ),
                 child: state.error != null
                     ? ErrorStateView(
                         key: const ValueKey('error'),
@@ -245,7 +273,12 @@ class _MetroScreenState extends State<MetroScreen> {
                       )
                     : _selected != null
                     ? MetroStationDetailView(
-                        key: const ValueKey('detail'),
+                        // Keyed by station id, not a constant 'detail': the
+                        // nested BlocProvider(create:) runs once per element,
+                        // so a constant key reused the same MetroEtaBloc across
+                        // station switches — title updated (widget prop) but
+                        // ETA/schedule stayed on the first station.
+                        key: ValueKey('detail:${_selected!.id}'),
                         system: 'TRTC',
                         stationId: _selected!.id,
                         name: _selected!.name,
@@ -254,6 +287,7 @@ class _MetroScreenState extends State<MetroScreen> {
                     : _MetroPlaceholderSheet(
                         key: const ValueKey('placeholder'),
                         onStationSelect: _selectStation,
+                        sheetController: _sheetController,
                       ),
               ),
             ),
@@ -280,6 +314,11 @@ class _MetroScreenState extends State<MetroScreen> {
           fit: StackFit.expand,
           children: [
             BlocBuilder<MetroBloc, MetroState>(
+              // The map only reads journeyMatrix (via _buildLabels below);
+              // activeStationId/error changes elsewhere in MetroState
+              // shouldn't force a full SVG map + ~120 label rebuild.
+              buildWhen: (previous, current) =>
+                  previous.journeyMatrix != current.journeyMatrix,
               builder: (context, state) => MetroSvgMap(
                 selectedStationId: _selected?.id,
                 onStationTap: _selectStation,
@@ -290,42 +329,24 @@ class _MetroScreenState extends State<MetroScreen> {
                 animate: _prevSelected == null && _selected != null,
               ),
             ),
-            SafeArea(
-              bottom: false,
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AppBarCircleButton(
-                        onTap: () => Navigator.of(
-                          context,
-                          rootNavigator: true,
-                        ).maybePop(),
-                        semanticLabel: '返回',
-                        child: Icon(
-                          Icons.arrow_back_rounded,
-                          size: 20,
-                          color: cs.onSurface,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      const _SystemPill(),
-                    ],
-                  ),
+            // Both map-level controls share one row so the width they compete
+            // for is real: the back button and system pill take their intrinsic
+            // width, and the time/fare switch flex-shrinks into whatever is
+            // left instead of overdrawing them at large text scales. The
+            // switch lives on the map because it drives the whole-map station
+            // labels, and surfaces only once a station is selected.
+            Align(
+              alignment: Alignment.topCenter,
+              child: FloatingAppBar(
+                leading: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AppBarBackButton(floating: true),
+                    SizedBox(width: AppBarMetrics.gap),
+                    _SystemPill(),
+                  ],
                 ),
-              ),
-            ),
-            // Time/fare switch lives on the map (it drives the whole-map station
-            // labels), surfacing only once a station is selected.
-            SafeArea(
-              bottom: false,
-              child: Align(
-                alignment: Alignment.topRight,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                trailing: Flexible(
                   child: AnimatedSwitcher(
                     duration: AppMotion.short,
                     switchInCurve: AppMotion.easeOut,
@@ -333,9 +354,10 @@ class _MetroScreenState extends State<MetroScreen> {
                     transitionBuilder: (child, animation) => FadeTransition(
                       opacity: animation,
                       child: ScaleTransition(
-                        scale: Tween<double>(begin: 0.9, end: 1).animate(
-                          animation,
-                        ),
+                        scale: Tween<double>(
+                          begin: 0.9,
+                          end: 1,
+                        ).animate(animation),
                         child: child,
                       ),
                     ),
@@ -350,20 +372,7 @@ class _MetroScreenState extends State<MetroScreen> {
                 ),
               ),
             ),
-            SheetViewport(
-              child: SheetExitGestureDetector(
-                onExit: () {
-                  if (_selected != null) {
-                    _dismiss();
-                  } else {
-                    unawaited(
-                      Navigator.of(context, rootNavigator: true).maybePop(),
-                    );
-                  }
-                },
-                child: _buildBottomSheetWidget(context, cs),
-              ),
-            ),
+            _buildBottomSheetWidget(context, cs),
           ],
         ),
       ),

@@ -2,11 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce_flutter/adapters.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/favorite.dart';
-import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
-import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
-import 'package:wheres_the_car/features/metro/view/metro_screen.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/data/models/favorite.dart';
+import 'package:wheres_the_bus/data/repositories/favorites_repository.dart';
+import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
+import 'package:wheres_the_bus/features/metro/view/metro_screen.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 void main() {
   testWidgets('metro sheet no longer hosts the time/fare sliding segment', (
@@ -20,6 +21,10 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppI18n.localizationsDelegates,
+        supportedLocales: AppI18n.supportedLocales,
+
         theme: AppTheme.light,
         home: BlocProvider<FavoritesBloc>.value(
           value: favorites,
@@ -31,15 +36,9 @@ void main() {
     // raster future and deferred hit-target timer.
     await tester.pump();
 
-    // The mode switch moved to a floating map chip; the sliding segment that
-    // used to sit atop the sheet is gone.
-    expect(
-      find.byWidgetPredicate(
-        (w) => w.runtimeType.toString().startsWith('AppSlidingSegment'),
-      ),
-      findsNothing,
-    );
-    // '旅途時間' was the segment's label and is unique to it.
+    // The mode switch moved to a floating map chip that only appears once a
+    // station is selected; nothing about it sits atop the sheet any more.
+    // '旅途時間' is the switch's own label and is unique to it.
     expect(find.text('旅途時間'), findsNothing);
   });
 }

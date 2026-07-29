@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/features/bus/widgets/stop_board_toggle.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_state.dart';
+import 'package:wheres_the_bus/features/bus/widgets/stop_board_toggle.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_state.dart';
 
 void main() {
   test(

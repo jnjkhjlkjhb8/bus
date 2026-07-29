@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 

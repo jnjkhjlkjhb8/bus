@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/rendering.dart' show Size;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 /// Backend hard cap on the nearby-station search radius — must track
@@ -47,32 +49,114 @@ int nearbyRadiusForViewport({
   );
 }
 
-/// Viewport-query bookkeeping for the home map: [lastAttempted] tracks every
-/// center a query was actually sent for (success or failure), while
-/// [lastSuccessful] only advances on a successful response. Deduping future
-/// idle-triggered queries against [lastSuccessful] — not [lastAttempted] —
-/// means a failed request never suppresses a retry at the same spot.
+/// Ground resolution at zoom 0 on the equator, in metres per logical pixel
+/// (Web Mercator, 256 px tiles).
+const _equatorMetersPerPixel = 156543.03392;
+
+/// How many logical pixels on screen [meters] of ground covers at [latitude]
+/// and [zoom] — what the home map's scan ring needs to draw a search radius
+/// at the size it was actually queried at, rather than a flattering constant.
+double screenPixelsForMeters({
+  required int meters,
+  required double latitude,
+  required double zoom,
+}) => meters / metersPerPixel(latitude, zoom);
+
+/// Ground metres covered by one logical pixel at [latitude] and [zoom], in the
+/// Web Mercator projection Google Maps uses. The scan ring sizes itself with
+/// it; the home map's member capsules project their screen positions with it.
+double metersPerPixel(double latitude, double zoom) =>
+    _equatorMetersPerPixel *
+    math.cos(latitude * math.pi / 180) /
+    math.pow(2, zoom);
+
+/// Search radius for a viewport of [size] logical pixels whose camera target
+/// sits [bottomPadding] pixels' worth above centre, computed from the Mercator
+/// scale instead of read back from the map.
+///
+/// [nearbyRadiusForViewport] needs `GoogleMapController.getVisibleRegion`,
+/// which means waiting for the platform view — ~1 s on an Android cold start,
+/// and the only thing the first nearby query would be waiting for. At startup
+/// the camera has no tilt or bearing, so the visible region is exactly the
+/// rectangle this measures, and the two agree closely enough that the
+/// camera-idle re-query dedupes against it.
+int estimatedNearbyRadius({
+  required Size size,
+  required double bottomPadding,
+  required LatLng center,
+  required double zoom,
+}) {
+  // The map centres its target in the space left above [bottomPadding], so the
+  // farthest corner is a bottom one.
+  final dx = size.width / 2;
+  final dy = (size.height + bottomPadding) / 2;
+  final meters =
+      math.sqrt(dx * dx + dy * dy) *
+      metersPerPixel(
+        center.latitude,
+        zoom,
+      );
+  return meters.round().clamp(kNearbyMinRadiusMeters, kNearbyMaxRadiusMeters);
+}
+
+/// How much bigger a requested radius may be than an already-covered one and
+/// still count as covered. A pinch that grows the viewport by more than this
+/// reaches stations the previous query never asked for.
+const _radiusGrowthTolerance = 1.2;
+
+/// What one nearby query covered: where it was centred and how far it reached.
+@immutable
+class NearbyCoverage {
+  const NearbyCoverage(this.center, this.radiusMeters);
+
+  final LatLng center;
+  final int radiusMeters;
+
+  /// Whether a query at [center] out to [radiusMeters] would return
+  /// substantially what this one already did. A heuristic, not containment:
+  /// true containment (`distance + radius <= this.radiusMeters`) would fail on
+  /// any pan at all, which is the opposite of what the dedup is for.
+  bool covers(LatLng center, int radiusMeters, double thresholdMeters) =>
+      haversineMeters(center, this.center) < thresholdMeters &&
+      radiusMeters <= this.radiusMeters * _radiusGrowthTolerance;
+}
+
+/// Viewport-query bookkeeping for the home map. [inFlight] is the query
+/// currently awaiting a response and [lastSuccessful] the newest one that
+/// returned; a query is skipped when either already covers the viewport.
+///
+/// Tracking the in-flight query is what stops a burst of camera-idle events
+/// from firing three overlapping requests before the first one lands — the
+/// bloc's generation guard discards those late results, but the router has
+/// already paid for them. A failure clears [inFlight] without advancing
+/// [lastSuccessful], so a failed request never suppresses the retry.
 class NearbyViewportQuery {
-  const NearbyViewportQuery({this.lastAttempted, this.lastSuccessful});
+  const NearbyViewportQuery({this.inFlight, this.lastSuccessful});
 
-  final LatLng? lastAttempted;
-  final LatLng? lastSuccessful;
+  final NearbyCoverage? inFlight;
+  final NearbyCoverage? lastSuccessful;
 
-  /// Whether [center] is far enough from the last *successful* query to be
-  /// worth re-fetching.
-  bool shouldQuery(LatLng center, {double thresholdMeters = 200}) {
-    final last = lastSuccessful;
-    if (last == null) return true;
-    return haversineMeters(center, last) >= thresholdMeters;
-  }
+  /// Whether a query at [center] out to [radiusMeters] is worth sending.
+  bool shouldQuery(
+    LatLng center,
+    int radiusMeters, {
+    double thresholdMeters = 200,
+  }) =>
+      !(inFlight?.covers(center, radiusMeters, thresholdMeters) ?? false) &&
+      !(lastSuccessful?.covers(center, radiusMeters, thresholdMeters) ?? false);
 
-  NearbyViewportQuery withAttempted(LatLng center) => NearbyViewportQuery(
-    lastAttempted: center,
-    lastSuccessful: lastSuccessful,
+  NearbyViewportQuery withAttempted(LatLng center, int radiusMeters) =>
+      NearbyViewportQuery(
+        inFlight: NearbyCoverage(center, radiusMeters),
+        lastSuccessful: lastSuccessful,
+      );
+
+  /// Promotes the in-flight query to the covered one. A response with nothing
+  /// in flight (a bloc-driven retry, say) leaves the coverage untouched.
+  NearbyViewportQuery withSuccess() => NearbyViewportQuery(
+    lastSuccessful: inFlight ?? lastSuccessful,
   );
 
-  NearbyViewportQuery withSuccess(LatLng center) => NearbyViewportQuery(
-    lastAttempted: lastAttempted,
-    lastSuccessful: center,
-  );
+  NearbyViewportQuery withFailure() =>
+      NearbyViewportQuery(lastSuccessful: lastSuccessful);
 }

@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/metro_models.dart';
+import 'package:wheres_the_bus/data/models/metro_models.dart';
 
 void main() {
   test('MetroLiveArrival carries line, destination, seconds', () {

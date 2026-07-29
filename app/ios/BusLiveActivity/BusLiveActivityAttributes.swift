@@ -28,6 +28,17 @@ struct BusLiveActivityAttributes: ActivityAttributes {
         /// board mode only: the stop this board is for, and its rows.
         var stopName: String?
         var routes: [BoardRow]?
+        /// metro alight-reminder only (mode == "mrt_track", ADR-0015): the line
+        /// roundel code + its data colour (hex), and the per-station progress
+        /// line — stationCount dots with currentIndex filled and targetIndex
+        /// ringed as the alight stop. Nil on every other surface.
+        var lineCode: String?
+        var lineColorHex: String?
+        var stationCount: Int?
+        var targetIndex: Int?
+        var currentIndex: Int?
+        /// Terminal reading shown briefly before dismissal: "arrived" | "lost".
+        var endedStatus: String?
     }
 
     let routeOrTrain: String

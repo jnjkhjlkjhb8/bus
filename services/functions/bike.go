@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -29,7 +29,11 @@ type bikeStation struct {
 	StationAddress struct {
 		ZhTw string `json:"Zh_tw"`
 	} `json:"StationAddress"`
-	BikesCapacity uint8 `json:"BikesCapacity"`
+	// Bike counts are int32, not uint8: a large station's capacity or live
+	// availability exceeds 255 (TDX has returned 321), and a uint8 makes the
+	// whole city's payload fail to unmarshal. ServiceStatus/ServiceType stay
+	// uint8 — they are small enums, not counts.
+	BikesCapacity int32 `json:"BikesCapacity"`
 	ServiceType   uint8 `json:"ServiceType"`
 }
 
@@ -40,10 +44,10 @@ type bikeAvailability struct {
 	StationID                string `json:"StationID"`
 	ServiceStatus            uint8  `json:"ServiceStatus"`
 	ServiceType              uint8  `json:"ServiceType"`
-	AvailableReturnBikes     uint8  `json:"AvailableReturnBikes"`
+	AvailableReturnBikes     int32  `json:"AvailableReturnBikes"`
 	AvailableRentBikesDetail struct {
-		GeneralBikes  uint8 `json:"GeneralBikes"`
-		ElectricBikes uint8 `json:"ElectricBikes"`
+		GeneralBikes  int32 `json:"GeneralBikes"`
+		ElectricBikes int32 `json:"ElectricBikes"`
 	} `json:"AvailableRentBikesDetail"`
 }
 
@@ -171,9 +175,9 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 					StationUID:           temp.StationUID,
 					ServiceStatus:        int32(temp.ServiceStatus),
 					ServiceType:          int32(temp.ServiceType),
-					AvailableReturnBikes: int32(temp.AvailableReturnBikes),
-					GeneralBikes:         int32(temp.AvailableRentBikesDetail.GeneralBikes),
-					ElectricBikes:        int32(temp.AvailableRentBikesDetail.ElectricBikes),
+					AvailableReturnBikes: temp.AvailableReturnBikes,
+					GeneralBikes:         temp.AvailableRentBikesDetail.GeneralBikes,
+					ElectricBikes:        temp.AvailableRentBikesDetail.ElectricBikes,
 				}
 				pb, err := proto.Marshal(raw)
 				if err != nil {

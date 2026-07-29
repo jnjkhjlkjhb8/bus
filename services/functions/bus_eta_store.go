@@ -32,7 +32,7 @@ func (s pgBusEtaStore) travelAverages(ctx context.Context, uids []string, hour, 
 }
 
 func (s pgBusEtaStore) saveHistory(ctx context.Context, rows [][]interface{}) {
-	saveBusEtaHistory(ctx, s.db, rows)
+	saveBusEtaHistory(ctx, archiveTarget(), rows)
 }
 
 func (s pgBusEtaStore) recordPredictions(ctx context.Context, rows []predictionRecord) {

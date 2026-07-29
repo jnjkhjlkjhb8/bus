@@ -44,23 +44,30 @@ func main() {
 		fmt.Fprintln(os.Stderr, "DATABASE_URL not set")
 		os.Exit(2)
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
+	if err := export(dsn, *table, *partCol, *part, *out); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+// export is split out of main so the pool is closed on the failure paths too:
+// os.Exit does not run deferred calls.
+func export(dsn, table, partCol, part, out string) error {
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		return err
 	}
 	defer pool.Close()
 
-	body, err := datasetJSON(context.Background(), pool, *table, *partCol, *part)
+	body, err := datasetJSON(context.Background(), pool, table, partCol, part)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
-	if err := os.WriteFile(*out, body, 0o644); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if err := os.WriteFile(out, body, 0o644); err != nil {
+		return err
 	}
-	fmt.Printf("wrote %d bytes to %s\n", len(body), *out)
+	fmt.Printf("wrote %d bytes to %s\n", len(body), out)
+	return nil
 }
 
 // datasetJSON reconstructs the lowercased-JSON array for one raw_tdx partition,

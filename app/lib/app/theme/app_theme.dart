@@ -1,7 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_shadows.dart';
-import 'package:wheres_the_car/shared/motion/predictive_back.dart';
+import 'package:wheres_the_bus/app/theme/app_shadows.dart';
+import 'package:wheres_the_bus/shared/motion/predictive_back.dart';
 
 /// Wraps [CupertinoPageTransitionsBuilder], which ignores the platform
 /// reduce-motion setting, with a short fade when
@@ -60,6 +60,10 @@ class AppTheme {
   static const Color mrtKO = Color(0xFFE6A739);
   static const Color ferryBlue = Color(0xFF0288D1);
 
+  static const Color markerBus = Color(0xFFC03634);
+  static const Color markerBike = Color(0xFFDFE24D);
+  static const Color markerRail = Color(0xFF285FF4);
+
   static const Color statusArriving = Color(0xFF12B76A);
   static const Color statusArrivingText = Color(0xFF0E7C42);
   static const Color statusApproach = Color(0xFFF79009);
@@ -77,6 +81,17 @@ class AppTheme {
   static const Color warningInkDark = Color(0xFFFBDFA6);
   static const Color warningAccentDark = Color(0xFFE8912B);
 
+  // Critical surface, split by the same three roles as the warning set. Not
+  // `cs.errorContainer`: the M3 container pair is tuned for buttons and reads
+  // heavier than a notice needs, and its dark value drifts from the ramp the
+  // rest of the app uses.
+  static const Color criticalBg = Color(0xFFFDE7E4);
+  static const Color criticalInkLight = Color(0xFF7A1C13);
+  static const Color criticalAccent = Color(0xFFB42318);
+  static const Color criticalBgDark = Color(0xFF3B1512);
+  static const Color criticalInkDark = Color(0xFFFFD9D3);
+  static const Color criticalAccentDark = Color(0xFFF0705E);
+
   static const double radiusCard = 12;
   static const double radiusModal = 12;
   static const double radiusBottom = 8;
@@ -84,6 +99,11 @@ class AppTheme {
   static const double radiusSearchBar = 28;
   static const double radiusChip = 4;
   static const double radiusButton = 8;
+
+  /// Corner of a single dock slot in the availability gauge's rack. Below the
+  /// chip radius on purpose: a slot is ~6px wide at a full station, where 4px
+  /// rounds it into a pill and the rack stops reading as square dock bays.
+  static const double radiusSlot = 2;
   static const double radiusBottomSheet = 28;
 
   // Pure Achromatic color tokens (Light Mode)

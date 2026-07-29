@@ -11,8 +11,8 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/robfig/cron/v3"
 )
 
@@ -467,18 +467,12 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				return trtcEta(ctx, sink, db)
 			}},
-		{key: "tra", cadence: "@every 2m", ttlPatterns: traPatterns,
-			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				return traEta(ctx, fetch, sink)
-			}},
+		{key: "tra", cadence: "@every 2m", ttlPatterns: traPatterns, run: traEta},
 		// THSR available-seat status changes slowly, so it refreshes on a
 		// conservative 10-minute cadence (its own cron entry, unbounded like
 		// mrt/tra). This is the seat refresh moved off the router's read path
 		// (ADR-0005 amendment).
-		{key: "thsr_seats", cadence: "@every 10m", ttlPatterns: thsrSeatsPatterns,
-			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
-				return thsrAvailableSeats(ctx, fetch, sink)
-			}},
+		{key: "thsr_seats", cadence: "@every 10m", ttlPatterns: thsrSeatsPatterns, run: thsrAvailableSeats},
 	}
 }
 

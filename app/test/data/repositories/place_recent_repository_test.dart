@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:hive_ce_flutter/adapters.dart';
-import 'package:wheres_the_car/data/repositories/place_recent_repository.dart';
-import 'package:wheres_the_car/features/go/model/planned_place.dart';
+import 'package:wheres_the_bus/data/repositories/place_recent_repository.dart';
+import 'package:wheres_the_bus/features/go/model/planned_place.dart';
 
 PlannedPlace _place(String name, double lat, double lon) =>
     PlannedPlace(name: name, latLng: LatLng(lat, lon));

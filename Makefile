@@ -6,6 +6,9 @@ COMPOSE ?= docker compose --project-directory .
 # clean checkout.
 PROTOC_GEN_GO_VERSION := v1.36.11
 PROTOC_GEN_GO_GRPC_VERSION := v1.6.2
+# Same rule for the linter: pinned, installed into .tools/bin, never @latest,
+# so `make lint` reports the same issues here and in CI.
+GOLANGCI_LINT_VERSION := v2.12.2
 TOOLS_BIN := $(CURDIR)/.tools/bin
 
 # each service reads only its own rendered env file (scripts/render-env.sh,
@@ -43,7 +46,7 @@ COMPOSE_PROD := ENV_FILE=env/prod.env \
 # Empty (the default) follows every service in the environment.
 SERVICE ?=
 
-.PHONY: up-test up-staging up-prod up-ollama up-ollama-prod logs-test logs-staging logs-prod down-test down-staging down-prod migrations-check run-test run-staging build-prod test test-go test-flutter proto-go proto-dart verify render-env-test render-env-staging render-env-prod
+.PHONY: up-test up-staging up-prod up-ollama up-ollama-prod logs-test logs-staging logs-prod down-test down-staging down-prod migrations-check run-test run-staging build-prod test test-go test-flutter lint lint-fix lint-tool proto-go proto-dart l10n-push l10n-pull l10n-pull-sources verify render-env-test render-env-staging render-env-prod
 
 test: test-go test-flutter
 
@@ -54,6 +57,22 @@ test-go: proto-go
 test-flutter: proto-dart
 	cd app && flutter analyze --no-fatal-infos && flutter test
 
+# lint reads .golangci.yml. lint-fix additionally applies the fixes the enabled
+# linters can make on their own (gofmt + the auto-fixable staticcheck rules).
+lint: lint-tool
+	$(TOOLS_BIN)/golangci-lint run ./...
+
+lint-fix: lint-tool
+	$(TOOLS_BIN)/golangci-lint fmt ./...
+	$(TOOLS_BIN)/golangci-lint run --fix ./...
+
+# Always installs rather than testing for the binary: a bumped
+# GOLANGCI_LINT_VERSION must not keep running the previously installed one.
+# The install is a no-op against a warm module cache.
+lint-tool:
+	mkdir -p $(TOOLS_BIN)
+	GOBIN=$(TOOLS_BIN) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
 proto-go:
 	mkdir -p $(TOOLS_BIN)
 	GOBIN=$(TOOLS_BIN) go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
@@ -63,6 +82,25 @@ proto-go:
 proto-dart:
 	mkdir -p app/lib/data/generated
 	PATH="$$PATH:$$HOME/.pub-cache/bin" protoc --dart_out=grpc:app/lib/data/generated -I models models/*.proto
+
+# Crowdin round trip. `app/lib/l10n/app_zh.arb` is the source; every other ARB
+# is a Crowdin artifact, pulled and committed as-is. All three targets need
+# CROWDIN_PERSONAL_TOKEN. The pull targets regenerate the Dart classes so a
+# pull that adds a locale or changes a placeholder is compilable in one step.
+l10n-push:
+	crowdin push sources
+
+l10n-pull:
+	crowdin pull
+	cd app && flutter gen-l10n
+
+# Brings zh-TW source edits made in the Crowdin editor back into app_zh.arb.
+# Overwrites the hand-authored file, so run it on a clean tree and read the
+# diff before committing — in particular check that the `@key` descriptions
+# survived the round trip, since they travel as Crowdin string context.
+l10n-pull-sources:
+	crowdin download sources
+	cd app && flutter gen-l10n
 
 verify: proto-go
 	./scripts/ci.sh contracts

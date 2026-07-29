@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/shared/widgets/train_type_chip.dart';
+import 'package:wheres_the_bus/shared/widgets/train_type_chip.dart';
 
 /// A 30px station departure row used in rail timetable lists.
 class StationTimetableRow extends StatelessWidget {

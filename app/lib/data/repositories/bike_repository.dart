@@ -1,6 +1,6 @@
-import 'package:wheres_the_car/core/grpc/grpc_client.dart';
-import 'package:wheres_the_car/data/generated/bike.pbgrpc.dart';
-import 'package:wheres_the_car/data/models/bike_models.dart';
+import 'package:wheres_the_bus/core/grpc/grpc_client.dart';
+import 'package:wheres_the_bus/data/generated/bike.pbgrpc.dart';
+import 'package:wheres_the_bus/data/models/bike_models.dart';
 
 class BikeRepository {
   BikeRepository({Bike_ServiceClient? client}) : _client = client;
@@ -10,9 +10,18 @@ class BikeRepository {
   Bike_ServiceClient? _client;
   Bike_ServiceClient get _grpc => _client ??= GrpcClient.instance.bike;
 
+  // Station name/capacity/position only change with the 03:30 daily load, so a
+  // process-lifetime memo is safe and makes a re-visit render with no
+  // round-trip at all.
+  // unbounded and in-memory — one entry per station visited in a
+  // session. Bound it or move it to Hive if it ever needs to survive a launch.
+  final _statics = <String, BikeStationInfo>{};
+
   Future<BikeStationInfo> stationStatic(String stationUid) async {
+    final cached = _statics[stationUid];
+    if (cached != null) return cached;
     final s = await _grpc.static(Bike_request(stationUID: stationUid));
-    return BikeStationInfo(
+    return _statics[stationUid] = BikeStationInfo(
       name: s.name,
       capacity: s.capacity,
       lat: double.tryParse(s.lat) ?? 0,
@@ -21,9 +30,8 @@ class BikeRepository {
   }
 
   /// Server-streaming: emits decoded availability updates until cancelled.
-  Stream<BikeAvailability> stationEta(String stationUid) => _grpc
-      .eta(Bike_request(stationUID: stationUid))
-      .map((resp) {
+  Stream<BikeAvailability> stationEta(String stationUid) =>
+      _grpc.eta(Bike_request(stationUID: stationUid)).map((resp) {
         final e = resp.data;
         return BikeAvailability(
           generalBikes: e.generalBikes,

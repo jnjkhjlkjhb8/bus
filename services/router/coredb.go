@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/jackc/pgx/v5"
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 )
 
 // coreDB is the read surface the bus, bike, and station-group handlers need.
@@ -86,6 +86,10 @@ type bikeStaticRow struct {
 	Capacity    int32
 	ServiceType int32
 	Address     string
+	// Nullable: geom is not NOT NULL, and a station landed without a point
+	// leaves both nil rather than reporting (0, 0) off West Africa.
+	Lat *float64
+	Lon *float64
 }
 
 // bikeStaticData reads a bike station's static fields from the loaded env
@@ -93,7 +97,7 @@ type bikeStaticRow struct {
 // NotFound.
 func bikeStaticData(ctx context.Context, db coreDB, stationUID string) (bikeStaticRow, error) {
 	var r bikeStaticRow
-	err := db.QueryRow(ctx, `SELECT name,capacity,service_type,address FROM bike_stations WHERE station_uid = $1;`, stationUID).
-		Scan(&r.Name, &r.Capacity, &r.ServiceType, &r.Address)
+	err := db.QueryRow(ctx, `SELECT name,capacity,service_type,address,ST_Y(geom),ST_X(geom) FROM bike_stations WHERE station_uid = $1;`, stationUID).
+		Scan(&r.Name, &r.Capacity, &r.ServiceType, &r.Address, &r.Lat, &r.Lon)
 	return r, err
 }

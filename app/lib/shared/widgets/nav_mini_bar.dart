@@ -3,14 +3,15 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
-import 'package:wheres_the_car/features/go/widgets/route_option_card.dart';
-import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_state.dart';
+import 'package:wheres_the_bus/features/go/widgets/route_option_card.dart';
+import 'package:wheres_the_bus/features/go/widgets/transit_visuals.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
 
 class NavMiniBar extends StatelessWidget {
   const NavMiniBar({super.key});
@@ -59,8 +60,10 @@ class _MiniBar extends StatelessWidget {
     final dest = route.sections.last.arrival.name;
     final arrival = formatClock(route.endTime);
     final title = isWalk(section)
-        ? '步行前往${section.arrival.name}'
-        : '搭乘${sectionLabel(section)}';
+        ? AppI18n.of(context).walkToward(section.arrival.name)
+        : AppI18n.of(
+            context,
+          ).rideVehicle(sectionLabel(AppI18n.of(context), section));
 
     return SafeArea(
       top: false,
@@ -71,7 +74,7 @@ class _MiniBar extends StatelessWidget {
             if (GoRouterState.of(context).uri.path == '/go') return;
             unawaited(context.push('/go'));
           },
-          semanticLabel: '返回導航，往$dest',
+          semanticLabel: AppI18n.of(context).navBackSemantics(dest),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: AppTheme.floatingControl(
@@ -109,7 +112,7 @@ class _MiniBar extends StatelessWidget {
                         ),
                       ),
                       Text(
-                        '往$dest',
+                        AppI18n.of(context).towards(dest),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: AppTextStyles.bodySmall.copyWith(

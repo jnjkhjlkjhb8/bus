@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/decoders/thsr_decoder.dart';
-import 'package:wheres_the_car/data/generated/thsr.pb.dart';
+import 'package:wheres_the_bus/data/decoders/thsr_decoder.dart';
+import 'package:wheres_the_bus/data/generated/thsr.pb.dart';
 
 const ThsrDecoder _decoder = ThsrDecoder.instance;
 

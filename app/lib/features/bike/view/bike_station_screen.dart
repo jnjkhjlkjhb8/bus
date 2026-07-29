@@ -5,30 +5,42 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
-import 'package:wheres_the_car/app/theme/app_shadows.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/location/location_service.dart';
-import 'package:wheres_the_car/features/bike/bloc/bike_station_bloc.dart';
-import 'package:wheres_the_car/features/bike/bloc/bike_station_state.dart';
-import 'package:wheres_the_car/features/bike/view/bike_station_detail_view.dart';
-import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
-import 'package:wheres_the_car/shared/map/marker_factory.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_bars.dart';
-import 'package:wheres_the_car/shared/widgets/app_spinner.dart';
-import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_bus/app/theme/app_shadows.dart';
+import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/core/location/location_service.dart';
+import 'package:wheres_the_bus/features/bike/bloc/bike_station_bloc.dart';
+import 'package:wheres_the_bus/features/bike/bloc/bike_station_state.dart';
+import 'package:wheres_the_bus/features/bike/view/bike_station_detail_view.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
+import 'package:wheres_the_bus/shared/map/marker_factory.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
+import 'package:wheres_the_bus/shared/widgets/app_spinner.dart';
+import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
 
 const _kDefaultPos = LatLng(25.0330, 121.5654);
 
 class BikeStationScreen extends StatefulWidget {
-  const BikeStationScreen({required this.stationUid, super.key});
+  const BikeStationScreen({
+    required this.stationUid,
+    this.name,
+    this.lat,
+    this.lon,
+    super.key,
+  });
   final String stationUid;
+
+  /// Caller-supplied station name and coordinates, when known. They seed the
+  /// bloc so the title and camera are right on the first frame, with no
+  /// network round-trip; the static fetch refines them when it lands.
+  final String? name;
+  final double? lat;
+  final double? lon;
 
   @override
   State<BikeStationScreen> createState() => _BikeStationScreenState();
@@ -38,10 +50,9 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
   GoogleMapController? _controller;
   late final SheetController _sheetController;
 
-  // Own bloc instance, separate from BikeStationDetailView's: it exists only
-  // to read the station's static lat/lon for the marker/camera target, kept
-  // out of the shared sheet bloc so this screen doesn't have to reach into
-  // the detail view's widget tree to read it.
+  // One bloc for both the map (marker/camera target) and the sheet — it is
+  // handed to BikeStationDetailView rather than letting the view create its
+  // own, which used to double every static fetch and live stream.
   late final BikeStationBloc _bloc;
   BitmapDescriptor? _bikeIcon;
   bool _locating = false;
@@ -55,10 +66,19 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
   void initState() {
     super.initState();
     _sheetController = SheetController();
-    _bloc = BikeStationBloc(stationUid: widget.stationUid);
+    _bloc = BikeStationBloc(
+      stationUid: widget.stationUid,
+      name: widget.name,
+      lat: widget.lat,
+      lon: widget.lon,
+    );
     unawaited(_loadMarkerIcon());
-    _initialPosition = LocationService.instance.currentPosition();
-    unawaited(_moveToInitialLocation());
+    // With seeded coordinates the camera already opens on the station, so the
+    // GPS fallback — and its permission/fix latency — is not needed at all.
+    if (_bloc.state.lat == 0 && _bloc.state.lon == 0) {
+      _initialPosition = LocationService.instance.currentPosition();
+      unawaited(_moveToInitialLocation());
+    }
   }
 
   Future<void> _loadMarkerIcon() async {
@@ -184,27 +204,7 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
               },
             ),
           ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 8,
-              ),
-              child: Row(
-                children: [
-                  AppBarCircleButton(
-                    onTap: context.pop,
-                    semanticLabel: '返回',
-                    child: Icon(
-                      Icons.arrow_back_ios_new_rounded,
-                      size: 18,
-                      color: cs.onSurface,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          const FloatingAppBar(),
 
           ValueListenableBuilder<double?>(
             valueListenable: _sheetController,
@@ -218,7 +218,7 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
             },
             child: Pressable(
               onTap: _recenterMap,
-              semanticLabel: '定位目前位置',
+              semanticLabel: AppI18n.of(context).commonLocateMe,
               child: Container(
                 width: 44,
                 height: 44,
@@ -249,32 +249,13 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
             ),
           ),
 
-          NotificationListener<SheetNotification>(
-            onNotification: (notification) {
-              if (notification is SheetDragEndNotification) {
-                unawaited(HapticService.instance.lightTap());
-              }
-              return false;
-            },
-            child: SheetViewport(
-              child: SheetExitGestureDetector(
-                onExit: () => context.pop(),
-                child: Sheet(
-                  controller: _sheetController,
-                  initialOffset: AppSheetSnap.half,
-                  snapGrid: AppSheetSnap.grid,
-                  scrollConfiguration: const SheetScrollConfiguration(),
-                  decoration: MaterialSheetDecoration(
-                    size: SheetSize.stretch,
-                    color: cs.surfaceContainerLow,
-                    borderRadius: const BorderRadius.vertical(
-                      top: Radius.circular(AppTheme.radiusBottomSheet),
-                    ),
-                    clipBehavior: Clip.antiAlias,
-                  ),
-                  child: BikeStationDetailView(stationUid: widget.stationUid),
-                ),
-              ),
+          AppSheet(
+            controller: _sheetController,
+            // Back button in the app bar above (see AppSheet.onExit).
+            onExit: null,
+            child: BikeStationDetailView(
+              stationUid: widget.stationUid,
+              bloc: _bloc,
             ),
           ),
         ],

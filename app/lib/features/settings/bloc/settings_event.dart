@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_state.dart';
+import 'package:wheres_the_bus/data/models/fare_type.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_state.dart';
 
 sealed class SettingsEvent extends Equatable {
   const SettingsEvent();
@@ -26,8 +27,8 @@ class LanguageSelected extends SettingsEvent {
   List<Object?> get props => [language];
 }
 
-class LargeTextToggled extends SettingsEvent {
-  const LargeTextToggled({required this.value});
+class LiveActivityToggled extends SettingsEvent {
+  const LiveActivityToggled({required this.value});
 
   final bool value;
 
@@ -35,8 +36,8 @@ class LargeTextToggled extends SettingsEvent {
   List<Object?> get props => [value];
 }
 
-class LiveActivityToggled extends SettingsEvent {
-  const LiveActivityToggled({required this.value});
+class ShakeToReportToggled extends SettingsEvent {
+  const ShakeToReportToggled({required this.value});
 
   final bool value;
 
@@ -53,26 +54,21 @@ class PushToggled extends SettingsEvent {
   List<Object?> get props => [value];
 }
 
-class AnalyticsToggled extends SettingsEvent {
-  const AnalyticsToggled({required this.value});
+/// The rider picked a ticket type in 設定 › 票價. Applies to every fare the
+/// app quotes — bus, TRA and THSR.
+class FareTypeSelected extends SettingsEvent {
+  const FareTypeSelected(this.fareType);
 
-  final bool value;
-
-  @override
-  List<Object?> get props => [value];
-}
-
-class CrashlyticsToggled extends SettingsEvent {
-  const CrashlyticsToggled({required this.value});
-
-  final bool value;
+  final FareType fareType;
 
   @override
-  List<Object?> get props => [value];
+  List<Object?> get props => [fareType];
 }
 
-class VersionTapped extends SettingsEvent {
-  const VersionTapped();
+/// The rider tapped 檢查更新. Pulls a fresh Remote Config revision and
+/// re-resolves the running build against it.
+class UpdateCheckRequested extends SettingsEvent {
+  const UpdateCheckRequested();
 }
 
 /// Carries the real app version and PowerSync freshness once both loaders

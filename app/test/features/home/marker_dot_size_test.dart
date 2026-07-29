@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/features/home/home_screen.dart';
+import 'package:wheres_the_bus/features/home/home_screen.dart';
 
 void main() {
   test('the large-zoom-band dot is bigger than the small-zoom-band dot', () {

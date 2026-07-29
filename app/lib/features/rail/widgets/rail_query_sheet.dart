@@ -2,41 +2,51 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_card.dart';
-import 'package:wheres_the_car/shared/widgets/app_date_picker.dart';
-import 'package:wheres_the_car/shared/widgets/app_sliding_segment.dart';
-import 'package:wheres_the_car/shared/widgets/app_time_picker.dart';
-import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
-import 'package:wheres_the_car/shared/widgets/thsr_station_picker.dart';
-import 'package:wheres_the_car/shared/widgets/tra_station_picker.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_card.dart';
+import 'package:wheres_the_bus/shared/widgets/app_date_picker.dart';
+import 'package:wheres_the_bus/shared/widgets/app_sliding_segment.dart';
+import 'package:wheres_the_bus/shared/widgets/app_time_picker.dart';
+import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_bus/shared/widgets/thsr_station_picker.dart';
+import 'package:wheres_the_bus/shared/widgets/tra_station_picker.dart';
 
 const List<FontFeature> _tnum = AppTextStyles.tabularFigures;
+
+/// The value line of every field in both query cards — the O/D card and the
+/// train-number card. Shared so the two cards measure the same height at any
+/// text scale; the train field is a [TextField], which only matches a plain
+/// [Text] when the style (and so the strut) is identical.
+final TextStyle _fieldValueStyle = AppTextStyles.bodyLarge.copyWith(
+  fontWeight: FontWeight.w700,
+  fontSize: 18,
+  fontFeatures: _tnum,
+);
 
 /// Mode-pane cross-fade duration; ~200 ms sits in the app's short-motion band.
 const Duration _kPaneSwitch = AppMotion.short;
 
-/// 高鐵品牌橘，僅用於車次晶片上的「高鐵」小標。
-const Color _thsrLabelColor = Color(0xFFDB5325);
-
-const Map<int, String> _weekdayMap = {
-  DateTime.monday: '一',
-  DateTime.tuesday: '二',
-  DateTime.wednesday: '三',
-  DateTime.thursday: '四',
-  DateTime.friday: '五',
-  DateTime.saturday: '六',
-  DateTime.sunday: '日',
+// Built per call rather than held in a const map: the names follow the
+// rider's language.
+Map<int, String> _weekdayMap(AppI18n i18n) => {
+  DateTime.monday: i18n.weekdayMon,
+  DateTime.tuesday: i18n.weekdayTue,
+  DateTime.wednesday: i18n.weekdayWed,
+  DateTime.thursday: i18n.weekdayThu,
+  DateTime.friday: i18n.weekdayFri,
+  DateTime.saturday: i18n.weekdaySat,
+  DateTime.sunday: i18n.weekdaySun,
 };
 
-String _formatDateDisplay(DateTime date) {
-  return '${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')} (${_weekdayMap[date.weekday]})';
+String _formatDateDisplay(AppI18n i18n, DateTime date) {
+  return '${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')} (${_weekdayMap(i18n)[date.weekday]})';
 }
 
 String _formatTime(TimeOfDay time) {
@@ -45,11 +55,10 @@ String _formatTime(TimeOfDay time) {
   return '$hour:$minute';
 }
 
-String _defaultOrigin(RailSystem system) =>
-    system == RailSystem.thsr ? '南港' : '台北';
-
-String _defaultDest(RailSystem system) =>
-    system == RailSystem.thsr ? '左營' : '花蓮';
+/// Shown in place of an unpicked station. The form starts empty rather than
+/// seeded with a station pair: a pre-filled O/D reads as the user's own query
+/// and invites a 查詢 tap that runs someone else's route.
+String _stationPlaceholder(AppI18n i18n) => i18n.railChooseStation;
 
 /// Which form the query sheet is showing.
 enum RailQueryMode { od, train }
@@ -171,12 +180,13 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
     super.initState();
     final preset = widget.preset;
     _system = preset?.system ?? RailSystem.tra;
-    _originName = preset?.originName ?? _defaultOrigin(_system);
+    _originName = preset?.originName ?? '';
     _originId = preset?.originId ?? '';
-    _destName = preset?.destName ?? _defaultDest(_system);
-    // If the preset station is itself the default destination, fall back to the
-    // default origin so the O/D pair is real.
-    if (_originName == _destName) _destName = _defaultOrigin(_system);
+    _destName = preset?.destName ?? '';
+    // A hand-off can name the same station twice (a station detail whose stop
+    // is also the preset destination); clear the dest rather than submit a
+    // zero-length trip.
+    if (_originName.isNotEmpty && _originName == _destName) _destName = '';
     _destId = preset?.destId ?? '';
     _selectedDate = preset?.date ?? DateTime.now();
     // Seed the time picker from the preset so a re-opened sheet shows the time
@@ -185,6 +195,13 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
       _selectedTime = TimeOfDay.fromDateTime(preset!.date!);
     }
     _isDepartureTime = preset?.isDeparture ?? true;
+    // Only when the caller named neither end. A preset that carries just an
+    // origin is a deliberate hand-off from a station detail, and pairing it
+    // with a destination the rider picked for some other origin would submit
+    // a trip nobody asked for.
+    if (_originName.isEmpty && _destName.isEmpty) {
+      _seedOdFromLastQuery(_system);
+    }
     _recentQueries = HiveStore.recentTrainQueries;
     _trainController.addListener(_onTrainTextChanged);
   }
@@ -195,6 +212,16 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
       ..removeListener(_onTrainTextChanged)
       ..dispose();
     super.dispose();
+  }
+
+  /// Fills the O/D fields from the rider's last query on [system], or clears
+  /// them when there is none. Caller owns `setState`.
+  void _seedOdFromLastQuery(RailSystem system) {
+    final last = HiveStore.lastOdQuery(system.name);
+    _originName = last?['originName'] as String? ?? '';
+    _originId = last?['originId'] as String? ?? '';
+    _destName = last?['destName'] as String? ?? '';
+    _destId = last?['destId'] as String? ?? '';
   }
 
   void _onTrainTextChanged() => setState(() {});
@@ -210,10 +237,11 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
     unawaited(HapticService.instance.lightTap());
     setState(() {
       _system = system;
-      _originName = _defaultOrigin(system);
-      _destName = _defaultDest(system);
-      _originId = '';
-      _destId = '';
+      // TRA and THSR station names do not overlap, so a carried-over pick would
+      // be unresolvable on the new system. Reseeded from the rider's own last
+      // query on the system being switched to, which is why the stored pairs
+      // are scoped per system rather than kept as one global last pair.
+      _seedOdFromLastQuery(system);
       _hasSubmittedOd = false;
     });
     widget.onSystemChanged?.call(system);
@@ -359,9 +387,12 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
       physics: const NeverScrollableScrollPhysics(),
+      // Without this the list expands to the full viewport, so the sheet reads
+      // the page as full-height: it opens at the top instead of the requested
+      // detent and its drag range collapses to a single offset.
+      shrinkWrap: true,
       children: [
         const SheetDragHandle(),
-        const SizedBox(height: 8),
         Row(
           children: [
             if (widget.onBack != null)
@@ -369,7 +400,8 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
                 onTap: () {
                   widget.onBack!();
                 },
-                semanticLabel: '返回',
+                semanticLabel: AppI18n.of(context).commonBack,
+                minTapSize: 44,
                 child: Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: Icon(
@@ -380,7 +412,7 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
                 ),
               ),
             Text(
-              '列車時刻查詢',
+              AppI18n.of(context).railTimetableTitle,
               style: AppTextStyles.bodyLarge.copyWith(
                 fontWeight: FontWeight.w700,
                 fontSize: 22,
@@ -391,16 +423,19 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
         ),
         const SizedBox(height: 16),
         AppSlidingSegment<RailQueryMode>(
-          options: const {
-            RailQueryMode.od: '起訖查詢',
-            RailQueryMode.train: '車次查詢',
+          options: {
+            RailQueryMode.od: AppI18n.of(context).railModeOd,
+            RailQueryMode.train: AppI18n.of(context).railModeTrain,
           },
           value: _mode,
           onChanged: _setMode,
         ),
         const SizedBox(height: 12),
         AppSlidingSegment<RailSystem>(
-          options: const {RailSystem.tra: '台鐵', RailSystem.thsr: '高鐵'},
+          options: {
+            RailSystem.tra: AppI18n.of(context).modeTra,
+            RailSystem.thsr: AppI18n.of(context).modeThsr,
+          },
           value: _system,
           onChanged: _switchSystem,
         ),
@@ -437,14 +472,18 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
                     child: Pressable(
                       onTap: _pickOrigin,
                       child: _FieldColumn(
-                        label: '起點站',
+                        label: AppI18n.of(context).railOrigin,
                         value: _originName,
+                        placeholder: _stationPlaceholder(AppI18n.of(context)),
                         crossAxisAlignment: CrossAxisAlignment.start,
                       ),
                     ),
                   ),
                   Pressable(
                     onTap: _swap,
+                    // 18px icon + 8px padding = 34px painted size; widen the
+                    // hit target only, per the 44px touch-target floor.
+                    minTapSize: 44,
                     child: Container(
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
@@ -462,8 +501,9 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
                     child: Pressable(
                       onTap: _pickDest,
                       child: _FieldColumn(
-                        label: '終點站',
+                        label: AppI18n.of(context).railDestination,
                         value: _destName,
+                        placeholder: _stationPlaceholder(AppI18n.of(context)),
                         crossAxisAlignment: CrossAxisAlignment.end,
                       ),
                     ),
@@ -477,8 +517,11 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
                     child: Pressable(
                       onTap: _pickDate,
                       child: _FieldColumn(
-                        label: '日期',
-                        value: _formatDateDisplay(_selectedDate),
+                        label: AppI18n.of(context).commonDate,
+                        value: _formatDateDisplay(
+                          AppI18n.of(context),
+                          _selectedDate,
+                        ),
                         crossAxisAlignment: CrossAxisAlignment.start,
                       ),
                     ),
@@ -495,10 +538,9 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
                         }
                       },
                       child: _FieldColumn(
-                        label: '時間',
+                        label: AppI18n.of(context).commonTime,
                         value: _formatTime(_selectedTime),
                         crossAxisAlignment: CrossAxisAlignment.end,
-                        monospace: true,
                       ),
                     ),
                   ),
@@ -509,16 +551,16 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
         ),
         const SizedBox(height: 16),
         AppSlidingSegment<bool>(
-          options: const {true: '出發時間', false: '抵達時間'},
-          value: _isDepartureTime,
-          onChanged: (value) {
-            unawaited(HapticService.instance.lightTap());
-            setState(() => _isDepartureTime = value);
+          options: {
+            true: AppI18n.of(context).goDepartAt,
+            false: AppI18n.of(context).goArriveBy,
           },
+          value: _isDepartureTime,
+          onChanged: (value) => setState(() => _isDepartureTime = value),
         ),
         const SizedBox(height: 16),
         _SubmitButton(
-          enabled: true,
+          enabled: _originName.isNotEmpty && _destName.isNotEmpty,
           onTap: () {
             unawaited(HapticService.instance.lightTap());
             _submitOd();
@@ -540,9 +582,9 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                '車次號碼',
+                AppI18n.of(context).railTrainNumber,
                 style: AppTextStyles.bodyVerySmall.copyWith(
-                  color: cs.onSurfaceVariant.withValues(alpha: 0.6),
+                  color: cs.onSurfaceVariant,
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -551,12 +593,10 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
                 controller: _trainController,
                 keyboardType: TextInputType.number,
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                style: AppTextStyles.memo.copyWith(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w700,
-                  fontFeatures: _tnum,
-                  color: cs.onSurface,
-                ),
+                // Same style as a [_FieldColumn] value, so this card is
+                // exactly as tall as the O/D card and switching mode does not
+                // shove everything below it up or down.
+                style: _fieldValueStyle.copyWith(color: cs.onSurface),
                 cursorColor: cs.primary,
                 decoration: InputDecoration(
                   isDense: true,
@@ -564,21 +604,16 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
                   border: InputBorder.none,
                   enabledBorder: InputBorder.none,
                   focusedBorder: InputBorder.none,
-                  hintText: '例:152',
-                  hintStyle: AppTextStyles.memo.copyWith(
-                    fontSize: 28,
-                    fontWeight: FontWeight.w700,
-                    fontFeatures: _tnum,
-                    color: cs.outline,
-                  ),
+                  hintText: AppI18n.of(context).railTrainNumberHint,
+                  hintStyle: _fieldValueStyle.copyWith(color: cs.outline),
                 ),
               ),
               _cardDivider(cs),
               Pressable(
                 onTap: _pickDate,
                 child: _FieldColumn(
-                  label: '日期',
-                  value: _formatDateDisplay(_selectedDate),
+                  label: AppI18n.of(context).commonDate,
+                  value: _formatDateDisplay(AppI18n.of(context), _selectedDate),
                   crossAxisAlignment: CrossAxisAlignment.start,
                 ),
               ),
@@ -588,9 +623,9 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
         if (_recentQueries.isNotEmpty) ...[
           const SizedBox(height: 16),
           Text(
-            '最近查詢',
+            AppI18n.of(context).railRecentQueries,
             style: AppTextStyles.bodyVerySmall.copyWith(
-              color: cs.onSurfaceVariant.withValues(alpha: 0.6),
+              color: cs.onSurfaceVariant,
               fontWeight: FontWeight.w500,
             ),
           ),
@@ -610,6 +645,15 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
         ],
         const SizedBox(height: 16),
         _SubmitButton(enabled: trainNoEntered, onTap: _submitTrain),
+        if (!trainNoEntered) ...[
+          const SizedBox(height: 8),
+          Text(
+            AppI18n.of(context).railTrainNumberPrompt,
+            style: AppTextStyles.bodyVerySmall.copyWith(
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -628,13 +672,16 @@ class _FieldColumn extends StatelessWidget {
     required this.label,
     required this.value,
     required this.crossAxisAlignment,
-    this.monospace = false,
+    this.placeholder,
   });
 
   final String label;
   final String value;
   final CrossAxisAlignment crossAxisAlignment;
-  final bool monospace;
+
+  /// Stand-in rendered in the outline colour when [value] is empty, so an
+  /// unpicked station reads as a prompt rather than as a chosen one.
+  final String? placeholder;
 
   @override
   Widget build(BuildContext context) {
@@ -645,18 +692,15 @@ class _FieldColumn extends StatelessWidget {
         Text(
           label,
           style: AppTextStyles.bodyVerySmall.copyWith(
-            color: cs.onSurfaceVariant.withValues(alpha: 0.6),
+            color: cs.onSurfaceVariant,
             fontWeight: FontWeight.w500,
           ),
         ),
         const SizedBox(height: 6),
         Text(
-          value,
-          style: AppTextStyles.bodyLarge.copyWith(
-            fontWeight: FontWeight.w700,
-            fontSize: 18,
-            color: cs.onSurface,
-            fontFeatures: monospace ? _tnum : null,
+          value.isEmpty ? (placeholder ?? value) : value,
+          style: _fieldValueStyle.copyWith(
+            color: value.isEmpty ? cs.outline : cs.onSurface,
           ),
         ),
       ],
@@ -681,6 +725,9 @@ class _RecentTrainChip extends StatelessWidget {
     final isThsr = system == 'thsr';
     return Pressable(
       onTap: () => onTap(system, trainNo),
+      // Chip content is far short of 44px on its own; widen the hit target
+      // without inflating the visual chip.
+      minTapSize: 44,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
@@ -691,9 +738,11 @@ class _RecentTrainChip extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              isThsr ? '高鐵' : '台鐵',
+              isThsr
+                  ? AppI18n.of(context).modeThsr
+                  : AppI18n.of(context).modeTra,
               style: AppTextStyles.bodySmall.copyWith(
-                color: isThsr ? _thsrLabelColor : cs.onSurfaceVariant,
+                color: isThsr ? AppTheme.trainThsr : cs.onSurfaceVariant,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -724,18 +773,21 @@ class _SubmitButton extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
       onTap: enabled ? onTap : null,
-      semanticLabel: '查詢',
+      semanticLabel: AppI18n.of(context).commonQuery,
       child: Container(
         height: 48,
         decoration: BoxDecoration(
-          color: enabled ? cs.primary : cs.outline,
-          borderRadius: BorderRadius.circular(8),
+          // cs.outline/cs.surface (the old pair) sits at 1.72:1, well under
+          // WCAG AA. outlineVariant/onSurfaceVariant clears 4.5:1 while still
+          // reading as disabled.
+          color: enabled ? cs.primary : cs.outlineVariant,
+          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
         ),
         alignment: Alignment.center,
         child: Text(
-          '查詢',
-          style: TextStyle(
-            color: enabled ? cs.onPrimary : cs.surface,
+          AppI18n.of(context).commonQuery,
+          style: AppTextStyles.bodyRegular.copyWith(
+            color: enabled ? cs.onPrimary : cs.onSurfaceVariant,
             fontWeight: FontWeight.w600,
             fontSize: 15,
           ),

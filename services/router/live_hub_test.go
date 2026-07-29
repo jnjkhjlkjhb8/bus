@@ -147,7 +147,7 @@ func TestLiveHubEvictsSlowSubscriberOnOverflow(t *testing.T) {
 	}
 	defer closeStream()
 
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		src.publish("route:1", []byte("frame"))
 	}
 
@@ -197,7 +197,7 @@ func TestLiveHubOverflowEvictsOnlyTheSlowSubscriber(t *testing.T) {
 	// never approaches the bound; only the never-read slow subscriber's
 	// queue fills and overflows.
 	var received []string
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		src.publish("route:1", []byte(fmt.Sprintf("frame-%d", i)))
 		select {
 		case frame := <-healthy:
@@ -296,7 +296,7 @@ func TestLiveHubUnsubscribeClearsCloseReasonAfterEviction(t *testing.T) {
 	// evicts this subscriber (evictSlowSubscriber): it deletes the
 	// subscribers[id] entry, closes the channel, and records the eviction
 	// cause in closeReasons.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		src.publish("route:1", []byte("frame"))
 	}
 	deadline := time.Now().Add(time.Second)

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 // A section is a walk when TDX types it as anything other than transit
 // (pedestrian legs). Keying off `type` — not `transport.mode` — because TDX
@@ -44,14 +45,14 @@ Color transitColor(PlanTransport t, ColorScheme cs) {
   }
 }
 
-String sectionLabel(PlanSection s) {
+String sectionLabel(AppI18n i18n, PlanSection s) {
   final t = s.transport;
-  if (isWalk(s)) return '步行';
+  if (isWalk(s)) return i18n.goWalk;
   final name = t.shortName.isNotEmpty ? t.shortName : t.name;
   return name;
 }
 
-String minutesLabel(int minutes) => '$minutes 分';
+String minutesLabel(AppI18n i18n, int minutes) => i18n.minutesValue(minutes);
 
 int sectionMinutes(PlanSection s) {
   final secs = s.travelSummary.duration;

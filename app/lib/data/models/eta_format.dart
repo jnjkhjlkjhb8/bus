@@ -3,6 +3,8 @@
 /// mapping owns the arrival/departure/service-state labels.
 library;
 
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+
 /// Approved domain rule: display always rounds seconds UP to minutes (ceil),
 /// never round or floor. Non-positive seconds mean "no estimate" -> 0.
 int etaCeilMinutes(int seconds) => seconds > 0 ? (seconds / 60).ceil() : 0;
@@ -68,6 +70,7 @@ BusStopDisplayStatus busStopDisplayStatus({
 /// '進站中', a clock time, or a service-state label), or null when nothing is
 /// known.
 String? busStopDisplayLabel({
+  required AppI18n i18n,
   required int estimateSeconds,
   required int stopStatus,
   required String nextBusTime,
@@ -80,16 +83,43 @@ String? busStopDisplayLabel({
   }
   // Any positive live estimate shows the countdown; 進站中 is reserved for a
   // live bus at zero.
-  if (estimateSeconds > 0) return '${etaCeilMinutes(estimateSeconds)}分';
-  if (stopStatus == 0) return '進站中';
+  if (estimateSeconds > 0) {
+    return i18n.etaMinutes(etaCeilMinutes(estimateSeconds));
+  }
+  if (stopStatus == 0) return i18n.etaArriving;
   return _clockLabel(nextBusTime) ??
       switch (stopStatus) {
-        1 => '尚未發車',
-        2 => '交管不停靠',
-        3 => '末班已過',
-        4 => '今日未營運',
+        1 => i18n.etaNotDeparted,
+        2 => i18n.etaTrafficControl,
+        3 => i18n.etaLastBusPassed,
+        4 => i18n.etaNotOperating,
         _ => null,
       };
+}
+
+/// Whether [stopStatus] means this stop has no more service today.
+///
+/// Reads the raw status rather than the rendered label: the label is localized,
+/// so comparing against its words would silently stop matching in any locale
+/// but the one it was written in.
+bool busStopServiceEnded(int stopStatus) => stopStatus == 3 || stopStatus == 4;
+
+/// Whether [busStopDisplayLabel] is about to return a *live* countdown ('2分',
+/// '進站中') rather than a scheduled departure clock ('20:40') or a
+/// service-state word ('末班已過').
+///
+/// The two read identically once they are strings, which is exactly the
+/// problem: a stop list that prints '20:40' and '2分' in one column is showing
+/// two different facts in one voice. Callers use this to style them apart, and
+/// to find where along a route the live run begins.
+bool busStopLabelIsLive({
+  required int estimateSeconds,
+  required int stopStatus,
+}) {
+  // Status 1 is a not-yet-departed stop: its label is the scheduled NextBusTime
+  // clock, even when the backend also derived a countdown from it.
+  if (stopStatus == 1) return false;
+  return estimateSeconds > 0 || stopStatus == 0;
 }
 
 String? _clockLabel(String value) {

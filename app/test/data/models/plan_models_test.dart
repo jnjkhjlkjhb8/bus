@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
 
 PlanPlace place(double lat, double lng) => PlanPlace(
   name: 'p',

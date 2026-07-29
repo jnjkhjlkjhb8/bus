@@ -1,6 +1,25 @@
 part of '../view/bus_route_screen.dart';
 
-const _arrowSize = 30.0;
+// Same node the vertical stop list draws for "the vehicle is in this segment"
+// (TimelineVehicleMarker): one marker, one look, whichever axis it is on.
+const _arrowSize = 17.0;
+
+// The sheet's collapsed detent (_RouteSheet) hosts this timeline inside a
+// Positioned box of the same height: both must agree or the fare-zone band
+// silently clips (see finding 1, docs/audit-2026-07-18.md). Named once here
+// so the two can't drift apart again.
+const _tlCellHeight = 120.0;
+
+// Vertical centre of the stop dot / rail; shared by the painter and the
+// vehicle-arrow overlay below so they stay aligned.
+const _tlDotCenterY = 52.0;
+
+// Remaining vertical layout of a cell, tuned to fit _tlCellHeight exactly —
+// the fare-zone band and its label used to sit below row 120 and never paint.
+const _tlEtaLabelTop = 70.0;
+const _tlBandTop = 88.0;
+const _tlBandHeight = 14.0;
+const _tlBandLabelTop = 102.0;
 
 class _HorizontalRouteTimeline extends StatelessWidget {
   const _HorizontalRouteTimeline({
@@ -19,6 +38,7 @@ class _HorizontalRouteTimeline extends StatelessWidget {
   final List<_BusVehicle> vehicles;
   final int direction;
   final ScrollController controller;
+
   /// The stop briefly highlighted after its map marker was tapped.
   final String? flashStopUid;
 
@@ -41,7 +61,7 @@ class _HorizontalRouteTimeline extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return SizedBox(
-      height: 148,
+      height: _tlCellHeight,
       child: ListView.builder(
         controller: controller,
         scrollDirection: Axis.horizontal,
@@ -76,7 +96,10 @@ class _HorizontalRouteTimeline extends StatelessWidget {
 
           final vehicle = _vehicleBetween(stop.uid, nextStop?.uid);
 
-          var dotColor = cs.outline;
+          // cs.outline is ~1.7:1 against the sheet surface, under the 3:1 WCAG
+          // 1.4.11 floor for a meaningful graphical object; onSurfaceVariant
+          // clears it in both themes while reading as restrained, not active.
+          var dotColor = cs.onSurfaceVariant;
           if (stop.state == TimelineStopState.arriving) {
             dotColor = AppTheme.statusArriving;
           } else if (stop.state == TimelineStopState.approaching) {
@@ -101,7 +124,10 @@ class _HorizontalRouteTimeline extends StatelessWidget {
                       isLast: isLast,
                       leftIsBuffer: leftIsBuffer,
                       rightIsBuffer: rightIsBuffer,
-                      lineColor: cs.outlineVariant,
+                      // cs.outlineVariant at the old 0.4 alpha read as ~1.05:1
+                      // on the sheet surface (rail read as invisible); the
+                      // painter now uses this at full strength.
+                      lineColor: cs.onSurfaceVariant,
                       dotColor: dotColor,
                       surfaceColor: cs.surface,
                       activeColor: cs.primary,
@@ -124,26 +150,22 @@ class _HorizontalRouteTimeline extends StatelessWidget {
                 if (vehicle != null && !isLast)
                   Positioned(
                     left: 60 + 60 * vehicle.progress - _arrowSize / 2,
-                    top: 52 - _arrowSize / 2,
+                    top: _tlDotCenterY - _arrowSize / 2,
                     child: IgnorePointer(
                       child: DecoratedBox(
                         decoration: BoxDecoration(
-                          color: cs.primary,
+                          color: cs.onSurface,
                           shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.22),
-                              blurRadius: 4,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
                         ),
                         child: SizedBox.square(
                           dimension: _arrowSize,
+                          // Points along the axis, i.e. the direction of
+                          // travel — the list's marker points down for the
+                          // same reason.
                           child: Icon(
                             Icons.arrow_forward_rounded,
-                            size: 18,
-                            color: cs.onPrimary,
+                            size: 11,
+                            color: cs.surface,
                           ),
                         ),
                       ),
@@ -169,7 +191,7 @@ class _HorizontalRouteTimeline extends StatelessWidget {
                 ),
 
                 Positioned(
-                  top: 76,
+                  top: _tlEtaLabelTop,
                   left: 4,
                   right: 4,
                   child: _buildEtaLabel(context, stop, cs),
@@ -177,10 +199,10 @@ class _HorizontalRouteTimeline extends StatelessWidget {
 
                 if (showBand)
                   Positioned(
-                    top: 104,
+                    top: _tlBandTop,
                     left: isBandStart ? 5 : 0,
                     right: isBandEnd ? 5 : 0,
-                    height: 18,
+                    height: _tlBandHeight,
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         color: cs.surfaceContainerHighest,
@@ -194,11 +216,11 @@ class _HorizontalRouteTimeline extends StatelessWidget {
 
                 if (isBandStart)
                   Positioned(
-                    top: 124,
+                    top: _tlBandLabelTop,
                     left: 8,
                     right: 0,
                     child: Text(
-                      '緩衝區',
+                      AppI18n.of(context).busBufferZone,
                       style: AppTextStyles.bodyVerySmall.copyWith(
                         color: cs.onSurfaceVariant,
                         fontWeight: FontWeight.w700,
@@ -235,7 +257,7 @@ class _HorizontalRouteTimeline extends StatelessWidget {
       case TimelineEtaLabel.arriving:
         return Center(
           child: Text(
-            '進站中',
+            AppI18n.of(context).etaArriving,
             style: AppTextStyles.memo.copyWith(
               color: AppTheme.statusArriving,
               fontWeight: FontWeight.w700,
@@ -248,7 +270,7 @@ class _HorizontalRouteTimeline extends StatelessWidget {
       case TimelineEtaLabel.approaching:
         return Center(
           child: Text(
-            '即將進站',
+            AppI18n.of(context).etaApproaching,
             style: AppTextStyles.memo.copyWith(
               color: AppTheme.statusApproach,
               fontWeight: FontWeight.w700,
@@ -337,16 +359,16 @@ class _HorizontalTimelinePainter extends CustomPainter {
     // Butt caps (not round) so each cell's half-segments abut the neighbours
     // into one continuous rail instead of reading as separate rounded stubs.
     final paintLineLeft = Paint()
-      ..color = isLeftActive ? activeColor : lineColor.withValues(alpha: 0.4)
+      ..color = isLeftActive ? activeColor : lineColor
       ..strokeWidth = 8.0
       ..strokeCap = StrokeCap.butt;
 
     final paintLineRight = Paint()
-      ..color = isRightActive ? activeColor : lineColor.withValues(alpha: 0.4)
+      ..color = isRightActive ? activeColor : lineColor
       ..strokeWidth = 8.0
       ..strokeCap = StrokeCap.butt;
 
-    const cy = 52.0;
+    const cy = _tlDotCenterY;
     final cx = size.width / 2;
 
     if (!isFirst) {

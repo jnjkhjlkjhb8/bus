@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pretty_dio_logger/pretty_dio_logger.dart';
-import 'package:wheres_the_car/core/http/http_client.dart';
+import 'package:wheres_the_bus/core/http/http_client.dart';
 
 void main() {
   group('HttpClient request logging', () {

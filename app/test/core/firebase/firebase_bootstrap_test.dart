@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/firebase/firebase_bootstrap.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_bootstrap.dart';
 
 /// `FirebaseBootstrap.ensureCoreInitialized`'s single-flight
 /// guard and `initFailSoft` propagating a failure instead of swallowing it.

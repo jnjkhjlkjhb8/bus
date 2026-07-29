@@ -1,8 +1,8 @@
-import 'package:wheres_the_car/core/grpc/grpc_client.dart';
-import 'package:wheres_the_car/data/decoders/alert_decoder.dart';
-import 'package:wheres_the_car/data/generated/alert.pbgrpc.dart';
-import 'package:wheres_the_car/data/models/alert_models.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/core/grpc/grpc_client.dart';
+import 'package:wheres_the_bus/data/decoders/alert_decoder.dart';
+import 'package:wheres_the_bus/data/generated/alert.pbgrpc.dart';
+import 'package:wheres_the_bus/data/models/alert_models.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
 
 class AlertRepository {
   AlertRepository({Alert_ServiceClient? client, SettingsRepository? settings})
@@ -22,37 +22,46 @@ class AlertRepository {
   Future<void> persistReadAlerts(Set<String> read) =>
       _settings.setReadAlerts(read);
 
-  /// Server-streaming: emits bus service alerts for [city] until cancelled.
-  Stream<AlertViewModel> busNews(String city) => _decoded(
+  /// Server-streaming: emits bus service news for [city] until cancelled.
+  Stream<List<AlertViewModel>> busNews(String city) => _decoded(
     _grpc.busNews(Alert_Bus_Ask(city: city)),
-    AlertSource(AlertSourceKind.bus, city),
+    AlertSource(AlertSourceKind.busNews, city),
+  );
+
+  /// Server-streaming: emits bus service disruptions for [city]. TDX publishes
+  /// these on a topic of their own, so they are a separate stream from
+  /// [busNews] rather than a severity within it.
+  Stream<List<AlertViewModel>> busAlert(String city) => _decoded(
+    _grpc.busAlert(Alert_Bus_Ask(city: city)),
+    AlertSource(AlertSourceKind.busAlert, city),
   );
 
   /// Server-streaming: emits metro service alerts for [system] until cancelled.
   ///
   /// [system] — metro operator code, e.g. `'TRTC'`.
-  Stream<AlertViewModel> metroAlert(String system) => _decoded(
+  Stream<List<AlertViewModel>> metroAlert(String system) => _decoded(
     _grpc.metroAlert(Alert_Metro_Ask(system: system)),
     AlertSource(AlertSourceKind.metro, system),
   );
 
   /// Server-streaming: emits TRA nationwide service alerts.
-  Stream<AlertViewModel> traAlert() => _decoded(
+  Stream<List<AlertViewModel>> traAlert() => _decoded(
     _grpc.traAlert(Alert_Ask()),
     const AlertSource(AlertSourceKind.tra),
   );
 
   /// Server-streaming: emits THSR nationwide service alerts.
-  Stream<AlertViewModel> thsrAlert() => _decoded(
+  Stream<List<AlertViewModel>> thsrAlert() => _decoded(
     _grpc.thsrAlert(Alert_Ask()),
     const AlertSource(AlertSourceKind.thsr),
   );
 
-  /// Decodes each proto envelope to a domain [AlertViewModel], dropping
-  /// messages that fail to parse. Keeps the proto seam inside data/.
-  Stream<AlertViewModel> _decoded(Stream<Alert_Msg> source, AlertSource from) =>
-      source
-          .map((msg) => AlertDecoder.instance.decode(msg.data, source: from))
-          .where((vm) => vm != null)
-          .cast<AlertViewModel>();
+  /// Decodes each proto envelope to domain rows, tagged with the stream they
+  /// arrived on. Every message carries that channel's whole current set, so an
+  /// emission replaces the source's previous one rather than adding to it —
+  /// which is how a disruption disappears once TDX stops publishing it.
+  Stream<List<AlertViewModel>> _decoded(
+    Stream<Alert_Msg> source,
+    AlertSource from,
+  ) => source.map((msg) => AlertDecoder.instance.decode(msg, source: from));
 }

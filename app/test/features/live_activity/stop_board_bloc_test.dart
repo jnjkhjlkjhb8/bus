@@ -1,15 +1,17 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_event.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/core/live_activity/live_activity_channel.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_event.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+
+import '../../support/helpers/i18n.dart';
 
 /// Records every board call so tests can assert on stopName/rows without the
 /// platform channel firing (mirrors `_CapturingChannel` in
@@ -119,7 +121,7 @@ void main() {
   setUp(() {
     channel = _RecordingChannel();
     etaCtrl = StreamController<List<BusStopArrival>>.broadcast();
-    session = JourneySessionBloc();
+    session = JourneySessionBloc(liveActivityEnabled: () => true);
   });
 
   tearDown(() async {
@@ -128,6 +130,7 @@ void main() {
   });
 
   StopBoardBloc bloc() => StopBoardBloc(
+    i18n: zhStrings,
     channel: channel,
     session: session,
     etaSource: (_, _) => etaCtrl.stream,
@@ -229,6 +232,7 @@ void main() {
     () async {
       final slow = _SlowStartChannel();
       final b = StopBoardBloc(
+        i18n: zhStrings,
         channel: slow,
         session: session,
         etaSource: (_, _) => etaCtrl.stream,

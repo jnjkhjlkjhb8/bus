@@ -61,11 +61,11 @@ class _StopBodyState extends State<_StopBody> {
           case BusStopStatus.loading:
             return const SliverToBoxAdapter(child: _StopSkeletonList());
           case BusStopStatus.empty:
-            return const SliverToBoxAdapter(
+            return SliverToBoxAdapter(
               child: _StopMessage(
                 icon: Icons.directions_bus_outlined,
-                title: '此站目前無路線資訊',
-                hint: '稍後再試，或確認站牌是否正確',
+                title: AppI18n.of(context).busStopNoRoutes,
+                hint: AppI18n.of(context).busStopNoRoutesHint,
               ),
             );
           case BusStopStatus.error:
@@ -108,7 +108,7 @@ class _StopBodyState extends State<_StopBody> {
     // Section headers only earn their space when 全部 spans several stops;
     // a picked chip already names the stop.
     final showHeaders = hasFilter && selected == null;
-    final labels = _memberLabels(members, byStation);
+    final labels = memberStopLabels(members, byStation);
     // Member stops with no routes render nothing in the 全部 view — an empty
     // group is noise, and a stack of them reads as a broken screen.
     final groups = [
@@ -161,10 +161,10 @@ class _StopBodyState extends State<_StopBody> {
           ],
         ],
       if (members.isNotEmpty && flatCount == 0)
-        () => const _StopMessage(
+        () => _StopMessage(
           icon: Icons.directions_bus_outlined,
-          title: '目前沒有任何資料',
-          hint: '稍後再試,或下拉重新整理',
+          title: AppI18n.of(context).busStopNoData,
+          hint: AppI18n.of(context).busStopNoDataHint,
         ),
     ];
   }
@@ -172,8 +172,8 @@ class _StopBodyState extends State<_StopBody> {
 
 /// Single-select filter chips, one per member stop plus 全部. Picking a chip
 /// filters the list and pans the map to that stop (via [BusStopStationSelected]
-/// on the bloc); labels come from [_memberLabels] — destination-first, never
-/// the raw StationID.
+/// on the bloc); labels come from [memberStopLabels] — destination-first,
+/// never the raw StationID, and the same names the map's capsules use.
 class _StationFilterBar extends StatelessWidget {
   const _StationFilterBar({
     required this.members,
@@ -192,7 +192,11 @@ class _StationFilterBar extends StatelessWidget {
       child: Row(
         spacing: 8,
         children: [
-          _StationChip(label: '全部', selected: selectedUid == null, uid: null),
+          _StationChip(
+            label: AppI18n.of(context).commonAll,
+            selected: selectedUid == null,
+            uid: null,
+          ),
           for (final m in members)
             _StationChip(
               label: labels[m.stationUid] ?? m.stationName,
@@ -246,61 +250,6 @@ class _StationChip extends StatelessWidget {
   }
 }
 
-/// Chip / header labels for member stops, in commuter language instead of
-/// ordinals: a member is named by where its routes go (往 X), because riders
-/// pick a pole by their destination, not by a number. Members with no routes
-/// fall back to a compass-side label (東側站牌) derived from the group
-/// centroid; colliding labels get the compass side appended, then an ordinal
-/// as the last resort. The raw StationID is never exposed.
-Map<String, String> _memberLabels(
-  List<BusStationMember> members,
-  Map<String, List<BusStopArrivalItem>> byStation,
-) {
-  if (members.isEmpty) return const {};
-  final clat =
-      members.map((m) => m.lat).reduce((a, b) => a + b) / members.length;
-  final clon =
-      members.map((m) => m.lon).reduce((a, b) => a + b) / members.length;
-
-  String bearing(BusStationMember m) {
-    final dy = m.lat - clat;
-    final dx = (m.lon - clon) * math.cos(clat * math.pi / 180);
-    if (dx == 0 && dy == 0) return '';
-    if (dx.abs() > dy.abs()) return dx > 0 ? '東側' : '西側';
-    return dy > 0 ? '北側' : '南側';
-  }
-
-  String base(BusStationMember m) {
-    final dests = <String>{
-      for (final a in byStation[m.stationUid] ?? const <BusStopArrivalItem>[])
-        if (a.display.destination.isNotEmpty) a.display.destination,
-    };
-    if (dests.isNotEmpty) return '往${dests.take(2).join('、')}';
-    final side = bearing(m);
-    return side.isEmpty ? m.stationName : '$side站牌';
-  }
-
-  final bases = {for (final m in members) m.stationUid: base(m)};
-  final counts = <String, int>{};
-  for (final v in bases.values) {
-    counts[v] = (counts[v] ?? 0) + 1;
-  }
-  final seen = <String, int>{};
-  final labels = <String, String>{};
-  for (final m in members) {
-    var label = bases[m.stationUid]!;
-    if ((counts[label] ?? 0) > 1) {
-      final side = bearing(m);
-      if (side.isNotEmpty && !label.contains(side)) label = '$label($side)';
-      final n = (seen[label] ?? 0) + 1;
-      seen[label] = n;
-      if (n > 1) label = '$label $n';
-    }
-    labels[m.stationUid] = label;
-  }
-  return labels;
-}
-
 class _StationSectionHeader extends StatelessWidget {
   const _StationSectionHeader({required this.label, required this.routeCount});
   final String label;
@@ -325,7 +274,7 @@ class _StationSectionHeader extends StatelessWidget {
             ),
           ),
           Text(
-            '$routeCount 條路線',
+            AppI18n.of(context).busRouteCount(routeCount),
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onSurfaceVariant,
             ),
@@ -347,7 +296,9 @@ class _StopMeta extends StatelessWidget {
     return BlocSelector<BusStopBloc, BusStopState, DateTime?>(
       selector: (state) => state.updatedAt,
       builder: (context, updatedAt) {
-        final label = updatedAt != null ? '更新於 ${_hhmm(updatedAt)}' : '公車站牌';
+        final label = updatedAt != null
+            ? AppI18n.of(context).busUpdatedAt(_hhmm(updatedAt))
+            : AppI18n.of(context).busStopFallbackTitle;
         return Text(
           label,
           style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),

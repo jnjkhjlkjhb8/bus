@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 )
 
 // loadBus replaces one city only after all eight correlated landing partitions
@@ -58,7 +58,7 @@ func invalidateBusStaticAfterCommit(rc *redis.Client, city string) error {
 	prefix := citymap[city]
 	invalidateBusStaticMapCity(prefix)
 	if rc == nil {
-		return errors.New("Redis client is nil")
+		return errors.New("redis client is nil")
 	}
 	generation, incrementErr := rc.Incr(shared.BusStaticGenerationKey(city)).Result()
 	publishErr := rc.Publish(shared.BusStaticGenerationChannel(city), generation).Err()

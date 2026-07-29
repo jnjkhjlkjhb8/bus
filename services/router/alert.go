@@ -1,9 +1,10 @@
 package main
 
 import (
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // AlertServer streams service alerts that the functions/MQTT subscriber
@@ -21,6 +22,13 @@ type AlertServer struct {
 func (s *AlertServer) BusNews(in *pb.Alert_Bus_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
 	key := shared.AlertBusNewsChannel(in.City)
 	return streamAlert(s.live, key, stream)
+}
+
+// BusAlert streams bus service disruptions for the requested city. It is a
+// separate channel from BusNews: TDX publishes advisories and disruptions on
+// different topics, and each mirrors its own latest-payload key.
+func (s *AlertServer) BusAlert(in *pb.Alert_Bus_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
+	return streamAlert(s.live, shared.AlertBusAlertChannel(in.City), stream)
 }
 
 // MetroAlert streams metro alerts for the requested rail system (e.g. TRTC,
@@ -45,11 +53,21 @@ func (s *AlertServer) ThsrAlert(_ *pb.Alert_Ask, stream grpc.ServerStreamingServ
 // streamAlert bridges one alert channel to a gRPC stream: the mirrored
 // latest-payload key seeds new subscribers, then live updates follow. Unlike
 // the old loop, client disconnect is noticed while idle.
+//
+// Payloads are the normalized snapshot the MQTT subscriber wrote as protojson;
+// the router only re-types them. A snapshot that fails to decode is skipped
+// rather than surfaced, since tearing down a live stream over one bad message
+// would cost the rider every later alert too.
 func streamAlert(live liveSource, key string, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
 	return streamLive(stream.Context(), live, liveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {
-		return stream.Send(&pb.Alert_Msg{Data: data})
+		var msg pb.Alert_Msg
+		if err := protojson.Unmarshal(data, &msg); err != nil {
+			log.Warnf("[alert] action=stream event=decode_failed channel=%s error=%v", key, err)
+			return nil
+		}
+		return stream.Send(&msg)
 	})
 }

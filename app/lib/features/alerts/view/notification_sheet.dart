@@ -2,22 +2,41 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/data/models/alert_models.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
-import 'package:wheres_the_car/features/alerts/view/alert_source_chip.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
-import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
-import 'package:wheres_the_car/shared/widgets/divider_line.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/app/theme/notice_tone.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/data/models/alert_models.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_bloc.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_event.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_state.dart';
+import 'package:wheres_the_bus/features/alerts/view/alert_source_chip.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_bus/shared/widgets/divider_line.dart';
 
-Color severityColor(AlertSeverity level, ColorScheme cs) =>
-    level == AlertSeverity.red ? cs.error : AppTheme.etaApproaching;
+/// One inbox entry: either a group heading or a notice row. Built as a flat
+/// list so the two groups scroll as one surface — a rider scanning for 「is
+/// anything broken」 reads top-down, not through two nested scroll views.
+sealed class _Entry {
+  const _Entry();
+}
+
+class _GroupHeading extends _Entry {
+  const _GroupHeading(this.label, this.count);
+
+  final String label;
+  final int count;
+}
+
+class _NoticeEntry extends _Entry {
+  const _NoticeEntry(this.notice);
+
+  final AlertViewModel notice;
+}
 
 Future<void> showNotificationSheet(BuildContext context) async {
   final bloc = context.read<AlertBloc>();
@@ -43,14 +62,23 @@ class _NotificationSheet extends StatelessWidget {
   void _dismiss(BuildContext context, AlertViewModel alert) {
     unawaited(HapticService.instance.lightTap());
     context.read<AlertBloc>().add(AlertDismissed(alert.message));
-    _showUndo(context, [alert.message], '已清除通知');
+    _showUndo(context, [alert.message], AppI18n.of(context).alertsCleared);
   }
 
   void _clearAll(BuildContext context, List<AlertViewModel> alerts) {
     unawaited(HapticService.instance.lightTap());
-    final messages = alerts.map((a) => a.message).toList();
+    // A maintenance window is ops-controlled; 清除全部 skips it rather than
+    // appearing to clear something that reappears on the next rebuild.
+    final messages = alerts
+        .where((a) => a.dismissible)
+        .map((a) => a.message)
+        .toList();
     context.read<AlertBloc>().add(AlertAllDismissed(messages));
-    _showUndo(context, messages, '已清除 ${messages.length} 則通知');
+    _showUndo(
+      context,
+      messages,
+      AppI18n.of(context).alertsClearedCount(messages.length),
+    );
   }
 
   void _showUndo(BuildContext context, List<String> messages, String label) {
@@ -58,7 +86,7 @@ class _NotificationSheet extends StatelessWidget {
     AppSnackbar.show(
       context,
       label,
-      action: '復原',
+      action: AppI18n.of(context).commonUndo,
       onAction: () => bloc.add(AlertRestored(messages)),
     );
   }
@@ -77,7 +105,25 @@ class _NotificationSheet extends StatelessWidget {
       ),
       child: BlocBuilder<AlertBloc, AlertState>(
         builder: (context, state) {
-          final alerts = state.visibleAlerts.reversed.toList();
+          // Newest first within each group; 進行中 always above 訊息, because
+          // a disruption happening now outranks anything there is to read.
+          final ongoing = state.ongoingNotices.reversed.toList();
+          final messages = state.messageNotices.reversed.toList();
+          final alerts = [...ongoing, ...messages];
+          final entries = <_Entry>[
+            if (ongoing.isNotEmpty)
+              _GroupHeading(
+                AppI18n.of(context).alertsGroupOngoing,
+                ongoing.length,
+              ),
+            ...ongoing.map(_NoticeEntry.new),
+            if (messages.isNotEmpty)
+              _GroupHeading(
+                AppI18n.of(context).alertsGroupMessages,
+                messages.length,
+              ),
+            ...messages.map(_NoticeEntry.new),
+          ];
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -87,7 +133,7 @@ class _NotificationSheet extends StatelessWidget {
                 child: Row(
                   children: [
                     Text(
-                      '通知',
+                      AppI18n.of(context).alertsTitle,
                       style: AppTextStyles.heading2.copyWith(
                         color: cs.onSurface,
                       ),
@@ -96,14 +142,16 @@ class _NotificationSheet extends StatelessWidget {
                     if (alerts.isNotEmpty)
                       Pressable(
                         onTap: () => _clearAll(context, alerts),
-                        semanticLabel: '清除全部通知',
+                        semanticLabel: AppI18n.of(
+                          context,
+                        ).alertsClearAllSemantics,
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 12,
                             vertical: 8,
                           ),
                           child: Text(
-                            '清除全部',
+                            AppI18n.of(context).alertsClearAll,
                             style: AppTextStyles.bodyRegular.copyWith(
                               color: cs.onSurfaceVariant,
                             ),
@@ -114,31 +162,24 @@ class _NotificationSheet extends StatelessWidget {
                 ),
               ),
               const DividerLine(),
-              if (state.error != null) const _StreamFailureStrip(),
               Expanded(
-                child: alerts.isEmpty
+                child: entries.isEmpty
                     ? const _NotificationEmpty()
-                    : ListView.separated(
+                    : ListView.builder(
                         padding: const EdgeInsets.only(bottom: 24),
-                        itemCount: alerts.length,
-                        separatorBuilder: (_, _) => Divider(
-                          height: 1,
-                          indent: 20,
-                          endIndent: 20,
-                          color: cs.outlineVariant.withValues(alpha: 0.5),
-                        ),
-                        itemBuilder: (context, i) {
-                          final alert = alerts[i];
-                          return Dismissible(
-                            key: ValueKey(alert.message),
-                            direction: DismissDirection.endToStart,
-                            onDismissed: (_) => _dismiss(context, alert),
-                            background: _DismissBackground(),
-                            child: _NotificationRow(
-                              alert: alert,
-                              unread: unreadAtOpen.contains(alert.message),
+                        itemCount: entries.length,
+                        itemBuilder: (context, i) => switch (entries[i]) {
+                          final _GroupHeading heading => _GroupHeader(
+                            label: heading.label,
+                            count: heading.count,
+                          ),
+                          final _NoticeEntry entry => _DismissibleRow(
+                            notice: entry.notice,
+                            unread: unreadAtOpen.contains(
+                              entry.notice.message,
                             ),
-                          );
+                            onDismissed: () => _dismiss(context, entry.notice),
+                          ),
                         },
                       ),
               ),
@@ -146,6 +187,69 @@ class _NotificationSheet extends StatelessWidget {
           );
         },
       ),
+    );
+  }
+}
+
+/// Group heading. Sticky would fight the sheet's own drag, so it scrolls with
+/// the list and leans on the count to stay readable when it drifts off.
+class _GroupHeader extends StatelessWidget {
+  const _GroupHeader({required this.label, required this.count});
+
+  final String label;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 6),
+      child: Row(
+        spacing: 8,
+        children: [
+          Text(
+            label,
+            style: AppTextStyles.bodySmall.copyWith(
+              color: cs.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          Text(
+            '$count',
+            style: AppTextStyles.memo.copyWith(
+              fontSize: 11.5,
+              color: cs.outline,
+              height: 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Wraps a row in swipe-to-clear, except where the notice may not be cleared.
+class _DismissibleRow extends StatelessWidget {
+  const _DismissibleRow({
+    required this.notice,
+    required this.unread,
+    required this.onDismissed,
+  });
+
+  final AlertViewModel notice;
+  final bool unread;
+  final VoidCallback onDismissed;
+
+  @override
+  Widget build(BuildContext context) {
+    final row = _NotificationRow(alert: notice, unread: unread);
+    if (!notice.dismissible) return row;
+    return Dismissible(
+      key: ValueKey(notice.message),
+      direction: DismissDirection.endToStart,
+      onDismissed: (_) => onDismissed(),
+      background: _DismissBackground(),
+      child: row,
     );
   }
 }
@@ -173,12 +277,15 @@ class _NotificationRowState extends State<_NotificationRow> {
     final cs = Theme.of(context).colorScheme;
     final alert = widget.alert;
     final unread = widget.unread;
-    final isRed = alert.level == AlertSeverity.red;
-    final dotColor = severityColor(alert.level, cs);
+    final colors = noticeColors(alert.tone, cs);
+    final isRed = alert.tone == NoticeTone.critical;
+    final dotColor = isRed ? colors.accent : cs.onSurfaceVariant;
 
-    // A red row is tinted end-to-end; the old colored left stripe is gone.
+    // A critical row is tinted end-to-end; the old colored left stripe is
+    // gone. Every other tone stays on the plain surface — the chip and the
+    // group it sits in already say what it is.
     final background = isRed
-        ? Color.alphaBlend(cs.error.withValues(alpha: 0.05), cs.surface)
+        ? Color.alphaBlend(colors.accent.withValues(alpha: 0.05), cs.surface)
         : cs.surface;
 
     final titleText = alert.title ?? alert.message;
@@ -213,11 +320,11 @@ class _NotificationRowState extends State<_NotificationRow> {
               children: [
                 AlertSourceChip(source: alert.source),
                 if (alert.source != null && isRed) const SizedBox(width: 8),
-                if (isRed) _SeverityTag(cs: cs),
+                if (isRed) _SeverityTag(accent: colors.accent, cs: cs),
                 const Spacer(),
                 if (time != null)
                   Text(
-                    alertRelativeTime(time, now),
+                    alertRelativeTime(AppI18n.of(context), time, now),
                     style: AppTextStyles.memo.copyWith(
                       fontSize: 11.5,
                       color: cs.onSurfaceVariant,
@@ -240,16 +347,14 @@ class _NotificationRowState extends State<_NotificationRow> {
               Text(
                 bodyText,
                 maxLines: _expanded ? null : 2,
-                overflow: _expanded
-                    ? TextOverflow.clip
-                    : TextOverflow.ellipsis,
+                overflow: _expanded ? TextOverflow.clip : TextOverflow.ellipsis,
                 style: _bodyStyle(cs),
               ),
             ],
             if (_expanded && time != null) ...[
               const SizedBox(height: 8),
               Text(
-                _publishFooter(alert),
+                _publishFooter(AppI18n.of(context), alert),
                 style: AppTextStyles.memo.copyWith(
                   fontSize: 11.5,
                   color: cs.outline,
@@ -269,7 +374,14 @@ class _NotificationRowState extends State<_NotificationRow> {
             curve: AppMotion.easeOut,
             alignment: Alignment.topCenter,
             child: Container(
-              color: background,
+              decoration: BoxDecoration(
+                color: background,
+                border: Border(
+                  top: BorderSide(
+                    color: cs.outlineVariant.withValues(alpha: 0.5),
+                  ),
+                ),
+              ),
               padding: const EdgeInsets.symmetric(
                 horizontal: 20,
                 vertical: 16,
@@ -323,13 +435,13 @@ class _NotificationRowState extends State<_NotificationRow> {
   );
 
   /// 「發布 HH:mm」, plus the operator code when the source carries one.
-  String _publishFooter(AlertViewModel alert) {
+  String _publishFooter(AppI18n i18n, AlertViewModel alert) {
     final t = alert.time!;
     final hh = t.hour.toString().padLeft(2, '0');
     final mm = t.minute.toString().padLeft(2, '0');
     final code = alert.source?.code ?? '';
     final suffix = code.isEmpty ? '' : ' · $code';
-    return '發布 $hh:$mm$suffix';
+    return i18n.alertPublishedAt('$hh:$mm', suffix);
   }
 
   /// Whether [text] in [style] would exceed two lines at [maxWidth].
@@ -351,8 +463,9 @@ class _NotificationRowState extends State<_NotificationRow> {
 
 /// Inline 「服務中斷」 tag next to the source chip on red rows.
 class _SeverityTag extends StatelessWidget {
-  const _SeverityTag({required this.cs});
+  const _SeverityTag({required this.accent, required this.cs});
 
+  final Color accent;
   final ColorScheme cs;
 
   @override
@@ -363,60 +476,18 @@ class _SeverityTag extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: cs.surface,
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: cs.error.withValues(alpha: 0.4)),
+        borderRadius: BorderRadius.circular(AppTheme.radiusChip),
+        border: Border.all(color: accent.withValues(alpha: 0.4)),
       ),
       child: Text(
-        '服務中斷',
+        AppI18n.of(context).alertsDisruption,
         style: TextStyle(
           fontFamily: 'IBMPlexSans',
           fontSize: 11.5,
           fontWeight: FontWeight.w600,
           height: 1,
-          color: cs.error,
+          color: accent,
         ),
-      ),
-    );
-  }
-}
-
-/// Shown under the header while an alert stream is reconnecting.
-class _StreamFailureStrip extends StatelessWidget {
-  const _StreamFailureStrip();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final dark = theme.brightness == Brightness.dark;
-    final (background, ink) = dark
-        ? (AppTheme.warningBgDark, AppTheme.warningInkDark)
-        : (AppTheme.warningBg, AppTheme.warningInkLight);
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 10, 20, 10),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 12,
-            height: 12,
-            child: CircularProgressIndicator(strokeWidth: 1.6, color: ink),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              '即時警報連線中斷，重新連線中⋯',
-              style: AppTextStyles.bodySmall.copyWith(
-                fontSize: 12.5,
-                color: ink,
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -486,7 +557,7 @@ class _NotificationEmpty extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text(
-            '目前沒有通知',
+            AppI18n.of(context).alertsEmpty,
             style: AppTextStyles.bodyLarge.copyWith(
               fontWeight: FontWeight.w600,
               color: cs.onSurface,
@@ -494,7 +565,7 @@ class _NotificationEmpty extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            '路線或班次有異常時會通知你',
+            AppI18n.of(context).alertsEmptyHint,
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onSurfaceVariant,
             ),

@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/rail_timetable_view.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/train_type_chip.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/data/models/rail_timetable_view.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/train_type_chip.dart';
 
 /// Summary card for one TRA or THSR timetable result. Consumes a decoded
 /// [RailTimetableView]; the backend proto never reaches this widget.
@@ -56,7 +57,9 @@ class RailTimetableCard extends StatelessWidget {
                   Text(_trainNo, style: theme.textTheme.titleSmall),
                   const Spacer(),
                   Text(
-                    delayed ? '誤點 $delayMinutes 分' : '準點',
+                    delayed
+                        ? AppI18n.of(context).railDelayMinutes(delayMinutes)
+                        : AppI18n.of(context).onTime,
                     style: theme.textTheme.labelMedium?.copyWith(
                       color: delayed
                           ? AppTheme.trainDelay

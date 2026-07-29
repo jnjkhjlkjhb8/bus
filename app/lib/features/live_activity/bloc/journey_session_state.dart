@@ -1,5 +1,5 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
 
 enum JourneyPhase { idle, waiting, riding, done }
 
@@ -14,6 +14,8 @@ class JourneySessionState extends Equatable {
     this.trackOnly = false,
     this.plate,
     this.pinnedStopsRemaining,
+    this.railProgress,
+    this.railNextStop,
   });
 
   final JourneyPhase phase;
@@ -35,10 +37,21 @@ class JourneySessionState extends Equatable {
   /// Null until the route-ETA stream has resolved both stops at least once.
   final int? pinnedStopsRemaining;
 
-  JourneyLeg? get currentLeg =>
-      legIndex < legs.length ? legs[legIndex] : null;
+  /// Continuous 0..1 progress along a rail track leg, timetable + clock
+  /// derived. Null for non-rail sessions.
+  final double? railProgress;
+
+  /// The rail track leg's live next-stop name. Null for non-rail sessions.
+  final String? railNextStop;
+
+  JourneyLeg? get currentLeg => legIndex < legs.length ? legs[legIndex] : null;
 
   bool get isLastLeg => legIndex >= legs.length - 1;
+
+  /// A standalone rail arrival tracker: presented as the riding card (which
+  /// draws the progress line) even though the internal phase stays waiting.
+  bool get isRailTrack =>
+      trackOnly && (currentLeg?.railSchedule.isNotEmpty ?? false);
 
   JourneySessionState copyWith({
     JourneyPhase? phase,
@@ -51,6 +64,8 @@ class JourneySessionState extends Equatable {
     bool? trackOnly,
     String? plate,
     int? pinnedStopsRemaining,
+    double? railProgress,
+    String? railNextStop,
   }) {
     return JourneySessionState(
       phase: phase ?? this.phase,
@@ -62,6 +77,8 @@ class JourneySessionState extends Equatable {
       trackOnly: trackOnly ?? this.trackOnly,
       plate: plate ?? this.plate,
       pinnedStopsRemaining: pinnedStopsRemaining ?? this.pinnedStopsRemaining,
+      railProgress: railProgress ?? this.railProgress,
+      railNextStop: railNextStop ?? this.railNextStop,
     );
   }
 
@@ -76,5 +93,7 @@ class JourneySessionState extends Equatable {
     trackOnly,
     plate,
     pinnedStopsRemaining,
+    railProgress,
+    railNextStop,
   ];
 }

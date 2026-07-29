@@ -82,6 +82,8 @@ func (d datasetSpec) url(part string) string {
 		return "/v2/Rail/" + d.apiSeg
 	case familyRailDate:
 		return "/v2/Rail/" + d.apiSeg + "/TrainDate/" + part
+	case familyNone:
+		// Zero value: no registry entry, so no URL.
 	}
 	return ""
 }
@@ -174,9 +176,10 @@ func datasetRegistry() []datasetSpec {
 		busDataset("Station", "bus_station", "", "bus"),
 		busDataset("StationGroup", "bus_stationgroup", "", "bus"),
 		busDataset("RouteFare", "bus_routefare", "", "bus"),
-		// Landed for every city (TDX serves an empty payload for the skip cities),
-		// but only loaded for the cities whose daily-timetable feed TDX serves.
-		{rawTable: "bus_dailytimetable", partCol: "city", partitions: allCities,
+		// Landed and loaded for the same city set: TDX answers HTTP 400 (not an
+		// empty payload) for the cities in busDailyTimetableSkip, so landing them
+		// only produced a nightly ingest failure for data no loader would read.
+		{rawTable: "bus_dailytimetable", partCol: "city", partitions: dailyTimetableCities,
 			loadParts: dailyTimetableCities, family: familyBusCity, apiSeg: "DailyTimeTable",
 			name: busName("DailyTimeTable"), loadKey: "bus_dailytimetable"},
 		// Bus/Stop is intentionally absent from the fetch and reverse maps: it is

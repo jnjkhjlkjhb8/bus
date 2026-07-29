@@ -12,20 +12,19 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/protobuf/proto"
 )
 
 // mrtStation decodes a TDX Rail/Metro/Station element used for the metro static
-// station table. serviceType is unexported and not populated from JSON.
+// station table.
 type mrtStation struct {
 	StationPosition struct {
 		PositionLon float64 `json:"PositionLon"`
 		PositionLat float64 `json:"PositionLat"`
 	} `json:"StationPosition"`
 	LocationCity       string `json:"LocationCity"`
-	serviceType        string
 	StationID          string `json:"StationID"`
 	BikeAllowOnHoliday bool   `json:"BikeAllowOnHoliday"`
 	StationName        struct {
@@ -39,7 +38,6 @@ type mrtFirstlast struct {
 	LineID                 string `json:"LineID"`
 	StationID              string `json:"StationID"`
 	TripHeadSign           string `json:"TripHeadSign"`
-	city                   string
 	DestinationStaionID    string `json:"DestinationStaionID"`
 	DestinationStationName struct {
 		ZhTw string `json:"Zh_tw"`
@@ -60,6 +58,8 @@ type mrtFirstlast struct {
 
 // mrtLive decodes a TDX Rail/Metro/LiveBoard element: the live estimate for a
 // train approaching a station toward a destination.
+//
+//nolint:unused // ADR-0014: TDX metro LiveBoard is paused, not removed
 type mrtLive struct {
 	LineID                 string `json:"LineID"`
 	StationID              string `json:"StationID"`
@@ -361,6 +361,8 @@ func mrtInService(windows map[string][]mrtServiceWindow, key string, now time.Ti
 // Entries outside their static first/last-train window are dropped: after close
 // TDX keeps returning rows with EstimateTime 0 and ServiceStatus 0, which would
 // otherwise surface as "approaching" in the app at night.
+//
+//nolint:unused // ADR-0014: TDX metro LiveBoard is paused, not removed
 func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) error {
 	log.Infof("[MRT_ETA] action=mrt_eta event=start")
 	windows := mrtServiceWindows(ctx, db)
@@ -512,13 +514,13 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, sink copyUpser
 		classPrices := map[int]int{}
 		for i, item := range fare.Fares {
 			if item.TicketType <= 0 {
-				return fmt.Errorf("Fares element %d TicketType must be positive, got %d", i, item.TicketType)
+				return fmt.Errorf("fares element %d TicketType must be positive, got %d", i, item.TicketType)
 			}
 			if item.FareClass < 0 {
-				return fmt.Errorf("Fares element %d FareClass must be non-negative, got %d", i, item.FareClass)
+				return fmt.Errorf("fares element %d FareClass must be non-negative, got %d", i, item.FareClass)
 			}
 			if item.Price < 0 {
-				return fmt.Errorf("Fares element %d Price must be non-negative, got %d", i, item.Price)
+				return fmt.Errorf("fares element %d Price must be non-negative, got %d", i, item.Price)
 			}
 			if item.TicketType == mrtTicketTypeSingle {
 				// Only the full and half classes are ever read (see fares), so
@@ -528,7 +530,7 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, sink copyUpser
 				// A real conflict on a price users see stays fatal.
 				if item.FareClass == mrtFareClassFull || item.FareClass == mrtFareClassHalf {
 					if prior, seen := classPrices[item.FareClass]; seen && prior != item.Price {
-						return fmt.Errorf("Fares element %d divergent duplicate TicketType 1 FareClass %d", i, item.FareClass)
+						return fmt.Errorf("fares element %d divergent duplicate TicketType 1 FareClass %d", i, item.FareClass)
 					}
 					classPrices[item.FareClass] = item.Price
 				}
@@ -536,7 +538,7 @@ func loadMrtJourneyMatrix(ctx context.Context, dec *json.Decoder, sink copyUpser
 			}
 		}
 		if !singleSeen {
-			return errors.New("Fares must include TicketType 1")
+			return errors.New("fares must include TicketType 1")
 		}
 		return nil
 	})

@@ -1,17 +1,32 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_eta_state.dart';
-import 'package:wheres_the_car/features/metro/view/metro_station_detail_view.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_eta_state.dart';
+import 'package:wheres_the_bus/features/metro/view/metro_station_detail_view.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 void main() {
   const schedule = [
-    MetroSchedule(destination: '南港展覽館', firstTime: '06:02', lastTime: '00:37'),
-    MetroSchedule(destination: '動物園', firstTime: '06:00', lastTime: '00:40'),
+    MetroSchedule(
+      line: 'BL',
+      destination: '南港展覽館',
+      firstTime: '06:02',
+      lastTime: '00:37',
+    ),
+    MetroSchedule(
+      line: 'BR',
+      destination: '動物園',
+      firstTime: '06:00',
+      lastTime: '00:40',
+    ),
   ];
 
   Future<void> pump(WidgetTester tester, Widget child) => tester.pumpWidget(
     MaterialApp(
+      locale: const Locale('zh'),
+      localizationsDelegates: AppI18n.localizationsDelegates,
+      supportedLocales: AppI18n.supportedLocales,
+
       theme: AppTheme.light,
       home: Scaffold(body: child),
     ),
@@ -56,25 +71,63 @@ void main() {
     expect(find.text('06:00'), findsOneWidget);
     expect(find.text('明日首班 · 往 動物園'), findsOneWidget);
     // Not the old dead-end string.
-    expect(find.text('目前無列車資訊'), findsNothing);
+    expect(find.text('此站目前沒有班次資訊'), findsNothing);
   });
 
-  testWidgets('running service with no live data keeps the quiet line', (
+  testWidgets(
+    'running service with no live data reports a feed failure, not silence',
+    (tester) async {
+      await pump(
+        tester,
+        MetroArrivalsEmpty(schedule: schedule, now: DateTime(2026, 7, 12, 12)),
+      );
+
+      expect(find.text('收不到即時到站資訊'), findsOneWidget);
+      expect(find.text('列車仍在行駛，但目前無法取得到站時間'), findsOneWidget);
+      expect(find.text('今日已收班'), findsNothing);
+      // Not the old dead-end string.
+      expect(find.text('此站目前沒有班次資訊'), findsNothing);
+    },
+  );
+
+  testWidgets('no schedule at all falls back to the running copy', (
+    tester,
+  ) async {
+    await pump(tester, const MetroArrivalsEmpty(schedule: []));
+    expect(find.text('收不到即時到站資訊'), findsOneWidget);
+  });
+
+  testWidgets('retry action fires onRetry when tapped in the running branch', (
+    tester,
+  ) async {
+    var tapped = false;
+    await pump(
+      tester,
+      MetroArrivalsEmpty(
+        schedule: schedule,
+        now: DateTime(2026, 7, 12, 12),
+        onRetry: () => tapped = true,
+      ),
+    );
+
+    expect(find.text('重新載入'), findsOneWidget);
+    await tester.tap(find.text('重新載入'));
+    await tester.pump();
+    expect(tapped, isTrue);
+  });
+
+  testWidgets('no retry affordance renders in the ended branch', (
     tester,
   ) async {
     await pump(
       tester,
-      MetroArrivalsEmpty(schedule: schedule, now: DateTime(2026, 7, 12, 12)),
+      MetroArrivalsEmpty(
+        schedule: schedule,
+        now: DateTime(2026, 7, 12, 0, 50),
+        onRetry: () {},
+      ),
     );
 
-    expect(find.text('目前無列車資訊'), findsOneWidget);
-    expect(find.text('今日已收班'), findsNothing);
-  });
-
-  testWidgets('no schedule at all falls back to the quiet line', (
-    tester,
-  ) async {
-    await pump(tester, const MetroArrivalsEmpty(schedule: []));
-    expect(find.text('目前無列車資訊'), findsOneWidget);
+    expect(find.text('重新載入'), findsNothing);
   });
 }

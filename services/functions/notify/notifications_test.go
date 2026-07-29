@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"firebase.google.com/go/v4/messaging"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 )
 
 type fakeNotificationStore struct {
@@ -268,91 +269,155 @@ func TestArrivalUnpinnedIgnoresArrivingPlate(t *testing.T) {
 	}
 }
 
-func TestRouteAlertsRequireIdentity(t *testing.T) {
-	if got := routeAlerts("v2/Bus/News/City/Taipei", []byte(`{"Description":"x"}`)); len(got) != 0 {
+func TestNormalizeAlertsRequireIdentity(t *testing.T) {
+	got, ok := normalizeAlerts("v2/Bus/News/City/Taipei", []byte(`{"Description":"x"}`))
+	if !ok || len(got) != 1 || len(got[0].RouteKeys) != 0 {
+		t.Fatalf("route-less bus news must parse with no keys: ok=%v got=%v", ok, got)
+	}
+	got, _ = normalizeAlerts("v2/Bus/News/City/Taipei", []byte(`[{"SubRouteUID":"R1","Description":"x"},{"SubRouteUID":"R1","Description":"x"}]`))
+	if len(got) != 1 || len(got[0].RouteKeys) != 1 || got[0].RouteKeys[0] != "R1" {
 		t.Fatalf("got=%v", got)
 	}
-	got := routeAlerts("v2/Bus/News/City/Taipei", []byte(`[{"SubRouteUID":"R1","Description":"x"},{"SubRouteUID":"R1","Description":"x"}]`))
-	if len(got) != 1 || got[0].routeKey != "R1" {
-		t.Fatalf("got=%v", got)
-	}
-	if got := routeAlerts("v2/Bus/News/City/Taipei", []byte(`[{"SubRouteUID":"R1"}]`)); len(got) != 0 {
+	if got, _ := normalizeAlerts("v2/Bus/News/City/Taipei", []byte(`[{"SubRouteUID":"R1"}]`)); len(got) != 0 {
 		t.Fatalf("bodyless alert leaked: %v", got)
 	}
 }
 
-// TestRouteAlertsPerTypeScoping covers each transit type's own scope shape:
-// TRA names train numbers the app subscribes by, while THSR and metro scope
-// only to lines and stations and must fall through to a line-wide (empty-key)
-// alert rather than being dropped.
-func TestRouteAlertsPerTypeScoping(t *testing.T) {
-	tra := routeAlerts("v3/Rail/TRA/Alert", []byte(`{"AuthorityCode":"TRA","Alerts":[
-		{"AlertID":"A1","Description":"停駛","Scope":{"Trains":[{"TrainNo":"123"},{"TrainNo":"456"}]}}
-	]}`))
-	if len(tra) != 2 || tra[0].routeType != "tra" || tra[0].routeKey != "123" || tra[1].routeKey != "456" {
-		t.Fatalf("tra alerts = %+v, want one per scoped train", tra)
+// A payload that cannot be understood must not become an empty snapshot: the
+// snapshot is what seeds every new subscriber, so writing nothing over the last
+// good one would blank the alert list for everyone.
+func TestNormalizeAlertsRejectsUnparseablePayload(t *testing.T) {
+	if _, ok := normalizeAlerts("v2/Bus/News/City/Taipei", []byte(`not json`)); ok {
+		t.Fatal("malformed JSON reported as understood")
 	}
-	thsr := routeAlerts("v2/Rail/THSR/AlertInfo", []byte(`[
-		{"AlertID":"A1","Description":"delay","Scope":{"LineSections":[{"LineID":"THSR"}]}}
-	]`))
-	if len(thsr) != 1 || thsr[0].routeType != "thsr" || thsr[0].routeKey != "" {
-		t.Fatalf("thsr alerts = %+v, want one line-wide alert", thsr)
+	if _, ok := normalizeAlerts("v2/Bike/Availability/Taipei", []byte(`[]`)); ok {
+		t.Fatal("non-alert topic reported as understood")
 	}
-	mrt := routeAlerts("v2/Rail/Metro/Alert/TRTC", []byte(`{"AuthorityCode":"TRTC","Alerts":[
-		{"AlertID":"A1","Description":"號誌異常","Scope":{"Lines":[{"LineID":"BL"}]}}
-	]}`))
-	if len(mrt) != 1 || mrt[0].routeType != "mrt" || mrt[0].routeKey != "" {
-		t.Fatalf("mrt alerts = %+v, want one line-wide alert", mrt)
+	// A valid but empty payload is TDX saying the disruption cleared, and must
+	// be written through so the list actually empties.
+	if got, ok := normalizeAlerts("v2/Bus/News/City/Taipei", []byte(`[]`)); !ok || len(got) != 0 {
+		t.Fatalf("cleared payload = (%v, %v), want an understood empty snapshot", got, ok)
 	}
 }
 
-// TestRouteAlertsParseBusAlertTopic runs a TDX v2 Bus/Alert payload through
+// TestNormalizeAlertsPerTypeScoping covers each transit type's own scope
+// shape: TRA names train numbers and metro names lines, both of which the app
+// subscribes by. THSR scopes only to sections of its single line, so it falls
+// through to a system-wide alert with no keys rather than being dropped.
+func TestNormalizeAlertsPerTypeScoping(t *testing.T) {
+	tra, _ := normalizeAlerts("v3/Rail/TRA/Alert", []byte(`{"AuthorityCode":"TRA","Alerts":[
+		{"AlertID":"A1","Description":"停駛","Scope":{"Trains":[{"TrainNo":"123"},{"TrainNo":"456"}]}}
+	]}`))
+	if len(tra) != 1 || tra[0].RouteType != "tra" || len(tra[0].RouteKeys) != 2 ||
+		tra[0].RouteKeys[0] != "123" || tra[0].RouteKeys[1] != "456" {
+		t.Fatalf("tra alerts = %+v, want one alert scoped to both trains", tra)
+	}
+	thsr, _ := normalizeAlerts("v2/Rail/THSR/AlertInfo", []byte(`[
+		{"AlertID":"A1","Description":"delay","Scope":{"LineSections":[{"LineID":"THSR"}]}}
+	]`))
+	if len(thsr) != 1 || thsr[0].RouteType != "thsr" || len(thsr[0].RouteKeys) != 0 {
+		t.Fatalf("thsr alerts = %+v, want one system-wide alert", thsr)
+	}
+	// Metro lines are keys now: a 收藏 of a station on BL resolves to BL, so a
+	// BL disruption must not blast every metro subscriber.
+	mrt, _ := normalizeAlerts("v2/Rail/Metro/Alert/TRTC", []byte(`{"AuthorityCode":"TRTC","Alerts":[
+		{"AlertID":"A1","Description":"號誌異常","Scope":{"Lines":[{"LineID":"BL"}]}}
+	]}`))
+	if len(mrt) != 1 || mrt[0].RouteType != "mrt" || len(mrt[0].RouteKeys) != 1 || mrt[0].RouteKeys[0] != "BL" {
+		t.Fatalf("mrt alerts = %+v, want one alert keyed to line BL", mrt)
+	}
+	// A metro alert that names no line stays system-wide.
+	wide, _ := normalizeAlerts("v2/Rail/Metro/Alert/TRTC", []byte(`{"AuthorityCode":"TRTC","Alerts":[
+		{"AlertID":"A2","Description":"全系統停止服務"}
+	]}`))
+	if len(wide) != 1 || len(wide[0].RouteKeys) != 0 {
+		t.Fatalf("unscoped mrt alert = %+v, want no keys", wide)
+	}
+}
+
+// TestNormalizeAlertsParseBusAlertTopic runs a TDX v2 Bus/Alert payload through
 // the parser: Alert carries AlertID/Description where News carries
 // NewsID/NewsContent, so the field-name list must cover both or the newly
 // subscribed alert topics parse to nothing.
-func TestRouteAlertsParseBusAlertTopic(t *testing.T) {
-	got := routeAlerts("v2/Bus/Alert/City/Taipei", []byte(`[
-		{"AlertID":"A1","SubRouteUID":"TPE10132","Description":"因道路施工改道","Status":1}
+func TestNormalizeAlertsParseBusAlertTopic(t *testing.T) {
+	got, _ := normalizeAlerts("v2/Bus/Alert/City/Taipei", []byte(`[
+		{"AlertID":"A1","Title":"改道","Description":"因道路施工改道","Status":1,"UpdateTime":"2026-07-26T09:30:00+08:00"}
 	]`))
 	if len(got) != 1 {
 		t.Fatalf("alerts = %+v, want 1 from a Bus/Alert payload", got)
 	}
-	if got[0].routeType != "bus" || got[0].routeKey != "TPE10132" || got[0].id != "A1" || got[0].body != "因道路施工改道" {
-		t.Fatalf("alert = %+v", got[0])
+	item := got[0]
+	if item.RouteType != "bus" || item.Body != "因道路施工改道" || item.Title != "改道" ||
+		item.Level != "yellow" || item.TimeUnix != 1785029400 {
+		t.Fatalf("alert = %+v", item)
+	}
+	if item.Id != alertID("因道路施工改道") {
+		t.Fatalf("id = %q, want the body hash", item.Id)
 	}
 }
 
-// TestRouteAlertsParseBusAlertScope covers the TDX Bus/Alert shape where the
-// affected routes live in Scope.SubRoutes / Scope.Routes rather than at the
-// top level: one alert fans out to every route it scopes.
-func TestRouteAlertsParseBusAlertScope(t *testing.T) {
-	got := routeAlerts("v2/Bus/Alert/City/Taipei", []byte(`[{
+// A suspension is graded red whether TDX publishes Status as a string or a
+// number; everything else is advisory.
+func TestAlertLevelGrading(t *testing.T) {
+	tests := []struct {
+		payload string
+		want    string
+	}{
+		{`{"Description":"x","Status":3}`, "red"},
+		{`{"Description":"x","Status":"red"}`, "red"},
+		{`{"Description":"x","Status":"服務中斷"}`, "red"},
+		{`{"Description":"x","Status":1}`, "yellow"},
+		{`{"Description":"x"}`, "yellow"},
+	}
+	for _, tt := range tests {
+		got, _ := normalizeAlerts("v3/Rail/TRA/Alert", []byte(tt.payload))
+		if len(got) != 1 || got[0].Level != tt.want {
+			t.Fatalf("%s level = %+v, want %s", tt.payload, got, tt.want)
+		}
+	}
+}
+
+// TestNormalizeAlertsFoldsRepeatedBodies covers the TDX Bus/Alert shape where
+// the affected routes live in Scope.SubRoutes / Scope.Routes rather than at the
+// top level: one disruption collects every route it scopes into one alert.
+func TestNormalizeAlertsFoldsRepeatedBodies(t *testing.T) {
+	got, _ := normalizeAlerts("v2/Bus/Alert/City/Taipei", []byte(`[{
 		"AlertID":"A1","Title":"停駛","Description":"因道路施工停駛",
 		"Scope":{"SubRoutes":[{"SubRouteID":"10132"},{"SubRouteUID":"TPE10133"}],"Routes":[{"RouteID":"10132"}]}
 	}]`))
-	keys := map[string]bool{}
-	for _, alert := range got {
-		keys[alert.routeKey] = true
+	if len(got) != 1 {
+		t.Fatalf("alerts = %+v, want one alert", got)
 	}
-	if len(got) != 2 || !keys["10132"] || !keys["TPE10133"] {
-		t.Fatalf("alerts = %+v, want one per scoped route (deduped)", got)
+	keys := map[string]bool{}
+	for _, key := range got[0].RouteKeys {
+		keys[key] = true
+	}
+	if len(got[0].RouteKeys) != 2 || !keys["10132"] || !keys["TPE10133"] {
+		t.Fatalf("keys = %+v, want one per scoped route (deduped)", got[0].RouteKeys)
 	}
 }
 
 // TestAlertItemsUnwrapEnvelope covers the metro/TRA authority envelope, which
 // carries several alerts per message instead of a bare array.
 func TestAlertItemsUnwrapEnvelope(t *testing.T) {
-	got := alertItems([]byte(`{"AuthorityCode":"TRTC","Alerts":[{"AlertID":"A1"},{"AlertID":"A2"}]}`))
+	decode := func(raw string) []map[string]any {
+		var value any
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			t.Fatalf("decode %s: %v", raw, err)
+		}
+		return alertItems(value)
+	}
+	got := decode(`{"AuthorityCode":"TRTC","Alerts":[{"AlertID":"A1"},{"AlertID":"A2"}]}`)
 	if len(got) != 2 || got[1]["AlertID"] != "A2" {
 		t.Fatalf("items = %+v, want the two enveloped alerts", got)
 	}
-	if got := alertItems([]byte(`{"AlertID":"A1"}`)); len(got) != 1 {
+	if got := decode(`{"AlertID":"A1"}`); len(got) != 1 {
 		t.Fatalf("bare object must parse as one alert: %+v", got)
 	}
 }
 
-func TestInterCityRouteAlertsUseCanonicalSubrouteIdentity(t *testing.T) {
-	got := routeAlerts("v2/Bus/News/InterCity", []byte(`[
+func TestInterCityAlertsUseCanonicalSubrouteIdentity(t *testing.T) {
+	got, _ := normalizeAlerts("v2/Bus/News/InterCity", []byte(`[
 		{"SubRouteUID":"THB902301","Description":"outbound"},
 		{"SubRouteUID":"THB902302","Description":"inbound"}
 	]`))
@@ -360,26 +425,9 @@ func TestInterCityRouteAlertsUseCanonicalSubrouteIdentity(t *testing.T) {
 		t.Fatalf("alerts = %+v", got)
 	}
 	for i := range got {
-		if got[i].routeKey != "THB9023" {
-			t.Fatalf("alert[%d] routeKey = %q, want canonical THB9023", i, got[i].routeKey)
+		if len(got[i].RouteKeys) != 1 || got[i].RouteKeys[0] != "THB9023" {
+			t.Fatalf("alert[%d] keys = %v, want canonical THB9023", i, got[i].RouteKeys)
 		}
-	}
-}
-
-func TestInterCityVehicleMQTTUsesRESTCanonicalIdentity(t *testing.T) {
-	payload := canonicalInterCityBusPayload("v2/Bus/Alert/InterCity", []byte(`[
-		{"PlateNumb":"KKA-1","SubRouteUID":"THB902301","Direction":9},
-		{"PlateNumb":"KKA-2","SubRouteUID":"THB902302","Direction":9}
-	]`))
-	var got []struct {
-		SubRouteUID string `json:"SubRouteUID"`
-		Direction   uint8  `json:"Direction"`
-	}
-	if err := json.Unmarshal(payload, &got); err != nil {
-		t.Fatalf("decode canonical payload: %v", err)
-	}
-	if len(got) != 2 || got[0].SubRouteUID != "THB9023" || got[0].Direction != 0 || got[1].SubRouteUID != "THB9023" || got[1].Direction != 1 {
-		t.Fatalf("canonical vehicle payload = %+v", got)
 	}
 }
 
@@ -564,11 +612,39 @@ func TestRouteAlertDedupeAcrossMessages(t *testing.T) {
 		claimed[key] = true
 		return true
 	}
-	alerts := routeAlerts("v2/Bus/News/City/Taipei", []byte(`{"SubRouteUID":"R1","NewsID":"A1","Description":"x"}`))
+	alerts, _ := normalizeAlerts("v2/Bus/News/City/Taipei", []byte(`{"SubRouteUID":"R1","NewsID":"A1","Description":"x"}`))
 	dispatchRouteAlerts(context.Background(), alerts, claim, dispatcher)
 	dispatchRouteAlerts(context.Background(), alerts, claim, dispatcher)
 	if len(sender.messages) != 1 {
 		t.Fatalf("sent=%d", len(sender.messages))
+	}
+
+	// TDX republishes an ongoing disruption with a fresh UpdateTime and
+	// sometimes a fresh AlertID while the text never changes. Identity is the
+	// body, so a republish must not re-notify.
+	republished, _ := normalizeAlerts("v2/Bus/News/City/Taipei", []byte(
+		`{"SubRouteUID":"R1","NewsID":"A2","UpdateTime":"2026-07-26T11:00:00+08:00","Description":"x"}`))
+	dispatchRouteAlerts(context.Background(), republished, claim, dispatcher)
+	if len(sender.messages) != 1 {
+		t.Fatalf("republished identical body sent=%d, want no second push", len(sender.messages))
+	}
+
+	// Text that actually changed is a new alert and must reach the rider.
+	updated, _ := normalizeAlerts("v2/Bus/News/City/Taipei", []byte(`{"SubRouteUID":"R1","NewsID":"A2","Description":"已排除"}`))
+	dispatchRouteAlerts(context.Background(), updated, claim, dispatcher)
+	if len(sender.messages) != 2 {
+		t.Fatalf("changed body sent=%d, want a second push", len(sender.messages))
+	}
+}
+
+// The claim window has to outlast the disruption it dedupes, or a multi-day
+// closure re-notifies every time it lapses.
+func TestAlertDedupeWindowOutlastsADisruption(t *testing.T) {
+	var got time.Duration
+	dispatchRouteAlerts(context.Background(), []*pb.Alert_Item{{RouteType: "bus", RouteKeys: []string{"R1"}, Id: "id", Body: "x"}},
+		func(_ string, ttl time.Duration) bool { got = ttl; return false }, nil)
+	if got < 24*time.Hour {
+		t.Fatalf("dedupe window = %v, want at least a day", got)
 	}
 }
 
@@ -586,8 +662,8 @@ func TestRouteAlertDedupeDoesNotCollideAcrossRoutes(t *testing.T) {
 	dispatcher := NewDispatcher(store, sender)
 	for _, routeKey := range []string{"R1", "R2"} {
 		store.wantRouteType, store.wantRouteKey = "bus", routeKey
-		dispatchRouteAlerts(context.Background(), []normalizedRouteAlert{{
-			routeType: "bus", routeKey: routeKey, body: "x", id: "A1",
+		dispatchRouteAlerts(context.Background(), []*pb.Alert_Item{{
+			RouteType: "bus", RouteKeys: []string{routeKey}, Body: "x", Id: "A1",
 		}}, claim, dispatcher)
 	}
 	if len(sender.messages) != 2 {

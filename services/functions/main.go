@@ -21,9 +21,9 @@ import (
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/robfig/cron/v3"
 )
 
@@ -32,6 +32,19 @@ import (
 // shared Redis and PostgreSQL connections, then dispatches to either the
 // ingestor cron set or the legacy prod flow. It blocks until a shutdown signal.
 func main() {
+	if err := run(); err != nil {
+		// Straight to stderr: run's deferred obs cleanup has already flushed
+		// Sentry by the time it returns, so logging this through the
+		// Sentry-forwarding handler would enqueue an event nothing flushes.
+		_, _ = fmt.Fprintf(os.Stderr, "functions exited with error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// run is main's body as a normal error-returning function: a boot failure must
+// unwind the deferred Redis/PostgreSQL closes and the obs flush, which log.Fatal
+// would skip.
+func run() error {
 	defer obs.Init("functions")()
 	defer obs.Recover("main")
 
@@ -39,7 +52,7 @@ func main() {
 	rawDumpEnabled = role == "ingestor"
 	mode, err := resolveRole(role)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	log.Infof("[BOOT] action=start role=%q", role)
 
@@ -47,7 +60,7 @@ func main() {
 	rc := shared.ConnectRedis()
 	// The ingestor is a nightly batch (≤3-way concurrency); give it its own small
 	// pool so its 03:00 burst can never eat more than a handful of the shared
-	// 50-slot Azure server's connections, independent of the realtime functions pool.
+	// 50-slot server's connections, independent of the realtime functions pool.
 	maxConnsEnv, maxConnsDefault := "FUNCTIONS_DB_MAX_CONNS", int32(10)
 	switch role {
 	case "ingestor":
@@ -65,6 +78,16 @@ func main() {
 		}
 	}(rc)
 	defer db.Close()
+	if err := initArchive(context.Background(), os.Getenv("ARCHIVE_MYSQL_DSN")); err != nil {
+		return err
+	}
+	defer func() {
+		if archiveDB != nil {
+			if cerr := archiveDB.Close(); cerr != nil {
+				log.Errorf("[ARCHIVE] action=close event=failed error=%v", cerr)
+			}
+		}
+	}()
 	// Loader and vector coordination must lock the database that owns raw_tdx,
 	// which can differ from the environment's transform/vector target. The
 	// ingestor always lands into its process DB and therefore locks db directly.
@@ -73,7 +96,7 @@ func main() {
 	if mode != modeIngestor {
 		rawPool, closeRawPool, err = rawSourcePool(context.Background(), db)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 	}
 	defer closeRawPool()
@@ -86,12 +109,12 @@ func main() {
 			job := vectorRefreshJob(rc, db, configuredEmbeddingClient())
 			runner := newStaticPipelineRunner(rawPool, manualBackfillTimeout)
 			if err := runner.Run(context.Background(), job); err != nil {
-				log.Fatalf("changetovector failed: %v", err)
+				return fmt.Errorf("changetovector failed: %w", err)
 			}
 		default:
-			log.Fatalf("unknown job: %s", os.Args[2])
+			return fmt.Errorf("unknown job: %s", os.Args[2])
 		}
-		return
+		return nil
 	}
 	tdx := shared.NewTDXClient(shared.TDXConfig{
 		Store:         shared.RedisTDXStore{RC: rc},
@@ -116,7 +139,11 @@ func main() {
 		drainShutdown(r.Stop(), &boot, shutdownGrace)
 	case modeLegacyProd:
 		runLegacyProd(r, tdx, rc, rawPool, db)
+	case modeInvalid:
+		// Unreachable: resolveRole returns modeInvalid only with an error,
+		// which already returned above.
 	}
+	return nil
 }
 
 // appMode is the resolved run mode of the binary, derived from the ROLE env var.
@@ -493,13 +520,13 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 			log.Errorf("[PIPELINE] action=compute_travel_avg event=marker_wait_failed error=%v", err)
 			return
 		}
-		runDaily("computeTravelAvg", 15*time.Minute, func(ctx context.Context) error { return computeTravelAvg(ctx, db) })
+		runDaily("computeTravelAvg", 15*time.Minute, func(ctx context.Context) error { return computeTravelAvg(ctx, db, archiveHistory()) })
 	})
 	_, _ = addStaticCron(r, "0 15 4 * * *", func() {
-		runDaily("measurePredictionError", 10*time.Minute, func(ctx context.Context) error { return measurePredictionError(ctx, db) })
+		runDaily("measurePredictionError", 10*time.Minute, func(ctx context.Context) error { return measurePredictionError(ctx, db, archiveHistory()) })
 	})
 	_, _ = addStaticCron(r, "0 30 4 * * *", func() {
-		runDaily("cleanupBusHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBusHistory(ctx, db) })
+		runDaily("cleanupPredictionErrors", 10*time.Minute, func(ctx context.Context) error { return cleanupPredictionErrors(ctx, db) })
 		runDaily("cleanupBikeHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBikeHistory(ctx, db) })
 	})
 	r.Start()

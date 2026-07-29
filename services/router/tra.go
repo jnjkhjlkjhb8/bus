@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -33,6 +33,17 @@ type traTimetableRow struct {
 	Departuretime         time.Time `db:"departuretime"`
 	Mask                  int32     `db:"mask"`
 	Note                  string    `db:"note"`
+}
+type traStationBoardRow struct {
+	Train_date          time.Time `db:"train_date"`
+	Trainno             string    `db:"trainno"`
+	Train_type_code     string    `db:"train_type_code"`
+	Train_type_name     string    `db:"train_type_name"`
+	Ending_station_name string    `db:"ending_station_name"`
+	Departuretime       time.Time `db:"departuretime"`
+	Direction           int32     `db:"direction"`
+	Mask                int32     `db:"mask"`
+	Note                string    `db:"note"`
 }
 type traStopsRow struct {
 	Stopsequence  int    `db:"stopsequence"`
@@ -183,6 +194,45 @@ func resolveRailStationID(ctx context.Context, db railDB, table, s string) (stri
 		return "", err
 	}
 	return s, nil
+}
+
+// traStationBoardPayload reads every departure from one station on one date in
+// one direction, ordered by departure time. It is the whole day, not a window:
+// the handler slices it, so one cached day serves riders whose clocks differ.
+//
+// Services terminating at the station are excluded — a board answers "what can
+// I board here", and a terminating train has nothing to board. An empty result
+// means the date is not landed for this station; it is never fetched from TDX
+// (ADR-0005).
+func traStationBoardPayload(ctx context.Context, db railDB, station string, date time.Time, direction int32) ([]*models.TraStationDeparture, error) {
+	station, err := resolveRailStationID(ctx, db, "tra_stations", station)
+	if err != nil {
+		return nil, err
+	}
+	const q = `SELECT train_date,trainno,train_type_code,train_type_name,ending_station_name,departuretime,direction,mask,note FROM tra_timetable WHERE stationid = $1 AND train_date = $2 AND direction = $3 AND stationid <> ending_station_id ORDER BY departuretime;`
+	rows, err := db.Query(ctx, q, station, date.Format(time.DateOnly), direction)
+	if err != nil {
+		return nil, err
+	}
+	row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[traStationBoardRow])
+	if err != nil {
+		return nil, err
+	}
+	arr := make([]*models.TraStationDeparture, 0, len(row))
+	for _, temp := range row {
+		arr = append(arr, &models.TraStationDeparture{
+			TrainDate:                temp.Train_date.Format(time.DateOnly),
+			TrainNo:                  temp.Trainno,
+			TrainTypeCode:            temp.Train_type_code,
+			TrainTypeName:            temp.Train_type_name,
+			Destination_Station_Name: temp.Ending_station_name,
+			DepartureTime:            temp.Departuretime.Format(time.TimeOnly),
+			Direction:                temp.Direction,
+			Mask:                     temp.Mask,
+			Note:                     temp.Note,
+		})
+	}
+	return arr, nil
 }
 
 // traTimetablePayload reads TRA services calling at both the origin and

@@ -1,9 +1,11 @@
 import 'package:fixnum/fixnum.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/decoders/bus_decoder.dart';
-import 'package:wheres_the_car/data/generated/bus.pb.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/eta_format.dart';
+import 'package:wheres_the_bus/data/decoders/bus_decoder.dart';
+import 'package:wheres_the_bus/data/generated/bus.pb.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/eta_format.dart';
+
+import '../../support/helpers/i18n.dart';
 
 const BusDecoder _decoder = BusDecoder.instance;
 
@@ -113,6 +115,47 @@ void main() {
     test('empty stops yields empty list', () {
       expect(_decoder.decodeRouteEta(Bus_RouteArrival(), now: _now), isEmpty);
     });
+    test(
+      'route ETA decoder carries the estimate plate onto the view model',
+      () {
+        final arrival = Bus_RouteArrival(
+          subRouteUid: 'sub-1',
+          stops: [
+            Bus_RouteEstimate(
+              stopUid: 'stop-7',
+              direction: 0,
+              stopSequence: 7,
+              estimate: 240,
+              stopStatus: 0,
+              plateNumb: 'KKA-1288',
+            ),
+          ],
+        );
+
+        final decoded = BusDecoder.instance.decodeRouteEta(
+          arrival,
+          now: DateTime(2026, 7, 20),
+        );
+
+        expect(decoded.single.plate, 'KKA-1288');
+      },
+    );
+
+    test('estimate plate defaults to empty when the server omits it', () {
+      final arrival = Bus_RouteArrival(
+        subRouteUid: 'sub-1',
+        stops: [
+          Bus_RouteEstimate(stopUid: 'stop-7', direction: 0, stopSequence: 7),
+        ],
+      );
+
+      final decoded = BusDecoder.instance.decodeRouteEta(
+        arrival,
+        now: DateTime(2026, 7, 20),
+      );
+
+      expect(decoded.single.plate, '');
+    });
   });
 
   group('decodeStationEta', () {
@@ -168,7 +211,7 @@ void main() {
       expect(out.single.minutes, isNull);
       expect(out.single.isArriving, isFalse);
       expect(out.single.displayStatus, BusStopDisplayStatus.notDeparted);
-      expect(out.single.displayLabel, '尚未發車');
+      expect(out.single.displayLabelOf(zhStrings), '尚未發車');
     });
 
     test('stopStatus 1 with a predicted NextBusTime is a valid countdown, '
@@ -185,7 +228,7 @@ void main() {
       expect(out.single.minutes, 12);
       expect(out.single.isArriving, isFalse);
       expect(out.single.displayStatus, BusStopDisplayStatus.minutes);
-      expect(out.single.displayLabel, '12分');
+      expect(out.single.displayLabelOf(zhStrings), '12分');
     });
 
     test('stopStatus 0 with a passed instant reads 進站中', () {
@@ -201,7 +244,7 @@ void main() {
       expect(out.single.minutes, isNull);
       expect(out.single.isArriving, isTrue);
       expect(out.single.displayStatus, BusStopDisplayStatus.arriving);
-      expect(out.single.displayLabel, '進站中');
+      expect(out.single.displayLabelOf(zhStrings), '進站中');
     });
 
     test('empty routes yields empty list', () {
@@ -355,7 +398,7 @@ void main() {
       final later = arrival.decayed(_now.add(const Duration(seconds: 120)));
       expect(later.minutes, isNull);
       expect(later.displayStatus, BusStopDisplayStatus.arriving);
-      expect(later.displayLabel, '進站中');
+      expect(later.displayLabelOf(zhStrings), '進站中');
     });
 
     test('leaves arrival unchanged when no absolute instant', () {

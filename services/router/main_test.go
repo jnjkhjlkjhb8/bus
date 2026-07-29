@@ -17,8 +17,8 @@ import (
 	"github.com/getsentry/sentry-go"
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -543,7 +543,7 @@ func invokeUnaryChain(interceptors []grpc.UnaryServerInterceptor, ctx context.Co
 }
 
 func TestProductionFirebaseUnaryChainBoundsRotatingInstallIDsByPeer(t *testing.T) {
-	interceptors := productionUnaryInterceptors(fakeAppCheckVerifier{}, true)
+	interceptors := productionUnaryInterceptors(fakeAppCheckVerifier{}, true, newRateLimiter())
 	info := &grpc.UnaryServerInfo{FullMethod: pb.Firebase_Service_UpsertDevice_FullMethodName}
 	handlerCalls := 0
 	handler := func(context.Context, interface{}) (interface{}, error) {

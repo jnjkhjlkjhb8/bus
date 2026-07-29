@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/shared/widgets/route_tab_bar.dart';
+import 'package:wheres_the_bus/shared/widgets/route_tab_bar.dart';
 
 void main() {
   // The home/bus sheets build RouteTabBar once inside a nested Navigator route

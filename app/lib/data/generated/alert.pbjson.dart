@@ -52,10 +52,34 @@ final $typed_data.Uint8List alert_Metro_AskDescriptor = $convert
 const Alert_Msg$json = {
   '1': 'Alert_Msg',
   '2': [
-    {'1': 'data', '3': 1, '4': 1, '5': 12, '10': 'data'},
+    {'1': 'items', '3': 2, '4': 3, '5': 11, '6': '.Alert_Item', '10': 'items'},
+  ],
+  '9': [
+    {'1': 1, '2': 2},
   ],
 };
 
 /// Descriptor for `Alert_Msg`. Decode as a `google.protobuf.DescriptorProto`.
-final $typed_data.Uint8List alert_MsgDescriptor =
-    $convert.base64Decode('CglBbGVydF9Nc2cSEgoEZGF0YRgBIAEoDFIEZGF0YQ==');
+final $typed_data.Uint8List alert_MsgDescriptor = $convert.base64Decode(
+    'CglBbGVydF9Nc2cSIQoFaXRlbXMYAiADKAsyCy5BbGVydF9JdGVtUgVpdGVtc0oECAEQAg==');
+
+@$core.Deprecated('Use alert_ItemDescriptor instead')
+const Alert_Item$json = {
+  '1': 'Alert_Item',
+  '2': [
+    {'1': 'id', '3': 1, '4': 1, '5': 9, '10': 'id'},
+    {'1': 'route_type', '3': 2, '4': 1, '5': 9, '10': 'routeType'},
+    {'1': 'route_keys', '3': 3, '4': 3, '5': 9, '10': 'routeKeys'},
+    {'1': 'title', '3': 4, '4': 1, '5': 9, '10': 'title'},
+    {'1': 'body', '3': 5, '4': 1, '5': 9, '10': 'body'},
+    {'1': 'level', '3': 6, '4': 1, '5': 9, '10': 'level'},
+    {'1': 'time_unix', '3': 7, '4': 1, '5': 3, '10': 'timeUnix'},
+  ],
+};
+
+/// Descriptor for `Alert_Item`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List alert_ItemDescriptor = $convert.base64Decode(
+    'CgpBbGVydF9JdGVtEg4KAmlkGAEgASgJUgJpZBIdCgpyb3V0ZV90eXBlGAIgASgJUglyb3V0ZV'
+    'R5cGUSHQoKcm91dGVfa2V5cxgDIAMoCVIJcm91dGVLZXlzEhQKBXRpdGxlGAQgASgJUgV0aXRs'
+    'ZRISCgRib2R5GAUgASgJUgRib2R5EhQKBWxldmVsGAYgASgJUgVsZXZlbBIbCgl0aW1lX3VuaX'
+    'gYByABKANSCHRpbWVVbml4');

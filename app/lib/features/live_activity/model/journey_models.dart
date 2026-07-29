@@ -1,7 +1,23 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
 
 enum JourneyLegKind { bus, metro, tra, thsr, other }
+
+/// One stop's scheduled time on a rail trackOnly leg. Carried in travel order
+/// on [JourneyLeg.railSchedule] so the live tracker can derive 還剩 N 站 +
+/// progress + ETA from the timetable after the rail screen is gone.
+class RailStopSchedule extends Equatable {
+  const RailStopSchedule({required this.name, required this.scheduledArrival});
+
+  final String name;
+
+  /// Arrival at this stop; callers pass departure as the fallback at an
+  /// endpoint where arrival is blank.
+  final DateTime scheduledArrival;
+
+  @override
+  List<Object?> get props => [name, scheduledArrival];
+}
 
 JourneyLegKind _kindOf(PlanSection s) => switch (s.identity.routeType) {
   'bus' => JourneyLegKind.bus,
@@ -34,6 +50,7 @@ class JourneyLeg extends Equatable {
     required this.scheduledArrival,
     required this.boardLocation,
     required this.stopLocations,
+    this.railSchedule = const [],
   });
 
   static List<JourneyLeg> legsFromRoute(PlanRoute route) {
@@ -90,6 +107,11 @@ class JourneyLeg extends Equatable {
   /// PiP card, in-app caption) index both with nextStopIndex.
   final List<PlanPoint> stopLocations;
 
+  /// Board→alight scheduled stop times for a rail trackOnly leg (empty for
+  /// every other leg). Drives schedule-derived 還剩 N 站 / progress / ETA,
+  /// offset by live TRA delay. `railSchedule.last` is the alight stop.
+  final List<RailStopSchedule> railSchedule;
+
   @override
   List<Object?> get props => [
     kind,
@@ -103,5 +125,6 @@ class JourneyLeg extends Equatable {
     scheduledArrival,
     boardLocation,
     stopLocations,
+    railSchedule,
   ];
 }

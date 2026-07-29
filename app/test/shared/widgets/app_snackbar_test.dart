@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/shared/widgets/app_snackbar.dart';
 
 void main() {
   Future<void> tap(WidgetTester tester, void Function(BuildContext) onTap) =>

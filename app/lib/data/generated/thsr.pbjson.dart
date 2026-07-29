@@ -15,6 +15,71 @@ import 'dart:convert' as $convert;
 import 'dart:core' as $core;
 import 'dart:typed_data' as $typed_data;
 
+@$core.Deprecated('Use thsr_ask_station_boardDescriptor instead')
+const thsr_ask_station_board$json = {
+  '1': 'thsr_ask_station_board',
+  '2': [
+    {'1': 'station_id', '3': 1, '4': 1, '5': 9, '10': 'stationId'},
+    {'1': 'date', '3': 2, '4': 1, '5': 9, '10': 'date'},
+    {'1': 'after', '3': 3, '4': 1, '5': 9, '10': 'after'},
+    {'1': 'direction', '3': 4, '4': 1, '5': 5, '10': 'direction'},
+    {'1': 'limit', '3': 5, '4': 1, '5': 5, '10': 'limit'},
+  ],
+};
+
+/// Descriptor for `thsr_ask_station_board`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List thsr_ask_station_boardDescriptor = $convert.base64Decode(
+    'ChZ0aHNyX2Fza19zdGF0aW9uX2JvYXJkEh0KCnN0YXRpb25faWQYASABKAlSCXN0YXRpb25JZB'
+    'ISCgRkYXRlGAIgASgJUgRkYXRlEhQKBWFmdGVyGAMgASgJUgVhZnRlchIcCglkaXJlY3Rpb24Y'
+    'BCABKAVSCWRpcmVjdGlvbhIUCgVsaW1pdBgFIAEoBVIFbGltaXQ=');
+
+@$core.Deprecated('Use thsr_station_boardDescriptor instead')
+const thsr_station_board$json = {
+  '1': 'thsr_station_board',
+  '2': [
+    {
+      '1': 'items',
+      '3': 1,
+      '4': 3,
+      '5': 11,
+      '6': '.thsr_station_departure',
+      '10': 'items'
+    },
+  ],
+};
+
+/// Descriptor for `thsr_station_board`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List thsr_station_boardDescriptor = $convert.base64Decode(
+    'ChJ0aHNyX3N0YXRpb25fYm9hcmQSLQoFaXRlbXMYASADKAsyFy50aHNyX3N0YXRpb25fZGVwYX'
+    'J0dXJlUgVpdGVtcw==');
+
+@$core.Deprecated('Use thsr_station_departureDescriptor instead')
+const thsr_station_departure$json = {
+  '1': 'thsr_station_departure',
+  '2': [
+    {'1': 'TrainDate', '3': 1, '4': 1, '5': 9, '10': 'TrainDate'},
+    {'1': 'TrainNo', '3': 2, '4': 1, '5': 9, '10': 'TrainNo'},
+    {
+      '1': 'Destination_Station_Name',
+      '3': 3,
+      '4': 1,
+      '5': 9,
+      '10': 'DestinationStationName'
+    },
+    {'1': 'DepartureTime', '3': 4, '4': 1, '5': 9, '10': 'DepartureTime'},
+    {'1': 'Direction', '3': 5, '4': 1, '5': 5, '10': 'Direction'},
+    {'1': 'Note', '3': 6, '4': 1, '5': 9, '10': 'Note'},
+  ],
+};
+
+/// Descriptor for `thsr_station_departure`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List thsr_station_departureDescriptor = $convert.base64Decode(
+    'ChZ0aHNyX3N0YXRpb25fZGVwYXJ0dXJlEhwKCVRyYWluRGF0ZRgBIAEoCVIJVHJhaW5EYXRlEh'
+    'gKB1RyYWluTm8YAiABKAlSB1RyYWluTm8SOAoYRGVzdGluYXRpb25fU3RhdGlvbl9OYW1lGAMg'
+    'ASgJUhZEZXN0aW5hdGlvblN0YXRpb25OYW1lEiQKDURlcGFydHVyZVRpbWUYBCABKAlSDURlcG'
+    'FydHVyZVRpbWUSHAoJRGlyZWN0aW9uGAUgASgFUglEaXJlY3Rpb24SEgoETm90ZRgGIAEoCVIE'
+    'Tm90ZQ==');
+
 @$core.Deprecated('Use thsr_ask_detainDescriptor instead')
 const thsr_ask_detain$json = {
   '1': 'thsr_ask_detain',

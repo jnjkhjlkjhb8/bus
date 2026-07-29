@@ -1,5 +1,5 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
 
 /// View model driving the in-app tracked-bus state and, in Phase 4, the
 /// native Live Activity payload. Per ADR-0007 a MaaS `riding` leg maps to

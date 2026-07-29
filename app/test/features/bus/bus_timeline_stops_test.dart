@@ -1,7 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/timeline_stop.dart';
-import 'package:wheres_the_car/features/bus/widgets/bus_timeline_stops.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/timeline_stop.dart';
+import 'package:wheres_the_bus/features/bus/widgets/bus_timeline_stops.dart';
+
+import '../../support/helpers/i18n.dart';
 
 // The approaching window uses AppConfig.getInt('eta_approaching_threshold_s'),
 // which returns its registered default (30s) when Firebase is disabled — the
@@ -113,6 +115,7 @@ void main() {
   group('deriveTimelineStops', () {
     test('emits every stop; one lacking an ETA gets no time, none state', () {
       final derived = deriveTimelineStops(
+        i18n: zhStrings,
         stops: [_stop('a', 1), _stop('b', 2)],
         etaMap: {'seq:0:1': _eta(estimateSeconds: 120, stopStatus: 0)},
         direction: 0,
@@ -127,6 +130,7 @@ void main() {
 
     test('prefers the seq key then falls back to the uid key', () {
       final derived = deriveTimelineStops(
+        i18n: zhStrings,
         stops: [_stop('a', 1), _stop('b', 2)],
         etaMap: {
           'seq:0:1': _eta(estimateSeconds: 120, stopStatus: 0),
@@ -142,6 +146,7 @@ void main() {
 
     test('seq key is scoped to the requested direction', () {
       final derived = deriveTimelineStops(
+        i18n: zhStrings,
         stops: [_stop('a', 1)],
         etaMap: {'seq:0:1': _eta(estimateSeconds: 120, stopStatus: 0)},
         direction: 1,
@@ -155,6 +160,7 @@ void main() {
 
     test('carries buffer flag and fare section onto stops', () {
       final derived = deriveTimelineStops(
+        i18n: zhStrings,
         stops: [_stop('a', 1), _stop('b', 2), _stop('c', 3)],
         etaMap: {
           'seq:0:1': _eta(estimateSeconds: 120, stopStatus: 0),
@@ -172,6 +178,7 @@ void main() {
     test('null stop list is handled as empty upstream contract', () {
       expect(
         deriveTimelineStops(
+          i18n: zhStrings,
           stops: const [],
           etaMap: const {},
           direction: 0,

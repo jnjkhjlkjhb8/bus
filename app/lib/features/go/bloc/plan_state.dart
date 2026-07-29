@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/repositories/maas_repository.dart';
 
 enum PlanStatus { initial, loading, success, failure }
 
@@ -15,6 +16,8 @@ class PlanState extends Equatable {
     this.activeStopIndex,
     this.activeWalkStepIndex = 0,
     this.savedRoutes = const [],
+    this.geometryPending = false,
+    this.failure,
   });
 
   final PlanStatus status;
@@ -41,6 +44,15 @@ class PlanState extends Equatable {
   /// Locally saved route snapshots, newest first.
   final List<PlanRoute> savedRoutes;
 
+  /// True between the router's two plan messages: the routes are final and the
+  /// list is fully usable, but walk/rail geometry is still resolving, so map
+  /// polylines are drawn from their straight-line fallback for now.
+  final bool geometryPending;
+
+  /// What went wrong, when [status] is failure — so the screen can name the
+  /// cause instead of showing one generic message for every kind of failure.
+  final PlanFailureKind? failure;
+
   /// Keys of saved snapshots, for O(1) "is this saved?" checks on cards.
   Set<String> get savedKeys => {for (final r in savedRoutes) r.savedKey};
 
@@ -57,6 +69,8 @@ class PlanState extends Equatable {
     int? activeStopIndex,
     int? activeWalkStepIndex,
     List<PlanRoute>? savedRoutes,
+    bool? geometryPending,
+    PlanFailureKind? failure,
   }) {
     return PlanState(
       status: status ?? this.status,
@@ -75,6 +89,8 @@ class PlanState extends Equatable {
           ? 0
           : activeWalkStepIndex ?? this.activeWalkStepIndex,
       savedRoutes: savedRoutes ?? this.savedRoutes,
+      geometryPending: geometryPending ?? this.geometryPending,
+      failure: clearError ? null : failure ?? this.failure,
     );
   }
 
@@ -90,5 +106,7 @@ class PlanState extends Equatable {
     activeStopIndex,
     activeWalkStepIndex,
     savedRoutes,
+    geometryPending,
+    failure,
   ];
 }

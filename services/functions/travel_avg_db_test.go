@@ -39,10 +39,6 @@ func TestComputeTravelAvgMatchesTimetableDepartures(t *testing.T) {
 	ctx := context.Background()
 
 	ddl := []string{
-		`CREATE TABLE IF NOT EXISTS bus_eta_history (
-			sub_route_uid text, direction smallint, stop_uid text,
-			hour smallint, day_of_week smallint, estimate double precision,
-			recorded_at timestamptz NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE IF NOT EXISTS bus_travel_avg (
 			sub_route_uid text, direction smallint, stop_uid text,
 			hour smallint, day_of_week smallint, avg_seconds int,
@@ -64,7 +60,7 @@ func TestComputeTravelAvgMatchesTimetableDepartures(t *testing.T) {
 
 	const sr = "TESTTRAVELAVG_SR"
 	clean := func() {
-		for _, tbl := range []string{"bus_eta_history", "bus_travel_avg", "bus_schedule"} {
+		for _, tbl := range []string{"bus_travel_avg", "bus_schedule"} {
 			if _, err := pool.Exec(ctx, "DELETE FROM "+tbl+" WHERE sub_route_uid = $1", sr); err != nil {
 				t.Fatalf("clean %s: %v", tbl, err)
 			}
@@ -86,25 +82,23 @@ func TestComputeTravelAvgMatchesTimetableDepartures(t *testing.T) {
 		t.Fatalf("insert schedule: %v", err)
 	}
 
-	// Ten arrival crossings for STOP_B: each pair is a positive estimate then a
-	// non-positive one within 5s, which computeTravelAvg reads as one arrival.
+	// Ten arrival crossings for STOP_B, supplied as fixtures: bus_eta_history
+	// lives on the MySQL history host now, so only the Postgres half of the job
+	// (departure lookup, bucketing, upsert) is exercised against a real database.
 	// Anchored to yesterday 08:05 Taipei so every crossing lands in hour 8 and
-	// resolves against the 08:00 origin departure. Stored hour/day_of_week are
-	// what the aggregation buckets on, independent of the wall-clock date.
+	// resolves against the 08:00 origin departure. hour/day_of_week are what the
+	// aggregation buckets on, independent of the wall-clock date.
 	now := time.Now().In(taipei)
 	base := time.Date(now.Year(), now.Month(), now.Day(), 8, 5, 0, 0, taipei).Add(-24 * time.Hour)
-	for i := 0; i < 10; i++ {
-		tPos := base.Add(time.Duration(i*20) * time.Second)
-		tNeg := tPos.Add(5 * time.Second)
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO bus_eta_history (sub_route_uid, direction, stop_uid, hour, day_of_week, estimate, recorded_at)
-			VALUES ($1, 0, 'STOP_B', 8, 1, 60, $2), ($1, 0, 'STOP_B', 8, 1, -5, $3)`,
-			sr, tPos, tNeg); err != nil {
-			t.Fatalf("insert history pair %d: %v", i, err)
-		}
+	hist := &fakeHistory{}
+	for i := range 10 {
+		hist.crossingRows = append(hist.crossingRows, crossing{
+			subRouteUID: sr, direction: 0, stopUID: "STOP_B", hour: 8, dayOfWeek: 1,
+			crossingAt: base.Add(time.Duration(i*20) * time.Second),
+		})
 	}
 
-	if err := computeTravelAvg(ctx, pool); err != nil {
+	if err := computeTravelAvg(ctx, pool, hist); err != nil {
 		t.Fatalf("computeTravelAvg: %v", err)
 	}
 
@@ -124,11 +118,11 @@ func TestComputeTravelAvgMatchesTimetableDepartures(t *testing.T) {
 	}
 }
 
-// TestCleanupBusHistoryRetentionBoundary pins the 30-day retention boundary of
-// the only data-deleting cron: rows past the window must go, rows inside it
-// must survive. A flipped comparison or wrong interval here silently destroys
-// the ETA training data, which cannot be rebuilt.
-func TestCleanupBusHistoryRetentionBoundary(t *testing.T) {
+// TestCleanupPredictionErrorsRetentionBoundary pins the 30-day retention
+// boundary of the only data-deleting cron left on Postgres: rows past the
+// window must go, rows inside it must survive. bus_eta_history is no longer a
+// target — it lives on the MySQL history host and is never pruned.
+func TestCleanupPredictionErrorsRetentionBoundary(t *testing.T) {
 	pool := travelAvgTestPool(t)
 	defer pool.Close()
 	ctx := context.Background()
@@ -141,7 +135,6 @@ func TestCleanupBusHistoryRetentionBoundary(t *testing.T) {
 
 	const sr = "TESTCLEANUP_SR"
 	clean := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM bus_eta_history WHERE sub_route_uid = $1`, sr)
 		_, _ = pool.Exec(ctx, `DELETE FROM bus_eta_prediction_error WHERE sub_route_uid = $1`, sr)
 	}
 	clean()
@@ -149,23 +142,17 @@ func TestCleanupBusHistoryRetentionBoundary(t *testing.T) {
 
 	for _, age := range []string{"31 days", "29 days"} {
 		if _, err := pool.Exec(ctx, `
-			INSERT INTO bus_eta_history (sub_route_uid, direction, stop_uid, hour, day_of_week, estimate, recorded_at)
-			VALUES ($1, 0, 'STOP_A', 8, 1, 60, NOW() - $2::interval)`, sr, age); err != nil {
-			t.Fatalf("insert history %s: %v", age, err)
-		}
-		if _, err := pool.Exec(ctx, `
 			INSERT INTO bus_eta_prediction_error (sub_route_uid, direction, stop_uid, source, predicted_at, predicted_seconds)
 			VALUES ($1, 0, 'STOP_A', 'model', NOW() - $2::interval, 120)`, sr, age); err != nil {
 			t.Fatalf("insert prediction error %s: %v", age, err)
 		}
 	}
 
-	if err := cleanupBusHistory(ctx, pool); err != nil {
-		t.Fatalf("cleanupBusHistory: %v", err)
+	if err := cleanupPredictionErrors(ctx, pool); err != nil {
+		t.Fatalf("cleanupPredictionErrors: %v", err)
 	}
 
 	for _, q := range []struct{ table, timeCol string }{
-		{"bus_eta_history", "recorded_at"},
 		{"bus_eta_prediction_error", "predicted_at"},
 	} {
 		var total, old int

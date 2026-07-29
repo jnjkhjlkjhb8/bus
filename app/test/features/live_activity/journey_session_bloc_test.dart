@@ -2,11 +2,11 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
 
 /// Mutable gate so the disabled branch isn't statically dead in the test.
 class _Gate {
@@ -34,8 +34,10 @@ void main() {
   late StreamController<Duration?> etaCtrl;
   // channel and positions default to null: platform channel and location
   // tracking are skipped in tests.
-  JourneySessionBloc bloc() =>
-      JourneySessionBloc(etaStream: (_) => etaCtrl.stream);
+  JourneySessionBloc bloc() => JourneySessionBloc(
+    etaStream: (_) => etaCtrl.stream,
+    liveActivityEnabled: () => true,
+  );
 
   setUp(() => etaCtrl = StreamController<Duration?>.broadcast());
   tearDown(() => etaCtrl.close());
@@ -108,6 +110,7 @@ void main() {
   test('eta stream error falls back to scheduled countdown', () async {
     final b = JourneySessionBloc(
       etaStream: (_) => Stream<Duration?>.error(Exception('grpc drop')),
+      liveActivityEnabled: () => true,
     )..add(JourneyStarted(legs: [_leg('307')]));
     // scheduledDeparture is in the past → fallback emits Duration.zero
     final s = await b.stream.firstWhere((s) => s.eta != null);
@@ -157,6 +160,7 @@ void main() {
       final b = JourneySessionBloc(
         etaStream: (_) => etaCtrl.stream,
         positions: positions,
+        liveActivityEnabled: () => true,
       )..add(JourneyStarted(legs: [_leg('307')]));
       await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
       b.add(const BoardConfirmed());
@@ -202,6 +206,7 @@ void main() {
     final b = JourneySessionBloc(
       etaStream: (_) => etaCtrl.stream,
       positions: () => Stream<Position>.error(Exception('permission revoked')),
+      liveActivityEnabled: () => true,
     )..add(JourneyStarted(legs: [_leg('307')]));
     await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
     b.add(const BoardConfirmed());

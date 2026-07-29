@@ -1,13 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/core/live_activity/live_activity_channel.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
 
 /// Captures the last content pushed through the platform channel so tests
 /// can assert on `_content()`'s output without the method channel firing.
@@ -29,6 +29,8 @@ class _CapturingChannel extends LiveActivityChannel {
   @override
   Future<void> stop(int lease) async {}
 }
+
+bool _alwaysEnabled() => true;
 
 JourneyLeg _leg() => const JourneyLeg(
   kind: JourneyLegKind.bus,
@@ -57,11 +59,15 @@ void main() {
   JourneySessionBloc bloc({
     Duration linger = const Duration(minutes: 2),
     LiveActivityChannel? channel,
+    // Defaults on so the many tests unrelated to this setting don't touch
+    // SettingsRepository (and, through it, an unopened Hive box).
+    bool Function() liveActivityEnabled = _alwaysEnabled,
   }) => JourneySessionBloc(
     etaStream: (_) => etaCtrl.stream,
     routeEtaStream: (_) => routeEtaCtrl.stream,
     trackOnlyLinger: linger,
     channel: channel,
+    liveActivityEnabled: liveActivityEnabled,
   );
 
   setUp(() {
@@ -148,7 +154,7 @@ void main() {
   });
 
   test(
-    'pinned session computes live stops-remaining from the route-ETA stream',
+    'pinned session tracks the plate by estimate, not the route-wide fleet',
     () async {
       final channel = _CapturingChannel();
       final b = bloc(channel: channel)
@@ -158,44 +164,89 @@ void main() {
       await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
       expect(routeEtaCtrl.hasListener, isTrue);
 
-      routeEtaCtrl.add(const [
-        // Target: the leg's alight stop (departureStopKey 'stop-1'), 10
-        // stops down the route.
-        BusStopEtaViewModel(
-          stopUid: 'stop-1',
-          direction: 0,
-          sequence: 10,
-          estimateSeconds: 0,
-          nextBusTime: '',
-          stopStatus: 0,
-          vehiclePlates: [],
-        ),
-        // The pinned plate currently sits 3 stops before the target.
-        BusStopEtaViewModel(
-          stopUid: 'stop-0',
-          direction: 0,
-          sequence: 7,
-          estimateSeconds: 0,
-          nextBusTime: '',
-          stopStatus: 0,
-          vehiclePlates: ['KKA-1288'],
-          vehicles: [
-            BusVehiclePosition(
-              plate: 'KKA-1288',
-              lat: 25,
-              lon: 121.5,
-              azimuth: 0,
-            ),
-          ],
-        ),
-      ]);
-      final s = await b.stream.firstWhere(
+      // The backend puts the whole route's fleet on EVERY stop, so `vehicles`
+      // cannot locate the bus. Only `plate` — the vehicle this estimate is
+      // about — can.
+      const fleet = [
+        BusVehiclePosition(plate: 'KKA-1288', lat: 25, lon: 121.5, azimuth: 0),
+        BusVehiclePosition(plate: 'ZZZ-0001', lat: 25, lon: 121.6, azimuth: 0),
+      ];
+
+      List<BusStopEtaViewModel> frame({required int plateAtSequence}) => [
+        for (var seq = 5; seq <= 10; seq++)
+          BusStopEtaViewModel(
+            stopUid: seq == 10 ? 'stop-1' : 'stop-$seq',
+            direction: 0,
+            sequence: seq,
+            estimateSeconds: 0,
+            nextBusTime: '',
+            stopStatus: 0,
+            vehiclePlates: const ['KKA-1288', 'ZZZ-0001'],
+            vehicles: fleet,
+            plate: seq == plateAtSequence ? 'KKA-1288' : 'ZZZ-0001',
+          ),
+      ];
+
+      // Target stop 'stop-1' is at sequence 10; our bus is next due at
+      // sequence 7 → 3 stops remaining.
+      routeEtaCtrl.add(frame(plateAtSequence: 7));
+      final first = await b.stream.firstWhere(
         (s) => s.pinnedStopsRemaining != null,
       );
-      expect(s.pinnedStopsRemaining, 3);
+      expect(first.pinnedStopsRemaining, 3);
       expect(channel.last?.remainingStops, 3);
       expect(channel.last?.plate, 'KKA-1288');
       expect(channel.last?.routeNumber, '307');
+
+      // The bus advances two stops — the count MUST decrease. This is the
+      // regression guard for the constant-count bug.
+      routeEtaCtrl.add(frame(plateAtSequence: 9));
+      final second = await b.stream.firstWhere(
+        (s) => s.pinnedStopsRemaining == 1,
+      );
+      expect(second.pinnedStopsRemaining, 1);
+
+      await b.close();
+    },
+  );
+
+  test(
+    'pinned stops-remaining matches plates that differ only by case/whitespace',
+    () async {
+      final b = bloc()
+        ..add(
+          JourneyStarted(
+            legs: [_leg()],
+            trackOnly: true,
+            plate: ' kka-1288 ',
+          ),
+        );
+      await b.stream.firstWhere((s) => s.phase == JourneyPhase.waiting);
+
+      // The estimate's plate is server-normalized (trimmed + upper-cased);
+      // the tracked plate above is raw, as the position feed sends it.
+      List<BusStopEtaViewModel> frame({required int plateAtSequence}) => [
+        for (var seq = 5; seq <= 10; seq++)
+          BusStopEtaViewModel(
+            stopUid: seq == 10 ? 'stop-1' : 'stop-$seq',
+            direction: 0,
+            sequence: seq,
+            estimateSeconds: 0,
+            nextBusTime: '',
+            stopStatus: 0,
+            vehiclePlates: const ['KKA-1288', 'ZZZ-0001'],
+            plate: seq == plateAtSequence ? 'KKA-1288' : 'ZZZ-0001',
+          ),
+      ];
+
+      // Target stop 'stop-1' is at sequence 10; our bus is next due at
+      // sequence 7 → 3 stops remaining.
+      routeEtaCtrl.add(frame(plateAtSequence: 7));
+      final first = await b.stream.firstWhere(
+        (s) => s.pinnedStopsRemaining != null,
+      );
+      expect(first.pinnedStopsRemaining, 3);
+
       await b.close();
     },
   );
@@ -227,14 +278,7 @@ void main() {
         nextBusTime: '',
         stopStatus: 0,
         vehiclePlates: const ['KKA-1288'],
-        vehicles: const [
-          BusVehiclePosition(
-            plate: 'KKA-1288',
-            lat: 25,
-            lon: 121.5,
-            azimuth: 0,
-          ),
-        ],
+        plate: 'KKA-1288',
       );
 
       // Frame 1: the pinned plate sits 3 stops before the target.
@@ -244,7 +288,7 @@ void main() {
       );
       expect(s1.pinnedStopsRemaining, 3);
 
-      // Frame 2: the plate is absent from every stop's vehicle list this
+      // Frame 2: the plate is absent from every stop's `plate` field this
       // frame (momentarily between stops) — the last-known value holds.
       routeEtaCtrl.add([target(10)]);
       await Future<void>.delayed(Duration.zero);
@@ -271,6 +315,21 @@ void main() {
     expect(channel.last?.remainingStops, isNull);
     expect(channel.last?.plate, isNull);
     expect(channel.last?.routeNumber, '307');
+    await b.close();
+  });
+
+  test('no Live Activity is started when the setting is off', () async {
+    final channel = _CapturingChannel();
+    final b = bloc(channel: channel, liveActivityEnabled: () => false)
+      ..add(JourneyStarted(legs: [_leg()], trackOnly: true, plate: 'KKA-1288'));
+
+    // Give the bloc a turn of the event loop to process the event.
+    await Future<void>.delayed(Duration.zero);
+
+    expect(b.state.phase, JourneyPhase.idle);
+    expect(channel.last, isNull);
+    expect(routeEtaCtrl.hasListener, isFalse);
+
     await b.close();
   });
 }

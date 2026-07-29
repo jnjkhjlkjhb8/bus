@@ -1,13 +1,16 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import 'package:wheres_the_car/core/firebase/remote_config.dart';
-import 'package:wheres_the_car/data/live/arrival_feed.dart';
-import 'package:wheres_the_car/data/models/alert_models.dart';
-import 'package:wheres_the_car/data/repositories/alert_repository.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
+import 'package:wheres_the_bus/core/firebase/remote_config.dart';
+import 'package:wheres_the_bus/data/live/arrival_feed.dart';
+import 'package:wheres_the_bus/data/models/alert_models.dart';
+import 'package:wheres_the_bus/data/models/subscription_scope.dart';
+import 'package:wheres_the_bus/data/repositories/alert_repository.dart';
+import 'package:wheres_the_bus/data/repositories/favorites_repository.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_event.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_state.dart';
 
 /// Parses the `alert_sources` remote-config value: comma-separated tagged
 /// tokens `metro:<system>` and `bus:<city>`. Malformed or unknown-kind tokens
@@ -32,6 +35,15 @@ import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
   return (metro: metro, bus: bus);
 }
 
+/// Default 訂閱範圍 source: the scope 收藏 currently resolves to, re-emitted
+/// whenever 收藏 changes. Injectable via [AlertBloc.new] so tests can drive the
+/// filter without Hive.
+Stream<Set<String>> _defaultScope() async* {
+  final favorites = FavoritesRepository.instance;
+  yield subscriptionScope(favorites.all());
+  yield* favorites.changes().map((_) => subscriptionScope(favorites.all()));
+}
+
 /// Default `alert_sources` config source: emits the current value immediately
 /// (so startup doesn't wait for a revision), then re-emits on every
 /// activated Remote Config revision. Injectable via [AlertBloc.new] so tests
@@ -41,12 +53,51 @@ Stream<String> _defaultAlertSourcesConfig() async* {
   yield* AppConfig.revisions().map((_) => AppConfig.getString('alert_sources'));
 }
 
+/// Ops-authored notices, read from Remote Config. Their text is their
+/// identity (same rule as feed alerts), so rewriting an announcement
+/// publishes a new one and re-arms its unread state — which is what ops mean
+/// when they change the copy.
+List<AlertViewModel> readAnnouncements() {
+  final maintenance = AppConfig.getString('maintenance_banner_text');
+  final announcement = AppConfig.getString('announcement_text');
+  return [
+    if (AppConfig.getBool('maintenance_banner_enabled') &&
+        maintenance.isNotEmpty)
+      AlertViewModel(
+        message: maintenance,
+        level: AlertSeverity.yellow,
+        source: const AlertSource(AlertSourceKind.appMaintenance),
+      ),
+    if (announcement.isNotEmpty)
+      AlertViewModel(
+        message: announcement,
+        level: AlertSeverity.yellow,
+        source: const AlertSource(AlertSourceKind.appNotice),
+      ),
+  ];
+}
+
+/// Default 公告 source: the current announcements immediately, then a fresh
+/// read on every activated Remote Config revision.
+Stream<List<AlertViewModel>> _defaultAnnouncements() async* {
+  yield readAnnouncements();
+  yield* AppConfig.revisions().map((_) => readAnnouncements());
+}
+
+/// Both announcement kinds arrive on one stream, so they share one
+/// subscription key; the row's own `source` still says which it is.
+const _announcementSource = AlertSourceId(AlertSourceKind.appNotice);
+
 class AlertBloc extends Bloc<AlertEvent, AlertState> {
   AlertBloc({
     AlertRepository? repository,
     Stream<String> Function()? alertSourcesConfig,
+    Stream<Set<String>> Function()? scopeSource,
+    Stream<List<AlertViewModel>> Function()? announcements,
   }) : _repository = repository ?? AlertRepository.instance,
        _alertSourcesConfig = alertSourcesConfig ?? _defaultAlertSourcesConfig,
+       _scopeSource = scopeSource ?? _defaultScope,
+       _announcements = announcements ?? _defaultAnnouncements,
        super(
          AlertState(
            readMessages: (repository ?? AlertRepository.instance).readAlerts(),
@@ -62,17 +113,21 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
     on<AlertStreamFailed>(_onStreamFailed);
     on<AlertStreamRecovered>(_onStreamRecovered);
     on<AlertConfigChanged>(_onConfigChanged);
+    on<AlertScopeChanged>(_onScopeChanged);
   }
 
   final AlertRepository _repository;
   final Stream<String> Function() _alertSourcesConfig;
+  final Stream<Set<String>> Function() _scopeSource;
+  final Stream<List<AlertViewModel>> Function() _announcements;
 
   void _persistRead(Set<String> read) {
     unawaited(_repository.persistReadAlerts(read));
   }
 
-  final Map<AlertSourceId, StreamSubscription<AlertViewModel>> _subs = {};
+  final Map<AlertSourceId, StreamSubscription<List<AlertViewModel>>> _subs = {};
   StreamSubscription<String>? _configSub;
+  StreamSubscription<Set<String>>? _scopeSub;
   String? _lastSourcesCsv;
 
   bool get hasActiveSubscriptions => _subs.isNotEmpty;
@@ -86,13 +141,13 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
 
   void _listenSource(
     AlertSourceId source,
-    Stream<AlertViewModel> Function() streamSource,
+    Stream<List<AlertViewModel>> Function() streamSource,
   ) {
     _subs[source] = ArrivalFeed.passthrough(
       source: streamSource,
       onFailure: (e) => add(AlertStreamFailed(e, source: source)),
       onRecovered: () => add(AlertStreamRecovered(source: source)),
-    ).listen((vm) => add(AlertReceived(vm)));
+    ).listen((alerts) => add(AlertReceived(source, alerts)));
   }
 
   Future<void> _onStarted(AlertStarted _, Emitter<AlertState> emit) async {
@@ -108,10 +163,20 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
       _repository.thsrAlert,
     );
 
+    // Subscribed directly rather than through ArrivalFeed: this is a local
+    // config read, not a network stream, so there is no failure to surface
+    // and nothing to reconnect.
+    _subs[_announcementSource] = _announcements().listen(
+      (notices) => add(AlertReceived(_announcementSource, notices)),
+    );
+
     await _configSub?.cancel();
     _configSub = _alertSourcesConfig().listen(
       (csv) => add(AlertConfigChanged(csv)),
     );
+
+    await _scopeSub?.cancel();
+    _scopeSub = _scopeSource().listen((scope) => add(AlertScopeChanged(scope)));
   }
 
   /// Diffs the newly-parsed metro/bus sources against what's currently
@@ -127,16 +192,23 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
     _lastSourcesCsv = event.sourcesCsv;
 
     final parsed = parseAlertSources(event.sourcesCsv);
+    // One `bus:<city>` token is two subscriptions: TDX splits advisories and
+    // disruptions across separate topics, and both are that city's alerts.
     final desired = <AlertSourceId>{
       for (final system in parsed.metro)
         AlertSourceId(AlertSourceKind.metro, system),
-      for (final city in parsed.bus) AlertSourceId(AlertSourceKind.bus, city),
+      for (final city in parsed.bus) ...[
+        AlertSourceId(AlertSourceKind.busNews, city),
+        AlertSourceId(AlertSourceKind.busAlert, city),
+      ],
+    };
+    const configured = {
+      AlertSourceKind.metro,
+      AlertSourceKind.busNews,
+      AlertSourceKind.busAlert,
     };
     final current = _subs.keys
-        .where(
-          (s) =>
-              s.kind == AlertSourceKind.metro || s.kind == AlertSourceKind.bus,
-        )
+        .where((s) => configured.contains(s.kind))
         .toSet();
 
     final toRemove = current.difference(desired);
@@ -148,12 +220,11 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
       await sub?.cancel();
     }
     for (final source in toAdd) {
-      _listenSource(
-        source,
-        source.kind == AlertSourceKind.metro
-            ? () => _repository.metroAlert(source.code)
-            : () => _repository.busNews(source.code),
-      );
+      _listenSource(source, switch (source.kind) {
+        AlertSourceKind.metro => () => _repository.metroAlert(source.code),
+        AlertSourceKind.busAlert => () => _repository.busAlert(source.code),
+        _ => () => _repository.busNews(source.code),
+      });
     }
 
     if (toRemove.isNotEmpty) {
@@ -166,12 +237,19 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
   }
 
   void _onReceived(AlertReceived event, Emitter<AlertState> emit) {
-    final updated = List<AlertViewModel>.from(state.activeAlerts)
-      ..removeWhere((a) => a.message == event.alert.message);
-    if (event.alert.level != AlertSeverity.green) {
-      updated.add(event.alert);
-    }
-    emit(state.copyWith(activeAlerts: updated));
+    // The batch is this source's whole current set, so it replaces that
+    // source's entry outright: an alert TDX no longer publishes has been
+    // resolved and must stop being shown. Other sources are untouched.
+    emit(
+      state.copyWith(
+        alertsBySource: {...state.alertsBySource, event.source: event.alerts},
+      ),
+    );
+  }
+
+  void _onScopeChanged(AlertScopeChanged event, Emitter<AlertState> emit) {
+    if (setEquals(event.scope, state.scope)) return;
+    emit(state.copyWith(scope: event.scope));
   }
 
   void _onDismissed(AlertDismissed event, Emitter<AlertState> emit) {
@@ -234,6 +312,8 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
   Future<void> close() async {
     await _configSub?.cancel();
     _configSub = null;
+    await _scopeSub?.cancel();
+    _scopeSub = null;
     await _cancelAll();
     return super.close();
   }

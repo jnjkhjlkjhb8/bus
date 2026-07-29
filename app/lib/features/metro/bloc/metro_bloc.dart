@@ -1,9 +1,9 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/data/repositories/mrt_repository.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_event.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_state.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_bus/data/repositories/mrt_repository.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_event.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_state.dart';
 
 class MetroBloc extends Bloc<MetroEvent, MetroState> {
   MetroBloc({MrtRepository? repository})

@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_bloc.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_event.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_state.dart';
 
 void main() {
   test('AlertBloc does not subscribe on construction', () async {

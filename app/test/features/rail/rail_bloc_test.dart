@@ -1,14 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/models/thsr_models.dart';
-import 'package:wheres_the_car/data/models/tra_models.dart';
-import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
-import 'package:wheres_the_car/data/repositories/tra_repository.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_bloc.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/fare_type.dart';
+import 'package:wheres_the_bus/data/models/thsr_models.dart';
+import 'package:wheres_the_bus/data/models/tra_models.dart';
+import 'package:wheres_the_bus/data/repositories/thsr_repository.dart';
+import 'package:wheres_the_bus/data/repositories/tra_repository.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_bloc.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_state.dart';
 
 void main() {
   test('one THSR request loads from the initial state', () async {
@@ -61,7 +62,7 @@ void main() {
     );
     final thsr = _FakeThsrRepository(
       timetableResult: const [item],
-      fareResult: const ThsrFare(fareClass: 1, price: 1490),
+      fareResult: const [ThsrFare(fareClass: 1, price: 1490)],
     );
     final bloc = RailBloc(thsrRepository: thsr);
     addTearDown(bloc.close);
@@ -78,7 +79,10 @@ void main() {
         await bloc.stream.firstWhere((state) => state is RailTimetableLoaded)
             as RailTimetableLoaded;
 
-    expect(loaded.fare, 1490);
+    expect(
+      loaded.fareQuote?.resolve(FareType.full),
+      (price: 1490, matched: FareType.full),
+    );
   });
 
   test('fare query failure still loads the timetable (null fare)', () async {
@@ -90,7 +94,7 @@ void main() {
       delayMinutes: 0,
       remark: '',
     );
-    // No fareResult → the fake's fare() throws; _loadFare swallows it.
+    // No fareResult → the fake's fares() throws; _loadFares swallows it.
     final thsr = _FakeThsrRepository(timetableResult: const [item]);
     final bloc = RailBloc(thsrRepository: thsr);
     addTearDown(bloc.close);
@@ -107,7 +111,7 @@ void main() {
         await bloc.stream.firstWhere((state) => state is RailTimetableLoaded)
             as RailTimetableLoaded;
 
-    expect(loaded.fare, isNull);
+    expect(loaded.fareQuote, isNull);
     expect(loaded.thsrItems, const [item]);
   });
 
@@ -554,12 +558,15 @@ class _FakeThsrRepository extends ThsrRepository {
 
   final List<ThsrTimetableItem> timetableResult;
   final Error? error;
-  final ThsrFare? fareResult;
+  final List<ThsrFare>? fareResult;
   final timetableCalls = <(String, String, String)>[];
 
   @override
-  Future<ThsrFare> fare(String date, String originId, String destId) async =>
-      fareResult ?? (throw StateError('no fare'));
+  Future<List<ThsrFare>> fares(
+    String date,
+    String originId,
+    String destId,
+  ) async => fareResult ?? (throw StateError('no fare'));
 
   @override
   Future<List<ThsrTimetableItem>> timetable(
@@ -581,10 +588,10 @@ class _FakeTraRepository extends TraRepository {
   final timetableCalls = <(String, String, String)>[];
   final delayCalls = <(String, String, String)>[];
 
-  // TRA fare wiring is covered by the THSR test; here fare() just fails so the
-  // existing TRA tests exercise the null-fare path without touching gRPC.
+  // The TRA list screen quotes no fare (it is per train class, not per O/D),
+  // so the bloc must never call this — a throw keeps that pinned.
   @override
-  Future<TraFare> fare(String stationId, String date) async =>
+  Future<List<TraFare>> fares(String originId, String destId) async =>
       throw StateError('no fare');
 
   @override

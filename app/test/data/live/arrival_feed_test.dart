@@ -3,8 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grpc/grpc.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/live/arrival_feed.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/live/arrival_feed.dart';
 
 /// A minimal arrival with an estimate that decays toward zero, standing in for
 /// the real domain models so the feed's orchestration is tested in isolation.

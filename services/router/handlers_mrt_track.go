@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -90,7 +90,7 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 		return nil, status.Error(codes.Internal, "failed to load station names")
 	}
 
-	trackID, err := newReminderID()
+	trackID, err := newUUIDv4()
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to create session ID")
 	}

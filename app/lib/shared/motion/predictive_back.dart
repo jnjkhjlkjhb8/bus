@@ -3,7 +3,7 @@ import 'dart:ui' show clampDouble;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
 
 /// Drop-in replacement for [PredictiveBackPageTransitionsBuilder], tuned to
 /// the app's calm motion language: a quiet lift-and-shift preview (no 3D
@@ -67,7 +67,6 @@ class BigPredictiveBackPageTransitionsBuilder extends PageTransitionsBuilder {
     );
   }
 }
-
 
 /// The phases of a predictive back gesture.
 enum _PredictiveBackPhase {
@@ -202,8 +201,9 @@ class _PredictiveBackGestureDetectorState
 
   @override
   Widget build(BuildContext context) {
-    final effectivePhase =
-        widget.route.popGestureInProgress ? phase : _PredictiveBackPhase.idle;
+    final effectivePhase = widget.route.popGestureInProgress
+        ? phase
+        : _PredictiveBackPhase.idle;
     return widget.builder(
       context,
       effectivePhase,

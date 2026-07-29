@@ -1,4 +1,5 @@
 import 'package:equatable/equatable.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
 
 class BikeStationState extends Equatable {
   const BikeStationState({
@@ -12,6 +13,7 @@ class BikeStationState extends Equatable {
     this.electricBikes = 0,
     this.loading = true,
     this.hasLiveData = false,
+    this.updatedAt,
     this.error,
     this.liveError,
   });
@@ -31,6 +33,11 @@ class BikeStationState extends Equatable {
   /// shown is only the field default, not a confirmed empty station (F27).
   final bool hasLiveData;
 
+  /// When the last live availability frame landed. Shown as a clock time, so
+  /// counts that stopped updating are visibly stale rather than silently old.
+  /// Null until the first frame.
+  final DateTime? updatedAt;
+
   /// Static station-info fetch failure (name/capacity never loaded).
   final String? error;
 
@@ -38,7 +45,7 @@ class BikeStationState extends Equatable {
   /// ResilientSubscription gives up reconnecting; cleared only on recovery.
   /// Kept separate from [error] so a static-info success doesn't mask a live
   /// stream that never came up, and vice versa (F27).
-  final String? liveError;
+  final AppError? liveError;
 
   BikeStationState copyWith({
     String? name,
@@ -51,9 +58,10 @@ class BikeStationState extends Equatable {
     int? electricBikes,
     bool? loading,
     bool? hasLiveData,
+    DateTime? updatedAt,
     String? error,
     bool clearError = false,
-    String? liveError,
+    AppError? liveError,
     bool clearLiveError = false,
   }) => BikeStationState(
     name: name ?? this.name,
@@ -66,6 +74,7 @@ class BikeStationState extends Equatable {
     electricBikes: electricBikes ?? this.electricBikes,
     loading: loading ?? this.loading,
     hasLiveData: hasLiveData ?? this.hasLiveData,
+    updatedAt: updatedAt ?? this.updatedAt,
     error: clearError ? null : (error ?? this.error),
     liveError: clearLiveError ? null : (liveError ?? this.liveError),
   );
@@ -82,6 +91,7 @@ class BikeStationState extends Equatable {
     electricBikes,
     loading,
     hasLiveData,
+    updatedAt,
     error,
     liveError,
   ];

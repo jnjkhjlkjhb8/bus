@@ -1,7 +1,22 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
+import 'package:wheres_the_bus/data/repositories/firebase_repository.dart';
 
 void main() {
+  // UpsertDevice and the firebase_device CHECK constraint accept only
+  // 'android' and 'ios'. TargetPlatform.iOS.name is 'iOS', so sending the
+  // enum name verbatim made every iOS registration fail with InvalidArgument.
+  group('devicePlatform', () {
+    tearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    for (final platform in [TargetPlatform.iOS, TargetPlatform.android]) {
+      test('is server-accepted on $platform', () {
+        debugDefaultTargetPlatformOverride = platform;
+        expect(devicePlatform(), anyOf('android', 'ios'));
+      });
+    }
+  });
+
   // FirebaseGate.enabled is false in the test environment (APP_ENV
   // defaults to 'dev'), so createArrivalReminder takes the disabled path
   // and returns a receipt whose id is the local id string. That id is

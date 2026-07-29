@@ -31,6 +31,8 @@ struct BusLiveActivityLiveActivity: Widget {
             Group {
                 if context.state.mode == "board" {
                     BoardCard(context: context)
+                } else if context.state.mode == "mrt_track" {
+                    MrtTrackCard(context: context)
                 } else if isPinned(context.state) {
                     PinnedCard(context: context)
                 } else if context.state.mode == "waiting" {
@@ -43,13 +45,29 @@ struct BusLiveActivityLiveActivity: Widget {
             .activityBackgroundTint(nil)
         } dynamicIsland: { context in
             let board = context.state.mode == "board"
+            let metro = context.state.mode == "mrt_track"
             let waiting = context.state.mode == "waiting"
             let pinned = isPinned(context.state)
             let glyph = typeGlyph(context.attributes.type)
             let boardRows = context.state.routes ?? []
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    if board {
+                    if metro {
+                        HStack(spacing: 8) {
+                            MrtRoundel(state: context.state, size: 26)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("往 \(context.state.alightStation ?? "")")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                Text("列車 \(context.state.routeNumber ?? "")")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(Color(.systemGray))
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(.leading, 4)
+                    } else if board {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("站牌")
                                 .font(.system(size: 12))
@@ -87,7 +105,16 @@ struct BusLiveActivityLiveActivity: Widget {
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     VStack(alignment: .trailing, spacing: 2) {
-                        if board {
+                        if metro {
+                            // Stops remaining only — never a countdown clock.
+                            Text("\(context.state.remainingStops ?? 0)")
+                                .font(.system(size: 26, weight: .semibold))
+                                .monospacedDigit()
+                                .foregroundColor(.white)
+                            Text("站")
+                                .font(.system(size: 11))
+                                .foregroundColor(Color(.systemGray))
+                        } else if board {
                             // Board rows render in the bottom region; the
                             // trailing region stays empty (no single ETA to
                             // headline when the board lists several routes).
@@ -139,7 +166,16 @@ struct BusLiveActivityLiveActivity: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    if board {
+                    if metro {
+                        VStack(alignment: .leading, spacing: 8) {
+                            MrtProgressLine(state: context.state)
+                            Text("下一站 \(context.state.nextStation)")
+                                .font(.system(size: 12))
+                                .foregroundColor(Color(.systemGray))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .lineLimit(1)
+                        }
+                    } else if board {
                         VStack(alignment: .leading, spacing: 4) {
                             ForEach(Array(boardRows.prefix(3).enumerated()), id: \.offset) { _, row in
                                 HStack(spacing: 8) {
@@ -166,7 +202,7 @@ struct BusLiveActivityLiveActivity: Widget {
                                 .background(Color(white: 0.25))
                                 .clipShape(Capsule())
                             Text("往 \(context.state.alightStation ?? context.state.nextStation)"
-                                 + (context.state.remainingStops.map { "・還剩 \($0) 站" } ?? ""))
+                                 + (context.state.remainingStops.map { "   還剩 \($0) 站" } ?? ""))
                                 .font(.system(size: 11))
                                 .foregroundColor(Color(.systemGray))
                                 .lineLimit(1)
@@ -174,7 +210,7 @@ struct BusLiveActivityLiveActivity: Widget {
                     } else if waiting {
                         Text("於 \(context.attributes.fromStation) 上車"
                              + (context.state.walkMinutes > 0
-                                ? "・步行 \(context.state.walkMinutes) 分"
+                                ? "  步行 \(context.state.walkMinutes) 分"
                                 : ""))
                             .font(.system(size: 12))
                             .foregroundColor(Color(.systemGray))
@@ -198,7 +234,9 @@ struct BusLiveActivityLiveActivity: Widget {
                     }
                 }
             } compactLeading: {
-                if board {
+                if metro {
+                    MrtRoundel(state: context.state, size: 22)
+                } else if board {
                     Text(boardRows.first?.route ?? "")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.white)
@@ -214,7 +252,12 @@ struct BusLiveActivityLiveActivity: Widget {
                         .foregroundColor(.white)
                 }
             } compactTrailing: {
-                if board {
+                if metro {
+                    Text("剩 \(context.state.remainingStops ?? 0) 站")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                } else if board {
                     Text(boardRows.first?.eta ?? "")
                         .font(.system(size: 14, weight: .semibold))
                         .monospacedDigit()
@@ -254,7 +297,9 @@ struct BusLiveActivityLiveActivity: Widget {
                         .lineLimit(1)
                 }
             } minimal: {
-                if board {
+                if metro {
+                    MrtRoundel(state: context.state, size: 20)
+                } else if board {
                     Image(systemName: "list.bullet")
                         .font(.system(size: 15))
                         .foregroundColor(.white)
@@ -350,7 +395,7 @@ private struct RidingCard: View {
                 }
                 // Trailing block folded into a single caption line keeps the
                 // card uncluttered on narrow lock-screen widths.
-                Text("\(context.state.alightStation ?? "") 下車・剩 \(context.state.remainingStops ?? 0) 站")
+                Text("\(context.state.alightStation ?? "") 下車  剩 \(context.state.remainingStops ?? 0) 站")
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -407,10 +452,10 @@ private struct PinnedCard: View {
                 .font(.system(size: 36))
                 .foregroundColor(.primary)
             VStack(alignment: .leading, spacing: 4) {
-                Text("\(context.state.routeNumber ?? context.attributes.routeOrTrain)・\(context.state.plate ?? "")")
+                Text("\(context.state.routeNumber ?? context.attributes.routeOrTrain)  \(context.state.plate ?? "")")
                     .font(.system(size: 16, weight: .semibold))
                 Text("往 \(context.state.alightStation ?? context.state.nextStation)"
-                     + (context.state.remainingStops.map { "・還剩 \($0) 站" } ?? ""))
+                     + (context.state.remainingStops.map { "  還剩 \($0) 站" } ?? ""))
                     .font(.system(size: 13))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -430,6 +475,144 @@ private struct PinnedCard: View {
             }
         }
         .padding(16)
+    }
+}
+
+/// Lock-screen card for the metro alight reminder (mode == "mrt_track",
+/// ADR-0015): line roundel, 往 {target} / 列車 {trip} · 下一站 {next}, the big
+/// 剩 N 站 count (never a countdown clock), and the per-station Living Line.
+@available(iOS 16.1, *)
+private struct MrtTrackCard: View {
+    let context: ActivityViewContext<BusLiveActivityAttributes>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                MrtRoundel(state: context.state, size: 26)
+                VStack(alignment: .leading, spacing: 2) {
+                    // A terminal reading replaces the live copy for the linger
+                    // window before dismissal: an ending must be seen.
+                    Text(cardTitle)
+                        .font(.system(size: 16, weight: .semibold))
+                        .lineLimit(1)
+                    Text(cardSubtitle)
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if context.state.endedStatus == nil {
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text("\(context.state.remainingStops ?? 0)")
+                            .font(.system(size: 26, weight: .semibold))
+                            .monospacedDigit()
+                        Text("站")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            MrtProgressLine(state: context.state)
+        }
+        .padding(16)
+    }
+
+    private var cardTitle: String {
+        switch context.state.endedStatus {
+        case "arrived": return "已到 \(context.state.alightStation ?? "")"
+        case "lost": return "追蹤失效"
+        default: return "往 \(context.state.alightStation ?? "")"
+        }
+    }
+
+    private var cardSubtitle: String {
+        switch context.state.endedStatus {
+        case "arrived": return "追蹤結束"
+        case "lost": return "請重新綁定列車"
+        default:
+            return "列車 \(context.state.routeNumber ?? "") · 下一站 \(context.state.nextStation)"
+        }
+    }
+}
+
+/// Line roundel: the line code on its data colour.
+private struct MrtRoundel: View {
+    let state: BusLiveActivityAttributes.ContentState
+    let size: CGFloat
+
+    var body: some View {
+        Circle()
+            .fill(Color(hex: state.lineColorHex) ?? Color.blue)
+            .frame(width: size, height: size)
+            .overlay(
+                Text(state.lineCode ?? "")
+                    .font(.system(size: size * 0.42, weight: .bold))
+                    .foregroundColor(.white)
+            )
+    }
+}
+
+/// The per-station Living Line: a dot per station board→target, filled in the
+/// line colour up to the current station, the alight stop drawn as a ringed
+/// dot, and a train marker at the current position.
+private struct MrtProgressLine: View {
+    let state: BusLiveActivityAttributes.ContentState
+
+    var body: some View {
+        let count = max(state.stationCount ?? 0, 1)
+        let target = state.targetIndex ?? (count - 1)
+        let current = min(max(state.currentIndex ?? 0, 0), max(target, 1))
+        let color = Color(hex: state.lineColorHex) ?? Color.blue
+        let fraction = target > 0 ? Double(current) / Double(target) : 0
+
+        GeometryReader { geo in
+            let width = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(height: 3)
+                Capsule()
+                    .fill(color)
+                    .frame(width: width * fraction, height: 3)
+                ForEach(0..<count, id: \.self) { i in
+                    let x = count > 1 ? width * Double(i) / Double(count - 1) : 0
+                    Circle()
+                        .fill(i == target ? Color(.systemBackground) : (i <= current ? color : Color.gray.opacity(0.4)))
+                        .overlay(
+                            Circle().stroke(
+                                i == target ? Color.primary : Color.clear,
+                                lineWidth: 2
+                            )
+                        )
+                        .frame(width: i == target ? 11 : 7, height: i == target ? 11 : 7)
+                        .position(x: x, y: geo.size.height / 2)
+                }
+                // Train marker rides the current position.
+                Capsule()
+                    .fill(Color.primary)
+                    .frame(width: 14, height: 9)
+                    .position(x: width * fraction, y: geo.size.height / 2)
+            }
+        }
+        .frame(height: 14)
+    }
+}
+
+private extension Color {
+    /// Parses a `#RRGGBB` hex string; nil when malformed so callers fall back.
+    init?(hex: String?) {
+        guard var value = hex else { return nil }
+        if value.hasPrefix("#") { value.removeFirst() }
+        guard value.count == 6, let rgb = UInt64(value, radix: 16) else {
+            return nil
+        }
+        self.init(
+            .sRGB,
+            red: Double((rgb >> 16) & 0xFF) / 255,
+            green: Double((rgb >> 8) & 0xFF) / 255,
+            blue: Double(rgb & 0xFF) / 255,
+            opacity: 1
+        )
     }
 }
 

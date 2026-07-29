@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,15 +14,14 @@ import (
 	legacyredis "github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	redisv9 "github.com/redis/go-redis/v9"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 )
 
 // MaasServer answers multimodal route-planning requests by proxying the TDX
@@ -59,6 +57,11 @@ type MaasServer struct {
 // the server closing before starting any cache or upstream work, so new work
 // fails promptly instead of racing shutdown.
 var errMaasServerClosing = status.Error(codes.Unavailable, "MaaS server is shutting down")
+
+// errMaasNoRoute marks a TDX MaaS 404: the upstream has no itinerary for this
+// origin/destination pair. That is an empty result rather than a router
+// failure, so Plan logs it at Warn instead of raising an error issue.
+var errMaasNoRoute = errors.New("TDX MaaS has no route for this origin/destination")
 
 type maasDB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
@@ -164,6 +167,10 @@ var defaultMaasSharedWorkConfig = maasSharedWorkConfig{
 }
 
 const maasOSRMConcurrency = 4
+
+// How long a finished plan stays in Redis. Short: an itinerary quotes live
+// departure times, so a stale hit would hand a rider a bus that has left.
+const maasCacheTTL = 90 * time.Second
 
 func shouldRetryMaas(resp *resty.Response, err error) bool {
 	if err != nil {
@@ -308,16 +315,100 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 		return nil, status.FromContextError(ctx.Err()).Err()
 	case completed := <-result:
 		if completed.Err != nil {
-			log.Errorf("[MAAS] plan error: %v", completed.Err)
-			if errors.Is(completed.Err, context.Canceled) || errors.Is(completed.Err, context.DeadlineExceeded) {
-				return nil, status.FromContextError(completed.Err).Err()
-			}
-			if status.Code(completed.Err) != codes.Unknown {
-				return nil, completed.Err
-			}
-			return nil, status.Errorf(codes.Unavailable, "route planning unavailable: %v", completed.Err)
+			return nil, maasPlanError(completed.Err)
 		}
 		return completed.Val.(*pb.MaasPlanResponse), nil
+	}
+}
+
+// maasPlanError maps a planning failure onto the gRPC status both plan entry
+// points return. A TDX 404 is an empty result rather than a router fault, so it
+// logs at Warn and answers NotFound.
+func maasPlanError(err error) error {
+	if errors.Is(err, errMaasNoRoute) {
+		log.Warnf("[MAAS] action=plan event=no_route error=%v", err)
+		return status.Error(codes.NotFound, "no route for this origin/destination")
+	}
+	log.Errorf("[MAAS] plan error: %v", err)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return status.FromContextError(err).Err()
+	}
+	if status.Code(err) != codes.Unknown {
+		return err
+	}
+	return status.Errorf(codes.Unavailable, "route planning unavailable: %v", err)
+}
+
+// PlanStream answers the same query as Plan, but hands the routes over as soon
+// as they exist instead of holding them until the map geometry is drawn: one
+// message with the itineraries (times, transfers, fares — everything the
+// results list shows), then a second with walkPath/transitPath filled in. A
+// cache hit is a single complete message.
+//
+// Unlike Plan this does not share a flight: two identical trips planned in the
+// same minute can both reach TDX, bounded by the response cache and the
+// work-slot cap. Delivering one leader's partial to every waiter needs a
+// per-key broadcast, which is a lot of machinery for a collision that requires
+// the same coordinates, options and minute — add it if the upstream call count
+// ever says otherwise.
+func (s *MaasServer) PlanStream(req *pb.MaasPlanRequest, stream pb.MaasService_PlanStreamServer) error {
+	if !s.beginSharedFlight() {
+		return errMaasServerClosing
+	}
+	defer s.endSharedFlight()
+
+	// Bounded like the unary path, and additionally cancelled when the caller
+	// hangs up: this work has exactly one client, so a stream that is gone
+	// leaves nobody to serve.
+	workCtx, cancel := context.WithTimeout(s.lifecycleCtx, s.workTimeout)
+	defer cancel()
+	defer context.AfterFunc(stream.Context(), cancel)()
+
+	select {
+	case s.workSlots <- struct{}{}:
+		defer func() { <-s.workSlots }()
+	default:
+		return status.Error(codes.ResourceExhausted, "MaaS concurrency limit exceeded")
+	}
+
+	cacheKey := maasKey(req)
+	if cached, err := s.cache.Get(workCtx, cacheKey); err == nil {
+		var response pb.MaasPlanResponse
+		if err := proto.Unmarshal(cached, &response); err == nil {
+			return stream.Send(&pb.MaasPlanUpdate{Plan: &response, Complete: true})
+		}
+	}
+	if err := workCtx.Err(); err != nil {
+		return status.FromContextError(err).Err()
+	}
+
+	api, err := s.fetch(workCtx, req)
+	if err != nil {
+		return maasPlanError(err)
+	}
+	// refs alias response's sections, so enrichGeometry below fills in the very
+	// message that was just sent — the second Send carries the same routes with
+	// their paths resolved.
+	response, refs := convertRoutes(workCtx, s.db, api)
+	if err := stream.Send(&pb.MaasPlanUpdate{Plan: response}); err != nil {
+		return err
+	}
+	enrichGeometry(workCtx, s.db, s.osrmClient, refs)
+	// Cached before the last Send: the work is already paid for, and a client
+	// that disconnects during that send should not throw it away.
+	s.cachePlan(workCtx, cacheKey, response)
+	return stream.Send(&pb.MaasPlanUpdate{Plan: response, Complete: true})
+}
+
+// cachePlan stores a finished plan best-effort. The rider already has the
+// answer by this point, so a cache failure is logged, never returned.
+func (s *MaasServer) cachePlan(ctx context.Context, cacheKey string, response *pb.MaasPlanResponse) {
+	encoded, err := proto.Marshal(response)
+	if err != nil {
+		return
+	}
+	if err := s.cache.Set(ctx, cacheKey, encoded, maasCacheTTL); err != nil && ctx.Err() == nil {
+		log.Errorf("[MAAS] cache set failed: %v", err)
 	}
 }
 
@@ -353,7 +444,7 @@ func (s *MaasServer) runSharedPlan(cacheKey string, req *pb.MaasPlanRequest) (*p
 	if err != nil {
 		return response, nil
 	}
-	if err := s.cache.Set(workCtx, cacheKey, encoded, 90*time.Second); err != nil {
+	if err := s.cache.Set(workCtx, cacheKey, encoded, maasCacheTTL); err != nil {
 		if contextErr := workCtx.Err(); contextErr != nil {
 			return nil, contextErr
 		}
@@ -385,6 +476,16 @@ func maasTimeParam(date, timeStr string, arriveBy bool, now time.Time) (depart, 
 }
 
 func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
+	api, err := s.fetch(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return convert(ctx, s.db, s.osrmClient, api), nil
+}
+
+// fetch is the upstream TDX MaaS call on its own, so PlanStream can run the two
+// conversion stages around it instead of taking the whole thing as one step.
+func (s *MaasServer) fetch(ctx context.Context, req *pb.MaasPlanRequest) (*tdxAPIResponse, error) {
 	gc := req.Gc
 	if gc < 0 || gc > 1 {
 		gc = 0.0
@@ -433,10 +534,14 @@ func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maas
 		return nil, err
 	}
 	if !resp.IsSuccess() {
-		return nil, fmt.Errorf("TDX MaaS HTTP %d for %s: %s",
+		err := fmt.Errorf("TDX MaaS HTTP %d for %s: %s",
 			resp.StatusCode(), resp.Request.URL, strings.TrimSpace(resp.String()))
+		if resp.StatusCode() == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: %w", errMaasNoRoute, err)
+		}
+		return nil, err
 	}
-	return convert(ctx, s.db, s.osrmClient, &apiResp), nil
+	return &apiResp, nil
 }
 
 type maasSectionRef struct {
@@ -447,6 +552,20 @@ type maasSectionRef struct {
 }
 
 func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxAPIResponse) *pb.MaasPlanResponse {
+	out, refs := convertRoutes(ctx, db, api)
+	enrichGeometry(ctx, db, osrmClient, refs)
+	return out
+}
+
+// convertRoutes is the first half of convert: the routes themselves, with the
+// fares and notification identities the cards read. Everything a rider needs to
+// choose between itineraries is set here; only the map geometry is still
+// missing, and a section with no path renders as a straight line. PlanStream
+// sends this out before paying for [enrichGeometry].
+//
+// The returned refs alias the response's sections, so enriching them later
+// mutates the same message.
+func convertRoutes(ctx context.Context, db maasDB, api *tdxAPIResponse) (*pb.MaasPlanResponse, []maasSectionRef) {
 	out := &pb.MaasPlanResponse{}
 	refs := make([]maasSectionRef, 0)
 	for _, route := range api.Data.Routes {
@@ -467,9 +586,16 @@ func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxA
 	}
 	batchBusNotificationIdentities(ctx, db, refs)
 	batchSectionFares(ctx, db, refs)
+	return out, refs
+}
+
+// enrichGeometry is the second half of convert: the OSRM foot paths and the
+// clipped rail line shapes that draw the route on the map. It is the expensive
+// half — one OSRM round trip per walk section — and nothing in the results list
+// depends on it.
+func enrichGeometry(ctx context.Context, db maasDB, osrmClient *resty.Client, refs []maasSectionRef) {
 	enrichWalkSections(ctx, osrmClient, refs)
 	enrichTransitPaths(ctx, db, refs)
-	return out
 }
 
 func convertSection(sec tdxSection) *pb.Section {
@@ -692,428 +818,18 @@ func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
 	}
 }
 
-// enrichWalkSections treats OSRM as optional enrichment: cancellation, timeout,
-// and routing failures leave the TDX duration and empty geometry untouched. The
-// indexed section references preserve response order while errgroup bounds the
-// number of concurrent OSRM requests.
-func enrichWalkSections(ctx context.Context, osrmClient *resty.Client, refs []maasSectionRef) {
-	if osrmClient == nil {
-		return
-	}
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(maasOSRMConcurrency)
-	for _, ref := range refs {
-		if !isWalkSection(ref.source) {
-			continue
-		}
-		ref := ref
-		group.Go(func() error {
-			if err := groupCtx.Err(); err != nil {
-				return err
-			}
-			secs, path, steps, ok := walkRoute(groupCtx, osrmClient, ref.target.Departure.Location, ref.target.Arrival.Location)
-			if ok {
-				ref.target.TravelSummary.Duration = secs
-				ref.target.WalkPath = path
-				ref.target.WalkSteps = steps
-			}
-			return nil
-		})
-	}
-	_ = group.Wait()
-}
-
-// isWalkSection reports whether a section is a pedestrian leg. Keyed off the
-// section type: live TDX MaaS responses emit type "pedestrian" with mode
-// "pedestrian" (not the documented "WALK"), and walk legs still carry a
-// transport block, so the type field is the reliable discriminator — mirrors
-// the app's isWalk. The legacy ""/"walk" modes are kept for older payloads.
-func isWalkSection(sec tdxSection) bool {
-	return strings.EqualFold(sec.Type, "pedestrian") ||
-		sec.Transport.Mode == "" || strings.EqualFold(sec.Transport.Mode, "walk")
-}
-
-// osrmRouteResponse is the subset of the OSRM /route/v1/foot response the
-// planner consumes: total duration, the geojson geometry, and the per-leg
-// turn-by-turn steps.
-type osrmRouteResponse struct {
-	Code   string `json:"code"`
-	Routes []struct {
-		Duration float64 `json:"duration"`
-		Geometry struct {
-			Coordinates [][]float64 `json:"coordinates"`
-		} `json:"geometry"`
-		Legs []struct {
-			Steps []struct {
-				Distance float64 `json:"distance"`
-				Duration float64 `json:"duration"`
-				Name     string  `json:"name"`
-				Maneuver struct {
-					Type     string    `json:"type"`
-					Modifier string    `json:"modifier"`
-					Location []float64 `json:"location"`
-				} `json:"maneuver"`
-			} `json:"steps"`
-		} `json:"legs"`
-	} `json:"routes"`
-}
-
-// walkRoute resolves the OSRM foot route between two points for a walk section.
-// It returns the real travel time (seconds), the route geometry, and the
-// turn-by-turn steps from a single /route call. ok is false when either point
-// lacks coordinates or OSRM returns no usable route, so the caller keeps the
-// fixed TDX estimate and leaves the path and steps empty.
-func walkRoute(ctx context.Context, osrmClient *resty.Client, from, to *pb.Location) (int64, []*pb.Location, []*pb.WalkStep, bool) {
-	if osrmClient == nil || from == nil || to == nil {
-		return 0, nil, nil, false
-	}
-	if (from.Lat == 0 && from.Lng == 0) || (to.Lat == 0 && to.Lng == 0) {
-		return 0, nil, nil, false
-	}
-	coords := fmt.Sprintf("%f,%f;%f,%f", from.Lng, from.Lat, to.Lng, to.Lat)
-	var out osrmRouteResponse
-	resp, err := osrmClient.R().
-		SetContext(ctx).
-		SetQueryParam("steps", "true").
-		SetQueryParam("geometries", "geojson").
-		SetQueryParam("overview", "full").
-		SetResult(&out).
-		Get(fmt.Sprintf("http://osrm:5000/route/v1/foot/%s", coords))
-	if err != nil || !resp.IsSuccess() || out.Code != "Ok" || len(out.Routes) == 0 {
-		return 0, nil, nil, false
-	}
-	route := out.Routes[0]
-	path := make([]*pb.Location, 0, len(route.Geometry.Coordinates))
-	for _, c := range route.Geometry.Coordinates {
-		if len(c) < 2 {
-			continue
-		}
-		// geojson coordinates are [lng, lat].
-		path = append(path, &pb.Location{Lng: c[0], Lat: c[1]})
-	}
-	var steps []*pb.WalkStep
-	for _, leg := range route.Legs {
-		for _, st := range leg.Steps {
-			step := &pb.WalkStep{
-				Instruction:     walkInstruction(st.Maneuver.Type, st.Maneuver.Modifier, st.Name),
-				ManeuverType:    st.Maneuver.Type,
-				Modifier:        st.Maneuver.Modifier,
-				DistanceMeters:  st.Distance,
-				DurationSeconds: int64(st.Duration),
-			}
-			if len(st.Maneuver.Location) >= 2 {
-				step.Location = &pb.Location{Lng: st.Maneuver.Location[0], Lat: st.Maneuver.Location[1]}
-			}
-			steps = append(steps, step)
-		}
-	}
-	return int64(route.Duration), path, steps, true
-}
-
-// walkInstruction composes a Traditional Chinese turn-by-turn sentence from one
-// OSRM maneuver. Taiwan OSM street names are already Chinese, so the street
-// name (when present) is used verbatim. Unknown maneuver types fall back to a
-// generic "continue straight" sentence so navigation never shows an empty line.
-func walkInstruction(maneuverType, modifier, name string) string {
-	switch maneuverType {
-	case "arrive":
-		return "抵達目的地"
-	case "depart":
-		if name != "" {
-			return fmt.Sprintf("沿%s出發", name)
-		}
-		return "開始步行"
-	}
-	turn := map[string]string{
-		"left": "左轉", "right": "右轉",
-		"slight left": "稍向左", "slight right": "稍向右",
-		"sharp left": "向左急轉", "sharp right": "向右急轉",
-		"uturn": "迴轉",
-	}[modifier]
-	switch {
-	case turn != "" && name != "":
-		return fmt.Sprintf("%s進入%s", turn, name)
-	case turn != "":
-		return turn
-	case name != "":
-		return fmt.Sprintf("沿%s直走", name)
-	default:
-		return "繼續直走"
-	}
-}
-
-// Rail-mode classifiers. TDX MaaS mode strings vary by dataset; these cover the
-// documented values (SUBWAY/METRO for metro, RAIL/TRA for conventional rail,
-// THSR/HSR for high-speed rail).
-func isMetroMode(mode string) bool {
-	return strings.EqualFold(mode, "subway") || strings.EqualFold(mode, "metro") || strings.EqualFold(mode, "mrt")
-}
-func isThsrMode(mode string) bool {
-	return strings.EqualFold(mode, "thsr") || strings.EqualFold(mode, "hsr")
-}
-func isRailMode(mode string) bool {
-	return strings.EqualFold(mode, "rail") || strings.EqualFold(mode, "tra") || strings.EqualFold(mode, "train")
-}
-
-func isBusMode(mode string) bool {
-	return strings.EqualFold(mode, "bus") || strings.EqualFold(mode, "HighwayBus")
-}
-
-// maasTransitPathConcurrency bounds concurrent rail_shapes lookups the same
-// way maasOSRMConcurrency bounds OSRM lookups in enrichWalkSections.
-const maasTransitPathConcurrency = 4
-
-// railShapeSnapMeters is the maximum distance (in meters) a section's
-// departure/arrival stop may sit from a candidate line before that line is
-// rejected as a match. 500m tolerates the walk-in access point TDX sometimes
-// reports for a station without matching an unrelated line.
-const railShapeSnapMeters = 500.0
-
-// railShapeSimplifyTolerance is the ST_SimplifyPreserveTopology tolerance (in
-// degrees) applied to a clipped line before it is returned, trimming
-// coordinate density without visibly changing the drawn path.
-const railShapeSimplifyTolerance = 0.0001
-
-// transitPathClipSQL finds the rail_shapes line that best matches one stop
-// pair for a given mode and returns it clipped between the two stops.
-//
-// Matching is purely geometric (MaaS sections carry no LineID): "best" is the
-// line minimizing the larger of the two stop-to-line distances, computed over
-// ST_LineMerge(geom) so a MULTILINESTRING scores as one shape. Once a
-// candidate merged geometry is chosen, its individual components are dumped
-// (ST_Dump) so ST_LineLocatePoint/ST_LineSubstring — which require a simple
-// LINESTRING — operate on the one component whose distance to both stops is
-// within railShapeSnapMeters; a shape whose components each miss one stop
-// (no single component holds both) yields no row, so the caller falls back to
-// a straight line for that pair. ST_LineLocatePoint fractions are ordered
-// low-to-high before ST_LineSubstring, since the stop pair's travel direction
-// does not necessarily match the shape's digitized direction.
-const transitPathClipSQL = `
-WITH candidates AS (
-	SELECT ST_LineMerge(geom) AS merged
-	FROM rail_shapes
-	WHERE mode = $1
-), scored AS (
-	SELECT merged,
-		GREATEST(
-			ST_Distance(merged::geography, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography),
-			ST_Distance(merged::geography, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography)
-		) AS score
-	FROM candidates
-), best AS (
-	SELECT merged FROM scored ORDER BY score ASC LIMIT 1
-), components AS (
-	SELECT (ST_Dump(merged)).geom AS line FROM best
-), matched AS (
-	SELECT line,
-		ST_Distance(line::geography, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography) AS d1,
-		ST_Distance(line::geography, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography) AS d2
-	FROM components
-), chosen AS (
-	SELECT line FROM matched
-	WHERE d1 <= $6 AND d2 <= $6
-	ORDER BY GREATEST(d1, d2) ASC
-	LIMIT 1
-), located AS (
-	SELECT line,
-		ST_LineLocatePoint(line, ST_SetSRID(ST_MakePoint($2, $3), 4326)) AS f1,
-		ST_LineLocatePoint(line, ST_SetSRID(ST_MakePoint($4, $5), 4326)) AS f2
-	FROM chosen
-)
-SELECT ST_AsText(
-	ST_SimplifyPreserveTopology(
-		ST_LineSubstring(line, LEAST(f1, f2), GREATEST(f1, f2)),
-		$7
-	)
-)
-FROM located`
-
-// railShapeMode maps a MaaS transport mode string to the rail_shapes.mode
-// value it should be matched against, reusing the same mode classifiers
-// batchSectionFares uses. "" means the section is out of scope for transit-
-// path enrichment (bus and anything else).
-func railShapeMode(mode string) string {
-	switch {
-	case isMetroMode(mode):
-		return "metro"
-	case isThsrMode(mode):
-		return "thsr"
-	case isRailMode(mode):
-		return "tra"
-	default:
-		return ""
-	}
-}
-
-// transitStopPoint is one stop a transit section passes through, in travel
-// order.
-type transitStopPoint struct {
-	lat, lng float64
-}
-
-// sectionStopPoints returns a section's ordered stop points: departure, every
-// intermediate stop, then arrival. This is the sequence enrichTransitPaths
-// clips one rail_shapes line between, pair by pair.
-func sectionStopPoints(sec tdxSection) []transitStopPoint {
-	points := make([]transitStopPoint, 0, 2+len(sec.IntermediateStops))
-	points = append(points, transitStopPoint{sec.Departure.Place.Location.Lat, sec.Departure.Place.Location.Lng})
-	for _, stop := range sec.IntermediateStops {
-		points = append(points, transitStopPoint{stop.Departure.Place.Location.Lat, stop.Departure.Place.Location.Lng})
-	}
-	points = append(points, transitStopPoint{sec.Arrival.Place.Location.Lat, sec.Arrival.Place.Location.Lng})
-	return points
-}
-
-// appendTransitSegment appends seg to path, dropping seg's first point when
-// it duplicates path's current last point — the joint between two
-// consecutive stop-pair clips — so the assembled path has no repeated point
-// at each intermediate stop.
-func appendTransitSegment(path []*pb.Location, seg []*pb.Location) []*pb.Location {
-	if len(seg) == 0 {
-		return path
-	}
-	if len(path) > 0 {
-		last := path[len(path)-1]
-		if last.Lat == seg[0].Lat && last.Lng == seg[0].Lng {
-			seg = seg[1:]
-		}
-	}
-	return append(path, seg...)
-}
-
-// parseWKTLineString parses a PostGIS ST_AsText LINESTRING result into
-// Locations. It never encounters MULTILINESTRING or any other geometry type
-// since transitPathClipSQL always clips a single dumped component.
-func parseWKTLineString(wkt string) ([]*pb.Location, error) {
-	wkt = strings.TrimSpace(wkt)
-	open := strings.IndexByte(wkt, '(')
-	closeIdx := strings.LastIndexByte(wkt, ')')
-	if !strings.HasPrefix(strings.ToUpper(wkt), "LINESTRING") || open < 0 || closeIdx <= open {
-		return nil, fmt.Errorf("not a LINESTRING: %q", wkt)
-	}
-	body := wkt[open+1 : closeIdx]
-	if strings.TrimSpace(body) == "" {
-		return nil, fmt.Errorf("empty LINESTRING: %q", wkt)
-	}
-	pairs := strings.Split(body, ",")
-	points := make([]*pb.Location, 0, len(pairs))
-	for _, pair := range pairs {
-		fields := strings.Fields(strings.TrimSpace(pair))
-		if len(fields) < 2 {
-			return nil, fmt.Errorf("malformed coordinate %q in %q", pair, wkt)
-		}
-		lng, err := strconv.ParseFloat(fields[0], 64)
-		if err != nil {
-			return nil, fmt.Errorf("parse lng %q: %w", fields[0], err)
-		}
-		lat, err := strconv.ParseFloat(fields[1], 64)
-		if err != nil {
-			return nil, fmt.Errorf("parse lat %q: %w", fields[1], err)
-		}
-		points = append(points, &pb.Location{Lat: lat, Lng: lng})
-	}
-	return points, nil
-}
-
-// clipRailShape looks up and clips the rail_shapes line best matching one
-// stop pair. ok is false whenever the enrichment does not apply: missing
-// coordinates, a query error, no candidate line, or every candidate's snap
-// distance exceeding railShapeSnapMeters. The caller falls back to a straight
-// line between the two stops in every ok=false case.
-func clipRailShape(ctx context.Context, db maasDB, mode string, a, b transitStopPoint) ([]*pb.Location, bool) {
-	if db == nil {
-		return nil, false
-	}
-	if (a.lat == 0 && a.lng == 0) || (b.lat == 0 && b.lng == 0) {
-		return nil, false
-	}
-	rows, err := db.Query(ctx, transitPathClipSQL,
-		mode, a.lng, a.lat, b.lng, b.lat, railShapeSnapMeters, railShapeSimplifyTolerance)
-	if err != nil {
-		log.Warnf("[MAAS] action=transit_path event=query_error mode=%s error=%v", mode, err)
-		return nil, false
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		return nil, false
-	}
-	var wkt string
-	if err := rows.Scan(&wkt); err != nil {
-		log.Warnf("[MAAS] action=transit_path event=scan_error mode=%s error=%v", mode, err)
-		return nil, false
-	}
-	points, err := parseWKTLineString(wkt)
-	if err != nil || len(points) < 2 {
-		log.Warnf("[MAAS] action=transit_path event=parse_error mode=%s error=%v", mode, err)
-		return nil, false
-	}
-	return points, true
-}
-
-// buildTransitPath assembles one section's full transitPath by clipping a
-// rail_shapes line between every consecutive stop pair (departure →
-// intermediate stops → arrival) and stitching the per-pair clips together. A
-// pair whose line does not resolve falls back to its two raw stop points, so
-// one unmatched pair degrades to a straight segment rather than emptying the
-// whole section's path.
-func buildTransitPath(ctx context.Context, db maasDB, mode string, sec tdxSection) []*pb.Location {
-	stops := sectionStopPoints(sec)
-	if len(stops) < 2 {
-		return nil
-	}
-	var path []*pb.Location
-	for i := 0; i+1 < len(stops); i++ {
-		a, b := stops[i], stops[i+1]
-		seg, ok := clipRailShape(ctx, db, mode, a, b)
-		if !ok {
-			seg = []*pb.Location{{Lat: a.lat, Lng: a.lng}, {Lat: b.lat, Lng: b.lng}}
-		}
-		path = appendTransitSegment(path, seg)
-	}
-	return path
-}
-
-// enrichTransitPaths is a pure enhancement, mirroring enrichWalkSections: any
-// SQL error, unmatched pair, or over-threshold snap leaves a section's
-// transitPath empty (or partially straight-line) rather than failing the
-// plan. Only rail/metro sections are enriched — buses are out of scope
-// (railShapeMode returns "" for them). Concurrency is bounded per section the
-// same way enrichWalkSections bounds per-section OSRM lookups.
-func enrichTransitPaths(ctx context.Context, db maasDB, refs []maasSectionRef) {
-	if db == nil {
-		return
-	}
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(maasTransitPathConcurrency)
-	for _, ref := range refs {
-		mode := railShapeMode(ref.source.Transport.Mode)
-		if mode == "" {
-			continue
-		}
-		ref := ref
-		group.Go(func() error {
-			if err := groupCtx.Err(); err != nil {
-				return err
-			}
-			ref.target.TransitPath = buildTransitPath(groupCtx, db, mode, ref.source)
-			return nil
-		})
-	}
-	_ = group.Wait()
-}
-
-// clampInt returns v bounded to [min,max], or def when v is unset (0) and 0 is
+// clampInt returns v bounded to [lo,hi], or def when v is unset (0) and 0 is
 // outside the valid range — so old clients / cached zero-value requests fall
 // back to the TDX defaults rather than sending 0.
-func clampInt(v, min, max, def int32) int32 {
-	if v == 0 && (0 < min || 0 > max) {
+func clampInt(v, lo, hi, def int32) int32 {
+	if v == 0 && (0 < lo || 0 > hi) {
 		return def
 	}
-	if v < min {
-		return min
+	if v < lo {
+		return lo
 	}
-	if v > max {
-		return max
+	if v > hi {
+		return hi
 	}
 	return v
 }

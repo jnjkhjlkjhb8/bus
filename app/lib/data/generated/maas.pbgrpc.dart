@@ -39,6 +39,20 @@ class MaasServiceClient extends $grpc.Client {
     return $createUnaryCall(_$plan, request, options: options);
   }
 
+  /// Same query as plan, delivered in stages: the routes land as soon as TDX
+  /// and the fare/notification lookups resolve, and a second message follows
+  /// with the map geometry (walkPath / transitPath) filled in. The first
+  /// message is already usable — the app falls back to straight lines for a
+  /// section whose path is empty.
+  $grpc.ResponseStream<$0.MaasPlanUpdate> planStream(
+    $0.MaasPlanRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createStreamingCall(
+        _$planStream, $async.Stream.fromIterable([request]),
+        options: options);
+  }
+
   // method descriptors
 
   static final _$plan =
@@ -46,6 +60,11 @@ class MaasServiceClient extends $grpc.Client {
           '/MaasService/plan',
           ($0.MaasPlanRequest value) => value.writeToBuffer(),
           $0.MaasPlanResponse.fromBuffer);
+  static final _$planStream =
+      $grpc.ClientMethod<$0.MaasPlanRequest, $0.MaasPlanUpdate>(
+          '/MaasService/planStream',
+          ($0.MaasPlanRequest value) => value.writeToBuffer(),
+          $0.MaasPlanUpdate.fromBuffer);
 }
 
 @$pb.GrpcServiceName('MaasService')
@@ -60,6 +79,13 @@ abstract class MaasServiceBase extends $grpc.Service {
         false,
         ($core.List<$core.int> value) => $0.MaasPlanRequest.fromBuffer(value),
         ($0.MaasPlanResponse value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.MaasPlanRequest, $0.MaasPlanUpdate>(
+        'planStream',
+        planStream_Pre,
+        false,
+        true,
+        ($core.List<$core.int> value) => $0.MaasPlanRequest.fromBuffer(value),
+        ($0.MaasPlanUpdate value) => value.writeToBuffer()));
   }
 
   $async.Future<$0.MaasPlanResponse> plan_Pre($grpc.ServiceCall $call,
@@ -68,5 +94,13 @@ abstract class MaasServiceBase extends $grpc.Service {
   }
 
   $async.Future<$0.MaasPlanResponse> plan(
+      $grpc.ServiceCall call, $0.MaasPlanRequest request);
+
+  $async.Stream<$0.MaasPlanUpdate> planStream_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.MaasPlanRequest> $request) async* {
+    yield* planStream($call, await $request);
+  }
+
+  $async.Stream<$0.MaasPlanUpdate> planStream(
       $grpc.ServiceCall call, $0.MaasPlanRequest request);
 }

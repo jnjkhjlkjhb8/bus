@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -211,6 +212,12 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 		ServiceType: row.ServiceType,
 		Address:     row.Address,
 	}
+	// Left empty when the station landed without a point, so a client reads a
+	// missing coordinate as missing rather than as the origin off West Africa.
+	if row.Lat != nil && row.Lon != nil {
+		resp.Lat = strconv.FormatFloat(*row.Lat, 'f', 6, 64)
+		resp.Lon = strconv.FormatFloat(*row.Lon, 'f', 6, 64)
+	}
 	if s.cache != nil {
 		if data, err := proto.Marshal(resp); err == nil {
 			s.cache.set("bike_static:"+in.StationUID, data, time.Hour)
@@ -382,9 +389,9 @@ func (s *Tra_DetainServer) Stops(ctx context.Context, in *pb.AskDetain) (*pb.Tra
 // empty cached value is skipped rather than sent as a seed frame.
 func (s *Tra_DetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainService_DelayServer) error {
 	log.Infof("call tra_delay %s", in.Trainno)
-	// No writer publishes this channel yet (functions only writes the delay hash
-	// and the :all snapshot), so this stream stays silent — see
-	// shared.TraDelayTrainChannel.
+	// The realtime TRA job sets and publishes this key per train (traEta), so a
+	// train absent from the current delay feed simply has no cached value and
+	// the stream stays silent until one lands.
 	key := shared.TraDelayTrainChannel(in.Trainno)
 	return streamLive(stream.Context(), s.live, liveStreamSpec{
 		channel:  key,
@@ -485,30 +492,78 @@ func (s *Near_Server) Near(stream pb.Near_Station_Service_NearServer) error {
 	return s.FindNear(stream)
 }
 
+// latestNearRequest drains the request stream into a single-slot channel: a
+// request that arrives while another is being computed replaces whatever is
+// waiting behind it rather than queueing. A client panning the map is answered
+// for where it stopped, and the intermediate viewports cost nothing.
+//
+// Callers must read the returned error only after the channel is closed; the
+// close is what publishes it.
+func latestNearRequest(stream pb.Near_Station_Service_NearServer) (<-chan *pb.Ask_Near, *error) {
+	requests := make(chan *pb.Ask_Near, 1)
+	var recvErr error
+	go func() {
+		defer close(requests)
+		for {
+			in, err := stream.Recv()
+			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					recvErr = err
+				}
+				return
+			}
+			// Sole producer, so the slot cannot refill between the drain and
+			// the send and the send cannot block.
+			select {
+			case <-requests:
+			default:
+			}
+			requests <- in
+		}
+	}()
+	return requests, &recvErr
+}
+
 // FindNear is a bidirectional stream: for each location the client sends, it
-// replies with nearby stations of every mode. It returns nil on client EOF.
+// replies with nearby stations of every mode. Responses are not one-per-request
+// — a viewport superseded before it was picked up is dropped, so a client must
+// treat every response as "the newest answer" rather than the answer to a
+// specific request it sent. It returns nil on client EOF.
 func (s *Near_Server) FindNear(stream pb.Near_Station_Service_NearServer) error {
 	ctx := stream.Context()
+	requests, recvErr := latestNearRequest(stream)
 	for {
-		in, err := stream.Recv()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
+		var in *pb.Ask_Near
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case next, ok := <-requests:
+			if !ok {
+				return *recvErr
+			}
+			in = next
 		}
 		lon := in.PositionLon
 		lat := in.PositionLat
 		r := in.Radius
 		log.Infof("[gRPC] received location: lon=%f lat=%f radius=%d", lon, lat, r)
+		started := time.Now()
 		resp, err := s.discovery.Discover(ctx, nearbyQuery{
 			Origin: geoPoint{Lon: lon, Lat: lat}, RadiusMeters: int(r),
 		})
+		// Server-side cost of one nearby query, so a slow first paint can be
+		// attributed to the router or ruled out without a second round of logs.
+		log.Infof("[NEAR] action=discover event=done elapsed_ms=%d", time.Since(started).Milliseconds())
 		if err != nil {
-			log.Errorf("[gRPC] action=nearby_discovery failed error=%v", err)
+			// A rejected query is the caller's bug, not the router's: it logs at
+			// Warn so a stale client sending an out-of-range radius does not
+			// raise a server-side error issue. The client clamps before sending
+			// (kNearbyMaxRadiusMeters), so this only fires for old builds.
 			if errors.Is(err, ErrInvalidNearbyQuery) {
+				log.Warnf("[gRPC] action=nearby_discovery event=invalid error=%v", err)
 				return status.Error(codes.InvalidArgument, err.Error())
 			}
+			log.Errorf("[gRPC] action=nearby_discovery failed error=%v", err)
 			if errors.Is(err, ErrNearbyUnavailable) {
 				return status.Error(codes.Unavailable, "nearby discovery unavailable")
 			}

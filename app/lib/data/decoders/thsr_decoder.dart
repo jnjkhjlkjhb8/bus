@@ -1,10 +1,28 @@
-import 'package:wheres_the_car/data/generated/thsr.pb.dart';
-import 'package:wheres_the_car/data/models/rail_timetable_view.dart';
-import 'package:wheres_the_car/data/models/thsr_models.dart';
+import 'package:wheres_the_bus/data/generated/thsr.pb.dart';
+import 'package:wheres_the_bus/data/models/rail_station_board.dart';
+import 'package:wheres_the_bus/data/models/rail_timetable_view.dart';
+import 'package:wheres_the_bus/data/models/thsr_models.dart';
 
 class ThsrDecoder {
   const ThsrDecoder._();
   static const ThsrDecoder instance = ThsrDecoder._();
+
+  /// One station's next departures. The train type is left empty rather than
+  /// filled with '高鐵': THSR runs a single class, so a chip repeating the
+  /// system on every row of a THSR board would say nothing.
+  List<RailStationDeparture> decodeStationBoard(thsr_station_board board) =>
+      board.items
+          .map(
+            (d) => RailStationDeparture(
+              trainNo: d.trainNo,
+              trainType: '',
+              destination: d.destinationStationName,
+              departureTime: d.departureTime,
+              serviceDate: d.trainDate,
+              remark: d.note,
+            ),
+          )
+          .toList();
 
   /// Reshapes one THSR timetable entry into the card-facing view model. THSR
   /// has a single service class, so the type label is fixed rather than
@@ -29,13 +47,22 @@ class ThsrDecoder {
             travelMinutes: _parseTravelMinutes(t.travelTime),
             delayMinutes: 0,
             remark: t.note,
+            isOvernight: t.overnight,
           ),
         )
         .toList();
   }
 
-  ThsrFare decodeFare(thsa_fare f) =>
-      ThsrFare(fareClass: f.fareClass, price: f.price);
+  /// One fare per fare class × cabin class — see [thsrFareFor].
+  List<ThsrFare> decodeFares(thsa_fares fares) => fares.items
+      .map(
+        (f) => ThsrFare(
+          fareClass: f.fareClass,
+          cabinClass: f.cabinClas,
+          price: f.price,
+        ),
+      )
+      .toList();
 
   List<ThsrStopTime> decodeStopTimes(thsr_stoptimes stoptimes) {
     return stoptimes.items

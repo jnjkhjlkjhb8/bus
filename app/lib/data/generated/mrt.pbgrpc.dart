@@ -40,12 +40,53 @@ class Mrt_ServiceClient extends $grpc.Client {
         options: options);
   }
 
+  /// Metro alight reminder (捷運下車提醒, ADR-0015): a car-bound tracking session.
+  /// CreateTrack resolves the car to a trip and returns the initial live state;
+  /// WatchTrack streams the evolving state; CancelTrack ends the session.
+  $grpc.ResponseFuture<$0.MrtTrackState> createTrack(
+    $0.CreateMrtTrackRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$createTrack, request, options: options);
+  }
+
+  $grpc.ResponseStream<$0.MrtTrackState> watchTrack(
+    $0.WatchMrtTrackRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createStreamingCall(
+        _$watchTrack, $async.Stream.fromIterable([request]),
+        options: options);
+  }
+
+  $grpc.ResponseFuture<$0.MrtTrackAck> cancelTrack(
+    $0.CancelMrtTrackRequest request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$cancelTrack, request, options: options);
+  }
+
   // method descriptors
 
   static final _$eta = $grpc.ClientMethod<$0.Ask_mrt, $0.Resp_Mrt_eta>(
       '/Mrt_Service/eta',
       ($0.Ask_mrt value) => value.writeToBuffer(),
       $0.Resp_Mrt_eta.fromBuffer);
+  static final _$createTrack =
+      $grpc.ClientMethod<$0.CreateMrtTrackRequest, $0.MrtTrackState>(
+          '/Mrt_Service/CreateTrack',
+          ($0.CreateMrtTrackRequest value) => value.writeToBuffer(),
+          $0.MrtTrackState.fromBuffer);
+  static final _$watchTrack =
+      $grpc.ClientMethod<$0.WatchMrtTrackRequest, $0.MrtTrackState>(
+          '/Mrt_Service/WatchTrack',
+          ($0.WatchMrtTrackRequest value) => value.writeToBuffer(),
+          $0.MrtTrackState.fromBuffer);
+  static final _$cancelTrack =
+      $grpc.ClientMethod<$0.CancelMrtTrackRequest, $0.MrtTrackAck>(
+          '/Mrt_Service/CancelTrack',
+          ($0.CancelMrtTrackRequest value) => value.writeToBuffer(),
+          $0.MrtTrackAck.fromBuffer);
 }
 
 @$pb.GrpcServiceName('Mrt_Service')
@@ -60,6 +101,30 @@ abstract class Mrt_ServiceBase extends $grpc.Service {
         true,
         ($core.List<$core.int> value) => $0.Ask_mrt.fromBuffer(value),
         ($0.Resp_Mrt_eta value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.CreateMrtTrackRequest, $0.MrtTrackState>(
+        'CreateTrack',
+        createTrack_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.CreateMrtTrackRequest.fromBuffer(value),
+        ($0.MrtTrackState value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.WatchMrtTrackRequest, $0.MrtTrackState>(
+        'WatchTrack',
+        watchTrack_Pre,
+        false,
+        true,
+        ($core.List<$core.int> value) =>
+            $0.WatchMrtTrackRequest.fromBuffer(value),
+        ($0.MrtTrackState value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.CancelMrtTrackRequest, $0.MrtTrackAck>(
+        'CancelTrack',
+        cancelTrack_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) =>
+            $0.CancelMrtTrackRequest.fromBuffer(value),
+        ($0.MrtTrackAck value) => value.writeToBuffer()));
   }
 
   $async.Stream<$0.Resp_Mrt_eta> eta_Pre(
@@ -69,4 +134,28 @@ abstract class Mrt_ServiceBase extends $grpc.Service {
 
   $async.Stream<$0.Resp_Mrt_eta> eta(
       $grpc.ServiceCall call, $0.Ask_mrt request);
+
+  $async.Future<$0.MrtTrackState> createTrack_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.CreateMrtTrackRequest> $request) async {
+    return createTrack($call, await $request);
+  }
+
+  $async.Future<$0.MrtTrackState> createTrack(
+      $grpc.ServiceCall call, $0.CreateMrtTrackRequest request);
+
+  $async.Stream<$0.MrtTrackState> watchTrack_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.WatchMrtTrackRequest> $request) async* {
+    yield* watchTrack($call, await $request);
+  }
+
+  $async.Stream<$0.MrtTrackState> watchTrack(
+      $grpc.ServiceCall call, $0.WatchMrtTrackRequest request);
+
+  $async.Future<$0.MrtTrackAck> cancelTrack_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.CancelMrtTrackRequest> $request) async {
+    return cancelTrack($call, await $request);
+  }
+
+  $async.Future<$0.MrtTrackAck> cancelTrack(
+      $grpc.ServiceCall call, $0.CancelMrtTrackRequest request);
 }

@@ -1,4 +1,4 @@
-import 'package:wheres_the_car/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
 
 /// Pure geometry for the "pin a bus, pick your alight stop" flow. Kept out of
 /// the screen's `part` files so it can be unit-tested directly.

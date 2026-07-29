@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grpc/grpc.dart';
-import 'package:wheres_the_car/core/grpc/grpc_deadline_interceptor.dart';
+import 'package:wheres_the_bus/core/grpc/grpc_deadline_interceptor.dart';
 
 import '../../support/helpers/fake_grpc.dart';
 

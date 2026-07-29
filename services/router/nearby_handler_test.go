@@ -5,9 +5,10 @@ import (
 	"errors"
 	"io"
 	"math"
+	"sync"
 	"testing"
 
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -52,6 +53,95 @@ func TestFindNearMapsTotalDiscoveryFailureToUnavailable(t *testing.T) {
 	err := server.FindNear(&fakeNearStream{request: &pb.Ask_Near{PositionLon: 121.5, PositionLat: 25, Radius: 500}})
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("code = %s, err = %v, want Unavailable", status.Code(err), err)
+	}
+}
+
+// queuedNearStream feeds requests from a channel and reports EOF once it
+// closes, so a test controls exactly when each request reaches the server.
+type queuedNearStream struct {
+	fakeNearStream
+	requests <-chan *pb.Ask_Near
+	sent     int
+}
+
+func (s *queuedNearStream) Recv() (*pb.Ask_Near, error) {
+	in, ok := <-s.requests
+	if !ok {
+		return nil, io.EOF
+	}
+	return in, nil
+}
+
+func (s *queuedNearStream) Send(*pb.RespNear) error {
+	s.sent++
+	return nil
+}
+
+// blockingNearbyStore records the origin of every query and holds the first one
+// open until released, so later requests pile up behind it.
+type blockingNearbyStore struct {
+	mu      sync.Mutex
+	origins []float64
+	first   sync.Once
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingNearbyStore) Find(_ context.Context, mode nearbyMode, query nearbyQuery) ([]nearbyCandidate, error) {
+	if mode != nearbyBus {
+		return nil, nil
+	}
+	s.mu.Lock()
+	s.origins = append(s.origins, query.Origin.Lon)
+	s.mu.Unlock()
+	blocking := false
+	s.first.Do(func() { blocking = true })
+	if blocking {
+		close(s.started)
+		<-s.release
+	}
+	return nil, nil
+}
+
+func TestFindNearDropsViewportsSupersededWhileBusy(t *testing.T) {
+	requests := make(chan *pb.Ask_Near)
+	store := &blockingNearbyStore{started: make(chan struct{}), release: make(chan struct{})}
+	stream := &queuedNearStream{requests: requests}
+	server := &Near_Server{discovery: newNearbyDiscovery(store, nil)}
+
+	done := make(chan error, 1)
+	go func() { done <- server.FindNear(stream) }()
+
+	ask := func(lon float64) *pb.Ask_Near {
+		return &pb.Ask_Near{PositionLon: lon, PositionLat: 25, Radius: 500}
+	}
+	requests <- ask(121.50)
+	<-store.started // the first query is now in flight and blocked
+	requests <- ask(121.51)
+	requests <- ask(121.52)
+	requests <- ask(121.53)
+	close(requests)
+	close(store.release)
+
+	if err := <-done; err != nil {
+		t.Fatalf("FindNear = %v, want nil on client EOF", err)
+	}
+
+	store.mu.Lock()
+	origins := store.origins
+	store.mu.Unlock()
+	// The blocked first query and the newest viewport are always served. The
+	// middle ones collapse into the single waiting slot; 121.52 may or may not
+	// have reached it before 121.53 replaced it, so only 121.51 is guaranteed
+	// dropped.
+	if len(origins) < 2 || len(origins) > 3 {
+		t.Fatalf("served origins = %v, want the first plus at most one more", origins)
+	}
+	if origins[0] != 121.50 || origins[len(origins)-1] != 121.53 {
+		t.Fatalf("served origins = %v, want first 121.50 and last 121.53", origins)
+	}
+	if stream.sent != len(origins) {
+		t.Fatalf("responses = %d, want one per served query (%d)", stream.sent, len(origins))
 	}
 }
 

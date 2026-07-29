@@ -68,6 +68,39 @@ func TestLoadBikeStationsAcceptsUnknownServiceType(t *testing.T) {
 	}
 }
 
+// Bike counts must decode past 255. They were uint8, so one large station
+// (TDX returned GeneralBikes 321) failed the whole city's payload with
+// "cannot unmarshal number 321 into Go struct field ... of type uint8" —
+// silently dropping every station in that city from the live cache.
+func TestBikeCountsDecodeAbove255(t *testing.T) {
+	var avail bikeAvailability
+	if err := decodeLiveItems(decodeInto(
+		`[{"StationUID":"CHA001","ServiceStatus":1,"ServiceType":2,"AvailableReturnBikes":300,`+
+			`"AvailableRentBikesDetail":{"GeneralBikes":321,"ElectricBikes":260}}]`,
+	), func(item bikeAvailability) error {
+		avail = item
+		return nil
+	}); err != nil {
+		t.Fatalf("decode bike availability: %v", err)
+	}
+	if avail.AvailableReturnBikes != 300 ||
+		avail.AvailableRentBikesDetail.GeneralBikes != 321 ||
+		avail.AvailableRentBikesDetail.ElectricBikes != 260 {
+		t.Fatalf("decoded counts = %+v, want 300/321/260", avail)
+	}
+
+	sink := &fakeLoadSink{}
+	if err := loadBikeStations(context.Background(), decodeInto(
+		`[{"StationUID":"CHA001","StationID":"001","StationPosition":{"PositionLon":120.5,"PositionLat":24.0},`+
+			`"BikesCapacity":400,"ServiceType":2}]`,
+	), sink, "ChanghuaCounty"); err != nil {
+		t.Fatalf("loadBikeStations error = %v, want a 400-dock station to load", err)
+	}
+	if len(sink.calls) == 0 {
+		t.Fatal("copyUpsert calls = 0, want the high-capacity station written through")
+	}
+}
+
 func TestLoadBikeStationsDuplicatePolicy(t *testing.T) {
 	station := `{"StationUID":"TPE001","StationID":"001","StationPosition":{"PositionLon":121.5,"PositionLat":25.0},"ServiceType":2}`
 	t.Run("identical dedupe", func(t *testing.T) {

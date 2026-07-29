@@ -16,6 +16,318 @@ import 'package:protobuf/protobuf.dart' as $pb;
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
 
+/// A station's next departures in one direction — the board a rider gets by
+/// tapping the station on the map, with no destination to pick.
+class ask_station_board extends $pb.GeneratedMessage {
+  factory ask_station_board({
+    $core.String? stationId,
+    $core.String? date,
+    $core.String? after,
+    $core.int? direction,
+    $core.int? limit,
+  }) {
+    final result = create();
+    if (stationId != null) result.stationId = stationId;
+    if (date != null) result.date = date;
+    if (after != null) result.after = after;
+    if (direction != null) result.direction = direction;
+    if (limit != null) result.limit = limit;
+    return result;
+  }
+
+  ask_station_board._();
+
+  factory ask_station_board.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory ask_station_board.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'ask_station_board',
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'stationId')
+    ..aOS(2, _omitFieldNames ? '' : 'date')
+    ..aOS(3, _omitFieldNames ? '' : 'after')
+    ..aI(4, _omitFieldNames ? '' : 'direction')
+    ..aI(5, _omitFieldNames ? '' : 'limit')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ask_station_board clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  ask_station_board copyWith(void Function(ask_station_board) updates) =>
+      super.copyWith((message) => updates(message as ask_station_board))
+          as ask_station_board;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static ask_station_board create() => ask_station_board._();
+  @$core.override
+  ask_station_board createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static ask_station_board getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<ask_station_board>(create);
+  static ask_station_board? _defaultInstance;
+
+  /// Numeric station id or a station name; the router resolves names the same
+  /// 臺/台-tolerant way it does for the O/D RPCs.
+  @$pb.TagNumber(1)
+  $core.String get stationId => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set stationId($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasStationId() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearStationId() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get date => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set date($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasDate() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearDate() => $_clearField(2);
+
+  /// Lower bound on departure time, `HH:mm:ss`. The caller sends its own clock
+  /// rather than the server reading one: the router runs in UTC and the rider
+  /// is in Asia/Taipei. Empty means the whole day.
+  @$pb.TagNumber(3)
+  $core.String get after => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set after($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasAfter() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearAfter() => $_clearField(3);
+
+  /// 0 順行 / 1 逆行.
+  @$pb.TagNumber(4)
+  $core.int get direction => $_getIZ(3);
+  @$pb.TagNumber(4)
+  set direction($core.int value) => $_setSignedInt32(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasDirection() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearDirection() => $_clearField(4);
+
+  /// Departures to return. 0 means the default (20); the router caps it.
+  @$pb.TagNumber(5)
+  $core.int get limit => $_getIZ(4);
+  @$pb.TagNumber(5)
+  set limit($core.int value) => $_setSignedInt32(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasLimit() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearLimit() => $_clearField(5);
+}
+
+class tra_station_board extends $pb.GeneratedMessage {
+  factory tra_station_board({
+    $core.Iterable<tra_station_departure>? items,
+  }) {
+    final result = create();
+    if (items != null) result.items.addAll(items);
+    return result;
+  }
+
+  tra_station_board._();
+
+  factory tra_station_board.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory tra_station_board.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'tra_station_board',
+      createEmptyInstance: create)
+    ..pPM<tra_station_departure>(1, _omitFieldNames ? '' : 'items',
+        subBuilder: tra_station_departure.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  tra_station_board clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  tra_station_board copyWith(void Function(tra_station_board) updates) =>
+      super.copyWith((message) => updates(message as tra_station_board))
+          as tra_station_board;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static tra_station_board create() => tra_station_board._();
+  @$core.override
+  tra_station_board createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static tra_station_board getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<tra_station_board>(create);
+  static tra_station_board? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $pb.PbList<tra_station_departure> get items => $_getList(0);
+}
+
+class tra_station_departure extends $pb.GeneratedMessage {
+  factory tra_station_departure({
+    $core.String? trainDate,
+    $core.String? trainNo,
+    $core.String? trainTypeCode,
+    $core.String? trainTypeName,
+    $core.String? destinationStationName,
+    $core.String? departureTime,
+    $core.int? direction,
+    $core.int? mask,
+    $core.String? note,
+  }) {
+    final result = create();
+    if (trainDate != null) result.trainDate = trainDate;
+    if (trainNo != null) result.trainNo = trainNo;
+    if (trainTypeCode != null) result.trainTypeCode = trainTypeCode;
+    if (trainTypeName != null) result.trainTypeName = trainTypeName;
+    if (destinationStationName != null)
+      result.destinationStationName = destinationStationName;
+    if (departureTime != null) result.departureTime = departureTime;
+    if (direction != null) result.direction = direction;
+    if (mask != null) result.mask = mask;
+    if (note != null) result.note = note;
+    return result;
+  }
+
+  tra_station_departure._();
+
+  factory tra_station_departure.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory tra_station_departure.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'tra_station_departure',
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'TrainDate', protoName: 'TrainDate')
+    ..aOS(2, _omitFieldNames ? '' : 'TrainNo', protoName: 'TrainNo')
+    ..aOS(3, _omitFieldNames ? '' : 'TrainTypeCode', protoName: 'TrainTypeCode')
+    ..aOS(4, _omitFieldNames ? '' : 'TrainTypeName', protoName: 'TrainTypeName')
+    ..aOS(5, _omitFieldNames ? '' : 'DestinationStationName',
+        protoName: 'Destination_Station_Name')
+    ..aOS(6, _omitFieldNames ? '' : 'DepartureTime', protoName: 'DepartureTime')
+    ..aI(7, _omitFieldNames ? '' : 'Direction', protoName: 'Direction')
+    ..aI(8, _omitFieldNames ? '' : 'mask')
+    ..aOS(9, _omitFieldNames ? '' : 'Note', protoName: 'Note')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  tra_station_departure clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  tra_station_departure copyWith(
+          void Function(tra_station_departure) updates) =>
+      super.copyWith((message) => updates(message as tra_station_departure))
+          as tra_station_departure;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static tra_station_departure create() => tra_station_departure._();
+  @$core.override
+  tra_station_departure createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static tra_station_departure getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<tra_station_departure>(create);
+  static tra_station_departure? _defaultInstance;
+
+  /// The service date this departure runs on, which is not always the date
+  /// asked for: a board opened near midnight is topped up from the next day.
+  @$pb.TagNumber(1)
+  $core.String get trainDate => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set trainDate($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasTrainDate() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearTrainDate() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get trainNo => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set trainNo($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasTrainNo() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearTrainNo() => $_clearField(2);
+
+  @$pb.TagNumber(3)
+  $core.String get trainTypeCode => $_getSZ(2);
+  @$pb.TagNumber(3)
+  set trainTypeCode($core.String value) => $_setString(2, value);
+  @$pb.TagNumber(3)
+  $core.bool hasTrainTypeCode() => $_has(2);
+  @$pb.TagNumber(3)
+  void clearTrainTypeCode() => $_clearField(3);
+
+  @$pb.TagNumber(4)
+  $core.String get trainTypeName => $_getSZ(3);
+  @$pb.TagNumber(4)
+  set trainTypeName($core.String value) => $_setString(3, value);
+  @$pb.TagNumber(4)
+  $core.bool hasTrainTypeName() => $_has(3);
+  @$pb.TagNumber(4)
+  void clearTrainTypeName() => $_clearField(4);
+
+  @$pb.TagNumber(5)
+  $core.String get destinationStationName => $_getSZ(4);
+  @$pb.TagNumber(5)
+  set destinationStationName($core.String value) => $_setString(4, value);
+  @$pb.TagNumber(5)
+  $core.bool hasDestinationStationName() => $_has(4);
+  @$pb.TagNumber(5)
+  void clearDestinationStationName() => $_clearField(5);
+
+  @$pb.TagNumber(6)
+  $core.String get departureTime => $_getSZ(5);
+  @$pb.TagNumber(6)
+  set departureTime($core.String value) => $_setString(5, value);
+  @$pb.TagNumber(6)
+  $core.bool hasDepartureTime() => $_has(5);
+  @$pb.TagNumber(6)
+  void clearDepartureTime() => $_clearField(6);
+
+  @$pb.TagNumber(7)
+  $core.int get direction => $_getIZ(6);
+  @$pb.TagNumber(7)
+  set direction($core.int value) => $_setSignedInt32(6, value);
+  @$pb.TagNumber(7)
+  $core.bool hasDirection() => $_has(6);
+  @$pb.TagNumber(7)
+  void clearDirection() => $_clearField(7);
+
+  @$pb.TagNumber(8)
+  $core.int get mask => $_getIZ(7);
+  @$pb.TagNumber(8)
+  set mask($core.int value) => $_setSignedInt32(7, value);
+  @$pb.TagNumber(8)
+  $core.bool hasMask() => $_has(7);
+  @$pb.TagNumber(8)
+  void clearMask() => $_clearField(8);
+
+  @$pb.TagNumber(9)
+  $core.String get note => $_getSZ(8);
+  @$pb.TagNumber(9)
+  set note($core.String value) => $_setString(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasNote() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearNote() => $_clearField(9);
+}
+
 /// Wire-compatible with the former `bytes data = 1`: field 1 still carries a
 /// marshaled tra_delays (both the system-wide and per-train delay RPCs).
 class Resp_tra_delay extends $pb.GeneratedMessage {

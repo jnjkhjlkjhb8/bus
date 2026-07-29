@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
 
 class FilterChipGroup<T> extends StatelessWidget {
   const FilterChipGroup({
@@ -53,7 +54,9 @@ class _Chip extends StatelessWidget {
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
     return Pressable(
       onTap: onTap,
-      semanticLabel: selected ? '$label，已選取' : label,
+      semanticLabel: selected
+          ? AppI18n.of(context).chipSelectedSemantics(label)
+          : label,
       child: Container(
         // 30pt visual height with vertical hit-area padding to reach a 44pt
         // tappable envelope.

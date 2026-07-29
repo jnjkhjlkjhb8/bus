@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_badge.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/features/go/widgets/transit_visuals.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_badge.dart';
 
 String formatClock(String raw) {
   if (raw.isEmpty) return '';
@@ -76,7 +77,7 @@ class RouteOptionCard extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.only(bottom: 2),
           child: Text(
-            '分',
+            AppI18n.of(context).goMinutesUnit,
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onSurfaceVariant,
             ),
@@ -92,7 +93,7 @@ class RouteOptionCard extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                '抵達 ',
+                AppI18n.of(context).goArriveLabel,
                 style: AppTextStyles.bodySmall.copyWith(
                   color: cs.onSurfaceVariant,
                 ),
@@ -119,7 +120,7 @@ class RouteOptionCard extends StatelessWidget {
       children: [
         header,
         const SizedBox(height: 10),
-        _LegStrip(sections: sections, detailed: highlighted),
+        LegStrip(sections: sections, detailed: highlighted),
         if (highlighted && (origin.isNotEmpty || dest.isNotEmpty)) ...[
           const SizedBox(height: 8),
           Row(
@@ -160,7 +161,9 @@ class RouteOptionCard extends StatelessWidget {
             ),
             const SizedBox(width: 4),
             Text(
-              route.transfers == 0 ? '直達' : '轉乘 ${route.transfers} 次',
+              route.transfers == 0
+                  ? AppI18n.of(context).goDirect
+                  : AppI18n.of(context).transfersCount(route.transfers),
               style: AppTextStyles.bodySmall.copyWith(
                 color: cs.onSurfaceVariant,
               ),
@@ -173,7 +176,7 @@ class RouteOptionCard extends StatelessWidget {
             ),
             const SizedBox(width: 4),
             Text(
-              '步行 ${walkMinutes(route)} 分',
+              AppI18n.of(context).walkMinutes(walkMinutes(route)),
               style: AppTextStyles.bodySmall.copyWith(
                 color: cs.onSurfaceVariant,
               ),
@@ -202,7 +205,9 @@ class RouteOptionCard extends StatelessWidget {
 
     return Pressable(
       onTap: onTap,
-      semanticLabel: '$minutes 分，抵達 $arrival，往 $dest',
+      semanticLabel: AppI18n.of(
+        context,
+      ).routeSummarySemantics(minutes, arrival, dest),
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
@@ -227,7 +232,9 @@ class _SaveButton extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
       onTap: onTap,
-      semanticLabel: saved ? '取消保存路線' : '保存路線',
+      semanticLabel: saved
+          ? AppI18n.of(context).goUnsaveRoute
+          : AppI18n.of(context).goSaveRoute,
       child: Padding(
         padding: const EdgeInsets.all(2),
         child: AnimatedSwitcher(
@@ -245,8 +252,11 @@ class _SaveButton extends StatelessWidget {
   }
 }
 
-class _LegStrip extends StatelessWidget {
-  const _LegStrip({required this.sections, required this.detailed});
+/// The route's legs as a chip run: line badges for transit, a walking glyph
+/// for the pedestrian stretches, chevrons between. Shared with the waiting
+/// state's "last time" card, which shows the same shape at a glance.
+class LegStrip extends StatelessWidget {
+  const LegStrip({required this.sections, required this.detailed, super.key});
 
   final List<PlanSection> sections;
   final bool detailed;
@@ -265,8 +275,11 @@ class _LegStrip extends StatelessWidget {
         children.add(
           AppBadge(
             label: detailed
-                ? '${sectionLabel(s)} · ${sectionMinutes(s)}分'
-                : sectionLabel(s),
+                ? AppI18n.of(context).legLabelWithMinutes(
+                    sectionLabel(AppI18n.of(context), s),
+                    sectionMinutes(s),
+                  )
+                : sectionLabel(AppI18n.of(context), s),
             color: color,
           ),
         );
@@ -312,7 +325,7 @@ class _WalkPill extends StatelessWidget {
         if (detailed) ...[
           const SizedBox(width: 2),
           Text(
-            '$minutes分',
+            AppI18n.of(context).minutesTight(minutes),
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onSurfaceVariant,
             ),

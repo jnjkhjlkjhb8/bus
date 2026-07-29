@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/features/bus/widgets/track_trigger_stop.dart';
+import 'package:wheres_the_bus/features/bus/widgets/track_trigger_stop.dart';
 
 void main() {
   const stops = ['A', 'B', 'C', 'D', 'E'];

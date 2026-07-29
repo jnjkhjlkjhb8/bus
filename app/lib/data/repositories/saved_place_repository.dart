@@ -1,6 +1,6 @@
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
-import 'package:wheres_the_car/features/go/model/planned_place.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/features/go/model/planned_place.dart';
 
 /// User-pinned planner locations with an arbitrary label and icon, mirroring
 /// `PlaceRecentRepository`. A saved place is a [PlannedPlace] whose `name` is

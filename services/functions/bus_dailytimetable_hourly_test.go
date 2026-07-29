@@ -31,8 +31,13 @@ func TestIngestRawLandsOnlySelectedTables(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(seen) != len(cities) {
-		t.Fatalf("fetched %d endpoints, want one per city (%d)", len(seen), len(cities))
+	if want := len(dailyTimetableCities()); len(seen) != want {
+		t.Fatalf("fetched %d endpoints, want one per served city (%d)", len(seen), want)
+	}
+	for _, path := range seen {
+		if city := path[strings.LastIndex(path, "/")+1:]; busDailyTimetableSkip(city) {
+			t.Errorf("fetched %s, but TDX serves no daily timetable for %s", path, city)
+		}
 	}
 	for _, path := range seen {
 		if !strings.HasPrefix(path, "/v2/Bus/DailyTimeTable/") {

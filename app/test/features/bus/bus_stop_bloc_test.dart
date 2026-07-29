@@ -1,11 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/live/arrival_feed.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/repositories/bus_repository.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_bloc.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_event.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/live/arrival_feed.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/repositories/bus_repository.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_bloc.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_event.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_state.dart';
+
+import '../../support/helpers/i18n.dart';
 
 void main() {
   test('loads members and arrivals from repository', () async {
@@ -29,7 +31,11 @@ void main() {
         ),
       ],
     );
-    final bloc = BusStopBloc(stopId: 'group-1', repository: repository);
+    final bloc = BusStopBloc(
+      i18n: zhStrings,
+      stopId: 'group-1',
+      repository: repository,
+    );
     addTearDown(bloc.close);
 
     await expectLater(
@@ -86,7 +92,11 @@ void main() {
         ),
       ],
     );
-    final bloc = BusStopBloc(stopId: 'group-1', repository: repository);
+    final bloc = BusStopBloc(
+      i18n: zhStrings,
+      stopId: 'group-1',
+      repository: repository,
+    );
     addTearDown(bloc.close);
 
     final state = await bloc.stream.firstWhere(
@@ -111,6 +121,7 @@ void main() {
 
   test('BusStopFailed sets AppError', () async {
     final bloc = BusStopBloc(
+      i18n: zhStrings,
       stopId: 'group-1',
       repository: _FakeBusRepository(),
     );
@@ -131,7 +142,11 @@ void main() {
 
   test('retry requests a fresh load', () async {
     final repository = _FakeBusRepository();
-    final bloc = BusStopBloc(stopId: 'group-1', repository: repository);
+    final bloc = BusStopBloc(
+      i18n: zhStrings,
+      stopId: 'group-1',
+      repository: repository,
+    );
     addTearDown(bloc.close);
 
     await Future<void>.delayed(Duration.zero);
@@ -172,7 +187,11 @@ void main() {
         ],
         arrivalsResult: const [first],
       );
-      final bloc = BusStopBloc(stopId: 'group-1', repository: repository);
+      final bloc = BusStopBloc(
+        i18n: zhStrings,
+        stopId: 'group-1',
+        repository: repository,
+      );
       addTearDown(bloc.close);
 
       await bloc.stream.firstWhere(
@@ -221,7 +240,11 @@ void main() {
           ),
         ],
       );
-      final bloc = BusStopBloc(stopId: 'group-1', repository: repository);
+      final bloc = BusStopBloc(
+        i18n: zhStrings,
+        stopId: 'group-1',
+        repository: repository,
+      );
       addTearDown(bloc.close);
 
       await bloc.stream.firstWhere(
@@ -278,7 +301,11 @@ void main() {
           ),
         ],
       );
-      final bloc = BusStopBloc(stopId: 'group-1', repository: repository);
+      final bloc = BusStopBloc(
+        i18n: zhStrings,
+        stopId: 'group-1',
+        repository: repository,
+      );
       addTearDown(bloc.close);
 
       await bloc.stream.firstWhere(
@@ -313,7 +340,11 @@ void main() {
     'loading forever (F31)',
     () async {
       final repository = _FailingGroupBusRepository();
-      final bloc = BusStopBloc(stopId: 'group-1', repository: repository);
+      final bloc = BusStopBloc(
+        i18n: zhStrings,
+        stopId: 'group-1',
+        repository: repository,
+      );
       addTearDown(bloc.close);
 
       final state = await bloc.stream.firstWhere(

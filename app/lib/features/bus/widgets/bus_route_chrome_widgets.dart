@@ -16,43 +16,27 @@ class _FloatingAppBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return SafeArea(
-      bottom: false,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        child: Row(
-          children: [
-            AppBarCircleButton(
-              onTap: () {
-                context.pop();
-              },
-              semanticLabel: '返回',
-              child: Icon(
-                Icons.arrow_back_ios_new_rounded,
-                size: 18,
-                color: cs.onSurface,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: _RoutePill(
-                routeName: routeName,
-                dirName: dirName,
-                direction: direction,
-              ),
-            ),
-            const SizedBox(width: 12),
-            AppBarCircleButton(
-              semanticLabel: '收藏',
-              onTap: onBookmarkTapped,
-              child: BookmarkButton(
-                routeType: 'bus',
-                routeKey: subRouteUid,
-                routeLabel: routeName,
-              ),
-            ),
-          ],
+    return FloatingAppBar(
+      // maybePop rather than the button's default pop: it asks the page's
+      // PopScope first, so tapping back collapses a raised sheet exactly like
+      // the system back gesture does.
+      leading: AppBarBackButton(
+        floating: true,
+        onTap: () => Navigator.maybePop(context),
+      ),
+      middle: _RoutePill(
+        routeName: routeName,
+        dirName: dirName,
+        direction: direction,
+      ),
+      trailing: AppBarCircleButton(
+        semanticLabel: AppI18n.of(context).commonFavorite,
+        onTap: onBookmarkTapped,
+        child: BookmarkButton(
+          routeType: 'bus',
+          routeKey: subRouteUid,
+          routeLabel: routeName,
+          onPlate: true,
         ),
       ),
     );

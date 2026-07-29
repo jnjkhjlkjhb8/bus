@@ -1,13 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/tra_stations.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_button.dart';
-import 'package:wheres_the_car/shared/widgets/app_dialog.dart';
-import 'package:wheres_the_car/shared/widgets/clock_dial.dart';
-import 'package:wheres_the_car/shared/widgets/station_display_field.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/data/models/tra_stations.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_button.dart';
+import 'package:wheres_the_bus/shared/widgets/app_dialog.dart';
+import 'package:wheres_the_bus/shared/widgets/clock_dial.dart';
+import 'package:wheres_the_bus/shared/widgets/station_display_field.dart';
 
 Future<String?> showTRAStationPicker(BuildContext context) {
   return showAppModal<String>(
@@ -25,7 +28,11 @@ class _TRAPickerDialog extends StatefulWidget {
 }
 
 class _TRAPickerDialogState extends State<_TRAPickerDialog> {
-  String _hemisphere = '北部';
+  // Reopens on the half last used. An unknown stored value (data reshaped
+  // since it was written) falls back rather than throwing on the lookup.
+  String _hemisphere = TraStations.data.containsKey(HiveStore.traHemisphere)
+      ? HiveStore.traHemisphere!
+      : '北部';
   int _regionIndex = 0;
   int _stationIndex = 0;
   bool _stationTile = false;
@@ -68,6 +75,7 @@ class _TRAPickerDialogState extends State<_TRAPickerDialog> {
   }
 
   void _setHemisphere(String h) {
+    unawaited(HiveStore.setTraHemisphere(h));
     setState(() {
       _hemisphere = h;
       _regionIndex = 0;

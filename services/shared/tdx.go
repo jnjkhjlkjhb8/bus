@@ -15,7 +15,7 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -57,7 +57,7 @@ type RedisTDXStore struct {
 // Get returns the cached value, or "" when the key is absent.
 func (s RedisTDXStore) Get(key string) (string, error) {
 	v, err := s.RC.Get(key).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return "", nil
 	}
 	return v, err

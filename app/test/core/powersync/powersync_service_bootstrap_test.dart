@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/powersync/powersync_service.dart';
+import 'package:wheres_the_bus/core/powersync/powersync_service.dart';
 
 void main() {
   group('PowerSyncService bootstrap', () {

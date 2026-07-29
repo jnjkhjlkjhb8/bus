@@ -6,11 +6,11 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:powersync/powersync.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/core/firebase/install_identity.dart';
-import 'package:wheres_the_car/core/http/http_client.dart';
-import 'package:wheres_the_car/core/powersync/local_db.dart';
-import 'package:wheres_the_car/core/powersync/powersync_health.dart';
+import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_bus/core/firebase/install_identity.dart';
+import 'package:wheres_the_bus/core/http/http_client.dart';
+import 'package:wheres_the_bus/core/powersync/local_db.dart';
+import 'package:wheres_the_bus/core/powersync/powersync_health.dart';
 
 const String _envPowersyncUrl = String.fromEnvironment(
   'POWERSYNC_URL',
@@ -44,6 +44,12 @@ const _schema = Schema([
     Column.text('lineid'),
     Column.text('destinationstaionid'),
     Column.integer('serviceday'),
+    // Station codes are only unique within an operator — TRTC 圓山 and KRTC
+    // 巨蛋 are both `R14` — so `system` is what keeps one operator's
+    // first/last-train rows out of another's station sheet. It was projected
+    // by the sync rule but omitted here, which dropped it on the way into
+    // SQLite and left MrtRepository.schedule unable to filter at all.
+    Column.text('system'),
     Column.text('first_train_time'),
     Column.text('last_train_time'),
   ]),
@@ -84,7 +90,7 @@ class PowerSyncService implements LocalDb {
   );
 
   /// Most recent successful PowerSync sync, or `null` before the first sync
-  /// completes (or before [init] runs). Drives the "資料庫狀態" freshness row
+  /// completes (or before [init] runs). Drives the "資料來源" freshness row
   /// in Settings instead of a hardcoded timestamp (F46).
   DateTime? get lastSyncedAt => _health.lastSyncedAt;
 

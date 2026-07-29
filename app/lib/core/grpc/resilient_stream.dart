@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:grpc/grpc.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
 
 typedef RetryDelay = Duration Function(Duration delay);
 

@@ -170,20 +170,14 @@ class DeviceIdentity extends $pb.GeneratedMessage {
   void clearAppVersion() => $_clearField(4);
 }
 
+/// Push is the only device preference the rider controls. Analytics, crash and
+/// performance collection are always on, so they are not carried here.
 class DevicePrefs extends $pb.GeneratedMessage {
   factory DevicePrefs({
     $core.bool? pushEnabled,
-    $core.bool? analyticsEnabled,
-    $core.bool? crashlyticsEnabled,
-    $core.bool? performanceEnabled,
   }) {
     final result = create();
     if (pushEnabled != null) result.pushEnabled = pushEnabled;
-    if (analyticsEnabled != null) result.analyticsEnabled = analyticsEnabled;
-    if (crashlyticsEnabled != null)
-      result.crashlyticsEnabled = crashlyticsEnabled;
-    if (performanceEnabled != null)
-      result.performanceEnabled = performanceEnabled;
     return result;
   }
 
@@ -200,9 +194,6 @@ class DevicePrefs extends $pb.GeneratedMessage {
       _omitMessageNames ? '' : 'DevicePrefs',
       createEmptyInstance: create)
     ..aOB(1, _omitFieldNames ? '' : 'pushEnabled')
-    ..aOB(2, _omitFieldNames ? '' : 'analyticsEnabled')
-    ..aOB(3, _omitFieldNames ? '' : 'crashlyticsEnabled')
-    ..aOB(4, _omitFieldNames ? '' : 'performanceEnabled')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -232,33 +223,6 @@ class DevicePrefs extends $pb.GeneratedMessage {
   $core.bool hasPushEnabled() => $_has(0);
   @$pb.TagNumber(1)
   void clearPushEnabled() => $_clearField(1);
-
-  @$pb.TagNumber(2)
-  $core.bool get analyticsEnabled => $_getBF(1);
-  @$pb.TagNumber(2)
-  set analyticsEnabled($core.bool value) => $_setBool(1, value);
-  @$pb.TagNumber(2)
-  $core.bool hasAnalyticsEnabled() => $_has(1);
-  @$pb.TagNumber(2)
-  void clearAnalyticsEnabled() => $_clearField(2);
-
-  @$pb.TagNumber(3)
-  $core.bool get crashlyticsEnabled => $_getBF(2);
-  @$pb.TagNumber(3)
-  set crashlyticsEnabled($core.bool value) => $_setBool(2, value);
-  @$pb.TagNumber(3)
-  $core.bool hasCrashlyticsEnabled() => $_has(2);
-  @$pb.TagNumber(3)
-  void clearCrashlyticsEnabled() => $_clearField(3);
-
-  @$pb.TagNumber(4)
-  $core.bool get performanceEnabled => $_getBF(3);
-  @$pb.TagNumber(4)
-  set performanceEnabled($core.bool value) => $_setBool(3, value);
-  @$pb.TagNumber(4)
-  $core.bool hasPerformanceEnabled() => $_has(3);
-  @$pb.TagNumber(4)
-  void clearPerformanceEnabled() => $_clearField(4);
 }
 
 class UpsertDeviceRequest extends $pb.GeneratedMessage {
@@ -456,58 +420,123 @@ class DeviceState extends $pb.GeneratedMessage {
   DevicePrefs ensurePrefs() => $_ensure(1);
 }
 
-class RouteSubscriptionRequest extends $pb.GeneratedMessage {
-  factory RouteSubscriptionRequest({
-    $core.String? installId,
+/// One route identity a device's 收藏 resolves to. route_key "*" is the
+/// line-wide marker a rail-station 收藏 produces: it matches no real alert
+/// scope, so it receives only system-wide disruptions.
+class RouteSubscription extends $pb.GeneratedMessage {
+  factory RouteSubscription({
     $core.String? routeType,
     $core.String? routeKey,
-    $core.bool? enabled,
   }) {
     final result = create();
-    if (installId != null) result.installId = installId;
     if (routeType != null) result.routeType = routeType;
     if (routeKey != null) result.routeKey = routeKey;
-    if (enabled != null) result.enabled = enabled;
     return result;
   }
 
-  RouteSubscriptionRequest._();
+  RouteSubscription._();
 
-  factory RouteSubscriptionRequest.fromBuffer($core.List<$core.int> data,
+  factory RouteSubscription.fromBuffer($core.List<$core.int> data,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromBuffer(data, registry);
-  factory RouteSubscriptionRequest.fromJson($core.String json,
+  factory RouteSubscription.fromJson($core.String json,
           [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
       create()..mergeFromJson(json, registry);
 
   static final $pb.BuilderInfo _i = $pb.BuilderInfo(
-      _omitMessageNames ? '' : 'RouteSubscriptionRequest',
+      _omitMessageNames ? '' : 'RouteSubscription',
       createEmptyInstance: create)
-    ..aOS(1, _omitFieldNames ? '' : 'installId')
-    ..aOS(2, _omitFieldNames ? '' : 'routeType')
-    ..aOS(3, _omitFieldNames ? '' : 'routeKey')
-    ..aOB(4, _omitFieldNames ? '' : 'enabled')
+    ..aOS(1, _omitFieldNames ? '' : 'routeType')
+    ..aOS(2, _omitFieldNames ? '' : 'routeKey')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
-  RouteSubscriptionRequest clone() => deepCopy();
+  RouteSubscription clone() => deepCopy();
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
-  RouteSubscriptionRequest copyWith(
-          void Function(RouteSubscriptionRequest) updates) =>
-      super.copyWith((message) => updates(message as RouteSubscriptionRequest))
-          as RouteSubscriptionRequest;
+  RouteSubscription copyWith(void Function(RouteSubscription) updates) =>
+      super.copyWith((message) => updates(message as RouteSubscription))
+          as RouteSubscription;
 
   @$core.override
   $pb.BuilderInfo get info_ => _i;
 
   @$core.pragma('dart2js:noInline')
-  static RouteSubscriptionRequest create() => RouteSubscriptionRequest._();
+  static RouteSubscription create() => RouteSubscription._();
   @$core.override
-  RouteSubscriptionRequest createEmptyInstance() => create();
+  RouteSubscription createEmptyInstance() => create();
   @$core.pragma('dart2js:noInline')
-  static RouteSubscriptionRequest getDefault() => _defaultInstance ??=
-      $pb.GeneratedMessage.$_defaultFor<RouteSubscriptionRequest>(create);
-  static RouteSubscriptionRequest? _defaultInstance;
+  static RouteSubscription getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<RouteSubscription>(create);
+  static RouteSubscription? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  $core.String get routeType => $_getSZ(0);
+  @$pb.TagNumber(1)
+  set routeType($core.String value) => $_setString(0, value);
+  @$pb.TagNumber(1)
+  $core.bool hasRouteType() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearRouteType() => $_clearField(1);
+
+  @$pb.TagNumber(2)
+  $core.String get routeKey => $_getSZ(1);
+  @$pb.TagNumber(2)
+  set routeKey($core.String value) => $_setString(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasRouteKey() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearRouteKey() => $_clearField(2);
+}
+
+/// The device's whole 訂閱範圍, replacing whatever was stored. Sending an empty
+/// list unsubscribes the device from everything.
+class RouteSubscriptionsRequest extends $pb.GeneratedMessage {
+  factory RouteSubscriptionsRequest({
+    $core.String? installId,
+    $core.Iterable<RouteSubscription>? subscriptions,
+  }) {
+    final result = create();
+    if (installId != null) result.installId = installId;
+    if (subscriptions != null) result.subscriptions.addAll(subscriptions);
+    return result;
+  }
+
+  RouteSubscriptionsRequest._();
+
+  factory RouteSubscriptionsRequest.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory RouteSubscriptionsRequest.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'RouteSubscriptionsRequest',
+      createEmptyInstance: create)
+    ..aOS(1, _omitFieldNames ? '' : 'installId')
+    ..pPM<RouteSubscription>(2, _omitFieldNames ? '' : 'subscriptions',
+        subBuilder: RouteSubscription.create)
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  RouteSubscriptionsRequest clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  RouteSubscriptionsRequest copyWith(
+          void Function(RouteSubscriptionsRequest) updates) =>
+      super.copyWith((message) => updates(message as RouteSubscriptionsRequest))
+          as RouteSubscriptionsRequest;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static RouteSubscriptionsRequest create() => RouteSubscriptionsRequest._();
+  @$core.override
+  RouteSubscriptionsRequest createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static RouteSubscriptionsRequest getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<RouteSubscriptionsRequest>(create);
+  static RouteSubscriptionsRequest? _defaultInstance;
 
   @$pb.TagNumber(1)
   $core.String get installId => $_getSZ(0);
@@ -519,31 +548,7 @@ class RouteSubscriptionRequest extends $pb.GeneratedMessage {
   void clearInstallId() => $_clearField(1);
 
   @$pb.TagNumber(2)
-  $core.String get routeType => $_getSZ(1);
-  @$pb.TagNumber(2)
-  set routeType($core.String value) => $_setString(1, value);
-  @$pb.TagNumber(2)
-  $core.bool hasRouteType() => $_has(1);
-  @$pb.TagNumber(2)
-  void clearRouteType() => $_clearField(2);
-
-  @$pb.TagNumber(3)
-  $core.String get routeKey => $_getSZ(2);
-  @$pb.TagNumber(3)
-  set routeKey($core.String value) => $_setString(2, value);
-  @$pb.TagNumber(3)
-  $core.bool hasRouteKey() => $_has(2);
-  @$pb.TagNumber(3)
-  void clearRouteKey() => $_clearField(3);
-
-  @$pb.TagNumber(4)
-  $core.bool get enabled => $_getBF(3);
-  @$pb.TagNumber(4)
-  set enabled($core.bool value) => $_setBool(3, value);
-  @$pb.TagNumber(4)
-  $core.bool hasEnabled() => $_has(3);
-  @$pb.TagNumber(4)
-  void clearEnabled() => $_clearField(4);
+  $pb.PbList<RouteSubscription> get subscriptions => $_getList(1);
 }
 
 class CreateArrivalReminderRequest extends $pb.GeneratedMessage {

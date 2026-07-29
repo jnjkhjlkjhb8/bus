@@ -1,7 +1,7 @@
 import 'package:firebase_ai/firebase_ai.dart';
-import 'package:wheres_the_car/data/models/search_models.dart';
-import 'package:wheres_the_car/data/repositories/search_repository.dart';
-import 'package:wheres_the_car/features/search/genui/model/genui_node.dart';
+import 'package:wheres_the_bus/data/models/search_models.dart';
+import 'package:wheres_the_bus/data/repositories/search_repository.dart';
+import 'package:wheres_the_bus/features/search/genui/model/genui_node.dart';
 
 /// AI 回覆的處理階段,供 UI 顯示進度文字。
 enum GenUiPhase { thinking, searching, composing }
@@ -27,6 +27,7 @@ class GenUiService {
       'step 列出搭乘步驟,chip 提供可點擊的後續搜尋(query 必須是可直接搜尋的站名或路線), '
       'divider 分隔區塊。route 與 chip 若對應某筆 searchTransit 查詢結果, '
       '必須把該筆結果的 uid 原樣放進 refUid,不可自行編造 uid。 '
+      '任何文字都不要寫到站時間、還有幾分鐘或班次時刻 — App 會自己從即時資料顯示,你寫的一定是錯的。 '
       '內容務必簡短,全部使用繁體中文。';
 
   GenerativeModel _build() {
@@ -42,7 +43,6 @@ class GenUiService {
           items: Schema.string(),
           description: 'route 的路線或路線色標籤',
         ),
-        'etaText': Schema.string(description: 'route 的到站或班次描述'),
         'kind': Schema.enumString(
           enumValues: ['board', 'ride', 'walk', 'alight'],
           description: 'step 的圖示種類',
@@ -57,7 +57,6 @@ class GenUiService {
         'text',
         'title',
         'badges',
-        'etaText',
         'kind',
         'label',
         'query',
@@ -145,13 +144,15 @@ class GenUiService {
       }
       return {
         'results': results
-            .map((r) => {
-                  'uid': r.uid,
-                  'type': r.type.name,
-                  'name': r.name,
-                  'subtitle': r.subtitle,
-                  if (r.city != null) 'city': r.city,
-                })
+            .map(
+              (r) => {
+                'uid': r.uid,
+                'type': r.type.name,
+                'name': r.name,
+                'subtitle': r.subtitle,
+                if (r.city != null) 'city': r.city,
+              },
+            )
             .toList(),
       };
     } on Object catch (e) {

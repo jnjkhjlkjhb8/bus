@@ -18,12 +18,6 @@ type busStaticMapCacheEntry struct {
 	loadedAt   time.Time
 }
 
-// cachedBusStaticMap returns the cached station map for a city prefix, or
-// (nil, false) on a miss (including a value of an unexpected type).
-func cachedBusStaticMap(prefix string) ([]busStationmap, bool) {
-	return cachedBusStaticMapFrom(&busStaticMapCache, prefix, "", time.Now())
-}
-
 func cachedBusStaticMapFrom(cache *sync.Map, prefix, generation string, now time.Time) ([]busStationmap, bool) {
 	v, ok := cache.Load(prefix)
 	if !ok {

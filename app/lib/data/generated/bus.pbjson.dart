@@ -453,6 +453,7 @@ const Bus_RouteEstimate$json = {
     },
     {'1': 'StopSequence', '3': 8, '4': 1, '5': 5, '10': 'StopSequence'},
     {'1': 'arrival_unix', '3': 9, '4': 1, '5': 3, '10': 'arrivalUnix'},
+    {'1': 'plate_numb', '3': 10, '4': 1, '5': 9, '10': 'plateNumb'},
   ],
 };
 
@@ -463,7 +464,8 @@ final $typed_data.Uint8List bus_RouteEstimateDescriptor = $convert.base64Decode(
     'dEJ1c1RpbWUYBCABKAlSC05leHRCdXNUaW1lEh8KC1N0b3Bfc3RhdHVzGAUgASgFUgpTdG9wU3'
     'RhdHVzEiYKD3NyY191cGRhdGVfdGltZRgGIAEoCVINc3JjVXBkYXRlVGltZRIjCgVCdXNlcxgH'
     'IAMoCzINLkJ1c19wb3NpdGlvblIFQnVzZXMSIgoMU3RvcFNlcXVlbmNlGAggASgFUgxTdG9wU2'
-    'VxdWVuY2USIQoMYXJyaXZhbF91bml4GAkgASgDUgthcnJpdmFsVW5peA==');
+    'VxdWVuY2USIQoMYXJyaXZhbF91bml4GAkgASgDUgthcnJpdmFsVW5peBIdCgpwbGF0ZV9udW1i'
+    'GAogASgJUglwbGF0ZU51bWI=');
 
 @$core.Deprecated('Use bus_StopEstimateDescriptor instead')
 const Bus_StopEstimate$json = {

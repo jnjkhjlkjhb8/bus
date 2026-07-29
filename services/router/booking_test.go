@@ -213,8 +213,8 @@ func TestBookingDeeplinkBadRequests(t *testing.T) {
 		"agency=tra&kind=web&start_station=a&end_station=b&train_date=20260718&train_time=10%3A00&train_number=103",     // bad date
 		"agency=tra&kind=web&start_station=a&end_station=b&train_date=2026-07-18&train_time=10%3A00&train_number=abc",   // bad train
 		"agency=tra&kind=web&start_station=&end_station=b&train_date=2026-07-18&train_time=10%3A00&train_number=103",    // empty station
-		"agency=tra&kind=web&start_station=a&end_station=b&train_date=2026-07-18&train_number=103&ticket_count=10",     // over TRA's 9-ticket ceiling
-		"agency=tra&kind=web&start_station=a&end_station=b&train_date=2026-07-18&train_number=103&ticket_type=4",       // no such booking class
+		"agency=tra&kind=web&start_station=a&end_station=b&train_date=2026-07-18&train_number=103&ticket_count=10",      // over TRA's 9-ticket ceiling
+		"agency=tra&kind=web&start_station=a&end_station=b&train_date=2026-07-18&train_number=103&ticket_type=4",        // no such booking class
 	}
 	for _, q := range bad {
 		if rec := getBooking(r, q); rec.Code != http.StatusBadRequest {

@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
 
 class AppPagination extends StatelessWidget {
   const AppPagination({
@@ -111,7 +112,7 @@ class _PageBtn extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
       onTap: active ? null : onTap,
-      semanticLabel: '第 $pageNum 頁',
+      semanticLabel: AppI18n.of(context).pageNumberSemantics(pageNum),
       child: Container(
         width: 44,
         height: 44,

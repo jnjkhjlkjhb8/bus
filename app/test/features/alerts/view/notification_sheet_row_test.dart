@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/alert_models.dart';
-import 'package:wheres_the_car/data/repositories/alert_repository.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
-import 'package:wheres_the_car/features/alerts/view/notification_sheet.dart';
+import 'package:wheres_the_bus/data/models/alert_models.dart';
+import 'package:wheres_the_bus/data/repositories/alert_repository.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_bloc.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_event.dart';
+import 'package:wheres_the_bus/features/alerts/view/notification_sheet.dart';
 
+import '../../../support/helpers/i18n.dart';
 import '../../../support/helpers/in_memory_settings_store.dart';
 
 AlertRepository _repo() => AlertRepository(
@@ -21,20 +22,20 @@ void main() {
     final bloc = AlertBloc(repository: _repo());
     addTearDown(bloc.close);
 
+    const source = AlertSource(AlertSourceKind.metro, 'TRTC');
     final alert = AlertViewModel(
       message: '因號誌故障,各站班距拉長',
       level: AlertSeverity.red,
-      rawJson: const {},
       title: '中和新蘆線延誤',
       time: DateTime.now(),
-      source: const AlertSource(AlertSourceKind.metro, 'TRTC'),
+      source: source,
     );
-    bloc.add(AlertReceived(alert));
+    bloc.add(AlertReceived(source, [alert]));
     await bloc.stream.first;
 
     await tester.pumpWidget(
-      MaterialApp(
-        home: BlocProvider.value(
+      i18nApp(
+        BlocProvider.value(
           value: bloc,
           child: Builder(
             builder: (context) => Scaffold(

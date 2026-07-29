@@ -1,10 +1,10 @@
-import 'package:wheres_the_car/core/grpc/grpc_client.dart';
-import 'package:wheres_the_car/core/powersync/local_db.dart';
-import 'package:wheres_the_car/core/powersync/powersync_service.dart';
-import 'package:wheres_the_car/data/decoders/mrt_decoder.dart';
-import 'package:wheres_the_car/data/generated/mrt.pbgrpc.dart';
-import 'package:wheres_the_car/data/models/journey_info.dart';
-import 'package:wheres_the_car/data/models/metro_models.dart';
+import 'package:wheres_the_bus/core/grpc/grpc_client.dart';
+import 'package:wheres_the_bus/core/powersync/local_db.dart';
+import 'package:wheres_the_bus/core/powersync/powersync_service.dart';
+import 'package:wheres_the_bus/data/decoders/mrt_decoder.dart';
+import 'package:wheres_the_bus/data/generated/mrt.pbgrpc.dart';
+import 'package:wheres_the_bus/data/models/journey_info.dart';
+import 'package:wheres_the_bus/data/models/metro_models.dart';
 
 class MrtRepository {
   MrtRepository({Mrt_ServiceClient? client, LocalDb? localDb})
@@ -30,11 +30,22 @@ class MrtRepository {
       .map((resp) => MrtDecoder.instance.decodeEta(resp.data));
 
   /// First/last-train schedule rows for [stationId] from the synced mirror.
-  Future<List<MetroScheduleEntry>> schedule(String stationId) async {
+  ///
+  /// Scoped by [system] and expanded across an interchange id for the same
+  /// reasons as [journeyMatrix]: `mrt_schedule` is keyed by single TDX codes,
+  /// so a combined id (`BL12_R10`) matches nothing, and station codes repeat
+  /// across operators (`R14` is both TRTC 圓山 and KRTC 巨蛋), so an unscoped
+  /// query returns another network's trains.
+  Future<List<MetroScheduleEntry>> schedule(
+    String system,
+    String stationId,
+  ) async {
+    final ids = stationId.split('_');
+    final placeholders = List.filled(ids.length, '?').join(',');
     final rows = await _db.getAll(
-      'SELECT destinationstaionid, first_train_time, last_train_time '
-      'FROM mrt_schedule WHERE station_id = ?',
-      [stationId],
+      'SELECT lineid, destinationstaionid, first_train_time, last_train_time '
+      'FROM mrt_schedule WHERE system = ? AND station_id IN ($placeholders)',
+      [system, ...ids],
     );
     return [for (final row in rows) MetroScheduleEntry.fromRow(row)];
   }

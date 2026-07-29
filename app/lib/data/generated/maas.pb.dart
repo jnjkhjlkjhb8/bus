@@ -17,6 +17,76 @@ import 'package:protobuf/protobuf.dart' as $pb;
 
 export 'package:protobuf/protobuf.dart' show GeneratedMessageGenericExtensions;
 
+class MaasPlanUpdate extends $pb.GeneratedMessage {
+  factory MaasPlanUpdate({
+    MaasPlanResponse? plan,
+    $core.bool? complete,
+  }) {
+    final result = create();
+    if (plan != null) result.plan = plan;
+    if (complete != null) result.complete = complete;
+    return result;
+  }
+
+  MaasPlanUpdate._();
+
+  factory MaasPlanUpdate.fromBuffer($core.List<$core.int> data,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromBuffer(data, registry);
+  factory MaasPlanUpdate.fromJson($core.String json,
+          [$pb.ExtensionRegistry registry = $pb.ExtensionRegistry.EMPTY]) =>
+      create()..mergeFromJson(json, registry);
+
+  static final $pb.BuilderInfo _i = $pb.BuilderInfo(
+      _omitMessageNames ? '' : 'MaasPlanUpdate',
+      createEmptyInstance: create)
+    ..aOM<MaasPlanResponse>(1, _omitFieldNames ? '' : 'plan',
+        subBuilder: MaasPlanResponse.create)
+    ..aOB(2, _omitFieldNames ? '' : 'complete')
+    ..hasRequiredFields = false;
+
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MaasPlanUpdate clone() => deepCopy();
+  @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
+  MaasPlanUpdate copyWith(void Function(MaasPlanUpdate) updates) =>
+      super.copyWith((message) => updates(message as MaasPlanUpdate))
+          as MaasPlanUpdate;
+
+  @$core.override
+  $pb.BuilderInfo get info_ => _i;
+
+  @$core.pragma('dart2js:noInline')
+  static MaasPlanUpdate create() => MaasPlanUpdate._();
+  @$core.override
+  MaasPlanUpdate createEmptyInstance() => create();
+  @$core.pragma('dart2js:noInline')
+  static MaasPlanUpdate getDefault() => _defaultInstance ??=
+      $pb.GeneratedMessage.$_defaultFor<MaasPlanUpdate>(create);
+  static MaasPlanUpdate? _defaultInstance;
+
+  @$pb.TagNumber(1)
+  MaasPlanResponse get plan => $_getN(0);
+  @$pb.TagNumber(1)
+  set plan(MaasPlanResponse value) => $_setField(1, value);
+  @$pb.TagNumber(1)
+  $core.bool hasPlan() => $_has(0);
+  @$pb.TagNumber(1)
+  void clearPlan() => $_clearField(1);
+  @$pb.TagNumber(1)
+  MaasPlanResponse ensurePlan() => $_ensure(0);
+
+  /// False on the routes-only message, true on the last message of the stream.
+  /// A cache hit sends a single message with complete = true.
+  @$pb.TagNumber(2)
+  $core.bool get complete => $_getBF(1);
+  @$pb.TagNumber(2)
+  set complete($core.bool value) => $_setBool(1, value);
+  @$pb.TagNumber(2)
+  $core.bool hasComplete() => $_has(1);
+  @$pb.TagNumber(2)
+  void clearComplete() => $_clearField(2);
+}
+
 class MaasPlanRequest extends $pb.GeneratedMessage {
   factory MaasPlanRequest({
     $core.double? fromLat,
@@ -416,6 +486,7 @@ class Section extends $pb.GeneratedMessage {
     $core.int? fare,
     $core.Iterable<Location>? walkPath,
     $core.Iterable<WalkStep>? walkSteps,
+    $core.Iterable<Location>? transitPath,
   }) {
     final result = create();
     if (type != null) result.type = type;
@@ -431,6 +502,7 @@ class Section extends $pb.GeneratedMessage {
     if (fare != null) result.fare = fare;
     if (walkPath != null) result.walkPath.addAll(walkPath);
     if (walkSteps != null) result.walkSteps.addAll(walkSteps);
+    if (transitPath != null) result.transitPath.addAll(transitPath);
     return result;
   }
 
@@ -465,6 +537,8 @@ class Section extends $pb.GeneratedMessage {
         protoName: 'walkPath', subBuilder: Location.create)
     ..pPM<WalkStep>(11, _omitFieldNames ? '' : 'walkSteps',
         protoName: 'walkSteps', subBuilder: WalkStep.create)
+    ..pPM<Location>(12, _omitFieldNames ? '' : 'transitPath',
+        protoName: 'transitPath', subBuilder: Location.create)
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -584,6 +658,13 @@ class Section extends $pb.GeneratedMessage {
   /// conditions as walkPath.
   @$pb.TagNumber(11)
   $pb.PbList<WalkStep> get walkSteps => $_getList(10);
+
+  /// Rail-line geometry clipped to this section's stops (metro/TRA/THSR only;
+  /// bus is out of scope). Empty when the section is not a rail leg, or the
+  /// router could not snap the stops to a known line geometry — the app then
+  /// falls back to a straight departure→intermediateStops→arrival line.
+  @$pb.TagNumber(12)
+  $pb.PbList<Location> get transitPath => $_getList(11);
 }
 
 class WalkStep extends $pb.GeneratedMessage {

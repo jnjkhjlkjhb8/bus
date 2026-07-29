@@ -684,7 +684,7 @@ func TestTokenRefreshSingleflight(t *testing.T) {
 	c.tokenURL = tokenSrv.URL
 	start := make(chan struct{})
 	results := make(chan error, callers)
-	for i := 0; i < callers; i++ {
+	for range callers {
 		go func() {
 			<-start
 			token, err := c.Token(context.Background())
@@ -700,7 +700,7 @@ func TestTokenRefreshSingleflight(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	close(release)
-	for i := 0; i < callers; i++ {
+	for i := range callers {
 		if err := <-results; err != nil {
 			t.Fatalf("Token caller %d: %v", i, err)
 		}

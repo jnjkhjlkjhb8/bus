@@ -19,11 +19,16 @@ router / functions / powersync / osrm / redis
 |---|---|---|---|
 | redis | redis:7-alpine | 127.0.0.1:6379 | 512 MB |
 | router | bus-router (Go) | 50051, 8080 | 256 MB |
-| functions | bus-functions (Go) | — | 192 MB |
-| ingestor | bus-functions (Go, `ROLE=ingestor`；TDX 憑證僅 prod，無憑證時直接跳過、零請求) | — | 256 MB |
-| powersync | journeyapps/powersync-service | 8081 | 512 MB |
-| osrm | osrm/osrm-backend | 127.0.0.1:5000 | 1536 MB |
-| ollama | ollama/ollama (custom) | 127.0.0.1:11434 | 800 MB |
+| functions | bus-functions (Go) | — | 768 MB |
+| ingestor | bus-functions (Go, `ROLE=ingestor`；TDX 憑證僅 prod，無憑證時直接跳過、零請求) | — | 384 MB |
+| loader | bus-functions (Go, `ROLE=loader`) | — | 384 MB |
+| powersync | journeyapps/powersync-service | 8081 | 384 MB |
+| osrm | osrm/osrm-backend | 127.0.0.1:5000 | 2048 MB |
+| ollama | ollama/ollama (custom，`gpu` profile) | 127.0.0.1:11434 | 4 GB |
+
+OSRM 的上限必須高於 `osrm-data/` 的實際大小（目前約 1.2 GB）：`osrm-routed`
+是 mmap 讀取，cgroup 會把那些 page cache 算進容器帳上，上限低於資料量時每次
+`/table` 查詢都要重新從磁碟讀 cell metrics。
 
 Redis 與 OSRM 僅對 localhost 開放，不對外暴露。
 

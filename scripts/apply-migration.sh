@@ -52,9 +52,14 @@ echo "== applying $name =="
 psql "$DATABASE_URL" "${psql_args[@]}" -f "$file"
 
 echo "== recording $name in schema_migrations =="
+# Fed on stdin rather than with -c: psql only expands :'variables' when reading
+# a file or stdin. A -c string must be parsable by the server as-is, so the
+# same statement there fails with a syntax error at the first colon.
 psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 \
-    -v "name=${name}" -v "checksum=${checksum}" -v "by=${applied_by}" \
-    -c "INSERT INTO schema_migrations (filename, sha256, applied_by) VALUES (:'name', :'checksum', :'by')
-        ON CONFLICT (filename) DO NOTHING;"
+    -v "name=${name}" -v "checksum=${checksum}" -v "by=${applied_by}" <<'SQL'
+INSERT INTO schema_migrations (filename, sha256, applied_by)
+VALUES (:'name', :'checksum', :'by')
+ON CONFLICT (filename) DO NOTHING;
+SQL
 
 echo "apply-migration: $name applied and recorded."

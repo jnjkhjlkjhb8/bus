@@ -41,13 +41,163 @@ var textSearchColumns = []string{"type", "uid", "name", "city", "depart", "desti
 
 func performSearchRequest(t *testing.T, db searchDB, query string) *httptest.ResponseRecorder {
 	t.Helper()
+	return newSearchRouter(t, db).get(t, "/api/search?q="+url.QueryEscape(query))
+}
+
+// searchRouter keeps one handler (and therefore one response cache) across
+// several requests, which is what the cache tests need to observe.
+type searchRouter struct{ engine *gin.Engine }
+
+func newSearchRouter(t *testing.T, db searchDB) searchRouter {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
-	router := gin.New()
-	router.GET("/api/search", handleSearch(db))
+	engine := gin.New()
+	engine.GET("/api/search", handleSearch(db))
+	return searchRouter{engine: engine}
+}
+
+func (r searchRouter) get(t *testing.T, target string) *httptest.ResponseRecorder {
+	t.Helper()
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/search?q="+url.QueryEscape(query), nil)
-	router.ServeHTTP(recorder, request)
+	r.engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
 	return recorder
+}
+
+// TestHandleSearchPassesCityFilterToQuery pins the filter to the database
+// rather than to a post-filter in Go: the branch LIMITs mean a response
+// filtered after the fact would show only the chosen city's share of the
+// top rows, not the rows that city actually has.
+func TestHandleSearchPassesCityFilterToQuery(t *testing.T) {
+	t.Setenv("EMBED_URL", "")
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
+		WithArgs("中正路", textSearchBranchLimit(20), "Taipei").
+		WillReturnRows(pgxmock.NewRows(textSearchColumns).
+			AddRow("bus_route", "R-1", "中正幹線", "Taipei", "A", "B", nil, nil, 2, 0.9))
+
+	got := newSearchRouter(t, db).get(t, "/api/search?q="+url.QueryEscape("中正路")+"&city=Taipei")
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", got.Code, got.Body.String())
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHandleSearchRejectsOverlongCity keeps the response cache's keyspace
+// bounded by the length cap rather than by whatever a caller sends.
+func TestHandleSearchRejectsOverlongCity(t *testing.T) {
+	t.Setenv("EMBED_URL", "")
+	db := &deadlineSearchDB{t: t}
+
+	got := newSearchRouter(t, db).get(t,
+		"/api/search?q=台北&city="+strings.Repeat("x", maxSearchCityRunes+1))
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s, want 400", got.Code, got.Body.String())
+	}
+	if db.called {
+		t.Fatal("database was queried for a rejected city filter")
+	}
+}
+
+// TestHandleSearchServesRepeatQueryFromCache guards the cache: search_vector
+// is rewritten once a day, so a repeated query must not repeat the scan.
+func TestHandleSearchServesRepeatQueryFromCache(t *testing.T) {
+	t.Setenv("EMBED_URL", "")
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Exactly one text-search expectation for two identical requests.
+	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
+		WithArgs("紅30", textSearchBranchLimit(20), "").
+		WillReturnRows(pgxmock.NewRows(textSearchColumns).
+			AddRow("bus_route", "R-1", "紅30", "Kaohsiung", "A", "B", nil, nil, 1, 1.0))
+
+	router := newSearchRouter(t, db)
+	target := "/api/search?q=" + url.QueryEscape("紅30")
+	first := router.get(t, target)
+	second := router.get(t, target)
+	if first.Code != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("statuses = %d/%d, want 200/200", first.Code, second.Code)
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("cached body = %s, want the same as %s", second.Body.String(), first.Body.String())
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHandleSearchCacheKeyIncludesCity stops a filtered response from being
+// served to an unfiltered request, which would silently hide other cities.
+func TestHandleSearchCacheKeyIncludesCity(t *testing.T) {
+	t.Setenv("EMBED_URL", "")
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
+		WithArgs("中正路", textSearchBranchLimit(20), "Taipei").
+		WillReturnRows(pgxmock.NewRows(textSearchColumns).
+			AddRow("bus_station", "S-1", "中正路", "Taipei", "", "", nil, nil, 1, 1.0))
+	db.ExpectQuery(`(?s)FROM bus_station_group_members`).
+		WithArgs([]string{"S-1"}).
+		WillReturnRows(pgxmock.NewRows([]string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon"}))
+	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
+		WithArgs("中正路", textSearchBranchLimit(20), "").
+		WillReturnRows(pgxmock.NewRows(textSearchColumns).
+			AddRow("bus_station", "S-9", "中正路", "Kaohsiung", "", "", nil, nil, 1, 1.0))
+	db.ExpectQuery(`(?s)FROM bus_station_group_members`).
+		WithArgs([]string{"S-9"}).
+		WillReturnRows(pgxmock.NewRows([]string{"type", "uid", "name", "city", "depart", "destin", "lat", "lon"}))
+
+	router := newSearchRouter(t, db)
+	q := url.QueryEscape("中正路")
+	filtered := router.get(t, "/api/search?q="+q+"&city=Taipei")
+	unfiltered := router.get(t, "/api/search?q="+q)
+	if body := filtered.Body.String(); !strings.Contains(body, "S-1") {
+		t.Fatalf("filtered body = %s, want the Taipei row", body)
+	}
+	if body := unfiltered.Body.String(); !strings.Contains(body, "S-9") {
+		t.Fatalf("unfiltered body = %s, want the unfiltered row, not the cached Taipei one", body)
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHandleSearchSkipsRouteExpansionOnFullPage: expansion only ever adds
+// rows, so on a full page every added row is dropped by the final cap —
+// the join is a second round trip spent on nothing.
+func TestHandleSearchSkipsRouteExpansionOnFullPage(t *testing.T) {
+	t.Setenv("EMBED_URL", "")
+	db, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// A bus_station result would normally trigger the expansion join; the
+	// mock declares no expectation for it, so running it fails the test.
+	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
+		WithArgs("中正", textSearchBranchLimit(2), "").
+		WillReturnRows(pgxmock.NewRows(textSearchColumns).
+			AddRow("bus_station", "S-1", "中正路", "Taipei", "", "", nil, nil, 1, 1.0).
+			AddRow("bus_station", "S-2", "中正路口", "NewTaipei", "", "", nil, nil, 1, 0.9))
+
+	got := newSearchRouter(t, db).get(t, "/api/search?q="+url.QueryEscape("中正")+"&limit=2")
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", got.Code, got.Body.String())
+	}
+	if err := db.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestHandleSearchLimitsQueryByUnicodeRunes(t *testing.T) {
@@ -59,7 +209,7 @@ func TestHandleSearchLimitsQueryByUnicodeRunes(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
-		WithArgs(strings.Repeat("界", 128), textSearchBranchLimit(20)).
+		WithArgs(strings.Repeat("界", 128), textSearchBranchLimit(20), "").
 		WillReturnRows(pgxmock.NewRows(textSearchColumns))
 
 	if got := performSearchRequest(t, db, strings.Repeat("界", 128)); got.Code != http.StatusOK {
@@ -151,11 +301,11 @@ func TestTextSearchReturnsScanError(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
-		WithArgs("台北", textSearchBranchLimit(20)).
+		WithArgs("台北", textSearchBranchLimit(20), "").
 		WillReturnRows(pgxmock.NewRows(textSearchColumns).
 			AddRow(struct{}{}, "uid", "name", "city", "depart", "destin", nil, nil, 0, 1.0))
 
-	results, err := textSearch(context.Background(), "台北", 20, db)
+	results, err := textSearch(context.Background(), "台北", "", 20, db)
 	if err == nil {
 		t.Fatalf("results = %#v, want scan error", results)
 	}
@@ -190,7 +340,7 @@ func TestExpandStationRoutesReturnsRowsErrorWithoutPartialResults(t *testing.T) 
 	}
 }
 
-func TestHandleSearchFailsOnVectorScanError(t *testing.T) {
+func TestHandleSearchDegradesOnVectorScanError(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"embeddings":[[1,2]]}`))
@@ -204,7 +354,7 @@ func TestHandleSearchFailsOnVectorScanError(t *testing.T) {
 	}
 	defer db.Close()
 	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
-		WithArgs("台北", textSearchBranchLimit(20)).
+		WithArgs("台北", textSearchBranchLimit(20), "").
 		WillReturnRows(pgxmock.NewRows(textSearchColumns))
 	db.ExpectQuery(`(?s)FROM search_vector.*ORDER BY embedding`).
 		WithArgs("[1,2]", 20).
@@ -212,8 +362,11 @@ func TestHandleSearchFailsOnVectorScanError(t *testing.T) {
 			AddRow(struct{}{}, "uid", "name", "city", "depart", "destin", nil, nil))
 
 	got := performSearchRequest(t, db, "台北")
-	if got.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, body = %s, want 500", got.Code, got.Body.String())
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", got.Code, got.Body.String())
+	}
+	if body := got.Body.String(); !strings.Contains(body, `"results":[]`) {
+		t.Fatalf("body = %s, want empty results", body)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -277,7 +430,7 @@ func TestHandleSearchFailsWhenRouteExpansionFails(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
-		WithArgs("台北車站", textSearchBranchLimit(20)).
+		WithArgs("台北車站", textSearchBranchLimit(20), "").
 		WillReturnRows(pgxmock.NewRows(textSearchColumns).
 			AddRow("bus_station", "G-1", "台北車站", "Taipei", "", "", nil, nil, 0, 1.0))
 	db.ExpectQuery(`(?s)FROM bus_station_group_members`).
@@ -402,8 +555,8 @@ func TestTextSearchExactUIDBranchIsIndexable(t *testing.T) {
 		t.Fatal("no WHERE clauses found")
 	}
 	exact := clauses[0]
-	if exact != "uid = $1" {
-		t.Fatalf("exact branch WHERE = %q, want a bare uid = $1 equality so it stays indexable", exact)
+	if exact != "uid = $1 AND ($3 = '' OR city = $3)" {
+		t.Fatalf("exact branch WHERE = %q, want the uid = $1 equality ANDed with the city filter so it stays indexable", exact)
 	}
 }
 
@@ -498,13 +651,13 @@ func TestTextSearchDedupesDuplicateBranchHitsDeterministically(t *testing.T) {
 	// exact-uid branch (best rank 0) and once via the contains branch
 	// (worse rank 5), plus an unrelated second result.
 	db.ExpectQuery(`(?s)FROM search_vector.*WHERE uid = \$1`).
-		WithArgs("台北", textSearchBranchLimit(10)).
+		WithArgs("台北", textSearchBranchLimit(10), "").
 		WillReturnRows(pgxmock.NewRows(textSearchColumns).
 			AddRow("bus_station", "S-1", "台北車站", "Taipei", "", "", nil, nil, 5, 0.4).
 			AddRow("bus_station", "S-1", "台北車站", "Taipei", "", "", nil, nil, 0, 1.0).
 			AddRow("bus_route", "R-2", "307", "Taipei", "A", "B", nil, nil, 4, 0.2))
 
-	results, err := textSearch(context.Background(), "台北", 10, db)
+	results, err := textSearch(context.Background(), "台北", "", 10, db)
 	if err != nil {
 		t.Fatal(err)
 	}

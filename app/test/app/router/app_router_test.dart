@@ -3,12 +3,13 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hive_ce_flutter/adapters.dart';
-import 'package:wheres_the_car/app/router/app_router.dart';
-import 'package:wheres_the_car/app/router/app_routes.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
-import 'package:wheres_the_car/features/settings/settings_option_screen.dart';
-import 'package:wheres_the_car/shared/widgets/main_scaffold.dart';
+import 'package:wheres_the_bus/app/router/app_router.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_bloc.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
+import 'package:wheres_the_bus/features/settings/settings_option_screen.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/widgets/main_scaffold.dart';
 
 /// Flattens the route tree into the full set of route path patterns.
 List<String> collectPaths(List<RouteBase> routes) {
@@ -44,25 +45,23 @@ void main() {
           BlocProvider<AlertBloc>.value(value: alertBloc),
           BlocProvider<PlanBloc>.value(value: planBloc),
         ],
-        child: MaterialApp.router(routerConfig: router),
+        // The settings pickers label themselves from the i18n delegate, so
+        // the routes under test only build with it installed. Pinned to
+        // zh-TW because `flutter_test` reports an en_US platform locale.
+        child: MaterialApp.router(
+          routerConfig: router,
+          locale: const Locale('zh'),
+          localizationsDelegates: AppI18n.localizationsDelegates,
+          supportedLocales: AppI18n.supportedLocales,
+        ),
       ),
     );
     await tester.pump();
   }
 
   group('route graph', () {
-    test('release graph excludes every UI Kit route', () {
-      final paths = collectPaths(buildAppRoutes(includeDebugRoutes: false));
-      expect(paths.where((p) => p.contains('ui-kit')), isEmpty);
-    });
-
-    test('debug graph includes the UI Kit gallery', () {
-      final paths = collectPaths(buildAppRoutes(includeDebugRoutes: true));
-      expect(paths, contains(AppRoutes.uiKit));
-    });
-
     test('main routes match the documented architecture', () {
-      final paths = collectPaths(buildAppRoutes(includeDebugRoutes: false));
+      final paths = collectPaths(buildAppRoutes());
       const expected = [
         '/',
         '/search',

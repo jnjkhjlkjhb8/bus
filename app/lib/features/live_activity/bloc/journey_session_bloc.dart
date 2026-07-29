@@ -2,12 +2,13 @@ import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/data/leg_eta_source.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/core/live_activity/live_activity_channel.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/features/live_activity/data/leg_eta_source.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
 
 /// Drives a journey/track Live Activity through [JourneySessionState].
 ///
@@ -24,14 +25,20 @@ class JourneySessionBloc
   JourneySessionBloc({
     LegEtaStream etaStream = defaultLegEtaStream,
     RouteEtaStream routeEtaStream = defaultRouteEtaStream,
+    RailTrackStream railTrackStream = defaultRailTrackStream,
     LiveActivityChannel? channel,
     Stream<Position> Function()? positions,
+    bool Function()? liveActivityEnabled,
     this.sessionTimeout = const Duration(hours: 8),
     this.trackOnlyLinger = const Duration(minutes: 2),
   }) : _etaStream = etaStream,
        _routeEtaStream = routeEtaStream,
+       _railTrackStream = railTrackStream,
        _channel = channel,
        _positions = positions,
+       _liveActivityEnabled =
+           liveActivityEnabled ??
+           (() => SettingsRepository.instance.liveActivityEnabled),
        super(const JourneySessionState()) {
     on<JourneyStarted>(_onStarted);
     on<BoardConfirmed>(_onBoarded);
@@ -40,12 +47,18 @@ class JourneySessionBloc
     on<EtaTicked>(_onEta);
     on<ProgressTicked>(_onProgress);
     on<PinnedStopsUpdated>(_onPinnedStopsUpdated);
+    on<RailTrackTicked>(_onRailTrack);
   }
 
   final LegEtaStream _etaStream;
   final RouteEtaStream _routeEtaStream;
+  final RailTrackStream _railTrackStream;
   final LiveActivityChannel? _channel;
   final Stream<Position> Function()? _positions;
+
+  /// Injected so tests can start a session without touching Hive. Defaults to
+  /// the user's setting.
+  final bool Function() _liveActivityEnabled;
 
   /// ActivityKit hard-caps activities at 8h; the session ends itself first.
   final Duration sessionTimeout;
@@ -56,6 +69,7 @@ class JourneySessionBloc
 
   StreamSubscription<Duration?>? _etaSub;
   StreamSubscription<List<BusStopEtaViewModel>>? _routeEtaSub;
+  StreamSubscription<RailTrackFrame>? _railSub;
   StreamSubscription<Position>? _posSub;
   Timer? _timeout;
   Timer? _linger;
@@ -73,6 +87,9 @@ class JourneySessionBloc
     Emitter<JourneySessionState> emit,
   ) async {
     if (event.legs.isEmpty) return;
+    // Checked here rather than at each call site so a future start path
+    // cannot bypass the user's setting.
+    if (!_liveActivityEnabled()) return;
     _timeout?.cancel();
     _timeout = Timer(sessionTimeout, () => add(const JourneyCancelled()));
     _linger?.cancel();
@@ -86,13 +103,17 @@ class JourneySessionBloc
         plate: event.plate,
       ),
     );
-    _subscribeEta(event.legs.first, generation);
-    _subscribeRouteEta(
-      event.legs.first,
-      event.trackOnly,
-      event.plate,
-      generation,
-    );
+    if (state.isRailTrack) {
+      _subscribeRailTracking(event.legs.first, generation);
+    } else {
+      _subscribeEta(event.legs.first, generation);
+      _subscribeRouteEta(
+        event.legs.first,
+        event.trackOnly,
+        event.plate,
+        generation,
+      );
+    }
     final lease = await _channel?.start(_content(state));
     if (generation == _generation) {
       _lease = lease;
@@ -196,6 +217,7 @@ class JourneySessionBloc
   void _end(Emitter<JourneySessionState> emit) {
     unawaited(_etaSub?.cancel());
     unawaited(_routeEtaSub?.cancel());
+    unawaited(_railSub?.cancel());
     unawaited(_posSub?.cancel());
     _timeout?.cancel();
     _linger?.cancel();
@@ -259,9 +281,14 @@ class JourneySessionBloc
   }
 
   /// Stops between the pinned vehicle's current position and the leg's
-  /// alight stop, both located in [etas] by stop uid / vehicle plate. Null
+  /// target stop, both located in [etas] by stop uid / estimate plate. Null
   /// when either side hasn't resolved yet (target stop or the plate itself
   /// missing from the current frame).
+  ///
+  /// The vehicle is located by [BusStopEtaViewModel.plate] — the bus this
+  /// estimate is about. [BusStopEtaViewModel.vehicles] cannot be used: the
+  /// server puts the whole route's fleet on every stop, so it matches
+  /// everywhere and pins the result to the route's first stop.
   int? _pinnedStopsRemaining(
     List<BusStopEtaViewModel> etas,
     JourneyLeg leg,
@@ -274,9 +301,13 @@ class JourneySessionBloc
 
     BusStopEtaViewModel? target;
     BusStopEtaViewModel? plateStop;
+    // e.plate is server-normalized (trimmed + upper-cased); the tracked
+    // plate comes from the raw position feed and isn't. Normalize only for
+    // this comparison — state/Live Activity keep the plate as tracked.
+    final normalizedPlate = plate.trim().toUpperCase();
     for (final e in inDirection) {
       if (e.stopUid == leg.identity.departureStopKey) target = e;
-      if (e.vehicles.any((v) => v.plate == plate)) {
+      if (e.plate.isNotEmpty && e.plate == normalizedPlate) {
         if (plateStop == null || e.sequence < plateStop.sequence) {
           plateStop = e;
         }
@@ -285,6 +316,46 @@ class JourneySessionBloc
     if (target == null || plateStop == null) return null;
     final diff = target.sequence - plateStop.sequence;
     return diff < 0 ? 0 : diff;
+  }
+
+  /// A rail trackOnly session derives its live 還剩 N 站 / progress / ETA from
+  /// the leg's carried timetable + live TRA delay (see
+  /// [defaultRailTrackStream]).
+  void _subscribeRailTracking(JourneyLeg leg, int generation) {
+    unawaited(_railSub?.cancel());
+    _railSub = _railTrackStream(leg).listen(
+      (f) => add(
+        RailTrackTicked(
+          eta: f.etaToAlight,
+          remainingStops: f.remainingStops,
+          progress: f.progress,
+          nextStop: f.nextStop,
+          generation: generation,
+        ),
+      ),
+      onError: (Object _) {},
+    );
+  }
+
+  void _onRailTrack(RailTrackTicked e, Emitter<JourneySessionState> emit) {
+    if (e.generation != _generation) return; // stale journey
+    if (state.phase != JourneyPhase.waiting) return;
+    final arrived = e.eta <= Duration.zero;
+    emit(
+      state.copyWith(
+        eta: e.eta,
+        pinnedStopsRemaining: e.remainingStops,
+        railProgress: e.progress,
+        railNextStop: e.nextStop,
+      ),
+    );
+    _pushUpdate();
+    // Arrived at the alight: linger briefly, then end (mirrors _onEta's
+    // trackOnly arrival handling — a train that reaches the alight is done).
+    if (arrived && !_trackedArrived) {
+      _trackedArrived = true;
+      _linger = Timer(trackOnlyLinger, () => add(const JourneyCancelled()));
+    }
   }
 
   void _subscribePositions() {
@@ -328,19 +399,24 @@ class JourneySessionBloc
         s.phase == JourneyPhase.riding && s.nextStopIndex < names.length
         ? names[s.nextStopIndex]
         : leg.boardStop;
+    final rail = s.isRailTrack;
     return LiveActivityContent(
-      mode: s.phase == JourneyPhase.riding ? 'riding' : 'waiting',
+      mode: rail
+          ? 'riding'
+          : (s.phase == JourneyPhase.riding ? 'riding' : 'waiting'),
       type: leg.kind.name == 'metro' ? 'mrt' : leg.kind.name,
       routeOrTrain: leg.routeLabel,
       fromStation: leg.boardStop,
-      nextStation: nextName,
+      nextStation: rail ? (s.railNextStop ?? leg.boardStop) : nextName,
       alightStation: leg.alightStop,
-      remainingStops: s.plate != null
-          ? s.pinnedStopsRemaining
-          : (s.phase == JourneyPhase.riding ? total - s.nextStopIndex : null),
-      progressPercent: s.phase == JourneyPhase.riding && total > 0
-          ? s.nextStopIndex / total
-          : 0.0,
+      remainingStops:
+          s.pinnedStopsRemaining ??
+          (s.phase == JourneyPhase.riding ? total - s.nextStopIndex : null),
+      progressPercent: rail
+          ? (s.railProgress ?? 0.0)
+          : (s.phase == JourneyPhase.riding && total > 0
+                ? s.nextStopIndex / total
+                : 0.0),
       etaMs: s.eta == null
           ? null
           : DateTime.now().add(s.eta!).millisecondsSinceEpoch,
@@ -354,6 +430,7 @@ class JourneySessionBloc
   Future<void> close() {
     unawaited(_etaSub?.cancel());
     unawaited(_routeEtaSub?.cancel());
+    unawaited(_railSub?.cancel());
     unawaited(_posSub?.cancel());
     _timeout?.cancel();
     _linger?.cancel();

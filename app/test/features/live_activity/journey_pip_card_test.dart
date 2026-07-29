@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
-import 'package:wheres_the_car/features/live_activity/view/journey_pip_card.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/features/live_activity/view/journey_pip_card.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 // Local leg builder — a shared fixtures file across test files is not worth
 // it for ~20 lines (see task-5 brief note).
@@ -30,11 +31,17 @@ JourneyLeg buildTestLeg(String routeLabel) {
 
 void main() {
   testWidgets('waiting mode shows route and board stop', (tester) async {
-    final bloc = JourneySessionBloc(etaStream: (_) => const Stream.empty())
-      ..add(JourneyStarted(legs: [buildTestLeg('307 往板橋')]));
+    final bloc = JourneySessionBloc(
+      etaStream: (_) => const Stream.empty(),
+      liveActivityEnabled: () => true,
+    )..add(JourneyStarted(legs: [buildTestLeg('307 往板橋')]));
     await tester.pump();
     await tester.pumpWidget(
       MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppI18n.localizationsDelegates,
+        supportedLocales: AppI18n.supportedLocales,
+
         home: BlocProvider.value(value: bloc, child: const JourneyPipCard()),
       ),
     );
@@ -49,12 +56,20 @@ void main() {
   testWidgets('done journey renders nothing (no stale riding card)', (
     tester,
   ) async {
-    final bloc = JourneySessionBloc(etaStream: (_) => const Stream.empty())
-      ..add(JourneyStarted(legs: [buildTestLeg('307 往板橋')]))
-      ..add(const JourneyCancelled());
+    final bloc =
+        JourneySessionBloc(
+            etaStream: (_) => const Stream.empty(),
+            liveActivityEnabled: () => true,
+          )
+          ..add(JourneyStarted(legs: [buildTestLeg('307 往板橋')]))
+          ..add(const JourneyCancelled());
     await tester.pump();
     await tester.pumpWidget(
       MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppI18n.localizationsDelegates,
+        supportedLocales: AppI18n.supportedLocales,
+
         home: BlocProvider.value(value: bloc, child: const JourneyPipCard()),
       ),
     );

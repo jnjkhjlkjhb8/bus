@@ -24,6 +24,8 @@ made by claude
   - 捷運站點與座標
 - `mrt_schedule`
   - 捷運首末班車時間；分割替換（partition-replace）：`loadMrtFirstlast` 在單一交易內先 `DELETE FROM mrt_schedule WHERE system=$1`，再純 `INSERT` 全部列（無 DISTINCT ON、無 ON CONFLICT）；`updated_at` 蓋 NOW()（新鮮度探測 `MAX(updated_at) WHERE system=$1`）。無自然鍵唯一約束；serviceday bitmask 第 8 bit = NationalHolidays
+- `mrt_adjacency`（ADR-0015；migration `2026-07-23-mrt-adjacency.sql`）
+  - 捷運「同線相鄰站」邊集，捷運下車提醒 session 走的路網。欄位：`system, line_id, from_station_id, to_station_id, updated_at`；PK `(system, from_station_id, to_station_id)`。由 `loadMrtAdjacency`（loader）從已落地的 `raw_tdx.metro_s2straveltime`（TRTC）的 `TravelTimes` 段建立，**只取段、不取 `LineTransfer`**（一班車不跨轉乘邊）。每段的兩個方向都寫入，故 router 的 board→terminal BFS 以有向查表達成無向走訪。以 `ON CONFLICT` upsert 原地更新；來源短暫為空時 no-op，不刪好邊。
 
 ### rail
 - `tra_stations`
@@ -32,6 +34,27 @@ made by claude
 - `thsr_fares`
 - `tra_timetable`
 - `thsr_timetable`
+
+### 到站/下車提醒（`firebase_arrival_reminder`，migration `005_firebase_notifications.sql`）
+公車以 live ETA、鐵路以排程（`fire_at = 抵達 − lead`）觸發。捷運下車提醒（`route_type='mrt'`，ADR-0015）重用同一張表，欄位對應如下：
+- `plate` = carID（車廂綁定）
+- `route_key` = TripId（GetTrainInfo 回傳，等同擁擠度 feed 的 TrainNumber）
+- `stop_key` = 目標站（下車站）ID
+- `direction` = 該班車終點站（terminal）ID
+- `lead_minutes` = **提前站數**（沿用該欄；stops-based lead，仍受 `CHECK (lead_minutes BETWEEN 1 AND 120)` 限制）
+- `fire_at` = NULL（如公車，不排程；由 functions tracker 依即時位置觸發）
+- `status` = `pending`（active）；lead 觸發時走既有 claim→sending→fired 機制。抵達/脫離/逾時等結束只更新 Redis session 狀態；**未曾 fire 的列**才由 tracker 標記 `expired`（已 fired 的列因 `CHECK (fired_at IS NULL OR status='fired')` 不可改，改由 `expires_at` 自然過期）
+
+### 使用者回報（`feedback_thread` / `feedback_message`，migration `2026-07-27-feedback.sql`）
+一則回報是一個 thread 加上它的第一則 message。拆成兩張表是因為 ops 的回覆就是同一個 thread 上的下一則 message——之後才長成這個形狀，等於要在資料庫上搬動線上資料，不如一開始就在旁邊多開一張表。
+- `feedback_thread(id, install_id, category, diagnostics jsonb, status, created_at)`
+  - `install_id` 與 `firebase_device` 是同一組匿名識別，但**刻意不設 FK**：關掉推播、或裝置列被清掉的使用者，仍然必須能回報問題
+  - `category` 的 CHECK 與 Go 端的白名單重複，是為了讓未來的 client 版本無法悄悄擴張 ops 端的分類
+  - `status` 只有 `open` / `closed`：讀回報走 SQL，沒有這欄的話待辦清單只會無限成長
+  - 索引：`(install_id, created_at DESC)` 服務每日配額計數；`(created_at DESC) WHERE status='open'` 是 partial index，大小維持在待辦量而非全部歷史
+- `feedback_message(id, thread_id, author, body, created_at)`
+  - `author` 是 `user` / `ops` 的文字而非 boolean，因為 `ops` 那些列是人在 psql 裡手寫的
+- **已讀狀態不進資料庫**：哪些回覆看過了存在 App 端 Hive，伺服器因此少一張表與一條 RPC
 
 ### bus ETA prediction
 - `bus_eta_history`

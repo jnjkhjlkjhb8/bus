@@ -13,7 +13,7 @@
 # Usage: scripts/ci.sh <profile> [profile...]
 #   contracts   dependency boundaries + file-size ratchet + proto contract +
 #               ADR hygiene
-#   go          go vet + go test
+#   go          golangci-lint (.golangci.yml, includes govet) + go test
 #   flutter     proto-dart stubs + flutter analyze + flutter test
 #   migrations  migration replay gate (scripts/check-migrations.sh)
 #   security    gitleaks + govulncheck + guardrail-test presence
@@ -54,8 +54,8 @@ run_contracts() {
 }
 
 run_go() {
-  echo "== go: vet =="
-  go vet ./...
+  echo "== go: lint (golangci-lint) =="
+  make lint
 
   echo "== go: test =="
   # shellcheck disable=SC2086 # GO_TEST_ARGS is a caller-controlled word list

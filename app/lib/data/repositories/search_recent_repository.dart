@@ -1,5 +1,5 @@
-import 'package:wheres_the_car/core/storage/hive_store.dart';
-import 'package:wheres_the_car/data/models/search_models.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/data/models/search_models.dart';
 
 class SearchRecentRepository {
   const SearchRecentRepository._();
@@ -34,6 +34,20 @@ class SearchRecentRepository {
         .where((r) => r.type != result.type || r.uid != result.uid)
         .map(_toMap)
         .toList();
+    await HiveStore.settings.put(_key, next);
+  }
+
+  /// Puts a removed entry back where it was.
+  ///
+  /// Undo can't go through [add]: that promotes the entry to the head of the
+  /// list, so "復原" would silently reorder history instead of restoring it.
+  Future<void> restore(SearchResult result, int index) async {
+    if (!HiveStore.settingsReady) return;
+    final current = all()
+        .where((r) => r.type != result.type || r.uid != result.uid)
+        .toList();
+    current.insert(index.clamp(0, current.length), result);
+    final next = current.take(_maxItems).map(_toMap).toList();
     await HiveStore.settings.put(_key, next);
   }
 

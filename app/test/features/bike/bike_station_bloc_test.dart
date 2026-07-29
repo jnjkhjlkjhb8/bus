@@ -2,10 +2,11 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grpc/grpc.dart';
-import 'package:wheres_the_car/data/models/bike_models.dart';
-import 'package:wheres_the_car/data/repositories/bike_repository.dart';
-import 'package:wheres_the_car/features/bike/bloc/bike_station_bloc.dart';
-import 'package:wheres_the_car/features/bike/bloc/bike_station_event.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/bike_models.dart';
+import 'package:wheres_the_bus/data/repositories/bike_repository.dart';
+import 'package:wheres_the_bus/features/bike/bloc/bike_station_bloc.dart';
+import 'package:wheres_the_bus/features/bike/bloc/bike_station_event.dart';
 
 void main() {
   test('BikeStationBloc starts in loading state', () {
@@ -75,7 +76,7 @@ void main() {
       final state = await bloc.stream.firstWhere((s) => s.liveError != null);
       expect(state.error, isNull);
       expect(state.hasLiveData, isFalse);
-      expect(state.liveError, isNotEmpty);
+      expect(state.liveError, isA<AppError>());
     },
   );
 
@@ -93,7 +94,7 @@ void main() {
       addTearDown(bloc.close);
 
       await bloc.stream.firstWhere((s) => !s.loading);
-      bloc.add(const BikeStationEtaFailed('offline'));
+      bloc.add(const BikeStationEtaFailed(OfflineError()));
       await bloc.stream.firstWhere((s) => s.liveError != null);
 
       bloc.add(
@@ -110,6 +111,46 @@ void main() {
       expect(recovered.available, 3);
     },
   );
+
+  test(
+    'a static fetch with no landed point keeps the caller-seeded coordinates '
+    'instead of overwriting them with 0/0',
+    () async {
+      final repository = _FakeBikeRepository(
+        etaSource: Stream<BikeAvailability>.empty,
+        staticLat: 0,
+        staticLon: 0,
+      );
+      final bloc = BikeStationBloc(
+        stationUid: 'bike-tpe',
+        repository: repository,
+        lat: 24.9928,
+        lon: 121.3009,
+      );
+      addTearDown(bloc.close);
+
+      final state = await bloc.stream.firstWhere((s) => !s.loading);
+      expect(state.lat, 24.9928);
+      expect(state.lon, 121.3009);
+    },
+  );
+
+  test('a static fetch that does carry a point wins over the seed', () async {
+    final repository = _FakeBikeRepository(
+      etaSource: Stream<BikeAvailability>.empty,
+    );
+    final bloc = BikeStationBloc(
+      stationUid: 'bike-tpe',
+      repository: repository,
+      lat: 1,
+      lon: 2,
+    );
+    addTearDown(bloc.close);
+
+    final state = await bloc.stream.firstWhere((s) => !s.loading);
+    expect(state.lat, 25.033);
+    expect(state.lon, 121.565);
+  });
 
   test('close cancels the live subscription before completing (F35)', () async {
     var cancelled = false;
@@ -138,19 +179,23 @@ class _FakeBikeRepository implements BikeRepository {
   _FakeBikeRepository({
     required this.etaSource,
     this.staticThrows = false,
+    this.staticLat = 25.033,
+    this.staticLon = 121.565,
   });
 
   final Stream<BikeAvailability> Function() etaSource;
   final bool staticThrows;
+  final double staticLat;
+  final double staticLon;
 
   @override
   Future<BikeStationInfo> stationStatic(String stationUid) async {
     if (staticThrows) throw const GrpcError.unavailable();
-    return const BikeStationInfo(
+    return BikeStationInfo(
       name: '測試站',
       capacity: 10,
-      lat: 25.033,
-      lon: 121.565,
+      lat: staticLat,
+      lon: staticLon,
     );
   }
 

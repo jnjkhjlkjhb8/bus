@@ -3,10 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
-import 'package:wheres_the_car/features/rail/rail_navigation_request.dart';
-import 'package:wheres_the_car/features/rail/view/rail_train_screen.dart';
-import 'package:wheres_the_car/features/rail/widgets/rail_query_sheet.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_bus/features/rail/rail_navigation_request.dart';
+import 'package:wheres_the_bus/features/rail/view/rail_train_screen.dart';
+import 'package:wheres_the_bus/features/rail/widgets/rail_query_sheet.dart';
 
 final _dateFormat = DateFormat('yyyy-MM-dd');
 

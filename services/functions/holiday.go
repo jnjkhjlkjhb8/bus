@@ -55,7 +55,7 @@ func refreshHolidays(ctx context.Context, client *http.Client, url string) error
 	if err != nil {
 		return fmt.Errorf("fetch holiday CSV: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		_, drainErr := io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 		return errors.Join(fmt.Errorf("fetch holiday CSV: HTTP status %d", resp.StatusCode), drainErr)
@@ -77,7 +77,7 @@ func parseHolidayCSV(r io.Reader) (map[string]bool, error) {
 	dates := make(map[string]bool)
 	for {
 		record, err := csvReader.Read()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

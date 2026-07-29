@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/firebase/firebase_call_options.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_call_options.dart';
 
 void main() {
   group('FirebaseCallOptions.build', () {

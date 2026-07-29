@@ -8,7 +8,6 @@ class _RouteDetailTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final departures = _departuresFor(state);
-    final timetable = _timetableFor(state);
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -19,7 +18,7 @@ class _RouteDetailTab extends StatelessWidget {
           _RouteMeta(cs: cs, state: state),
           _Operators(cs: cs, operators: state.route?.operators ?? const []),
           _Fares(cs: cs, fare: state.fare),
-          _Timetable(cs: cs, headsign: _headsignFor(state), rows: timetable),
+          _Timetable(cs: cs, headsign: _headsignFor(state), state: state),
         ],
       ),
     );
@@ -67,23 +66,37 @@ class _NextDepartures extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 12,
       children: [
-        _SectionLabel('今日發車班表', cs: cs),
+        _SectionLabel(AppI18n.of(context).busNextDepartures, cs: cs),
         if (departures.isEmpty)
-          _EmptyDetailText('尚無今日班表資料', cs: cs)
+          _EmptyDetailText(AppI18n.of(context).busNoDepartures, cs: cs)
         else
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            clipBehavior: Clip.none,
-            child: Row(
-              spacing: 8,
-              children: [
-                for (final item in departures)
-                  _DeparturePill(
-                    time: item.time,
-                    isNext: item.isNext,
-                    cs: cs,
-                  ),
+          // Edge fade signals the strip is scrollable instead of cutting the
+          // last pill off mid-glyph with no affordance. The gradient is a
+          // mask (dstIn), not UI color, so it sits outside the token rule.
+          ShaderMask(
+            shaderCallback: (bounds) => const LinearGradient(
+              colors: [
+                Colors.transparent,
+                Colors.black,
+                Colors.black,
+                Colors.transparent,
               ],
+              stops: [0, 0.03, 0.94, 1],
+            ).createShader(bounds),
+            blendMode: BlendMode.dstIn,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                spacing: 8,
+                children: [
+                  for (final item in departures)
+                    _DeparturePill(
+                      time: item.time,
+                      isNext: item.isNext,
+                      cs: cs,
+                    ),
+                ],
+              ),
             ),
           ),
       ],
@@ -136,7 +149,12 @@ class _RouteMeta extends StatelessWidget {
     final destination = route?.destinationStopName.isNotEmpty == true
         ? route!.destinationStopName
         : (stops.isEmpty ? '-' : stops.last.stopName);
-    final city = route?.city.isNotEmpty == true ? route!.city : '-';
+    // route.city is a TDX county code (e.g. "Taoyuan"), and it names where
+    // the route operates, not a regulator — map it to its Chinese name
+    // rather than label it 主管機關 and leak the English identifier.
+    final city = route?.city.isNotEmpty == true
+        ? _dtCityLabel(AppI18n.of(context), route!.city)
+        : '-';
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -145,7 +163,7 @@ class _RouteMeta extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             spacing: 4,
             children: [
-              _SectionLabel('主管機關', cs: cs),
+              _SectionLabel(AppI18n.of(context).busOperatingCities, cs: cs),
               Text(city, style: AppTextStyles.bodyLarge),
             ],
           ),
@@ -155,32 +173,79 @@ class _RouteMeta extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.end,
             spacing: 4,
             children: [
-              _SectionLabel('起迄站', cs: cs),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                spacing: 4,
-                children: [
-                  Flexible(
-                    child: Text(
-                      origin,
-                      style: AppTextStyles.bodyLarge,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const Text('→', style: AppTextStyles.bodyLarge),
-                  Flexible(
-                    child: Text(
-                      destination,
-                      style: AppTextStyles.bodyLarge,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
+              _SectionLabel(AppI18n.of(context).busEndpoints, cs: cs),
+              _originDestinationLine(
+                context,
+                origin: origin,
+                destination: destination,
               ),
             ],
           ),
         ),
       ],
+    );
+  }
+
+  // At large text-scale factors, two Flexible halves of a Row squeeze each
+  // station name down to a single ellipsised glyph (verified at 2.0x). Measure
+  // both labels against the width actually on offer and fall back to a
+  // stacked column instead of destroying the names.
+  Widget _originDestinationLine(
+    BuildContext context, {
+    required String origin,
+    required String destination,
+  }) {
+    const style = AppTextStyles.bodyLarge;
+    const arrow = '→';
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final scaler = MediaQuery.textScalerOf(context);
+        double widthOf(String text) {
+          final painter = TextPainter(
+            text: TextSpan(text: text, style: style),
+            textDirection: Directionality.of(context),
+            textScaler: scaler,
+          )..layout();
+          return painter.width;
+        }
+
+        final needed =
+            widthOf(origin) + widthOf(arrow) + widthOf(destination) + 8;
+        final fits =
+            constraints.maxWidth.isFinite && needed <= constraints.maxWidth;
+        if (fits) {
+          return Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            spacing: 4,
+            children: [
+              Flexible(
+                child: Text(
+                  origin,
+                  style: style,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const Text(arrow, style: style),
+              Flexible(
+                child: Text(
+                  destination,
+                  style: style,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          spacing: 2,
+          children: [
+            Text(origin, style: style, textAlign: TextAlign.end),
+            const Text('↓', style: style),
+            Text(destination, style: style, textAlign: TextAlign.end),
+          ],
+        );
+      },
     );
   }
 }
@@ -196,9 +261,9 @@ class _Operators extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 12,
       children: [
-        _SectionLabel('營運業者', cs: cs),
+        _SectionLabel(AppI18n.of(context).busOperators, cs: cs),
         if (operators.isEmpty)
-          _EmptyDetailText('尚無營運業者資料', cs: cs)
+          _EmptyDetailText(AppI18n.of(context).busNoOperators, cs: cs)
         else
           AppCard.outlined(
             padding: EdgeInsets.zero,
@@ -276,7 +341,7 @@ class _OperatorRow extends StatelessWidget {
           if (op.phone.isNotEmpty)
             _OperatorIconButton(
               icon: Icons.phone_outlined,
-              label: '撥打 ${op.name} 電話',
+              label: AppI18n.of(context).callOperator(op.name),
               cs: cs,
               onTap: () => _dial(op.phone),
             ),
@@ -284,7 +349,7 @@ class _OperatorRow extends StatelessWidget {
             const SizedBox(width: 8),
             _OperatorIconButton(
               icon: Icons.language_outlined,
-              label: '${op.name} 官方網站',
+              label: AppI18n.of(context).operatorWebsite(op.name),
               cs: cs,
               onTap: () => _open(op.url),
             ),
@@ -333,56 +398,182 @@ class _Fares extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final fare = this.fare;
-    final od = decodeOdFares(fare);
-    final range = odFareRange(od);
+    final od = decodeOdFares(AppI18n.of(context), fare);
     // City buses have no origin→destination table; their class rows are short
     // enough to sit inline. Only 公路客運 with an OD table gets the accordion.
     final flatGroups = od.isEmpty
-        ? decodeFareTable(fare)
+        ? decodeFareTable(AppI18n.of(context), fare)
         : const <FareGroup>[];
     final odCount = od.fold<int>(0, (n, o) => n + o.destinations.length);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      spacing: 12,
-      children: [
-        _SectionLabel('票價資訊', cs: cs),
-        if (fare == null)
-          _EmptyDetailText('尚無票價資料', cs: cs)
-        else ...[
-          AppCard.outlined(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+
+    return FarePreferenceBuilder(
+      builder: (context, fareType) {
+        final range = odFareRange(od, fareType);
+        // A genuine range (min != max) means the OD table really does carry
+        // per-stop variation, which contradicts TDX's own 一段票 (flat-fare)
+        // label for some routes — reconcile them instead of showing both.
+        final hasFareRange =
+            od.isNotEmpty && range != null && range.min != range.max;
+        // Every class the route prices, for the 全部票種 disclosure. A route
+        // that only ever publishes 全票 gets no disclosure rather than one
+        // that opens onto a single row the rider is already looking at.
+        final allClasses = _fareClassCount(flatGroups, od);
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          spacing: 12,
+          children: [
+            _SectionLabel(AppI18n.of(context).busFareInfo, cs: cs),
+            if (fare == null)
+              _EmptyDetailText(AppI18n.of(context).busNoFare, cs: cs)
+            else ...[
+              AppCard.outlined(
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: _FareFact(
-                        label: '票價型態',
-                        value: _farePricingTypeLabel(fare.pricingType),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: _FareFact(
+                            label: AppI18n.of(context).busFarePricingType,
+                            value: _farePricingTypeLabel(
+                              AppI18n.of(context),
+                              fare.pricingType,
+                              hasFareRange: hasFareRange,
+                            ),
+                            cs: cs,
+                          ),
+                        ),
+                        // "需付費" told the rider nothing they didn't already
+                        // know; 免費 is the only value of this fact worth a
+                        // slot.
+                        if (fare.isFreeBus)
+                          _FareFact(
+                            label: AppI18n.of(context).busFareChargingMethod,
+                            value: AppI18n.of(context).busFareFree,
+                            alignEnd: true,
+                            cs: cs,
+                          ),
+                      ],
+                    ),
+                    if (od.isNotEmpty && range != null)
+                      _FareRangeLine(
+                        range: range,
+                        fareType: fareType,
                         cs: cs,
-                      ),
-                    ),
-                    _FareFact(
-                      label: '收費方式',
-                      value: fare.isFreeBus ? '免費' : '需付費',
-                      alignEnd: true,
-                      cs: cs,
-                    ),
+                      )
+                    else
+                      for (final (i, group) in flatGroups.indexed)
+                        _FareGroupBlock(
+                          group: group,
+                          fareType: fareType,
+                          showDivider: i > 0,
+                          cs: cs,
+                        ),
                   ],
                 ),
-                if (od.isNotEmpty && range != null)
-                  _FareRangeLine(range: range, cs: cs)
-                else
-                  for (final (i, group) in flatGroups.indexed)
-                    _FareGroupBlock(group: group, showDivider: i > 0, cs: cs),
-              ],
+              ),
+              // The rider's own ticket type is the headline above; the rest of
+              // the classes stay one tap away rather than stacking six rows
+              // per segment on a screen read at a bus stop.
+              if (allClasses > 1 && flatGroups.isNotEmpty)
+                AppAccordion(
+                  title: AppI18n.of(
+                    context,
+                  ).busAllFareClasses(allClasses),
+                  child: _AllFareClasses(groups: flatGroups, cs: cs),
+                ),
+              if (od.isNotEmpty)
+                AppAccordion(
+                  title: AppI18n.of(
+                    context,
+                  ).busAllOdFares(odCount),
+                  child: _OdFareTable(
+                    origins: od,
+                    fareType: fareType,
+                    cs: cs,
+                  ),
+                ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// How many distinct fare classes the route prices anywhere, which decides
+/// whether a 全部票種 disclosure has anything to disclose.
+int _fareClassCount(List<FareGroup> groups, List<OdOrigin> origins) {
+  final classes = <int>{};
+  for (final group in groups) {
+    for (final row in group.rows) {
+      classes.add(row.fareClass);
+    }
+  }
+  for (final origin in origins) {
+    for (final dest in origin.destinations) {
+      for (final row in dest.rows) {
+        classes.add(row.fareClass);
+      }
+    }
+  }
+  return classes.length;
+}
+
+/// Every fare class the route prices, per segment. The rider's own type is
+/// already shown above, so this is reference material: a plain label/price
+/// list, no highlighting, no second hierarchy competing with the headline.
+class _AllFareClasses extends StatelessWidget {
+  const _AllFareClasses({required this.groups, required this.cs});
+  final List<FareGroup> groups;
+  final ColorScheme cs;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final (i, group) in groups.indexed) ...[
+          if (i > 0)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: DividerLine(),
             ),
-          ),
-          if (od.isNotEmpty)
-            AppAccordion(
-              title: '完整起迄票價（$odCount 筆）',
-              child: _OdFareTable(origins: od, cs: cs),
+          if (group.segment case final segment?)
+            Padding(
+              padding: EdgeInsets.only(top: i > 0 ? 0 : 4, bottom: 2),
+              child: Text(
+                segment,
+                style: AppTextStyles.bodySmall.copyWith(
+                  fontWeight: FontWeight.w600,
+                  color: cs.onSurface,
+                ),
+              ),
+            ),
+          for (final row in group.rows)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      row.label,
+                      style: AppTextStyles.bodyRegular.copyWith(
+                        color: cs.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    row.price,
+                    style: AppTextStyles.bodyRegular.copyWith(
+                      fontFeatures: _tnum,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                ],
+              ),
             ),
         ],
       ],
@@ -391,12 +582,21 @@ class _Fares extends StatelessWidget {
 }
 
 class _FareRangeLine extends StatelessWidget {
-  const _FareRangeLine({required this.range, required this.cs});
+  const _FareRangeLine({
+    required this.range,
+    required this.fareType,
+    required this.cs,
+  });
   final ({int min, int max}) range;
+
+  /// The ticket type [range] was computed for. Named on the row, because a
+  /// range with no ticket type beside it reads as the standard fare.
+  final FareType fareType;
   final ColorScheme cs;
 
   @override
   Widget build(BuildContext context) {
+    final i18n = AppI18n.of(context);
     final label = range.min == range.max
         ? 'NT\$${range.min}'
         : 'NT\$${range.min} – NT\$${range.max}';
@@ -406,7 +606,7 @@ class _FareRangeLine extends StatelessWidget {
         children: [
           Expanded(
             child: Text(
-              '票價範圍',
+              i18n.busFareRange(fareType.labelOf(i18n)),
               style: AppTextStyles.bodyRegular.copyWith(
                 color: cs.onSurfaceVariant,
               ),
@@ -430,8 +630,17 @@ class _FareRangeLine extends StatelessWidget {
 /// accordion, so it never dominates the detail tab. Rows are capped and the
 /// remainder surfaced through search rather than an endless flat list.
 class _OdFareTable extends StatefulWidget {
-  const _OdFareTable({required this.origins, required this.cs});
+  const _OdFareTable({
+    required this.origins,
+    required this.fareType,
+    required this.cs,
+  });
   final List<OdOrigin> origins;
+
+  /// The rider's ticket type. Each destination shows the one price they pay;
+  /// listing every class per destination turned an 80-row table into a 300-row
+  /// one nobody scrolled to the bottom of.
+  final FareType fareType;
   final ColorScheme cs;
 
   @override
@@ -483,8 +692,8 @@ class _OdFareTableState extends State<_OdFareTable> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         AppInput(
-          label: '搜尋站牌',
-          hint: '輸入起站或迄站名稱',
+          label: AppI18n.of(context).busSearchStops,
+          hint: AppI18n.of(context).busSearchStopsHint,
           prefixIcon: Icon(
             Icons.search,
             size: 20,
@@ -497,7 +706,7 @@ class _OdFareTableState extends State<_OdFareTable> {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 16),
             child: Text(
-              '查無「$q」相關站牌',
+              AppI18n.of(context).busNoStopMatch(q),
               style: AppTextStyles.bodyRegular.copyWith(
                 color: cs.onSurfaceVariant,
               ),
@@ -509,7 +718,7 @@ class _OdFareTableState extends State<_OdFareTable> {
             Padding(
               padding: const EdgeInsets.only(top: 12),
               child: Text(
-                '僅顯示前 $_maxRows 筆，輸入站牌以查詢其餘票價',
+                AppI18n.of(context).busFareTruncated(_maxRows),
                 style: AppTextStyles.bodySmall.copyWith(
                   color: cs.onSurfaceVariant,
                 ),
@@ -541,7 +750,7 @@ class _OdFareTableState extends State<_OdFareTable> {
               ),
               const SizedBox(width: 4),
               Text(
-                '出發',
+                AppI18n.of(context).busDepart,
                 style: AppTextStyles.bodySmall.copyWith(
                   color: cs.onSurfaceVariant,
                 ),
@@ -555,9 +764,12 @@ class _OdFareTableState extends State<_OdFareTable> {
   }
 
   Widget _destRow(OdDestination dest, ColorScheme cs) {
-    // Usually one row (全票); multi-class OD entries append the class label so
-    // 全票 / 半票 prices stay distinguishable.
-    final multi = dest.rows.length > 1;
+    final picked = pickFareRow(dest.rows, widget.fareType);
+    if (picked == null) return const SizedBox.shrink();
+    // The class label rides along only when it is not what the rider asked
+    // for — otherwise the whole column repeats their own ticket type on every
+    // row, which the section heading already states once.
+    final needsLabel = picked.matched != widget.fareType;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 9),
       child: Row(
@@ -569,20 +781,15 @@ class _OdFareTableState extends State<_OdFareTable> {
               style: AppTextStyles.bodyRegular.copyWith(color: cs.onSurface),
             ),
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            spacing: 2,
-            children: [
-              for (final row in dest.rows)
-                Text(
-                  multi ? '${row.label} ${row.price}' : row.price,
-                  style: AppTextStyles.bodyRegular.copyWith(
-                    fontFeatures: _tnum,
-                    fontWeight: FontWeight.w600,
-                    color: cs.onSurface,
-                  ),
-                ),
-            ],
+          Text(
+            needsLabel
+                ? '${picked.row.label} ${picked.row.price}'
+                : picked.row.price,
+            style: AppTextStyles.bodyRegular.copyWith(
+              fontFeatures: _tnum,
+              fontWeight: FontWeight.w600,
+              color: cs.onSurface,
+            ),
           ),
         ],
       ),
@@ -590,18 +797,25 @@ class _OdFareTableState extends State<_OdFareTable> {
   }
 }
 
+/// One segment's headline price: the single row the rider actually pays. Every
+/// other class for the segment lives in the 全部票種 disclosure — stacking all
+/// six here is what made this block unreadable at a stop.
 class _FareGroupBlock extends StatelessWidget {
   const _FareGroupBlock({
     required this.group,
+    required this.fareType,
     required this.showDivider,
     required this.cs,
   });
   final FareGroup group;
+  final FareType fareType;
   final bool showDivider;
   final ColorScheme cs;
 
   @override
   Widget build(BuildContext context) {
+    final i18n = AppI18n.of(context);
+    final picked = pickFareRow(group.rows, fareType);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -623,23 +837,32 @@ class _FareGroupBlock extends StatelessWidget {
               ),
             ),
           ),
-        for (final row in group.rows)
+        if (picked != null)
           Padding(
             padding: const EdgeInsets.only(top: 12),
             child: Row(
               children: [
                 Expanded(
                   child: Text(
-                    row.label,
-                    style: AppTextStyles.bodySmall.copyWith(
+                    // The matched label, not the requested one: a segment that
+                    // prices no 敬老票 says 全票 here rather than mislabelling
+                    // the standard fare as a concession.
+                    picked.matched == fareType
+                        ? picked.row.label
+                        : i18n.busFareMissing(
+                            picked.row.label,
+                            fareType.labelOf(i18n),
+                          ),
+                    style: AppTextStyles.bodyRegular.copyWith(
                       color: cs.onSurfaceVariant,
                     ),
                   ),
                 ),
                 Text(
-                  row.price,
-                  style: AppTextStyles.bodySmall.copyWith(
+                  picked.row.price,
+                  style: AppTextStyles.bodyLarge.copyWith(
                     fontFeatures: _tnum,
+                    fontWeight: FontWeight.w600,
                     color: cs.onSurface,
                   ),
                 ),
@@ -687,44 +910,105 @@ class _FareFact extends StatelessWidget {
   }
 }
 
-class _Timetable extends StatelessWidget {
+class _Timetable extends StatefulWidget {
   const _Timetable({
     required this.cs,
     required this.headsign,
-    required this.rows,
+    required this.state,
   });
   final ColorScheme cs;
   final String headsign;
-  final List<_TimetableInfo> rows;
+  final BusRouteState state;
 
   static const int _columns = 4;
 
   @override
+  State<_Timetable> createState() => _TimetableState();
+}
+
+class _TimetableState extends State<_Timetable> {
+  late int _day = busWeekdayIndex(DateTime.now());
+
+  ColorScheme get cs => widget.cs;
+
+  @override
   Widget build(BuildContext context) {
+    final schedules = _schedulesFor(widget.state);
+    final serviceDays = busServiceDays(schedules);
+    final timetable = _timetableFor(widget.state, _day);
+    final today = busWeekdayIndex(DateTime.now());
+    // Without a weekly pattern only today is knowable: showing a day picker
+    // would offer six answers the data cannot give.
+    final weekly = serviceDays.isNotEmpty;
+    final reduceMotion = AppMotion.reduced(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       spacing: 12,
       children: [
-        _SectionLabel('班表', cs: cs),
-        if (rows.isEmpty)
-          _EmptyDetailText('尚無班表資料', cs: cs)
-        else
-          AppCard.outlined(padding: EdgeInsets.zero, child: _board()),
+        _SectionLabel(AppI18n.of(context).busTimetable, cs: cs),
+        if (!weekly && timetable.departures.isEmpty)
+          _EmptyDetailText(AppI18n.of(context).busNoTimetable, cs: cs)
+        else ...[
+          if (weekly)
+            AppSlidingSegment<int>(
+              options: {
+                for (final (i, label) in _dtWeekdayLabels(
+                  AppI18n.of(context),
+                ).indexed)
+                  i: label,
+              },
+              value: _day,
+              // A day the route does not run reads as an answer before the tap
+              // — the muted label is the "沒有班" the picker exists to give.
+              muted: {
+                for (var d = 0; d < 7; d++)
+                  if (!serviceDays.contains(d) &&
+                      !(d == today && timetable.departures.isNotEmpty))
+                    d,
+              },
+              onChanged: (day) => setState(() => _day = day),
+            ),
+          AnimatedSize(
+            duration: reduceMotion ? AppMotion.instant : AppMotion.micro,
+            curve: AppMotion.easeOut,
+            alignment: Alignment.topCenter,
+            child: AnimatedSwitcher(
+              // The board is data, so days cross-fade in place rather than
+              // sliding: nothing travels, the numbers just change.
+              duration: reduceMotion ? AppMotion.instant : AppMotion.micro,
+              switchInCurve: AppMotion.easeOut,
+              switchOutCurve: AppMotion.easeOut,
+              child: KeyedSubtree(
+                key: ValueKey((_day, widget.state.direction)),
+                child: AppCard.outlined(
+                  padding: EdgeInsets.zero,
+                  child: _board(timetable),
+                ),
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
 
-  Widget _board() {
+  String _dayLabel(AppI18n i18n) =>
+      i18n.busWeekday(_dtWeekdayLabels(i18n)[_day]);
+
+  Widget _board(BusDayTimetable timetable) {
+    final rows = timetable.departures;
     // Chunk the day's departures into fixed-width columns so the board reads as
     // a scannable timetable rather than a list. The headsign is stated once in
     // the header instead of repeating on every trip.
-    final gridRows = <List<_TimetableInfo?>>[];
-    for (var i = 0; i < rows.length; i += _columns) {
-      final end = i + _columns < rows.length ? i + _columns : rows.length;
+    final gridRows = <List<BusTimetableCell?>>[];
+    for (var i = 0; i < rows.length; i += _Timetable._columns) {
+      final end = i + _Timetable._columns < rows.length
+          ? i + _Timetable._columns
+          : rows.length;
       final chunk = rows.sublist(i, end);
       gridRows.add([
         ...chunk,
-        for (var p = chunk.length; p < _columns; p++) null,
+        for (var p = chunk.length; p < _Timetable._columns; p++) null,
       ]);
     }
     return Column(
@@ -738,13 +1022,13 @@ class _Timetable extends StatelessWidget {
                   TextSpan(
                     children: [
                       TextSpan(
-                        text: '往 ',
+                        text: AppI18n.of(context).towardsPrefix,
                         style: AppTextStyles.bodyRegular.copyWith(
                           color: cs.onSurfaceVariant,
                         ),
                       ),
                       TextSpan(
-                        text: headsign,
+                        text: widget.headsign,
                         style: AppTextStyles.bodyRegular.copyWith(
                           fontWeight: FontWeight.w600,
                           color: cs.onSurface,
@@ -755,11 +1039,16 @@ class _Timetable extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              Text(
-                '${rows.length} 班次',
-                style: AppTextStyles.bodySmall.copyWith(
-                  fontFeatures: _tnum,
-                  color: cs.onSurfaceVariant,
+              Flexible(
+                child: Text(
+                  rows.isEmpty
+                      ? _dayLabel(AppI18n.of(context))
+                      : AppI18n.of(context).busRunCount(rows.length),
+                  textAlign: TextAlign.end,
+                  style: AppTextStyles.bodySmall.copyWith(
+                    fontFeatures: _tnum,
+                    color: cs.onSurfaceVariant,
+                  ),
                 ),
               ),
             ],
@@ -784,11 +1073,29 @@ class _Timetable extends StatelessWidget {
             ),
           ),
         ],
+        // Headway routes publish no departure times at all, so the window is
+        // the whole answer; routes that publish both get it as a footer.
+        for (final window in timetable.windows) ...[
+          const DividerLine(),
+          _HeadwayRow(window: window, cs: cs),
+        ],
+        if (rows.isEmpty && timetable.windows.isEmpty) ...[
+          const DividerLine(),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+            child: Text(
+              AppI18n.of(context).busNotRunningToday,
+              style: AppTextStyles.bodyRegular.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
 
-  Widget _cell(_TimetableInfo? info) {
+  Widget _cell(BusTimetableCell? info) {
     if (info == null) return const SizedBox.shrink();
     // The next not-yet-departed trip is highlighted in place (static, per the
     // no-pulse rule): highlight fill + heavier tabular time.
@@ -817,9 +1124,17 @@ class _Timetable extends StatelessWidget {
           ConstrainedBox(
             constraints: const BoxConstraints(minHeight: 14),
             child: info.isNext
-                ? _tag('下一班', cs.onSurface, FontWeight.w700)
+                ? _tag(
+                    AppI18n.of(context).busNextRun,
+                    cs.onSurface,
+                    FontWeight.w700,
+                  )
                 : info.lowFloor
-                ? _tag('低地板', cs.onSurfaceVariant, FontWeight.w600)
+                ? _tag(
+                    AppI18n.of(context).busLowFloor,
+                    cs.onSurfaceVariant,
+                    FontWeight.w600,
+                  )
                 : const SizedBox.shrink(),
           ),
         ],
@@ -836,4 +1151,45 @@ class _Timetable extends StatelessWidget {
       color: color,
     ),
   );
+}
+
+/// A headway-operated window on the timetable board: the service span in mono
+/// so it aligns with the departure grid above it, the interval as prose.
+class _HeadwayRow extends StatelessWidget {
+  const _HeadwayRow({required this.window, required this.cs});
+  final BusHeadwayWindow window;
+  final ColorScheme cs;
+
+  @override
+  Widget build(BuildContext context) {
+    // TDX sends both bounds even when they are equal; "每 15 分" is the honest
+    // reading of a 15–15 range.
+    final headway = window.minMins == window.maxMins
+        ? AppI18n.of(context).busHeadwayFixed(window.minMins)
+        : AppI18n.of(context).busHeadwayRange(window.minMins, window.maxMins);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        spacing: 12,
+        children: [
+          Text(
+            '${window.start}–${window.end}',
+            style: AppTextStyles.memo.copyWith(
+              fontSize: 16,
+              fontFeatures: _tnum,
+              color: cs.onSurface,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              headway,
+              style: AppTextStyles.bodyRegular.copyWith(
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

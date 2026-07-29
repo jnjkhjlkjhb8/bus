@@ -6,8 +6,10 @@
 # process can't take down the 6 GB host. Memory budget (default profile,
 # excludes the opt-in `gpu` profile's ollama, which targets a separate,
 # GPU-equipped host): router 256m + functions 768m + ingestor 384m +
-# loader 384m + redis 512m + powersync 384m + osrm 1024m = 3712m, leaving
-# ~2.4 GB of headroom on the 6 GB host for the OS and Docker daemon.
+# loader 384m + redis 512m + powersync 384m + osrm 2048m = 4736m, leaving
+# ~1.4 GB of headroom on the 6 GB host for the OS and Docker daemon. The
+# ingestor and loader are cron-driven and idle between runs, so the ceilings
+# above are not all claimed at once.
 services:
   ollama:
     build:
@@ -15,7 +17,13 @@ services:
     profiles: ["gpu"]
     environment:
       OLLAMA_HOST: 0.0.0.0
-      OLLAMA_KEEP_ALIVE: 30m
+      # Keep the embedding model resident indefinitely. Its two callers are
+      # the nightly changetovector run and the router's semantic search
+      # fallback, which only fires when text search matches nothing — far
+      # rarer than any finite idle timeout, so the model was reloaded on
+      # almost every fallback. A cold load measures ~30s against the router's
+      # 5s request budget; a warm call, ~0.4s.
+      OLLAMA_KEEP_ALIVE: -1
       OLLAMA_NUM_PARALLEL: 2
       OLLAMA_MAX_LOADED_MODELS: 1
       OLLAMA_LLM_LIBRARY: cuda_v12
@@ -288,7 +296,7 @@ services:
       TZ: Asia/Taipei
       POWERSYNC_CONFIG_PATH: /config/config.yaml
       POWERSYNC_SYNC_RULES_PATH: /config/sync-rules.yaml
-    # frontend only: powersync replicates from Azure Postgres directly
+    # frontend only: powersync replicates from Postgres directly
     # (PS_SOURCE_DATABASE_URL, external) and calls router's jwks_uri over
     # frontend -- it never touches Redis, so it has no reason to be on
     # backend (O7 / review_results.md P2-03).
@@ -430,9 +438,14 @@ services:
         --algorithm mld
         --max-table-size 10000
         /data/${OSRM_FILE:-taiwan.osrm}
-    mem_limit: 1024m
+    # osrm-routed mmaps the .osrm files, and the cgroup counts those pages as
+    # its own: a limit under the ~1.2 GB on-disk set made every table query
+    # re-fault its cells in from disk. Sized above the data so the working set
+    # stays resident. Two cores because a nearby query is a single table
+    # request over up to ~400 destinations.
+    mem_limit: 2048m
     pids_limit: 64
-    cpus: 1.0
+    cpus: 2.0
     security_opt:
       - no-new-privileges:true
     cap_drop:

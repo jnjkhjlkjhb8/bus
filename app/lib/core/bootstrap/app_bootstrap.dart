@@ -57,13 +57,15 @@ class AppBootstrapController extends ChangeNotifier {
 
   bool _bestEffortFailed = false;
 
-  /// Runs the essential path and fires the best-effort steps alongside it.
+  /// Runs the essential path, firing Firebase alongside it. PowerSync is
+  /// deferred until the essential path settles (ready or degraded) so it
+  /// doesn't contend for I/O with Hive/gRPC during the splash.
   /// Safe to call once from `main()` right before `runApp`; it never
   /// throws.
   Future<void> start() async {
     unawaited(_runBestEffort(_initFirebase, 'firebase'));
-    unawaited(_runBestEffort(_initPowerSync, 'powersync'));
     await _runEssential();
+    unawaited(_runBestEffort(_initPowerSync, 'powersync'));
   }
 
   /// Re-attempts the essential path after a [AppBootstrapState.failed]

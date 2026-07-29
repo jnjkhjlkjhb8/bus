@@ -1,13 +1,13 @@
 import 'dart:async';
 
-import 'package:wheres_the_car/core/grpc/grpc_client.dart';
-import 'package:wheres_the_car/data/decoders/near_decoder.dart';
-import 'package:wheres_the_car/data/generated/near.pbgrpc.dart';
-import 'package:wheres_the_car/data/models/near_models.dart';
+import 'package:wheres_the_bus/core/grpc/grpc_client.dart';
+import 'package:wheres_the_bus/data/decoders/near_decoder.dart';
+import 'package:wheres_the_bus/data/generated/near.pbgrpc.dart';
+import 'package:wheres_the_bus/data/models/near_models.dart';
 
 // Nearby domain types live in data/models/near_models.dart; re-exported so
 // feature callers keep resolving them through the repository.
-export 'package:wheres_the_car/data/models/near_models.dart'
+export 'package:wheres_the_bus/data/models/near_models.dart'
     show NearQuery, NearStationType, NearStationViewModel;
 
 class NearRepository {
@@ -19,7 +19,11 @@ class NearRepository {
   Near_Station_ServiceClient get _grpc => _client ??= GrpcClient.instance.near;
 
   /// Bidirectional-streaming query. Callers control the request stream and
-  /// receive one decoded station list per [NearQuery] sent.
+  /// receive decoded station lists in the order the router answers them.
+  ///
+  /// Not one response per request: the router drops a query that a newer one
+  /// superseded before it was picked up, so callers must treat each response as
+  /// the current answer rather than pairing it with a specific request.
   Stream<List<NearStationViewModel>> near(Stream<NearQuery> queries) {
     final requests = queries.map(
       (q) => Ask_Near(

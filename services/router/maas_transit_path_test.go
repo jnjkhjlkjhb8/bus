@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 )
 
 // TestRailShapeMode pins the MaaS mode string -> rail_shapes.mode mapping.

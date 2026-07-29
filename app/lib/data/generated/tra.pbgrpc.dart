@@ -40,7 +40,7 @@ class TRA_timetable_serviceClient extends $grpc.Client {
     return $createUnaryCall(_$timetable, request, options: options);
   }
 
-  $grpc.ResponseFuture<$0.TraFareItem> fare(
+  $grpc.ResponseFuture<$0.tra_fare_items> fare(
     $0.ask_staiton request, {
     $grpc.CallOptions? options,
   }) {
@@ -55,6 +55,13 @@ class TRA_timetable_serviceClient extends $grpc.Client {
         options: options);
   }
 
+  $grpc.ResponseFuture<$0.tra_station_board> station_board(
+    $0.ask_station_board request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$station_board, request, options: options);
+  }
+
   // method descriptors
 
   static final _$timetable =
@@ -62,14 +69,19 @@ class TRA_timetable_serviceClient extends $grpc.Client {
           '/TRA_timetable_service/timetable',
           ($0.ask_route value) => value.writeToBuffer(),
           $0.tra_timetables.fromBuffer);
-  static final _$fare = $grpc.ClientMethod<$0.ask_staiton, $0.TraFareItem>(
+  static final _$fare = $grpc.ClientMethod<$0.ask_staiton, $0.tra_fare_items>(
       '/TRA_timetable_service/fare',
       ($0.ask_staiton value) => value.writeToBuffer(),
-      $0.TraFareItem.fromBuffer);
+      $0.tra_fare_items.fromBuffer);
   static final _$delay = $grpc.ClientMethod<$0.ask_route, $0.Resp_tra_delay>(
       '/TRA_timetable_service/delay',
       ($0.ask_route value) => value.writeToBuffer(),
       $0.Resp_tra_delay.fromBuffer);
+  static final _$station_board =
+      $grpc.ClientMethod<$0.ask_station_board, $0.tra_station_board>(
+          '/TRA_timetable_service/station_board',
+          ($0.ask_station_board value) => value.writeToBuffer(),
+          $0.tra_station_board.fromBuffer);
 }
 
 @$pb.GrpcServiceName('TRA_timetable_service')
@@ -84,13 +96,13 @@ abstract class TRA_timetable_serviceServiceBase extends $grpc.Service {
         false,
         ($core.List<$core.int> value) => $0.ask_route.fromBuffer(value),
         ($0.tra_timetables value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.ask_staiton, $0.TraFareItem>(
+    $addMethod($grpc.ServiceMethod<$0.ask_staiton, $0.tra_fare_items>(
         'fare',
         fare_Pre,
         false,
         false,
         ($core.List<$core.int> value) => $0.ask_staiton.fromBuffer(value),
-        ($0.TraFareItem value) => value.writeToBuffer()));
+        ($0.tra_fare_items value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.ask_route, $0.Resp_tra_delay>(
         'delay',
         delay_Pre,
@@ -98,6 +110,13 @@ abstract class TRA_timetable_serviceServiceBase extends $grpc.Service {
         true,
         ($core.List<$core.int> value) => $0.ask_route.fromBuffer(value),
         ($0.Resp_tra_delay value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.ask_station_board, $0.tra_station_board>(
+        'station_board',
+        station_board_Pre,
+        false,
+        false,
+        ($core.List<$core.int> value) => $0.ask_station_board.fromBuffer(value),
+        ($0.tra_station_board value) => value.writeToBuffer()));
   }
 
   $async.Future<$0.tra_timetables> timetable_Pre(
@@ -108,12 +127,12 @@ abstract class TRA_timetable_serviceServiceBase extends $grpc.Service {
   $async.Future<$0.tra_timetables> timetable(
       $grpc.ServiceCall call, $0.ask_route request);
 
-  $async.Future<$0.TraFareItem> fare_Pre(
+  $async.Future<$0.tra_fare_items> fare_Pre(
       $grpc.ServiceCall $call, $async.Future<$0.ask_staiton> $request) async {
     return fare($call, await $request);
   }
 
-  $async.Future<$0.TraFareItem> fare(
+  $async.Future<$0.tra_fare_items> fare(
       $grpc.ServiceCall call, $0.ask_staiton request);
 
   $async.Stream<$0.Resp_tra_delay> delay_Pre(
@@ -123,6 +142,14 @@ abstract class TRA_timetable_serviceServiceBase extends $grpc.Service {
 
   $async.Stream<$0.Resp_tra_delay> delay(
       $grpc.ServiceCall call, $0.ask_route request);
+
+  $async.Future<$0.tra_station_board> station_board_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.ask_station_board> $request) async {
+    return station_board($call, await $request);
+  }
+
+  $async.Future<$0.tra_station_board> station_board(
+      $grpc.ServiceCall call, $0.ask_station_board request);
 }
 
 @$pb.GrpcServiceName('TRA_Detain_service')

@@ -16,6 +16,7 @@ var healthFilePath = func() string {
 	}
 	return "/tmp/healthy"
 }()
+
 func touchHealthFile() {
 	now := time.Now()
 	if err := os.Chtimes(healthFilePath, now, now); err == nil {

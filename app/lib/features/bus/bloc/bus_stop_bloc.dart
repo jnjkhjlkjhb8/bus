@@ -2,20 +2,23 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_car/data/live/arrival_feed.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/repositories/bus_repository.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_event.dart';
-import 'package:wheres_the_car/features/bus/bloc/bus_stop_state.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_bus/data/live/arrival_feed.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/repositories/bus_repository.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_event.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_state.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
   BusStopBloc({
+    required AppI18n i18n,
     required this.stopId,
     this.city,
     BusRepository? repository,
-  }) : _repository = repository ?? BusRepository.instance,
+  }) : _i18n = i18n,
+       _repository = repository ?? BusRepository.instance,
        super(const BusStopState()) {
     on<BusStopStarted>(_onStarted);
     on<BusStopRetryRequested>(_onStarted);
@@ -27,6 +30,12 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
 
   final String? stopId;
   final String? city;
+
+  /// Captured at construction: a bloc has no `BuildContext` to resolve a
+  /// locale from per frame. The arrival rows therefore keep the language the
+  /// screen was opened in until it is rebuilt — acceptable because switching
+  /// language re-runs the root `MaterialApp` builder, which tears this down.
+  final AppI18n _i18n;
   final BusRepository _repository;
   // Replace policy + 15s decay live inside the feed; the empty-frame guard the
   // bloc used to run in _onUpdated is the feed's replace policy now.
@@ -96,8 +105,9 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     // the feed is alive (F29, F30).
     if (!isSource) {
       if (!arrivalsChanged) return;
-      final displays = [for (final a in event.arrivals) BusStopArrivalItem(a)]
-        ..sort((a, b) => a.rank.compareTo(b.rank));
+      final displays = [
+        for (final a in event.arrivals) BusStopArrivalItem(_i18n, a),
+      ]..sort((a, b) => a.rank.compareTo(b.rank));
       final byStation = <String, List<BusStopArrivalItem>>{};
       for (final item in displays) {
         byStation.putIfAbsent(item.stationId, () => []).add(item);
@@ -126,8 +136,9 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     }
     // Arrivals moved: derive the sorted/grouped tile view-models here, off the
     // widget build path. The sheet build becomes pure layout over this.
-    final displays = [for (final a in event.arrivals) BusStopArrivalItem(a)]
-      ..sort((a, b) => a.rank.compareTo(b.rank));
+    final displays = [
+      for (final a in event.arrivals) BusStopArrivalItem(_i18n, a),
+    ]..sort((a, b) => a.rank.compareTo(b.rank));
     final byStation = <String, List<BusStopArrivalItem>>{};
     for (final item in displays) {
       byStation.putIfAbsent(item.stationId, () => []).add(item);

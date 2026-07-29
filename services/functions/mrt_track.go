@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -9,9 +10,9 @@ import (
 
 	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/robfig/cron/v3"
 	"google.golang.org/protobuf/proto"
 )
@@ -126,7 +127,7 @@ func (t *mrtTracker) tick(ctx context.Context, now time.Time) {
 // vibration once, and persist + publish the new state.
 func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackReminder, now time.Time) {
 	raw, err := t.rc.WithContext(ctx).Get(shared.MrtTrackKey(track.ID)).Bytes()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		// The session's state has ended and its key expired (or was never
 		// written). Drop a never-fired row so the active query stops returning it;
 		// a fired row ages out on expires_at (its status cannot move — CHECK).

@@ -10,20 +10,20 @@ enum NearbyFilter {
   tra,
   thsr;
 
-  String get label {
+  String labelOf(AppI18n i18n) {
     switch (this) {
       case NearbyFilter.all:
-        return '全部';
+        return i18n.commonAll;
       case NearbyFilter.mrt:
-        return '捷運';
+        return i18n.modeMetro;
       case NearbyFilter.bus:
-        return '公車';
+        return i18n.modeBus;
       case NearbyFilter.youbike:
-        return '公共自行車';
+        return i18n.modeBike;
       case NearbyFilter.tra:
-        return '台鐵';
+        return i18n.modeTra;
       case NearbyFilter.thsr:
-        return '高鐵';
+        return i18n.modeThsr;
     }
   }
 }
@@ -53,6 +53,9 @@ class _FilterButtonGroup extends StatelessWidget {
                 unawaited(HapticService.instance.lightTap());
                 onFilterChanged(filter);
               },
+              // 36 matches the second-layer station chips; the hit target is
+              // widened back to the 44px floor rather than the painted chip.
+              minTapSize: 44,
               child: AnimatedContainer(
                 duration: AppMotion.micro,
                 curve: AppMotion.easeInOut,
@@ -66,12 +69,11 @@ class _FilterButtonGroup extends StatelessWidget {
                 ),
                 alignment: Alignment.center,
                 child: Text(
-                  filter.label,
-                  style: TextStyle(
+                  filter.labelOf(AppI18n.of(context)),
+                  style: AppTextStyles.bodySmall.copyWith(
                     fontWeight: filter == selectedFilter
                         ? FontWeight.w600
                         : FontWeight.w400,
-                    fontSize: 13,
                     color: filter == selectedFilter
                         ? cs.onPrimary
                         : cs.onSurface,
@@ -89,10 +91,16 @@ class _NearbyStationsTab extends StatefulWidget {
   const _NearbyStationsTab({
     required this.onStationTap,
     required this.sheetController,
+    required this.sheetTicks,
   });
 
   final ValueChanged<NearStationViewModel> onStationTap;
   final SheetController sheetController;
+
+  /// Offset ticks that stop while a detail page covers this one — the filter
+  /// row's reveal resizes the list, which must not happen mid-drag on the page
+  /// above (see [CurrentPageSheetTicks]).
+  final Listenable sheetTicks;
 
   @override
   State<_NearbyStationsTab> createState() => _NearbyStationsTabState();
@@ -107,17 +115,9 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
   // single-position assertion.
   bool _onScrollNotification(ScrollNotification n) {
     if (n.metrics.axis != Axis.vertical) return false;
-    // Only a real user drag snaps the sheet up — a programmatic scroll-to-top
-    // (from "return to map") has no dragDetails and must not re-expand it.
-    if (n is ScrollStartNotification && n.dragDetails != null) {
-      // Defer out of the notification: animating the sheet re-entrantly here
-      // disposes its in-flight drag activity while it's still in use.
-      scheduleMicrotask(() {
-        if (mounted) {
-          unawaited(widget.sheetController.animateTo(AppSheetSnap.full));
-        }
-      });
-    }
+    // No sheet expansion here: SheetScrollConfiguration already hands
+    // list drags to the sheet, and force-animating to full on every drag
+    // start re-pinned the sheet at 1.0 whenever the user tried to pull down.
     final show = n.metrics.pixels > _kShowReturnMapOffset;
     if (show != _showReturnMap) setState(() => _showReturnMap = show);
     return false;
@@ -136,7 +136,12 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
         ),
       );
     }
-    unawaited(widget.sheetController.animateTo(AppSheetSnap.peek));
+    unawaited(
+      widget.sheetController.animateToDetent(
+        AppSheetSnap.peek,
+        reduced: AppMotion.reduced(context),
+      ),
+    );
   }
 
   // Filtered rows cached per (stations identity, filter) so sheet-driven
@@ -174,18 +179,56 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
     }
   }
 
+  // At the peek detent, chrome (handle + search + tab bar) already consumes
+  // most of the available height, and AppI18n.of(context).commonAll — the default filter — costs
+  // 60px for a row that changes nothing. Keep the filter row collapsed until
+  // the sheet has grown roughly halfway toward the half detent, so peek
+  // spends its height on station rows instead.
+  Widget _buildFilterRow(BuildContext context) {
+    final reduceMotion = AppMotion.reduced(context);
+    return AnimatedBuilder(
+      animation: widget.sheetTicks,
+      builder: (context, child) {
+        final metrics = widget.sheetController.metrics;
+        final viewport =
+            metrics?.viewportSize.height ?? MediaQuery.sizeOf(context).height;
+        // The viewport measures 0 on the frames before the sheet has been
+        // laid out. Dividing through it yields NaN, which survives clamp()
+        // and then trips Curve.transform's range assert, so bail to the
+        // collapsed state until there is a real height to interpolate over.
+        if (viewport <= 0) return const SizedBox.shrink();
+        final peekPx = viewport * AppSheetSnap.peekFrac;
+        final halfPx = viewport * AppSheetSnap.halfFrac;
+        final offset = metrics?.offset ?? peekPx;
+        final raw = ((offset - peekPx) / (halfPx - peekPx)).clamp(0.0, 1.0);
+        final reveal = reduceMotion
+            ? (raw >= 0.5 ? 1.0 : 0.0)
+            : AppMotion.easeInOut.transform(raw);
+        if (reveal == 0) return const SizedBox.shrink();
+        return ClipRect(
+          child: Align(
+            alignment: Alignment.topCenter,
+            heightFactor: reveal,
+            child: Opacity(opacity: reveal, child: child),
+          ),
+        );
+      },
+      child: _FilterButtonGroup(
+        selectedFilter: _selectedFilter,
+        onFilterChanged: (filter) {
+          setState(() {
+            _selectedFilter = filter;
+          });
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        _FilterButtonGroup(
-          selectedFilter: _selectedFilter,
-          onFilterChanged: (filter) {
-            setState(() {
-              _selectedFilter = filter;
-            });
-          },
-        ),
+        _buildFilterRow(context),
         Expanded(
           child: BlocBuilder<NearbyBloc, NearbyState>(
             builder: (context, state) {
@@ -222,7 +265,12 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
                 final items = _visibleStations(state.stations);
                 if (items.isEmpty) {
                   kind = 'empty';
-                  body = const _NearbyEmpty();
+                  body = _NearbyEmpty(
+                    hasStationsNearby: state.stations.isNotEmpty,
+                    filter: _selectedFilter,
+                    onResetFilter: () =>
+                        setState(() => _selectedFilter = NearbyFilter.all),
+                  );
                 } else {
                   kind = 'loaded';
                   body = Stack(
@@ -233,17 +281,14 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
                           physics: const AlwaysScrollableScrollPhysics(),
                           padding: EdgeInsets.zero,
                           itemCount: items.length,
-                          itemBuilder: (context, i) => StaggerItem(
+                          itemBuilder: (context, i) => _NearbyStationRow(
                             // Composite key: stationId alone is not guaranteed
                             // unique across transit types in this mixed list.
                             key: ValueKey(
                               '${items[i].type.name}:${items[i].stationId}',
                             ),
-                            index: i,
-                            child: _NearbyStationRow(
-                              station: items[i],
-                              onStationTap: widget.onStationTap,
-                            ),
+                            station: items[i],
+                            onStationTap: widget.onStationTap,
                           ),
                         ),
                       ),
@@ -280,18 +325,37 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
 }
 
 class _NearbyEmpty extends StatelessWidget {
-  const _NearbyEmpty();
+  const _NearbyEmpty({
+    required this.hasStationsNearby,
+    required this.filter,
+    required this.onResetFilter,
+  });
+
+  // Whether the unfiltered list has any stations at all — distinguishes
+  // "nothing nearby" from "the active filter hid everything".
+  final bool hasStationsNearby;
+  final NearbyFilter filter;
+  final VoidCallback onResetFilter;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Center(
-      child: Text(
-        '附近沒有站點',
-        style: AppTextStyles.bodyRegular.copyWith(
-          color: cs.onSurfaceVariant,
-        ),
-      ),
+    final filterHidesResults = hasStationsNearby && filter != NearbyFilter.all;
+    return _EmptyState(
+      icon: filterHidesResults
+          ? Icons.filter_alt_off_outlined
+          : Icons.near_me_outlined,
+      heading: filterHidesResults
+          ? AppI18n.of(context).homeNoNearbyFiltered(
+              filter.labelOf(AppI18n.of(context)),
+            )
+          : AppI18n.of(context).homeNoNearby,
+      body: filterHidesResults
+          ? AppI18n.of(context).homeNoNearbyFilteredBody
+          : AppI18n.of(context).homeNoNearbyBody,
+      actionLabel: filterHidesResults
+          ? AppI18n.of(context).homeShowAllStops
+          : null,
+      onAction: filterHidesResults ? onResetFilter : null,
     );
   }
 }
@@ -310,19 +374,25 @@ class _ReturnMapPillState extends State<_ReturnMapPill>
     with SingleTickerProviderStateMixin {
   static const _dotSize = 12.0;
   static const _pillHeight = 44.0;
-  static const _label = '返回地圖';
   static const _iconSize = 20.0;
   static const _iconGap = 6.0;
   static const _paddingH = 12.0;
-  static const _labelStyle = TextStyle(
+  static final TextStyle _labelStyle = AppTextStyles.bodySmall.copyWith(
     fontWeight: FontWeight.w600,
-    fontSize: 13,
   );
 
-  // Hug: the pill sizes to its content (icon + gap + label) plus side padding.
-  double _pillWidth(BuildContext context) {
+  // Hug: the pill sizes to its content (icon + gap + label) plus side
+  // padding. Cached because this feeds an AnimatedBuilder that rebuilds
+  // every frame of the pill's show/hide animation; only the text scaler
+  // (read in didChangeDependencies) can change the result.
+  late double _cachedPillWidth;
+
+  double _computePillWidth(BuildContext context) {
     final tp = TextPainter(
-      text: const TextSpan(text: _label, style: _labelStyle),
+      text: TextSpan(
+        text: AppI18n.of(context).homeBackToMap,
+        style: _labelStyle,
+      ),
       textDirection: TextDirection.ltr,
       textScaler: MediaQuery.textScalerOf(context),
     )..layout();
@@ -360,6 +430,12 @@ class _ReturnMapPillState extends State<_ReturnMapPill>
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _cachedPillWidth = _computePillWidth(context);
+  }
+
+  @override
   void didUpdateWidget(covariant _ReturnMapPill old) {
     super.didUpdateWidget(old);
     if (widget.visible != old.visible) {
@@ -383,7 +459,7 @@ class _ReturnMapPillState extends State<_ReturnMapPill>
         final appear = reduce ? (widget.visible ? 1.0 : 0.0) : _appear.value;
         if (appear == 0) return const SizedBox.shrink();
         final morph = reduce ? 1.0 : _morph.value;
-        final pillWidth = _pillWidth(context);
+        final pillWidth = _cachedPillWidth;
         final width = _dotSize + (pillWidth - _dotSize) * morph;
         final height = _dotSize + (_pillHeight - _dotSize) * morph;
         return SizedBox(
@@ -396,7 +472,7 @@ class _ReturnMapPillState extends State<_ReturnMapPill>
                 scale: 0.85 + 0.15 * appear,
                 child: Pressable(
                   onTap: widget.onTap,
-                  semanticLabel: '返回地圖',
+                  semanticLabel: AppI18n.of(context).homeBackToMap,
                   child: Container(
                     width: width,
                     height: height,
@@ -405,13 +481,12 @@ class _ReturnMapPillState extends State<_ReturnMapPill>
                     decoration: BoxDecoration(
                       color: cs.primary,
                       borderRadius: BorderRadius.circular(height / 2),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.15),
-                          blurRadius: 12,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
+                      // Matches AppTheme.floatingControl: a drop shadow only
+                      // reads against the light sheet, so dark mode skips the
+                      // blur pass rather than painting it for nothing.
+                      boxShadow: cs.brightness == Brightness.dark
+                          ? const []
+                          : AppShadows.floating,
                     ),
                     // Lay the label out at full pill width so the shrinking
                     // container clips it rather than reflowing it.
@@ -431,7 +506,7 @@ class _ReturnMapPillState extends State<_ReturnMapPill>
                             ),
                             const SizedBox(width: _iconGap),
                             Text(
-                              _label,
+                              AppI18n.of(context).homeBackToMap,
                               style: _labelStyle.copyWith(color: cs.onPrimary),
                             ),
                           ],
@@ -453,6 +528,7 @@ class _NearbyStationRow extends StatelessWidget {
   const _NearbyStationRow({
     required this.station,
     required this.onStationTap,
+    super.key,
   });
 
   final NearStationViewModel station;
@@ -467,8 +543,12 @@ class _NearbyStationRow extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final distance = station.routed
         ? formatNearDistance(station.distanceMeters)
-        : '約 ${formatNearDistance(station.distanceMeters)}';
-    final details = '步行 ${station.walkingMinutes} 分 · $distance';
+        : AppI18n.of(
+            context,
+          ).aboutDistance(formatNearDistance(station.distanceMeters));
+    final details = AppI18n.of(
+      context,
+    ).nearbyWalkAndDistance(station.walkingMinutes, distance);
     return Pressable(
       onTap: () => _onTap(context),
       semanticLabel: '${station.stationName} $details',
@@ -498,12 +578,13 @@ class _NearbyStationRow extends StatelessWidget {
                 children: [
                   Text(
                     station.stationName,
-                    style: TextStyle(
+                    style: AppTextStyles.bodyLarge.copyWith(
                       fontWeight: FontWeight.w700,
-                      fontSize: 15,
                       color: cs.onSurface,
                       height: 1.3,
                     ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 2),
                   Row(
@@ -511,17 +592,16 @@ class _NearbyStationRow extends StatelessWidget {
                       Icon(
                         Icons.access_time_rounded,
                         size: 11,
-                        color: cs.onSurfaceVariant.withValues(alpha: 0.8),
+                        color: cs.onSurfaceVariant,
                       ),
                       const SizedBox(width: 3),
                       Expanded(
                         child: Text(
                           details,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w400,
-                            fontSize: 12,
+                          style: AppTextStyles.bodySmall.copyWith(
                             color: cs.onSurfaceVariant,
                             height: 1.3,
+                            fontFeatures: AppTextStyles.tabularFigures,
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -536,7 +616,7 @@ class _NearbyStationRow extends StatelessWidget {
             Icon(
               Icons.chevron_right_rounded,
               size: 20,
-              color: cs.onSurfaceVariant.withValues(alpha: 0.5),
+              color: cs.onSurfaceVariant,
             ),
           ],
         ),

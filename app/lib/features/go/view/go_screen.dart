@@ -9,43 +9,45 @@ import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
-import 'package:wheres_the_car/app/theme/app_shadows.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/core/live_activity/pip_mode.dart';
-import 'package:wheres_the_car/core/location/location_service.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
-import 'package:wheres_the_car/features/go/model/plan_options.dart';
-import 'package:wheres_the_car/features/go/model/planned_place.dart';
-import 'package:wheres_the_car/features/go/navigation/navigation_coordinator.dart';
-import 'package:wheres_the_car/features/go/view/place_search_screen.dart';
-import 'package:wheres_the_car/features/go/widgets/route_option_card.dart';
-import 'package:wheres_the_car/features/go/widgets/transit_visuals.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/shared/map/map_color_scheme.dart';
-import 'package:wheres_the_car/shared/map/marker_factory.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_badge.dart';
-import 'package:wheres_the_car/shared/widgets/app_button.dart';
-import 'package:wheres_the_car/shared/widgets/app_date_picker.dart';
-import 'package:wheres_the_car/shared/widgets/app_progress_bar.dart';
-import 'package:wheres_the_car/shared/widgets/app_quantity_selector.dart';
-import 'package:wheres_the_car/shared/widgets/app_range_slider.dart';
-import 'package:wheres_the_car/shared/widgets/app_segmented_control.dart';
-import 'package:wheres_the_car/shared/widgets/app_slider.dart';
-import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
-import 'package:wheres_the_car/shared/widgets/app_time_picker.dart';
-import 'package:wheres_the_car/shared/widgets/bottom_sheet_shell.dart';
-import 'package:wheres_the_car/shared/widgets/divider_line.dart';
-import 'package:wheres_the_car/shared/widgets/filter_chip_group.dart';
+import 'package:wheres_the_bus/app/theme/app_shadows.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/core/live_activity/pip_mode.dart';
+import 'package:wheres_the_bus/core/location/location_service.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/repositories/maas_repository.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_event.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_state.dart';
+import 'package:wheres_the_bus/features/go/model/plan_options.dart';
+import 'package:wheres_the_bus/features/go/model/planned_place.dart';
+import 'package:wheres_the_bus/features/go/navigation/navigation_coordinator.dart';
+import 'package:wheres_the_bus/features/go/view/place_search_screen.dart';
+import 'package:wheres_the_bus/features/go/widgets/route_option_card.dart';
+import 'package:wheres_the_bus/features/go/widgets/transit_visuals.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
+import 'package:wheres_the_bus/shared/map/marker_factory.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_badge.dart';
+import 'package:wheres_the_bus/shared/widgets/app_button.dart';
+import 'package:wheres_the_bus/shared/widgets/app_date_picker.dart';
+import 'package:wheres_the_bus/shared/widgets/app_progress_bar.dart';
+import 'package:wheres_the_bus/shared/widgets/app_quantity_selector.dart';
+import 'package:wheres_the_bus/shared/widgets/app_range_slider.dart';
+import 'package:wheres_the_bus/shared/widgets/app_slider.dart';
+import 'package:wheres_the_bus/shared/widgets/app_sliding_segment.dart';
+import 'package:wheres_the_bus/shared/widgets/app_snackbar.dart';
+import 'package:wheres_the_bus/shared/widgets/app_time_picker.dart';
+import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
+import 'package:wheres_the_bus/shared/widgets/divider_line.dart';
+import 'package:wheres_the_bus/shared/widgets/filter_chip_group.dart';
 
 part '../widgets/go_planner_widgets.dart';
 part '../widgets/go_navigation_widgets.dart';
@@ -73,7 +75,12 @@ const _kNavBearing = 30.0;
 enum _TimeMode { leaveNow, departAt, arriveBy }
 
 class GoScreen extends StatefulWidget {
-  const GoScreen({super.key});
+  const GoScreen({super.key, this.initialDestination});
+
+  /// A destination handed in by whoever opened the planner (a station detail
+  /// saying "take me here"). The origin still resolves from GPS, so the plan
+  /// fires on its own as soon as that lands — see [_GoScreenState._initOrigin].
+  final PlannedPlace? initialDestination;
 
   @override
   State<GoScreen> createState() => _GoScreenState();
@@ -87,6 +94,10 @@ class _GoScreenState extends State<GoScreen> {
   late final SheetController _previewSheet;
   late final NavigationCoordinator _navigationCoordinator;
   PlannedPlace? _origin;
+  // Whether the GPS fix that fills the origin is still coming, arrived, or was
+  // refused — the field says which rather than showing an unfilled hint that
+  // reads like a required choice.
+  OriginStatus _originStatus = OriginStatus.resolving;
   PlannedPlace? _dest;
   PlanOptions _options = const PlanOptions();
   // Departure/arrival time stance for the query. `_timeAt` is only consulted
@@ -149,6 +160,7 @@ class _GoScreenState extends State<GoScreen> {
   @override
   void initState() {
     super.initState();
+    _dest = widget.initialDestination;
     _sheet = SheetController();
     _previewSheet = SheetController();
     _navigationCoordinator = NavigationCoordinator(
@@ -181,22 +193,46 @@ class _GoScreenState extends State<GoScreen> {
   }
 
   Future<void> _initOrigin() async {
+    if (mounted) setState(() => _originStatus = OriginStatus.resolving);
+    // This runs synchronously out of initState, where reading an inherited
+    // widget (Localizations, below) throws. Yield first so the lookup happens
+    // once the element is settled — otherwise every open reported the origin
+    // as unavailable, permission granted or not.
+    await Future<void>.microtask(() {});
+    if (!mounted) return;
+    final i18n = AppI18n.of(context);
     try {
-      final place = await resolveCurrentPlace();
+      final place = await resolveCurrentPlace(i18n);
       if (!mounted) return;
-      setState(() => _origin = place);
-    } on Object catch (_) {}
+      setState(() {
+        _origin = place;
+        _originStatus = OriginStatus.resolved;
+      });
+      // No-op unless a destination was seeded in (see [GoScreen
+      // .initialDestination]); with one, this is what fires the plan once the
+      // GPS fix that completes the pair finally lands. A denied or failed fix
+      // leaves the destination filled and the origin field waiting for a pick,
+      // which is the same state as opening the planner and typing a
+      // destination first.
+      _maybePlan();
+    } on Object catch (_) {
+      if (!mounted) return;
+      setState(() => _originStatus = OriginStatus.unavailable);
+    }
   }
 
   Future<void> _editField({required bool origin}) async {
     final picked = await showPlaceSearchPage(
       context,
-      fieldLabel: origin ? '選擇出發地' : '選擇目的地',
+      fieldLabel: origin
+          ? AppI18n.of(context).goChooseOrigin
+          : AppI18n.of(context).goChooseDestination,
     );
     if (picked == null || !mounted) return;
     setState(() {
       if (origin) {
         _origin = picked;
+        _originStatus = OriginStatus.resolved;
       } else {
         _dest = picked;
       }
@@ -217,7 +253,10 @@ class _GoScreenState extends State<GoScreen> {
   }
 
   Future<void> _resolveOriginThenPlan(PlannedPlace dest) async {
-    final picked = await showPlaceSearchPage(context, fieldLabel: '選擇出發地');
+    final picked = await showPlaceSearchPage(
+      context,
+      fieldLabel: AppI18n.of(context).goChooseOrigin,
+    );
     if (picked == null || !mounted) return;
     setState(() {
       _origin = picked;
@@ -245,6 +284,12 @@ class _GoScreenState extends State<GoScreen> {
     // user's chosen instant and set the wire `arriveBy` flag accordingly.
     final when = _timeMode == _TimeMode.leaveNow ? DateTime.now() : _timeAt;
     String two(int v) => v.toString().padLeft(2, '0');
+    // A fresh search invalidates every marker built for the prior results;
+    // drop them so the caches don't grow for the life of the screen across
+    // successive searches. Markers for the new plan rebuild on the next
+    // _ensureOverlays pass once results arrive.
+    _markerCache.clear();
+    _markerPending.clear();
     context.read<PlanBloc>().add(
       PlanSearchRequested(
         fromLat: from.latLng.latitude,
@@ -271,6 +316,53 @@ class _GoScreenState extends State<GoScreen> {
     unawaited(HapticService.instance.lightTap());
     _maybePlan();
   }
+
+  // Give up on a query that is taking too long. The destination is cleared with
+  // it so the screen falls back to the entry surface rather than sitting on a
+  // map with nothing on it; the origin and the typed options survive.
+  void _cancelPlan() {
+    unawaited(HapticService.instance.lightTap());
+    context.read<PlanBloc>().add(const PlanSearchCancelled());
+    setState(() => _dest = null);
+  }
+
+  // A saved route between the same two points, matched on where it actually
+  // starts and ends rather than on the place names — the same corner searched
+  // twice can come back with two different labels. Shown while waiting, so a
+  // rider on a trip they have taken before sees it immediately.
+  PlanRoute? _lastRouteForTrip(List<PlanRoute> saved) {
+    final from = _origin?.latLng;
+    final to = _dest?.latLng;
+    if (from == null || to == null) return null;
+    for (final route in saved) {
+      final sections = route.sections;
+      if (sections.isEmpty) continue;
+      final start = sections.first.departure.location;
+      final end = sections.last.arrival.location;
+      if (_near(from, start) && _near(to, end)) return route;
+    }
+    return null;
+  }
+
+  // Within a short walk of the same spot. Loose on purpose: a saved route's
+  // ends are the stop it boarded at, not the address that was searched for.
+  static const _kSameTripMeters = 400.0;
+
+  double? _straightLineMeters() {
+    final from = _origin?.latLng;
+    final to = _dest?.latLng;
+    if (from == null || to == null) return null;
+    return Geolocator.distanceBetween(
+      from.latitude,
+      from.longitude,
+      to.latitude,
+      to.longitude,
+    );
+  }
+
+  bool _near(LatLng a, PlanPoint b) =>
+      Geolocator.distanceBetween(a.latitude, a.longitude, b.lat, b.lng) <=
+      _kSameTripMeters;
 
   Future<void> _adjustOptions() async {
     final picked = await showOptionsSheet(context, current: _options);
@@ -331,8 +423,8 @@ class _GoScreenState extends State<GoScreen> {
     if (wasSaved) {
       AppSnackbar.show(
         context,
-        '已移除收藏',
-        action: '復原',
+        AppI18n.of(context).favoritesRemoved,
+        action: AppI18n.of(context).commonUndo,
         onAction: () => bloc.add(RouteSaveToggled(route)),
       );
     }
@@ -477,7 +569,11 @@ class _GoScreenState extends State<GoScreen> {
     if (!mounted) return;
     if (result.arrived) {
       _resetCamera();
-      AppSnackbar.show(context, '已抵達目的地', type: SnackType.success);
+      AppSnackbar.show(
+        context,
+        AppI18n.of(context).goArrived,
+        type: SnackType.success,
+      );
       return;
     }
     // A leg advance re-arms follow: the pan below frames the next leg's
@@ -501,7 +597,11 @@ class _GoScreenState extends State<GoScreen> {
     unawaited(HapticService.instance.lightTap());
     if (arrived) {
       _resetCamera();
-      AppSnackbar.show(context, '已抵達目的地', type: SnackType.success);
+      AppSnackbar.show(
+        context,
+        AppI18n.of(context).goArrived,
+        type: SnackType.success,
+      );
       return;
     }
     // Auto leg advance re-arms follow, mirroring the manual advance path.
@@ -597,10 +697,15 @@ class _GoScreenState extends State<GoScreen> {
         }
       }
 
-      // Walk sections trace the real OSRM foot path when it resolved; otherwise
-      // fall back to a straight departure→arrival line (same as transit legs).
+      // Walk sections trace the real OSRM foot path when it resolved; rail
+      // transit sections trace the line geometry the router clipped to this
+      // section's stops when it resolved. Either way, an unresolved path
+      // falls back to a straight line through departure→intermediateStops→
+      // arrival.
       if (walk && s.walkPath.isNotEmpty) {
         s.walkPath.forEach(add);
+      } else if (!walk && s.transitPath.isNotEmpty) {
+        s.transitPath.forEach(add);
       } else {
         add(s.departure.location);
         for (final stop in s.intermediateStops) {
@@ -847,6 +952,57 @@ class _GoScreenState extends State<GoScreen> {
     );
   }
 
+  // What the map can honestly show before the router answers: the two ends and
+  // the straight line between them. It is not a route and does not pretend to
+  // be one — dotted, muted, and replaced the moment real geometry arrives.
+  Set<Polyline> _pendingLines(ColorScheme cs) {
+    final from = _origin?.latLng;
+    final to = _dest?.latLng;
+    if (from == null || to == null) return const {};
+    return {
+      Polyline(
+        polylineId: const PolylineId('pending_direct'),
+        points: [from, to],
+        width: 3,
+        color: cs.onSurface.withValues(alpha: 0.45),
+        patterns: [PatternItem.dot, PatternItem.gap(14)],
+      ),
+    };
+  }
+
+  Set<Marker> _pendingMarkers(ColorScheme cs) {
+    final from = _origin?.latLng;
+    final to = _dest?.latLng;
+    if (from == null || to == null) return const {};
+    final origin = _originMarker(cs, dim: false);
+    final dest = _destMarker(cs, dim: false);
+    return {
+      if (origin != null)
+        Marker(
+          markerId: const MarkerId('pending_origin'),
+          position: from,
+          icon: origin,
+          anchor: const Offset(0.5, 0.5),
+        ),
+      if (dest != null)
+        Marker(
+          markerId: const MarkerId('pending_dest'),
+          position: to,
+          icon: dest,
+          anchor: const Offset(0.5, 0.5),
+        ),
+    };
+  }
+
+  // Frames the pair while the query runs, so the map is about this trip from
+  // the first frame instead of sitting on a default city view.
+  void _fitPending() {
+    final from = _origin?.latLng;
+    final to = _dest?.latLng;
+    if (from == null || to == null) return;
+    _fitBounds([from, to]);
+  }
+
   // Recomputes the cached overlays only when the result identity, selected
   // route, active leg, or theme colors change; identical inputs reuse the sets.
   void _ensureOverlays(
@@ -888,8 +1044,12 @@ class _GoScreenState extends State<GoScreen> {
   Widget _buildPlanner() {
     return BlocConsumer<PlanBloc, PlanState>(
       // Camera reframes on entering a phase or switching the previewed route.
+      // Loading counts as a phase: framing the origin/destination pair is what
+      // makes the wait look like it is about this trip.
       listenWhen: (p, c) =>
-          (p.status != c.status && c.status == PlanStatus.success) ||
+          (p.status != c.status &&
+              (c.status == PlanStatus.success ||
+                  c.status == PlanStatus.loading)) ||
           p.selectedRouteIndex != c.selectedRouteIndex ||
           p.previewing != c.previewing,
       // activeStopIndex advances within a leg as the user progresses but does
@@ -906,6 +1066,10 @@ class _GoScreenState extends State<GoScreen> {
       listener: (context, state) {
         // Navigation drives its own camera.
         if (state.activeLegIndex != null) return;
+        if (state.status == PlanStatus.loading) {
+          _fitPending();
+          return;
+        }
         final result = state.result;
         if (result == null || result.routes.isEmpty) return;
         // Preview frames the selected route; results frame every alternative.
@@ -917,7 +1081,6 @@ class _GoScreenState extends State<GoScreen> {
         }
       },
       builder: (context, state) {
-        MapMarkers.configure(MediaQuery.devicePixelRatioOf(context));
         final navigating = state.activeLegIndex != null;
         final previewing = state.previewing;
         final route = _activeRoute(state);
@@ -958,15 +1121,15 @@ class _GoScreenState extends State<GoScreen> {
                   ? _PlannerEntry(
                       key: const ValueKey('entry'),
                       origin: _origin,
-                      dest: _dest,
+                      originStatus: _originStatus,
                       savedRoutes: state.savedRoutes,
                       onEditOrigin: () => _editField(origin: true),
-                      onEditDest: () => _editField(origin: false),
                       onSwap: _swap,
                       onPickDestination: _pickDestination,
                       onOpenSaved: _openSaved,
                       onToggleSave: _toggleSave,
                       onBack: () => context.pop(),
+                      onEnableLocation: () => unawaited(_initOrigin()),
                     )
                   : KeyedSubtree(
                       key: const ValueKey('map'),
@@ -1010,7 +1173,11 @@ class _GoScreenState extends State<GoScreen> {
             ),
             onMapCreated: (c) {
               _map = c;
-              if (result == null || navigating) return;
+              if (navigating) return;
+              if (result == null) {
+                _fitPending();
+                return;
+              }
               if (previewing && route != null) {
                 _fitTo(route);
               } else {
@@ -1037,9 +1204,14 @@ class _GoScreenState extends State<GoScreen> {
             zoomControlsEnabled: false,
             compassEnabled: false,
             mapToolbarEnabled: false,
-            polylines: route == null ? const {} : _overlayPolylines,
+            polylines: route == null
+                ? _pendingLines(Theme.of(context).colorScheme)
+                : _overlayPolylines,
             markers: {
-              if (route != null) ..._overlayMarkers,
+              if (route != null)
+                ..._overlayMarkers
+              else
+                ..._pendingMarkers(Theme.of(context).colorScheme),
               if (navigating) ?_navPuck(Theme.of(context).colorScheme),
             },
             // Map shares a Stack with the draggable sheet; without an eager
@@ -1140,8 +1312,12 @@ class _GoScreenState extends State<GoScreen> {
             hasDestination: _dest != null,
             timeMode: _timeMode,
             timeAt: _timeAt,
+            routeCount: _options.top,
+            lastRoute: _lastRouteForTrip(state.savedRoutes),
+            straightLineMeters: _straightLineMeters(),
             onSelect: _previewRoute,
             onRetry: _retry,
+            onCancel: _cancelPlan,
             onAdjustOptions: _adjustOptions,
             onAdjustTime: _adjustTime,
             onToggleSave: _toggleSave,

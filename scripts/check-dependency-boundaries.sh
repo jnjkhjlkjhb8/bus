@@ -4,7 +4,7 @@
 # Enforces the three dependency boundaries the architecture relies on:
 #
 #   (a) Flutter feature isolation — a file under app/lib/features/<X>/ must
-#       not import package:wheres_the_car/features/<Y>/ for a different
+#       not import package:wheres_the_bus/features/<Y>/ for a different
 #       feature Y. Importing shared/, core/, data/, and app/ is always fine;
 #       those are the approved seams. Pre-existing cross-feature couplings
 #       are ratcheted in scripts/testdata/dependency-boundary-allowlist.txt
@@ -33,8 +33,8 @@ set -uo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-dart_pkg="wheres_the_car"
-go_module="github.com/jnjkhjlkjhb8/wheres_the_car"
+dart_pkg="wheres_the_bus"
+go_module="github.com/jnjkhjlkjhb8/wheres_the_bus"
 feature_allowlist="scripts/testdata/dependency-boundary-allowlist.txt"
 proto_allowlist="scripts/testdata/proto-confinement-allowlist.txt"
 

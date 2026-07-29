@@ -1,6 +1,7 @@
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/eta_format.dart';
-import 'package:wheres_the_car/data/models/eta_status.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/eta_format.dart';
+import 'package:wheres_the_bus/data/models/eta_status.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 /// The small contract the shared arrival tile renders (CONTEXT.md: "arrival
 /// display"). Each transit mode maps its own domain model to it; the tile owns
@@ -28,8 +29,8 @@ class ArrivalDisplay {
   /// mapping the bus stop sheet used: 進站中 first, 即將進站 next, then minutes
   /// (later minutes rank later), and every service-state row (尚未發車 / 末班已過
   /// / 交管不停靠 / scheduled clock time) last.
-  factory ArrivalDisplay.fromBusStop(BusStopArrival a) {
-    final label = a.displayLabel;
+  factory ArrivalDisplay.fromBusStop(AppI18n i18n, BusStopArrival a) {
+    final label = a.displayLabelOf(i18n);
     final (EtaStatus status, int rank) = switch (a.displayStatus) {
       BusStopDisplayStatus.arriving => (EtaStatus.arriving(), 0),
       BusStopDisplayStatus.departingSoon => (EtaStatus.approaching(), 1),
@@ -59,22 +60,21 @@ class ArrivalDisplay {
     );
   }
 
-  /// Maps a metro arrival to its display: an approaching train shows 即將進站,
-  /// otherwise the minute countdown. [rank] is the minute estimate so the row
+  /// Maps a metro arrival to its display: a 分/秒 countdown, collapsing to 進站中
+  /// once the estimate reaches zero. [rank] is the second estimate so the row
   /// order matches the feed's estimate sort. Metro does not surface the
   /// coming-soon highlight, so callers leave it off regardless of [rank].
   factory ArrivalDisplay.fromMetro({
     required String line,
     required String destination,
-    required int estimateMinutes,
-    required bool approaching,
+    required int estimateSeconds,
   }) => ArrivalDisplay(
     label: line,
     destination: destination,
-    status: approaching
-        ? EtaStatus.approaching()
-        : EtaStatus.minutes(estimateMinutes),
-    rank: estimateMinutes,
+    status: estimateSeconds <= 0
+        ? EtaStatus.arriving()
+        : EtaStatus.minutesSeconds(estimateSeconds ~/ 60, estimateSeconds % 60),
+    rank: estimateSeconds,
   );
 
   final String label;

@@ -15,6 +15,27 @@ import 'dart:convert' as $convert;
 import 'dart:core' as $core;
 import 'dart:typed_data' as $typed_data;
 
+@$core.Deprecated('Use maasPlanUpdateDescriptor instead')
+const MaasPlanUpdate$json = {
+  '1': 'MaasPlanUpdate',
+  '2': [
+    {
+      '1': 'plan',
+      '3': 1,
+      '4': 1,
+      '5': 11,
+      '6': '.MaasPlanResponse',
+      '10': 'plan'
+    },
+    {'1': 'complete', '3': 2, '4': 1, '5': 8, '10': 'complete'},
+  ],
+};
+
+/// Descriptor for `MaasPlanUpdate`. Decode as a `google.protobuf.DescriptorProto`.
+final $typed_data.Uint8List maasPlanUpdateDescriptor = $convert.base64Decode(
+    'Cg5NYWFzUGxhblVwZGF0ZRIlCgRwbGFuGAEgASgLMhEuTWFhc1BsYW5SZXNwb25zZVIEcGxhbh'
+    'IaCghjb21wbGV0ZRgCIAEoCFIIY29tcGxldGU=');
+
 @$core.Deprecated('Use maasPlanRequestDescriptor instead')
 const MaasPlanRequest$json = {
   '1': 'MaasPlanRequest',
@@ -153,6 +174,14 @@ const Section$json = {
       '6': '.WalkStep',
       '10': 'walkSteps'
     },
+    {
+      '1': 'transitPath',
+      '3': 12,
+      '4': 3,
+      '5': 11,
+      '6': '.Location',
+      '10': 'transitPath'
+    },
   ],
 };
 
@@ -166,7 +195,8 @@ final $typed_data.Uint8List sectionDescriptor = $convert.base64Decode(
     'VuY3lSBmFnZW5jeRJKChVub3RpZmljYXRpb25faWRlbnRpdHkYCCABKAsyFS5Ob3RpZmljYXRp'
     'b25JZGVudGl0eVIUbm90aWZpY2F0aW9uSWRlbnRpdHkSEgoEZmFyZRgJIAEoBVIEZmFyZRIlCg'
     'h3YWxrUGF0aBgKIAMoCzIJLkxvY2F0aW9uUgh3YWxrUGF0aBInCgl3YWxrU3RlcHMYCyADKAsy'
-    'CS5XYWxrU3RlcFIJd2Fsa1N0ZXBz');
+    'CS5XYWxrU3RlcFIJd2Fsa1N0ZXBzEisKC3RyYW5zaXRQYXRoGAwgAygLMgkuTG9jYXRpb25SC3'
+    'RyYW5zaXRQYXRo');
 
 @$core.Deprecated('Use walkStepDescriptor instead')
 const WalkStep$json = {

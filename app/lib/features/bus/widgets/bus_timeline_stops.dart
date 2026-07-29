@@ -5,10 +5,11 @@
 /// mapping) live in `eta_format.dart` and are reused here, not re-implemented.
 library;
 
-import 'package:wheres_the_car/core/firebase/remote_config.dart';
-import 'package:wheres_the_car/data/models/bus_models.dart';
-import 'package:wheres_the_car/data/models/eta_format.dart';
-import 'package:wheres_the_car/data/models/timeline_stop.dart';
+import 'package:wheres_the_bus/core/firebase/remote_config.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
+import 'package:wheres_the_bus/data/models/eta_format.dart';
+import 'package:wheres_the_bus/data/models/timeline_stop.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 /// Live per-stop state for the timeline. 進站中 (arriving) is reserved for a
 /// live bus at the stop — the one status the crude [_approaching] threshold
@@ -63,6 +64,7 @@ Map<int, int> fareSectionsBySequence({
 /// (`uid:<stopUid>`); a stop with no ETA entry is still emitted, with no
 /// primary time and a [TimelineStopState.none] state.
 List<TimelineStop> deriveTimelineStops({
+  required AppI18n i18n,
   required List<BusStopModel> stops,
   required Map<String, BusStopEtaViewModel> etaMap,
   required int direction,
@@ -83,12 +85,55 @@ List<TimelineStop> deriveTimelineStops({
         TimelineStop(
           uid: st.stopUid,
           name: st.stopName,
-          primaryTime: eta?.displayLabel,
+          primaryTime: eta?.displayLabelOf(i18n),
           state: timelineStopState(eta),
           isBuffer: bufferSequences.contains(st.sequence),
           fareSection: sections[st.sequence],
+          isLiveEta:
+              eta != null &&
+              busStopLabelIsLive(
+                estimateSeconds: eta.estimateSeconds,
+                stopStatus: eta.stopStatus,
+              ),
+          etaMinutes: eta != null && eta.estimateSeconds > 0
+              ? etaCeilMinutes(eta.estimateSeconds)
+              : null,
+          serviceEnded: eta != null && busStopServiceEnded(eta.stopStatus),
+          plate: eta?.plate ?? '',
         ),
   ];
+}
+
+/// Indices of the stops a vehicle marker belongs *above*, i.e. the vehicle is
+/// somewhere in the segment between stop `i - 1` and stop `i`.
+///
+/// There is no per-stop vehicle association in the feed — `BusVehiclePosition`
+/// carries GPS only, and mapping a coordinate back onto a route that doubles
+/// back on itself guesses wrong exactly where riders notice. The ETA sequence
+/// is the more reliable derivation and is the thing the rider is reading
+/// anyway. Two signals mark a vehicle:
+///
+/// - a stop counting down live where the one behind it is not (the run has
+///   begun here — everything behind is waiting on a later departure), and
+/// - a countdown that drops below the stop behind it, which no single vehicle
+///   can do: it means the stop behind is quoting a *following* bus.
+///
+/// Deliberately says nothing about which plate is which; the feed does not
+/// support that claim.
+Set<int> busVehicleMarkerIndices(List<TimelineStop> stops) {
+  final markers = <int>{};
+  for (var i = 1; i < stops.length; i++) {
+    final here = stops[i];
+    final behind = stops[i - 1];
+    if (here.isLiveEta && !behind.isLiveEta) {
+      markers.add(i);
+      continue;
+    }
+    final a = behind.etaMinutes;
+    final b = here.etaMinutes;
+    if (a != null && b != null && b < a) markers.add(i);
+  }
+  return markers;
 }
 
 /// Semantic ETA-label classes for a timeline stop, mirroring the horizontal

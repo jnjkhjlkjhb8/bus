@@ -4,7 +4,7 @@ import 'dart:math';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:hive_ce/hive.dart';
 import 'package:uuid/uuid.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
 
 class InstallIdentity {
   InstallIdentity._();

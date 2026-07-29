@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/robfig/cron/v3"
 )
 
@@ -202,7 +202,7 @@ func fetchRawWithVerifier(
 		return errors.New("fetch raw: empty landing cycle")
 	}
 	table, partCol, partVal, mapped := rawDumpTarget(url)
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := range 2 {
 		result, err := tdx.GetInto(ctx, url, name, func(commit shared.TDXIntoCommit) error {
 			if !mapped {
 				return nil

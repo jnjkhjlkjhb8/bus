@@ -1,10 +1,10 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/journey_info.dart';
-import 'package:wheres_the_car/data/repositories/mrt_repository.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_bloc.dart';
-import 'package:wheres_the_car/features/metro/bloc/metro_event.dart';
+import 'package:wheres_the_bus/data/models/journey_info.dart';
+import 'package:wheres_the_bus/data/repositories/mrt_repository.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_bloc.dart';
+import 'package:wheres_the_bus/features/metro/bloc/metro_event.dart';
 
 const _info = JourneyInfo(
   toStationId: 'BL02',

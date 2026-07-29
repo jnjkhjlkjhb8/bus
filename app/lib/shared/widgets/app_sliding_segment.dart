@@ -2,44 +2,133 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
 
+/// Surface the segment sits on, which decides how the track and thumb are
+/// drawn. The physics, gestures and label behaviour are identical.
+enum AppSegmentStyle {
+  /// Recessed groove holding a raised, lighter thumb. For controls that sit in
+  /// content — sheets, forms, detail panes.
+  groove,
+
+  /// Floating card holding an inverted (dark) thumb. For controls that sit
+  /// over the map, where a light thumb loses its edge against the imagery.
+  floating,
+}
+
+/// A segmented control whose thumb can be tapped to, or grabbed and dragged.
+///
+/// The thumb is the only draggable part: a press anywhere else is a plain tap,
+/// matching the platform control. Dragging tracks the finger 1:1, resists past
+/// the ends, ticks as it crosses each segment, and lands where the flick was
+/// going rather than where the finger stopped.
 class AppSlidingSegment<T> extends StatefulWidget {
   const AppSlidingSegment({
     required this.options,
     required this.value,
     required this.onChanged,
+    this.muted = const {},
+    this.style = AppSegmentStyle.groove,
+    this.fill = true,
     super.key,
-  }) : assert(options.length == 2, 'Exactly two options are required.');
+  }) : assert(options.length >= 2, 'At least two options are required.');
 
   final Map<T, String> options;
   final T value;
+
+  /// Called on commit. The control fires the selection haptic itself, so call
+  /// sites should not add their own.
   final ValueChanged<T> onChanged;
+
+  /// Options whose label is dimmed because they carry nothing to show (a
+  /// weekday the route does not run). They stay selectable — the dim state is
+  /// a preview of the answer, not a lock.
+  final Set<T> muted;
+
+  final AppSegmentStyle style;
+
+  /// Whether the control stretches to the width it is offered. When false it
+  /// hugs its content instead — every segment as wide as the widest label —
+  /// which is what a control floating over the map wants.
+  final bool fill;
 
   @override
   State<AppSlidingSegment<T>> createState() => _AppSlidingSegmentState<T>();
 }
 
 class _AppSlidingSegmentState<T> extends State<AppSlidingSegment<T>>
-    with SingleTickerProviderStateMixin {
-  // Thumb position as a 0..1 progress between the two segments — 0 sits on
-  // the first option, 1 on the second. Unbounded controller so a
-  // SpringSimulation can drive it directly by value instead of fighting the
-  // default 0..1 clamp mid-flight.
+    with TickerProviderStateMixin {
+  /// How far past the end segments the thumb can be pulled, in segments. Small
+  /// on purpose: this is a short control, and the resistance only has to say
+  /// "there is nothing more here".
+  static const double _overshoot = 0.12;
+
+  /// Resting point of a flick, in segments per segment/second of release
+  /// velocity. The exponential-decay projection scrolling uses, at a 0.995
+  /// deceleration rate — snappier than scroll's 0.998, because a segment is a
+  /// short throw.
+  static const double _flickProjection = 0.199;
+
+  /// Release speed, in segments/second, above which the settle is allowed the
+  /// slight overshoot of [AppMotion.springMomentum]. Below it the gesture
+  /// carried no momentum to express.
+  static const double _momentumThreshold = 0.5;
+
+  // Thumb position as a progress in segments — 0 sits on the first option,
+  // `_lastIndex` on the last. Unbounded controller so a SpringSimulation can
+  // drive it directly by value instead of fighting the default 0..1 clamp
+  // mid-flight, and so the rubber-band can carry it briefly past either end.
   late final AnimationController _thumb = AnimationController.unbounded(
     vsync: this,
     value: _indexOf(widget.value).toDouble(),
   );
 
-  /// Pill width + inter-pill gap in logical pixels, refreshed every layout —
-  /// converts a horizontal drag delta into thumb progress.
-  double _pillStride = 0;
+  /// Thumb press-scale: 0 at rest, 1 while the thumb is held. Driven from
+  /// pointer-down rather than from the commit, so the control answers the
+  /// press before it answers the choice.
+  late final AnimationController _press = AnimationController(
+    vsync: this,
+    duration: AppMotion.press,
+  );
 
-  bool get _reduceMotion => MediaQuery.disableAnimationsOf(context);
+  /// The gesture area, asked for its width when a drag needs to convert pixels
+  /// into segments. Measuring here rather than through a `LayoutBuilder` keeps
+  /// the control intrinsically sizeable, which `fill: false` depends on —
+  /// `LayoutBuilder` refuses to answer intrinsic queries.
+  final GlobalKey _trackKey = GlobalKey();
 
-  int _indexOf(T value) => widget.options.keys.toList().indexOf(value);
+  /// Pill width in logical pixels — converts a horizontal drag delta into
+  /// thumb progress. Zero before the first layout.
+  double get _pillStride {
+    final box = _trackKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return 0;
+    return box.size.width / widget.options.length;
+  }
+
+  /// Unresisted drag position. [_thumb] holds its rubber-banded projection, so
+  /// accumulating the raw deltas separately keeps the resistance from
+  /// compounding frame over frame.
+  double _dragRaw = 0;
+
+  /// Whether the pointer went down on the thumb. Only then does a horizontal
+  /// drag move anything.
+  bool _grabbed = false;
+
+  /// Segment the thumb last ticked past, so the crossing haptic fires once per
+  /// boundary rather than once per frame, and the commit does not repeat it.
+  int _ticked = 0;
+
+  bool get _reduceMotion => AppMotion.reduced(context);
+
+  int get _lastIndex => widget.options.length - 1;
+
+  int _indexOf(T value) =>
+      widget.options.keys.toList().indexOf(value).clamp(0, _lastIndex);
 
   @override
   void didUpdateWidget(AppSlidingSegment<T> old) {
@@ -52,25 +141,47 @@ class _AppSlidingSegmentState<T> extends State<AppSlidingSegment<T>>
   @override
   void dispose() {
     _thumb.dispose();
+    _press.dispose();
     super.dispose();
   }
 
-  void _springTo(double target, double velocity) {
+  void _springTo(double target, double velocity, {bool momentum = false}) {
     if (_reduceMotion) {
       _thumb.value = target;
       return;
     }
     unawaited(
       _thumb.animateWith(
-        SpringSimulation(AppMotion.spring, _thumb.value, target, velocity),
+        SpringSimulation(
+          momentum ? AppMotion.springMomentum : AppMotion.spring,
+          _thumb.value,
+          target,
+          velocity,
+        ),
       ),
     );
   }
 
-  void _commit(int index) {
+  /// Progressive resistance past the ends, asymptotically approaching
+  /// [_overshoot]. A hard clamp reads as a frozen control; resistance reads as
+  /// a responsive one that has run out of options.
+  double _resist(double value) {
+    final last = _lastIndex.toDouble();
+    double band(double over) => over * _overshoot / (over + _overshoot);
+    if (value < 0) return -band(-value);
+    if (value > last) return last + band(value - last);
+    return value;
+  }
+
+  void _pressThumb({required bool down}) {
+    _press.duration = _reduceMotion ? AppMotion.instant : AppMotion.press;
+    unawaited(down ? _press.forward() : _press.reverse());
+  }
+
+  void _commit(int index, {bool haptic = true}) {
     final keys = widget.options.keys.toList();
     if (keys[index] == widget.value) return;
-    unawaited(HapticService.instance.lightTap());
+    if (haptic) unawaited(HapticService.instance.lightTap());
     widget.onChanged(keys[index]);
   }
 
@@ -79,139 +190,331 @@ class _AppSlidingSegmentState<T> extends State<AppSlidingSegment<T>>
     _springTo(index.toDouble(), 0);
   }
 
+  void _handleDragDown(DragDownDetails details) {
+    final stride = _pillStride;
+    final left = _thumb.value.clamp(0.0, _lastIndex.toDouble()) * stride;
+    _grabbed =
+        stride > 0 &&
+        details.localPosition.dx >= left &&
+        details.localPosition.dx <= left + stride;
+    if (_grabbed) _pressThumb(down: true);
+  }
+
+  void _handleDragCancel() {
+    if (!_grabbed) return;
+    _grabbed = false;
+    _pressThumb(down: false);
+  }
+
   void _handleDragStart(DragStartDetails details) {
+    if (!_grabbed) return;
     _thumb.stop();
+    _dragRaw = _thumb.value;
+    _ticked = _dragRaw.round().clamp(0, _lastIndex);
   }
 
   void _handleDragUpdate(DragUpdateDetails details) {
-    if (_pillStride <= 0) return;
-    final delta = details.delta.dx / _pillStride;
-    _thumb.value = (_thumb.value + delta).clamp(0.0, 1.0);
+    final stride = _pillStride;
+    if (!_grabbed || stride <= 0) return;
+    _dragRaw += details.delta.dx / stride;
+    _thumb.value = _resist(_dragRaw);
+    final crossed = _thumb.value.round().clamp(0, _lastIndex);
+    if (crossed != _ticked) {
+      _ticked = crossed;
+      unawaited(HapticService.instance.lightTap());
+    }
   }
 
   void _handleDragEnd(DragEndDetails details) {
-    final velocityProgress = _pillStride > 0
-        ? details.velocity.pixelsPerSecond.dx / _pillStride
+    if (!_grabbed) return;
+    _grabbed = false;
+    _pressThumb(down: false);
+    final stride = _pillStride;
+    final velocity = stride > 0
+        ? details.velocity.pixelsPerSecond.dx / stride
         : 0.0;
-    // A decisive flick commits by direction even mid-crossing; otherwise the
-    // segment nearest to where the thumb stopped wins.
-    final target = velocityProgress.abs() > 1.5
-        ? (velocityProgress > 0 ? 1 : 0)
-        : _thumb.value.round().clamp(0, 1);
-    _commit(target);
-    _springTo(target.toDouble(), velocityProgress);
+    // Land where the flick was going, not where the finger stopped, then snap
+    // to the segment nearest that projected point.
+    final target = (_thumb.value + velocity * _flickProjection).round().clamp(
+      0,
+      _lastIndex,
+    );
+    // The crossing tick already spoke for every boundary the drag passed;
+    // only a target the drag never reached still owes a haptic.
+    _commit(target, haptic: target != _ticked);
+    _springTo(
+      target.toDouble(),
+      velocity,
+      momentum: velocity.abs() > _momentumThreshold,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final reduceMotion = _reduceMotion;
     final entries = widget.options.entries.toList();
+    final skin = _SegmentSkin.of(widget.style, cs);
 
+    // The pills tile the track exactly and the thumb is one pill wide, so the
+    // thumb lands on the same centre as the label it covers whatever the
+    // option count — and it does so as a fraction of the track, which keeps
+    // the control intrinsically sizeable for [AppSlidingSegment.fill].
+    final track = GestureDetector(
+      onHorizontalDragDown: _handleDragDown,
+      onHorizontalDragCancel: _handleDragCancel,
+      onHorizontalDragStart: _handleDragStart,
+      onHorizontalDragUpdate: _handleDragUpdate,
+      onHorizontalDragEnd: _handleDragEnd,
+      child: SizedBox(
+        key: _trackKey,
+        height: 36,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: Listenable.merge([_thumb, _press]),
+                builder: (context, child) => Align(
+                  // Alignment.x runs -1..1 across the *free* space, which is
+                  // the track minus one pill: at progress p of `_lastIndex`
+                  // segments the thumb's left edge must sit at p pills in.
+                  alignment: Alignment(2 * _thumb.value / _lastIndex - 1, 0),
+                  child: FractionallySizedBox(
+                    widthFactor: 1 / entries.length,
+                    heightFactor: 1,
+                    child: Transform.scale(
+                      scale: 1 - (1 - AppMotion.pressedScale) * _press.value,
+                      child: child,
+                    ),
+                  ),
+                ),
+                child: Container(decoration: skin.thumb),
+              ),
+            ),
+            Row(
+              children: entries.asMap().entries.map((indexed) {
+                final index = indexed.key;
+                final entry = indexed.value;
+                final muted = widget.muted.contains(entry.key);
+                return Expanded(
+                  child: Semantics(
+                    button: true,
+                    selected: entry.key == widget.value,
+                    // Dimming is invisible to assistive tech, so the muted
+                    // state is stated in the label instead.
+                    label: muted
+                        ? AppI18n.of(context).segmentNoService(entry.value)
+                        : null,
+                    child: Pressable(
+                      onTap: () => _handleTap(index),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        child: Center(
+                          child: _SegmentLabel(
+                            text: entry.value,
+                            index: index,
+                            thumb: _thumb,
+                            skin: skin,
+                            muted: muted,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: skin.track,
+      // IntrinsicWidth over a row of equal flex children resolves to the
+      // widest label times the option count, so hugging still yields equal
+      // pills — the thumb's fractional width stays honest.
+      child: widget.fill ? track : IntrinsicWidth(child: track),
+    );
+  }
+}
+
+/// The one-option case of [AppSlidingSegment]: same groove, same 44px
+/// footprint, nothing to choose.
+///
+/// A loop bus route has a single headsign, and a two-slot slider with a blank
+/// half would render. Reusing the control's own skin keeps the header from
+/// changing shape as the rider moves between a loop route and a two-way one.
+class AppStaticSegment extends StatelessWidget {
+  const AppStaticSegment({
+    required this.label,
+    this.leading,
+    this.semanticLabel,
+    this.style = AppSegmentStyle.groove,
+    super.key,
+  });
+
+  final String label;
+
+  /// Glyph placed before the label, sized and coloured by the control so it
+  /// reads as part of the same vocabulary wherever it is used.
+  final IconData? leading;
+
+  /// What assistive tech announces. The visual pill states "one direction"
+  /// only through its shape, which is invisible to a screen reader.
+  final String? semanticLabel;
+
+  final AppSegmentStyle style;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    // Only the track is borrowed from the skin. The label sits on the track
+    // rather than on a thumb, so it takes plain ink in both styles — the
+    // floating skin's inverted label colour would vanish here.
+    final skin = _SegmentSkin.of(style, cs);
+    return Semantics(
+      label: semanticLabel,
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: skin.track,
+        child: SizedBox(
+          height: 36,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (leading != null) ...[
+                Icon(leading, size: 15, color: cs.onSurfaceVariant),
+                const SizedBox(width: 6),
+              ],
+              Flexible(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTextStyles.bodyRegular.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: cs.onSurface,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Label whose weight and colour follow the thumb's live position rather than
+/// the committed value, so a segment lights up as the thumb is dragged across
+/// it instead of snapping at release.
+class _SegmentLabel extends StatelessWidget {
+  const _SegmentLabel({
+    required this.text,
+    required this.index,
+    required this.thumb,
+    required this.skin,
+    required this.muted,
+  });
+
+  final String text;
+  final int index;
+  final Animation<double> thumb;
+  final _SegmentSkin skin;
+  final bool muted;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: thumb,
+      builder: (context, _) {
+        final covered = (1 - (thumb.value - index).abs()).clamp(0.0, 1.0);
+        return Text(
+          text,
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.ellipsis,
+          style: AppTextStyles.bodyRegular.copyWith(
+            fontWeight: FontWeight.lerp(
+              FontWeight.w400,
+              FontWeight.w600,
+              covered,
+            ),
+            color: Color.lerp(
+              skin.label.withValues(alpha: muted ? .4 : 1),
+              skin.labelSelected,
+              covered,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The two surface treatments, resolved once per build.
+class _SegmentSkin {
+  const _SegmentSkin({
+    required this.track,
+    required this.thumb,
+    required this.label,
+    required this.labelSelected,
+  });
+
+  factory _SegmentSkin.of(AppSegmentStyle style, ColorScheme cs) {
+    final isDark = cs.brightness == Brightness.dark;
+    if (style == AppSegmentStyle.floating) {
+      const radius = BorderRadius.all(
+        Radius.circular(AppTheme.radiusStadium),
+      );
+      return _SegmentSkin(
+        track: AppTheme.floatingControl(cs, borderRadius: radius),
+        thumb: BoxDecoration(color: cs.onSurface, borderRadius: radius),
+        label: cs.onSurfaceVariant,
+        // Inverted against the dark thumb: this control floats over the map,
+        // where a light thumb would lose its edge against the imagery.
+        labelSelected: cs.surface,
+      );
+    }
     // A recessed groove holding a raised, lighter thumb. The track is a
     // translucent black overlay, not an opaque surface token, so it darkens
     // whatever hosts the control — scaffold or bottom sheet alike. An opaque
     // track keyed to a fixed surface collides with the sheet colour in dark
     // mode (surfaceContainerLow == the sheet), which erases the track entirely.
-    final isDark = cs.brightness == Brightness.dark;
-    final trackColor = Colors.black.withValues(alpha: isDark ? 0.30 : 0.05);
-    final thumbColor = isDark
-        ? cs.surfaceContainerHighest
-        : cs.surfaceContainerLow;
-
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: trackColor,
+    return _SegmentSkin(
+      track: BoxDecoration(
+        color: Colors.black.withValues(alpha: isDark ? 0.30 : 0.05),
         borderRadius: BorderRadius.circular(10),
       ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final pillWidth = (constraints.maxWidth - 8) / 2;
-          _pillStride = pillWidth + 4;
-          return GestureDetector(
-            onHorizontalDragStart: _handleDragStart,
-            onHorizontalDragUpdate: _handleDragUpdate,
-            onHorizontalDragEnd: _handleDragEnd,
-            child: SizedBox(
-              height: 36,
-              child: Stack(
-                children: [
-                  AnimatedBuilder(
-                    animation: _thumb,
-                    builder: (context, child) => Positioned(
-                      left: _thumb.value.clamp(0.0, 1.0) * _pillStride,
-                      top: 0,
-                      bottom: 0,
-                      width: pillWidth,
-                      child: child!,
-                    ),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: thumbColor,
-                        borderRadius: BorderRadius.circular(7),
-                        // Light: a hairline defines the white thumb when it
-                        // sits on an equally white sheet. Dark needs no edge
-                        // — the lighter thumb already separates from the
-                        // groove.
-                        border: isDark
-                            ? null
-                            : Border.all(
-                                color: Colors.black.withValues(alpha: .04),
-                                width: .5,
-                              ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(
-                              alpha: isDark ? .25 : .05,
-                            ),
-                            blurRadius: isDark ? 2 : 4,
-                            offset: Offset(0, isDark ? 1 : 2),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Row(
-                    children: entries.asMap().entries.map((indexed) {
-                      final index = indexed.key;
-                      final entry = indexed.value;
-                      final selected = entry.key == widget.value;
-                      return Expanded(
-                        child: Semantics(
-                          button: true,
-                          selected: selected,
-                          child: Pressable(
-                            onTap: () => _handleTap(index),
-                            child: Center(
-                              child: AnimatedDefaultTextStyle(
-                                duration: reduceMotion
-                                    ? Duration.zero
-                                    : AppMotion.medium,
-                                curve: AppMotion.easeOut,
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  fontWeight: selected
-                                      ? FontWeight.w600
-                                      : FontWeight.w400,
-                                  color: selected
-                                      ? cs.onSurface
-                                      : cs.onSurfaceVariant,
-                                ),
-                                child: Text(entry.value),
-                              ),
-                            ),
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-                ],
+      thumb: BoxDecoration(
+        color: isDark ? cs.surfaceContainerHighest : cs.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(7),
+        // Light: a hairline defines the white thumb when it sits on an equally
+        // white sheet. Dark needs no edge — the lighter thumb already
+        // separates from the groove.
+        border: isDark
+            ? null
+            : Border.all(
+                color: Colors.black.withValues(alpha: .04),
+                width: .5,
               ),
-            ),
-          );
-        },
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? .25 : .05),
+            blurRadius: isDark ? 2 : 4,
+            offset: Offset(0, isDark ? 1 : 2),
+          ),
+        ],
       ),
+      label: cs.onSurfaceVariant,
+      labelSelected: cs.onSurface,
     );
   }
+
+  final BoxDecoration track;
+  final BoxDecoration thumb;
+  final Color label;
+  final Color labelSelected;
 }

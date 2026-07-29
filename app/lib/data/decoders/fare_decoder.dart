@@ -1,6 +1,8 @@
 import 'dart:convert';
 
-import 'package:wheres_the_car/data/models/bus_route_detail.dart';
+import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
+import 'package:wheres_the_bus/data/models/fare_type.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 Set<int> decodeBufferSequences(BusFareInfo? fare) {
   if (fare == null || fare.sectionFaresJson.isEmpty) return const {};
@@ -24,8 +26,10 @@ Set<int> decodeBufferSequences(BusFareInfo? fare) {
   }
 }
 
-/// A price row within a fare group: fare-class label + `NT$15`.
-typedef FareRow = ({String label, String price});
+/// A price row within a fare group: fare-class label + `NT$15`, plus the TDX
+/// FareClass code it came from so a row can be matched to a rider's ticket
+/// type (see [pickFareRow]).
+typedef FareRow = ({String label, String price, int fareClass});
 
 /// A fare group. `segment` labels the origin→destination stage / OD segment
 /// (公路客運) or 第N段 when a route has multiple sections; it is null for a
@@ -37,12 +41,12 @@ typedef FareGroup = ({String? segment, List<FareRow> rows});
 /// We emit one group per segment (or per section), each listing a row per fare
 /// class — split by ticket type (現金 / 電子票證) only when the price differs.
 /// Prices of -1 mean "no fare" and are dropped; malformed payloads are skipped.
-List<FareGroup> decodeFareTable(BusFareInfo? fare) {
+List<FareGroup> decodeFareTable(AppI18n i18n, BusFareInfo? fare) {
   if (fare == null) return const [];
   final groups = <FareGroup>[];
-  _addSectionGroups(fare.sectionFaresJson, groups);
-  _addSegmentGroups(fare.stageFaresJson, groups);
-  _addSegmentGroups(fare.odFaresJson, groups);
+  _addSectionGroups(i18n, fare.sectionFaresJson, groups);
+  _addSegmentGroups(i18n, fare.stageFaresJson, groups);
+  _addSegmentGroups(i18n, fare.odFaresJson, groups);
   return groups;
 }
 
@@ -56,24 +60,26 @@ typedef OdDestination = ({String destination, List<FareRow> rows});
 /// [decodeFareTable] already yields inline rows.
 typedef OdOrigin = ({String origin, List<OdDestination> destinations});
 
-List<OdOrigin> decodeOdFares(BusFareInfo? fare) {
+List<OdOrigin> decodeOdFares(AppI18n i18n, BusFareInfo? fare) {
   if (fare == null) return const [];
   final byOrigin = <String, List<OdDestination>>{};
   final order = <String>[];
   void collect(List<int> payload) {
     for (final entry in _decodeList(payload)) {
       if (entry is! Map) continue;
-      final rows = _fareRows(entry['Fares']);
+      final rows = _fareRows(i18n, entry['Fares']);
       if (rows.isEmpty) continue;
       final o = _stopName(entry['OriginStage'] ?? entry['OriginStop']);
       final d = _stopName(
         entry['DestinationStage'] ?? entry['DestinationStop'],
       );
       if (o == null || d == null) continue;
-      byOrigin.putIfAbsent(o, () {
-        order.add(o);
-        return [];
-      }).add((destination: d, rows: rows));
+      byOrigin
+          .putIfAbsent(o, () {
+            order.add(o);
+            return [];
+          })
+          .add((destination: d, rows: rows));
     }
   }
 
@@ -82,42 +88,75 @@ List<OdOrigin> decodeOdFares(BusFareInfo? fare) {
   return [for (final o in order) (origin: o, destinations: byOrigin[o]!)];
 }
 
+/// The row a rider on [type] pays, or null when the group prices nothing.
+///
+/// Walks [FareType.busFareClasses] so a 敬老 rider gets 敬老票 where the operator
+/// publishes one, then 愛心票 or 半票 (operators publish the same price under any
+/// of the three), and only then 全票. `matched` reports which type the row
+/// actually is, so a fallback to 全票 is labelled as 全票 rather than passed off
+/// as a concession price.
+({FareRow row, FareType matched})? pickFareRow(
+  List<FareRow> rows,
+  FareType type,
+) {
+  for (final fareClass in type.busFareClasses) {
+    for (final row in rows) {
+      if (row.fareClass == fareClass) {
+        return (
+          row: row,
+          matched: type.matchedWhen(isFullFare: fareClass == 1),
+        );
+      }
+    }
+  }
+  // A route whose classes are all unmapped codes still has a price to show;
+  // quoting its first row beats quoting nothing.
+  return rows.isEmpty ? null : (row: rows.first, matched: type);
+}
+
 /// Cheapest and dearest fare across the origin-grouped table, for the
-/// at-a-glance 票價範圍 summary. Null when [origins] carry no priced rows.
-({int min, int max})? odFareRange(List<OdOrigin> origins) {
+/// at-a-glance 票價範圍 summary. Scoped to what a rider on [type] would pay, so
+/// the range matches the prices listed underneath it rather than spanning every
+/// ticket type at once. Null when [origins] carry no priced rows.
+({int min, int max})? odFareRange(List<OdOrigin> origins, FareType type) {
   var min = -1;
   var max = -1;
   for (final origin in origins) {
     for (final dest in origin.destinations) {
-      for (final row in dest.rows) {
-        final n = int.tryParse(row.price.replaceAll(RegExp('[^0-9]'), ''));
-        if (n == null) continue;
-        if (min < 0 || n < min) min = n;
-        if (n > max) max = n;
-      }
+      final picked = pickFareRow(dest.rows, type);
+      if (picked == null) continue;
+      final n = int.tryParse(
+        picked.row.price.replaceAll(RegExp('[^0-9]'), ''),
+      );
+      if (n == null) continue;
+      if (min < 0 || n < min) min = n;
+      if (n > max) max = n;
     }
   }
   return min < 0 ? null : (min: min, max: max);
 }
 
-void _addSectionGroups(List<int> payload, List<FareGroup> out) {
+void _addSectionGroups(AppI18n i18n, List<int> payload, List<FareGroup> out) {
   final parsed = _decodeList(payload);
   final sections = [
     for (final s in parsed)
       if (s is Map) s,
   ];
   for (final (i, s) in sections.indexed) {
-    final rows = _fareRows(s['Fares']);
+    final rows = _fareRows(i18n, s['Fares']);
     if (rows.isEmpty) continue;
     // A single section is the whole fare — no segment label needed.
-    out.add((segment: sections.length > 1 ? '第${i + 1}段' : null, rows: rows));
+    out.add((
+      segment: sections.length > 1 ? i18n.fareSectionNumbered(i + 1) : null,
+      rows: rows,
+    ));
   }
 }
 
-void _addSegmentGroups(List<int> payload, List<FareGroup> out) {
+void _addSegmentGroups(AppI18n i18n, List<int> payload, List<FareGroup> out) {
   for (final entry in _decodeList(payload)) {
     if (entry is! Map) continue;
-    final rows = _fareRows(entry['Fares']);
+    final rows = _fareRows(i18n, entry['Fares']);
     if (rows.isEmpty) continue;
     out.add((segment: _segmentLabel(entry), rows: rows));
   }
@@ -154,7 +193,7 @@ String? _stopName(Object? stop) {
   return null;
 }
 
-List<FareRow> _fareRows(Object? faresRaw) {
+List<FareRow> _fareRows(AppI18n i18n, Object? faresRaw) {
   if (faresRaw is! List) return const [];
   final byClass = <int, List<({String? name, int ticket, int price})>>{};
   for (final f in faresRaw) {
@@ -175,8 +214,12 @@ List<FareRow> _fareRows(Object? faresRaw) {
     final entries = byClass[cls]!;
     final distinctPrices = {for (final e in entries) e.price};
     if (distinctPrices.length == 1) {
-      final label = _fareClassLabel(cls);
-      rows.add((label: label, price: _money(entries.first.price)));
+      final label = _fareClassLabel(i18n, cls);
+      rows.add((
+        label: label,
+        price: _money(entries.first.price),
+        fareClass: cls,
+      ));
       continue;
     }
     // Prices split within the class (現金 vs 電子票證, or seat class): one row
@@ -185,9 +228,10 @@ List<FareRow> _fareRows(Object? faresRaw) {
     for (final e in entries) {
       final label = e.name != null
           ? e.name!.replaceAll('_', ' ')
-          : '${_fareClassLabel(cls)}${e.ticket == 3 ? ' · 電子票證' : ''}';
+          : '${_fareClassLabel(i18n, cls)}'
+                '${e.ticket == 3 ? i18n.fareSmartCard : ''}';
       if (seen.add('$label|${e.price}')) {
-        rows.add((label: label, price: _money(e.price)));
+        rows.add((label: label, price: _money(e.price), fareClass: cls));
       }
     }
   }
@@ -197,16 +241,16 @@ List<FareRow> _fareRows(Object? faresRaw) {
 // TDX Bus FareClass enum (PTX). 1/10 confirmed against sample FareNames
 // (全票/半票); the rest follow the documented enum. Unknown codes fall back to
 // a numbered label rather than being dropped.
-const Map<int, String> _fareClassLabels = {
-  1: '全票',
-  10: '半票',
-  2: '學生票',
-  7: '兒童票',
-  3: '敬老票',
-  4: '愛心票',
-  5: '愛心陪伴票',
-  6: '團體票',
-  9: '其他優待',
+Map<int, String> _fareClassLabels(AppI18n i18n) => {
+  1: i18n.fareClassFull,
+  10: i18n.fareClassHalf,
+  2: i18n.fareClassStudent,
+  7: i18n.fareClassChild,
+  3: i18n.fareClassSenior,
+  4: i18n.fareClassDisabled,
+  5: i18n.fareClassCompanion,
+  6: i18n.fareClassGroup,
+  9: i18n.fareClassOtherConcession,
 };
 
 // Headline classes (全票, 半票) first, then remaining known classes in map
@@ -214,11 +258,15 @@ const Map<int, String> _fareClassLabels = {
 List<int> _fareClassOrder(Iterable<int> classes) {
   const priority = [1, 10, 2, 7, 3, 4, 5, 6, 9];
   final present = classes.toSet();
-  final known = [for (final c in priority) if (present.remove(c)) c];
+  final known = [
+    for (final c in priority)
+      if (present.remove(c)) c,
+  ];
   final unknown = present.toList()..sort();
   return [...known, ...unknown];
 }
 
-String _fareClassLabel(int cls) => _fareClassLabels[cls] ?? '票種 $cls';
+String _fareClassLabel(AppI18n i18n, int cls) =>
+    _fareClassLabels(i18n)[cls] ?? i18n.fareClassUnknown(cls);
 
 String _money(int price) => 'NT\$$price';

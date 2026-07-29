@@ -1,6 +1,6 @@
 // Package main runs the router process: a gRPC server on :50051 and an HTTP
 // server on :8080. Static queries (bus/bike/MRT/TRA/THSR stops and timetables)
-// are served from PostgreSQL on Azure; realtime ETA and alert streams are fanned
+// are served from PostgreSQL; realtime ETA and alert streams are fanned
 // out from Redis Pub/Sub. It also serves nearby-station search, TDX MaaS route
 // planning, and Firebase device/reminder registration. main() wires every gRPC
 // service, the rate limiter, and optional Firebase App Check onto one server.
@@ -24,9 +24,9 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
@@ -63,7 +63,6 @@ func logPoolStats(pool *pgxpool.Pool) {
 // PostgreSQL (memoized in cache) and live ETA streamed from Redis Pub/Sub.
 type BusRouteserver struct {
 	pb.UnimplementedBus_Route_ServiceServer
-	mu    sync.Mutex
 	db    *pgxpool.Pool
 	rc    *redis.Client
 	cache *ttlCache
@@ -74,7 +73,6 @@ type BusRouteserver struct {
 // PostgreSQL and per-station live ETA streamed from Redis Pub/Sub.
 type BusStationserver struct {
 	pb.UnimplementedBus_Station_ServiceServer
-	mu   sync.Mutex
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live liveSource
@@ -84,7 +82,6 @@ type BusStationserver struct {
 // cache) and live availability streamed from Redis Pub/Sub.
 type BikeServer struct {
 	pb.UnimplementedBike_ServiceServer
-	mu    sync.Mutex
 	db    *pgxpool.Pool
 	rc    *redis.Client
 	cache *ttlCache
@@ -98,7 +95,6 @@ type BikeServer struct {
 // at creation, and now is an injectable clock for tests.
 type MrtServer struct {
 	pb.UnimplementedMrt_ServiceServer
-	mu    sync.Mutex
 	rc    *redis.Client
 	db    *pgxpool.Pool
 	live  liveSource
@@ -114,7 +110,6 @@ type MrtServer struct {
 // fetch (ADR-0005), so the server holds no TDX client.
 type ThsrServer struct {
 	pb.UnimplementedThsrTimetableServiceServer
-	mu   sync.Mutex
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live liveSource
@@ -125,7 +120,6 @@ type ThsrServer struct {
 // loaded env schema; empty results return NotFound (no TDX fetch, ADR-0005).
 type Tra_TimetableServer struct {
 	pb.UnimplementedTRATimetableServiceServer
-	mu   sync.Mutex
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live liveSource
@@ -136,7 +130,6 @@ type Tra_TimetableServer struct {
 // schema; empty results return NotFound (no TDX fetch, ADR-0005).
 type Tra_DetainServer struct {
 	pb.UnimplementedTRA_DetainServiceServer
-	mu   sync.Mutex
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live liveSource
@@ -147,7 +140,6 @@ type Tra_DetainServer struct {
 // (no TDX fetch, ADR-0005).
 type Thsr_DetainServer struct {
 	pb.UnimplementedThsr_DetainServiceServer
-	mu   sync.Mutex
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live liveSource
@@ -251,11 +243,15 @@ func installationRateLimitInterceptor(rl *rateLimiter, limit int, window time.Du
 	}
 }
 
-func productionUnaryInterceptors(appCheckVerifier appCheckVerifier, enforceAppCheck bool) []grpc.UnaryServerInterceptor {
+func productionUnaryInterceptors(
+	appCheckVerifier appCheckVerifier,
+	enforceAppCheck bool,
+	maasRL *rateLimiter,
+) []grpc.UnaryServerInterceptor {
 	return []grpc.UnaryServerInterceptor{
 		obs.UnaryInterceptor(),
 		rateLimitInterceptor(newRateLimiter(), 30, time.Second),
-		maasResourceInterceptor(newRateLimiter(), defaultMaasResourceConfig),
+		maasResourceInterceptor(maasRL, defaultMaasResourceConfig),
 		appCheckUnaryInterceptor(appCheckVerifier, enforceAppCheck),
 		installationRateLimitInterceptor(newRateLimiter(), 30, time.Second),
 	}
@@ -271,6 +267,29 @@ var defaultMaasResourceConfig = maasResourceConfig{
 	RateWindow: time.Minute,
 }
 
+// maasQuotaScope is the rate-limiter bucket both plan methods spend from. They
+// share one name deliberately: plan and planStream cost the same TDX call, so
+// billing them separately would hand every caller a second allowance for
+// switching method.
+const maasQuotaScope = "maas:plan"
+
+// maasPlanQuota charges one plan against the per-caller TDX quota, returning the
+// error to fail the RPC with, or nil to proceed. Cancellation is checked on both
+// sides of the accounting so a caller that left neither spends quota
+// unnecessarily nor gets work started on its behalf.
+func maasPlanQuota(ctx context.Context, rl *rateLimiter, config maasResourceConfig) error {
+	if err := ctx.Err(); err != nil {
+		return status.FromContextError(err).Err()
+	}
+	if !allowRequest(ctx, rl, maasQuotaScope, config.RateLimit, config.RateWindow) {
+		return status.Error(codes.ResourceExhausted, "MaaS rate limit exceeded")
+	}
+	if err := ctx.Err(); err != nil {
+		return status.FromContextError(err).Err()
+	}
+	return nil
+}
+
 // maasResourceInterceptor contains the per-caller TDX quota independently from
 // unrelated gRPC methods. Shared-work concurrency and deadlines belong to
 // MaasServer so singleflight work retains them after an individual caller exits.
@@ -279,16 +298,24 @@ func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.Un
 		if info.FullMethod != pb.MaasService_Plan_FullMethodName {
 			return handler(ctx, req)
 		}
-		if err := ctx.Err(); err != nil {
-			return nil, status.FromContextError(err).Err()
-		}
-		if !allowRequest(ctx, rl, info.FullMethod, config.RateLimit, config.RateWindow) {
-			return nil, status.Error(codes.ResourceExhausted, "MaaS rate limit exceeded")
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, status.FromContextError(err).Err()
+		if err := maasPlanQuota(ctx, rl, config); err != nil {
+			return nil, err
 		}
 		return handler(ctx, req)
+	}
+}
+
+// maasResourceStreamInterceptor is the streaming half of the same quota. Without
+// it planStream would reach TDX with no per-caller ceiling at all.
+func maasResourceStreamInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.StreamServerInterceptor {
+	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if info.FullMethod != pb.MaasService_PlanStream_FullMethodName {
+			return handler(srv, ss)
+		}
+		if err := maasPlanQuota(ss.Context(), rl, config); err != nil {
+			return err
+		}
+		return handler(srv, ss)
 	}
 }
 
@@ -471,16 +498,20 @@ func run() error {
 		}
 		appCheckVerifier, enforceAppCheck, err := firebaseAppCheckFromEnv(context.Background())
 		if err != nil {
-			return fmt.Errorf("Firebase Admin initialization failed: %w", err)
+			return fmt.Errorf("initialize Firebase Admin: %w", err)
 		}
+		// One limiter across both chains so the TDX quota is spent per caller,
+		// not per method (see maasQuotaScope).
+		maasRL := newRateLimiter()
 		serverOptions := []grpc.ServerOption{
 			// Stop is the bounded GracefulStop fallback. Waiting for handlers here
 			// keeps backend ownership valid until canceled RPC handlers return.
 			grpc.WaitForHandlers(true),
-			grpc.ChainUnaryInterceptor(productionUnaryInterceptors(appCheckVerifier, enforceAppCheck)...),
+			grpc.ChainUnaryInterceptor(productionUnaryInterceptors(appCheckVerifier, enforceAppCheck, maasRL)...),
 			grpc.ChainStreamInterceptor(
 				obs.StreamInterceptor(),
 				rateLimitStreamInterceptor(rl, 30, time.Second),
+				maasResourceStreamInterceptor(maasRL, defaultMaasResourceConfig),
 				appCheckStreamInterceptor(appCheckVerifier, enforceAppCheck),
 			),
 		}
@@ -511,6 +542,11 @@ func run() error {
 		runtime.addCleanup(maasServer.Close)
 		pb.RegisterMaasServiceServer(grpcServer, maasServer)
 		pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
+		pb.RegisterFeedback_ServiceServer(grpcServer, &FeedbackServer{
+			store:    newFeedbackStore(db),
+			devices:  newFirebaseStore(db),
+			notifier: newFeedbackNotifier(),
+		})
 		log.Infof("gRPC server is running on port %d", 50051)
 		log.Infof("[HTTP] server running on 0.0.0.0:8080")
 		coordinator := serverCoordinator{
@@ -534,7 +570,7 @@ func run() error {
 // through the Sentry-forwarding handler and silently enqueue an event nothing
 // ever flushes.
 func reportProcessFailure(w io.Writer, err error) {
-	fmt.Fprintf(w, "router exited with error: %v\n", err)
+	_, _ = fmt.Fprintf(w, "router exited with error: %v\n", err)
 }
 
 func main() {

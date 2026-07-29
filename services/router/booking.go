@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-resty/resty/v2"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 )
 
 // bookingProxy exchanges rail booking parameters for a short-lived TDX deeplink
@@ -68,17 +68,17 @@ var (
 const maxTicketsPerCategory = 10
 
 // queryIntInRange reads an integer query parameter, returning fallback when it
-// is absent and an error when it is present but outside [min, max]. An
+// is absent and an error when it is present but outside [lo, hi]. An
 // out-of-range value is rejected rather than clamped: silently booking one
 // ticket when nine were asked for is worse than saying no.
-func queryIntInRange(c *gin.Context, name string, fallback, min, max int) (int, error) {
+func queryIntInRange(c *gin.Context, name string, fallback, lo, hi int) (int, error) {
 	raw := strings.TrimSpace(c.Query(name))
 	if raw == "" {
 		return fallback, nil
 	}
 	n, err := strconv.Atoi(raw)
-	if err != nil || n < min || n > max {
-		return 0, fmt.Errorf("%s must be an integer between %d and %d", name, min, max)
+	if err != nil || n < lo || n > hi {
+		return 0, fmt.Errorf("%s must be an integer between %d and %d", name, lo, hi)
 	}
 	return n, nil
 }

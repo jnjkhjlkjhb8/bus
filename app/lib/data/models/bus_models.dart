@@ -1,6 +1,7 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_car/data/models/bus_route_detail.dart';
-import 'package:wheres_the_car/data/models/eta_format.dart';
+import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
+import 'package:wheres_the_bus/data/models/eta_format.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 enum BusArrivalStatus { arriving, approaching, minutes, unknown }
 
@@ -51,6 +52,7 @@ class BusStopEtaViewModel extends Equatable {
     required this.vehiclePlates,
     this.arrivalUnix = 0,
     this.vehicles = const [],
+    this.plate = '',
   });
 
   final String stopUid;
@@ -62,6 +64,11 @@ class BusStopEtaViewModel extends Equatable {
   final List<String> vehiclePlates;
   final int arrivalUnix;
   final List<BusVehiclePosition> vehicles;
+
+  /// The vehicle this estimate describes, uppercase-trimmed by the server.
+  /// Empty when TDX sent no plate. Distinct from [vehiclePlates], which is
+  /// the whole route's live fleet and is identical on every stop.
+  final String plate;
 
   int get estimateMinutes => etaCeilMinutes(estimateSeconds);
 
@@ -90,9 +97,11 @@ class BusStopEtaViewModel extends Equatable {
     vehiclePlates: vehiclePlates,
     arrivalUnix: arrivalUnix,
     vehicles: vehicles,
+    plate: plate,
   );
 
-  String? get displayLabel => busStopDisplayLabel(
+  String? displayLabelOf(AppI18n i18n) => busStopDisplayLabel(
+    i18n: i18n,
     estimateSeconds: estimateSeconds,
     stopStatus: stopStatus,
     nextBusTime: nextBusTime,
@@ -120,6 +129,7 @@ class BusStopEtaViewModel extends Equatable {
     vehiclePlates,
     arrivalUnix,
     vehicles,
+    plate,
   ];
 }
 
@@ -184,7 +194,8 @@ class BusStopArrival extends Equatable {
 
   /// User-facing label ('2分', '進站中', a clock time, or a service state), or
   /// null when nothing is known.
-  String? get displayLabel => busStopDisplayLabel(
+  String? displayLabelOf(AppI18n i18n) => busStopDisplayLabel(
+    i18n: i18n,
     estimateSeconds: estimateSeconds,
     stopStatus: stopStatus,
     nextBusTime: nextBusTime,
@@ -258,6 +269,8 @@ class BusRouteViewModel extends Equatable {
     this.stopsReturn = const [],
     this.geometryGo = '',
     this.geometryReturn = '',
+    this.schedulesGo = const [],
+    this.schedulesReturn = const [],
     this.fare,
   });
 
@@ -274,6 +287,12 @@ class BusRouteViewModel extends Equatable {
   final List<BusStopModel> stopsReturn;
   final String geometryGo;
   final String geometryReturn;
+
+  /// Weekly service pattern per direction; empty when TDX publishes no
+  /// Bus/Schedule for the sub-route, in which case only today's timetable is
+  /// knowable.
+  final List<BusServiceEntry> schedulesGo;
+  final List<BusServiceEntry> schedulesReturn;
   final BusFareInfo? fare;
 
   @override

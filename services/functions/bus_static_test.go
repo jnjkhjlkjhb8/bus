@@ -347,6 +347,36 @@ func TestReadBusCitySnapshotBuildsDeterministicManualGroupCentroid(t *testing.T)
 	}
 }
 
+func TestReadBusCitySnapshotStripsCityBusNameSuffix(t *testing.T) {
+	// Keelung's city-bus stations carry "(市區公車)" while InterCity names the
+	// same pole without it; the group-member fold compares the two by equality.
+	src := validBusSnapshotSource("Taipei")
+	src.bodies["bus_station|Taipei"] = []byte(`[
+		{"stationuid":"TPEST1","stationid":"ST1","stationname":{"Zh_tw":"地方法院(市區公車)"},"stationposition":{"PositionLon":121.74,"PositionLat":25.13}},
+		{"stationuid":"TPEST2","stationid":"ST2","stationname":{"Zh_tw":"地方法院"},"stationposition":{"PositionLon":121.74,"PositionLat":25.13}}
+	]`)
+	snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	if len(snapshot.groupRows) != 1 {
+		t.Fatalf("group rows = %d, want 1 (both names fold to 地方法院)", len(snapshot.groupRows))
+	}
+	if got := snapshot.groupRows[0][2].(string); got != "地方法院" {
+		t.Fatalf("group name = %q, want 地方法院", got)
+	}
+	for i, row := range snapshot.memberRows {
+		if got := row[3].(string); got != "地方法院" {
+			t.Fatalf("member[%d] name = %q, want 地方法院", i, got)
+		}
+	}
+	for i, row := range snapshot.stationRows {
+		if got := row[2].(string); got != "地方法院" {
+			t.Fatalf("station[%d] name = %q, want 地方法院", i, got)
+		}
+	}
+}
+
 func TestReadBusCitySnapshotDeduplicatesIdenticalStopsAndTakesFirstOnDivergence(t *testing.T) {
 	// One divergent variant out of two is 50% of this fixture; the ratio gate
 	// is covered by TestLoadQuarantineRatioGate.
@@ -395,12 +425,73 @@ func TestReadBusCitySnapshotMapsNativeFareAndRejectsDivergentCanonicalOffers(t *
 		t.Fatal("canonical subroute did not receive native SubRouteID fare")
 	}
 
+	// Two offers for one canonical subroute: the wire model holds one, so the
+	// first wins and the city still loads. One divergent offer out of two is 50%
+	// of this fixture; the ratio gate is covered by TestLoadQuarantineRatioGate.
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "1")
 	src.bodies["bus_routefare|"+city] = []byte(`[
-		{"RouteID":"0968","SubRouteID":"096801","FarePricingType":1},
-		{"RouteID":"0968","SubRouteID":"096802","FarePricingType":2}
+		{"RouteID":"0968","SubRouteID":"096801","FarePricingType":1,"IsForAllSubRoutes":1},
+		{"RouteID":"0968","SubRouteID":"096802","FarePricingType":2,"IsForAllSubRoutes":1}
 	]`)
-	if _, err := readBusCitySnapshot(context.Background(), src, city); !errors.Is(err, errBusSnapshotConflict) {
-		t.Fatalf("divergent fare error = %v, want errBusSnapshotConflict", err)
+	snapshot, err = readBusCitySnapshot(context.Background(), src, city)
+	if err != nil {
+		t.Fatalf("divergent fare: %v, want the city to load with the first offer", err)
+	}
+	if got := snapshot.subroutes["THB0968"].Fare; got.GetFarePricingType() != 1 {
+		t.Fatalf("fare = %+v, want the first offer (FarePricingType 1)", got)
+	}
+}
+
+func TestReadBusCitySnapshotDropsUnorderedStopListAndItsDirection(t *testing.T) {
+	// One unordered variant out of one is 100% of this fixture; the ratio gate is
+	// covered by TestLoadQuarantineRatioGate.
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "1")
+	src := validBusSnapshotSource("Taipei")
+	src.bodies["bus_route|Taipei"] = []byte(`[{"RouteUID":"TPE1","RouteName":{"Zh_tw":"1"},"SubRoutes":[
+		{"SubRouteUID":"TPE100","SubRouteID":"100","SubRouteName":{"Zh_tw":"100"},"Direction":0,"DepartureStopNameZh":"甲","DestinationStopNameZh":"乙"},
+		{"SubRouteUID":"TPE100","SubRouteID":"100","SubRouteName":{"Zh_tw":"100"},"Direction":1,"DepartureStopNameZh":"甲","DestinationStopNameZh":"乙"}
+	]}]`)
+	src.bodies["bus_station|Taipei"] = []byte(`[
+		{"stationuid":"TPEST1","stationid":"ST1","stationname":{"Zh_tw":"甲"},"stationposition":{"PositionLon":121.5,"PositionLat":25.0}},
+		{"stationuid":"TPEST2","stationid":"ST2","stationname":{"Zh_tw":"乙"},"stationposition":{"PositionLon":121.6,"PositionLat":25.0}}
+	]`)
+	// Direction 0's sequence restarts mid-list; direction 1 is clean.
+	src.bodies["bus_stopofroute|Taipei"] = []byte(`[
+		{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Stops":[
+			{"StopUID":"S1","StopName":{"Zh_tw":"甲"},"StopSequence":1,"StationID":"ST1","StopPosition":{"PositionLon":121.5,"PositionLat":25}},
+			{"StopUID":"S2","StopName":{"Zh_tw":"乙"},"StopSequence":1,"StationID":"ST2","StopPosition":{"PositionLon":121.6,"PositionLat":25}}
+		]},
+		{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":1,"Stops":[
+			{"StopUID":"S2","StopName":{"Zh_tw":"乙"},"StopSequence":1,"StationID":"ST2","StopPosition":{"PositionLon":121.6,"PositionLat":25}}
+		]}
+	]`)
+	snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
+	if err != nil {
+		t.Fatalf("unordered stop list: %v, want the city to load without that direction", err)
+	}
+	sub := snapshot.subroutes["TPE100"]
+	if sub == nil {
+		t.Fatal("subroute dropped, want it kept on its clean direction")
+	}
+	if _, ok := sub.Directions[0]; ok {
+		t.Fatalf("directions = %v, want the unordered direction 0 pruned", sub.Directions)
+	}
+	// The pruned direction must not leave its endpoints on the subroute: direction
+	// 1 is stored reversed, so inheriting from it flips departure/destination.
+	if sub.DepartureStopName != "乙" || sub.DestinationStopName != "甲" {
+		t.Fatalf("endpoints = %q -> %q, want the surviving direction's 乙 -> 甲", sub.DepartureStopName, sub.DestinationStopName)
+	}
+
+	// Every direction unordered: the subroute goes, and with it the last one, so
+	// the city fails instead of writing an empty snapshot.
+	src.bodies["bus_stopofroute|Taipei"] = []byte(`[
+		{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Stops":[
+			{"StopUID":"S1","StopName":{"Zh_tw":"甲"},"StopSequence":1,"StationID":"ST1","StopPosition":{"PositionLon":121.5,"PositionLat":25}},
+			{"StopUID":"S2","StopName":{"Zh_tw":"乙"},"StopSequence":1,"StationID":"ST2","StopPosition":{"PositionLon":121.6,"PositionLat":25}}
+		]}
+	]`)
+	if _, err := readBusCitySnapshot(context.Background(), src, "Taipei"); !errors.Is(err, errBusSnapshotInvalid) {
+		t.Fatalf("every subroute pruned: err = %v, want errBusSnapshotInvalid", err)
 	}
 }
 
@@ -504,6 +595,30 @@ func TestBusScheduleRowsUseDepartureTime(t *testing.T) {
 	}
 	if got := snapshot.scheduleRows[0][9]; got != "08:03" {
 		t.Fatalf("departure column = %v, want 08:03", got)
+	}
+}
+
+func TestBusSchedulePayloadCarriesOnlyTripOrigin(t *testing.T) {
+	src := validBusSnapshotSource("Taipei")
+	// Stop times arrive out of sequence order: the payload row must still be the
+	// origin (sequence 1), not the first element.
+	src.bodies["bus_schedule|Taipei"] = []byte(`[{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Timetables":[{"TripID":"TRIP","ServiceDay":{"Monday":1},"StopTimes":[{"StopSequence":3,"StopUID":"S3","StopName":{"Zh_tw":"丙"},"ArrivalTime":"08:20","DepartureTime":"08:21"},{"StopSequence":1,"StopUID":"S1","StopName":{"Zh_tw":"甲"},"ArrivalTime":"08:00","DepartureTime":"08:03"}]}]}]`)
+	snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	if got := len(snapshot.scheduleRows); got != 2 {
+		t.Fatalf("db rows = %d, want 2 (every stop is still stored)", got)
+	}
+	schedules := snapshot.subroutes["TPE100"].Directions[0].Schedules
+	if len(schedules) != 1 {
+		t.Fatalf("payload schedules = %d, want 1 per trip", len(schedules))
+	}
+	if got := schedules[0].MaxHeadwayMinsDepartureTime; got != "08:03" {
+		t.Fatalf("origin departure = %q, want 08:03", got)
+	}
+	if got := schedules[0].ServiceDay; got != 1 {
+		t.Fatalf("service day mask = %d, want 1 (Monday)", got)
 	}
 }
 

@@ -1,186 +1,102 @@
-import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/search_models.dart';
-import 'package:wheres_the_car/data/repositories/search_repository.dart';
+import 'dart:io';
 
-import '../../support/helpers/fake_local_db.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/search_models.dart';
+import 'package:wheres_the_bus/data/repositories/search_repository.dart';
 
 void main() {
-  group('offline (HTTP disabled)', () {
-    test(
-      'finds synchronized static transport data via the local mirror',
-      () async {
-        final localDb = FakeLocalDb({
-          '板橋': [
-            {
-              'type': 'mrt_station',
-              'uid': 'BL13',
-              'name': '板橋',
-              'city': 'New Taipei',
-              'depart': '',
-              'destin': '',
-            },
-          ],
-        });
-        final repo = SearchRepository(
-          localDb: localDb,
-          httpFetch: (query, limit) async => throw StateError('HTTP disabled'),
-        );
-
-        final results = await repo.search('板橋');
-
-        expect(results, hasLength(1));
-        expect(results.single.uid, 'BL13');
-        expect(results.single.name, '板橋');
-        expect(results.single.type, SearchResultType.mrtStation);
-        expect(results.single.subtitle, 'New Taipei');
-      },
-    );
-
-    test(
-      'returns an empty list, not an error, when nothing matches locally',
-      () async {
-        final repo = SearchRepository(
-          localDb: FakeLocalDb(const {}),
-          httpFetch: (query, limit) async => throw StateError('HTTP disabled'),
-        );
-
-        final results = await repo.search('nowhere');
-
-        expect(results, isEmpty);
-      },
-    );
-
-    test(
-      'drops rail station rows — the rail query flow lives on the home sheet',
-      () async {
-        final localDb = FakeLocalDb({
-          '台北': [
-            {
-              'type': 'tra_station',
-              'uid': '1000',
-              'name': '台北',
-              'city': 'Taipei',
-              'depart': '',
-              'destin': '',
-            },
-          ],
-        });
-        final repo = SearchRepository(
-          localDb: localDb,
-          httpFetch: (query, limit) async => throw StateError('HTTP disabled'),
-        );
-
-        final results = await repo.search('台北');
-
-        expect(results, isEmpty);
-      },
-    );
-  });
-
-  group('online enrichment', () {
-    test(
-      'merges local results with HTTP results, local first, deduped',
-      () async {
-        final localDb = FakeLocalDb({
-          'red': [
-            {
-              'type': 'bus_route',
-              'uid': 'local-1',
-              'name': 'Red Line',
-              'city': 'Taipei',
-              'depart': 'A',
-              'destin': 'B',
-            },
-          ],
-        });
-        final repo = SearchRepository(
-          localDb: localDb,
-          httpFetch: (query, limit) async => [
-            const SearchResult(
-              type: SearchResultType.busRoute,
-              uid: 'local-1', // duplicate of the local hit
-              name: 'Red Line',
-              subtitle: 'A → B',
-            ),
-            const SearchResult(
-              type: SearchResultType.busStation,
-              uid: 'remote-2',
-              name: 'Red Station',
-              subtitle: 'Taipei',
-            ),
-          ],
-        );
-
-        final results = await repo.search('red');
-
-        expect(results.map((r) => r.uid), ['local-1', 'remote-2']);
-      },
-    );
-
-    test('a failing HTTP call still returns the local results', () async {
-      final localDb = FakeLocalDb({
-        'red': [
-          {
-            'type': 'bus_route',
-            'uid': 'local-1',
-            'name': 'Red Line',
-            'city': 'Taipei',
-            'depart': '',
-            'destin': '',
-          },
-        ],
-      });
+  group('failures', () {
+    test('surfaces the failure rather than an empty list — "no results" is '
+        'a different claim than "we could not reach the server"', () async {
       final repo = SearchRepository(
-        localDb: localDb,
-        httpFetch: (query, limit) async => throw StateError('timeout'),
+        httpFetch: (query, limit, city) async => throw StateError('down'),
       );
 
-      final results = await repo.search('red');
+      await expectLater(repo.search('nowhere'), throwsA(isA<UnknownError>()));
+    });
 
-      expect(results, hasLength(1));
-      expect(results.single.uid, 'local-1');
+    test('maps a socket failure to OfflineError for the caller', () async {
+      final repo = SearchRepository(
+        httpFetch: (query, limit, city) async =>
+            throw const SocketException('no route to host'),
+      );
+
+      await expectLater(repo.search('nowhere'), throwsA(isA<OfflineError>()));
     });
   });
 
-  group('local DB failure falls back to HTTP', () {
+  group('city filter', () {
+    test('passes the city through to the router', () async {
+      final seen = <String?>[];
+      final repo = SearchRepository(
+        httpFetch: (query, limit, city) async {
+          seen.add(city);
+          return const [];
+        },
+      );
+
+      await repo.search('中正路', city: 'Taipei');
+      await repo.search('中正路');
+
+      expect(seen, ['Taipei', null]);
+    });
+  });
+
+  group('memo', () {
+    test('repeats a query from memory instead of the network', () async {
+      var calls = 0;
+      final repo = SearchRepository(
+        httpFetch: (query, limit, city) async {
+          calls++;
+          return [_result('r-1')];
+        },
+      );
+
+      final first = await repo.search('307');
+      final second = await repo.search('307');
+
+      expect(calls, 1);
+      expect(second, same(first));
+    });
+
     test(
-      'a local query throwing (e.g. no such table) still calls HTTP and '
-      'returns its results, instead of the exception propagating',
+      'keys on the city, so a filtered page is not served unfiltered',
       () async {
         final repo = SearchRepository(
-          localDb: FakeLocalDb.throwing(
-            Exception('no such table: search_vector'),
-          ),
-          httpFetch: (query, limit) async => [
-            const SearchResult(
-              type: SearchResultType.busRoute,
-              uid: 'remote-1',
-              name: 'Remote Line',
-              subtitle: 'A → B',
-            ),
-          ],
+          httpFetch: (query, limit, city) async => [_result(city ?? 'all')],
         );
 
-        final results = await repo.search('red');
+        final filtered = await repo.search('307', city: 'Taipei');
+        final unfiltered = await repo.search('307');
 
-        expect(results, hasLength(1));
-        expect(results.single.uid, 'remote-1');
+        expect(filtered.single.uid, 'Taipei');
+        expect(unfiltered.single.uid, 'all');
       },
     );
 
     test(
-      'a local query throwing and HTTP also failing returns an empty list, '
-      'not an exception',
+      'a failed query is not memoized, so a retry actually retries',
       () async {
+        var calls = 0;
         final repo = SearchRepository(
-          localDb: FakeLocalDb.throwing(StateError('DB not initialized')),
-          httpFetch: (query, limit) async => throw StateError('offline'),
+          httpFetch: (query, limit, city) async {
+            calls++;
+            throw const SocketException('offline');
+          },
         );
 
-        final results = await repo.search('red');
-
-        expect(results, isEmpty);
+        await expectLater(repo.search('307'), throwsA(isA<OfflineError>()));
+        await expectLater(repo.search('307'), throwsA(isA<OfflineError>()));
+        expect(calls, 2);
       },
     );
   });
 }
+
+SearchResult _result(String uid) => SearchResult(
+  type: SearchResultType.busRoute,
+  uid: uid,
+  name: '307',
+  subtitle: '板橋',
+);

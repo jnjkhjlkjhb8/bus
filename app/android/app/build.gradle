@@ -47,27 +47,37 @@ static def decodeDartDefines(String raw) {
 
 def dartDefines = decodeDartDefines(project.findProperty('dart-defines')?.toString())
 
-// GOOGLE_MAPS_API_KEY resolution order: Flutter dart-defines (the
+def localPropertiesFile = rootProject.file('local.properties')
+
+// Resolution order for a given define name: Flutter dart-defines (the
 // documented `--dart-define-from-file=env/<flavor>.json` path) > an
-// explicit `-PGOOGLE_MAPS_API_KEY` Gradle property > local.properties
+// explicit `-P<name>` Gradle property > local.properties
 // (developer-machine convenience, gitignored). Deliberately `null` (not
 // `""`) when nothing supplied a value, so "missing" and "configured but
 // blank" stay distinguishable for the fail-closed check below.
-def googleMapsApiKey = dartDefines.get('GOOGLE_MAPS_API_KEY')
-if (!googleMapsApiKey) {
-    googleMapsApiKey = project.hasProperty('GOOGLE_MAPS_API_KEY') ? GOOGLE_MAPS_API_KEY : null
-}
-def localPropertiesFile = rootProject.file('local.properties')
-if (!googleMapsApiKey && localPropertiesFile.exists()) {
-    localPropertiesFile.eachLine { line ->
-        if (line.startsWith('GOOGLE_MAPS_API_KEY=')) {
-            def value = line.substring('GOOGLE_MAPS_API_KEY='.length()).trim()
-            if (!value.isEmpty()) {
-                googleMapsApiKey = value
+def resolveDefine = { String name ->
+    def value = dartDefines.get(name)
+    if (!value) {
+        value = project.hasProperty(name) ? project.property(name)?.toString() : null
+    }
+    if (!value && localPropertiesFile.exists()) {
+        localPropertiesFile.eachLine { line ->
+            if (line.startsWith("${name}=")) {
+                def candidate = line.substring(name.length() + 1).trim()
+                if (!candidate.isEmpty()) {
+                    value = candidate
+                }
             }
         }
     }
+    return value ?: null
 }
+
+// Google Cloud restricts a Maps key to one platform (Android needs package
+// name + signing SHA-1, iOS needs the bundle id), so the two platforms
+// generally need separate keys. GOOGLE_MAPS_API_KEY_ANDROID wins here;
+// GOOGLE_MAPS_API_KEY remains the fallback for single-key setups.
+def googleMapsApiKey = resolveDefine('GOOGLE_MAPS_API_KEY_ANDROID') ?: resolveDefine('GOOGLE_MAPS_API_KEY')
 
 def appEnv = dartDefines.get('APP_ENV') ?: 'test'
 def isTestFlavor = appEnv == 'test'

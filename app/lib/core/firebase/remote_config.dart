@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import 'package:flutter/foundation.dart';
-import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_gate.dart';
 
 /// Thin read accessor over Firebase Remote Config.
 ///
@@ -23,8 +23,15 @@ class AppConfig {
   static const defaults = <String, Object>{
     'maintenance_banner_enabled': false,
     'maintenance_banner_text': '',
+    // General app announcement. No enable flag: empty text is off, which is
+    // one fewer switch for ops to leave in the wrong position.
+    'announcement_text': '',
     'push_enabled': true,
     'min_supported_version': '1.0.0',
+    // The newest published build. Only ever nudges; `min_supported_version`
+    // is the one that blocks. Defaults equal to the floor so a project with
+    // no value set nudges nobody.
+    'latest_version': '1.0.0',
     'store_url_ios': '',
     'store_url_android': '',
     'arrival_lead_minutes': '1,3,5',
@@ -32,7 +39,15 @@ class AppConfig {
     // Tagged tokens: `metro:<system>` and `bus:<city>`, comma-separated.
     'alert_sources': 'metro:TRTC,bus:Taipei',
     'nearby_fallback_radius_m': 900,
+    // Kill switch for the search screen's ask lane. It is the one surface
+    // whose cost and latency come from a third party, so it needs to be
+    // switchable off without a release.
+    genUiEnabledKey: true,
   };
+
+  /// The ask lane's Remote Config key. Named rather than inlined because the
+  /// default map and the read site have to agree.
+  static const genUiEnabledKey = 'genui_enabled';
 
   /// Bridges [version] into a broadcast [Stream] for consumers that want to
   /// react to each activated revision instead of polling a
@@ -48,6 +63,27 @@ class AppConfig {
       onCancel: () => version.removeListener(listener),
     );
     return controller.stream;
+  }
+
+  /// Pulls a fresh revision on demand and activates it, bumping [version] so
+  /// every listener re-reads. For the one place a rider explicitly asks for
+  /// current data (Settings → 檢查更新); everything else rides the launch
+  /// fetch and Realtime updates.
+  ///
+  /// Returns false when the refresh could not happen (Firebase off, offline,
+  /// fetch timeout) so the caller can say so instead of reporting a stale
+  /// read as a successful check. Still subject to `minimumFetchInterval`,
+  /// which is a minute — short enough that a throttled answer is a current
+  /// one.
+  static Future<bool> refresh() async {
+    if (!FirebaseGate.enabled) return false;
+    try {
+      await FirebaseRemoteConfig.instance.fetchAndActivate();
+      version.value++;
+      return true;
+    } on Object catch (_) {
+      return false;
+    }
   }
 
   static bool getBool(String key) => _read(key, (rc) => rc.getBool(key));

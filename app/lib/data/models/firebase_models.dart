@@ -20,9 +20,6 @@ class FirebaseDeviceState extends Equatable {
     this.platform = '',
     this.appVersion = '',
     this.pushEnabled = false,
-    this.analyticsEnabled = false,
-    this.crashlyticsEnabled = false,
-    this.performanceEnabled = false,
   });
 
   final String installId;
@@ -30,9 +27,6 @@ class FirebaseDeviceState extends Equatable {
   final String platform;
   final String appVersion;
   final bool pushEnabled;
-  final bool analyticsEnabled;
-  final bool crashlyticsEnabled;
-  final bool performanceEnabled;
 
   @override
   List<Object?> get props => [
@@ -41,9 +35,6 @@ class FirebaseDeviceState extends Equatable {
     platform,
     appVersion,
     pushEnabled,
-    analyticsEnabled,
-    crashlyticsEnabled,
-    performanceEnabled,
   ];
 }
 

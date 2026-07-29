@@ -2,7 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart'
     show debugPrint, kDebugMode, visibleForTesting;
 import 'package:pretty_dio_logger/pretty_dio_logger.dart';
-import 'package:wheres_the_car/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
 
 /// Matches a JSON-shaped `"key": "value"` log line whose key is a common
 /// spelling of a credential. Values that survive as far as this line

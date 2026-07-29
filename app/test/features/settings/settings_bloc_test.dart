@@ -1,9 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_bloc.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_event.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_state.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_bloc.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_event.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_state.dart';
 
 import '../../support/helpers/in_memory_settings_store.dart';
 
@@ -11,7 +13,7 @@ Future<bool> _grant({required bool requested}) async => requested;
 
 Future<PackageInfo> _fakePackageInfo({String version = '2.4.1'}) async =>
     PackageInfo(
-      appName: 'wheres_the_car',
+      appName: 'wheres_the_bus',
       packageName: 'tw.gov.bus',
       version: version,
       buildNumber: '1',
@@ -26,12 +28,16 @@ void main() {
     PushUpdater? updatePushPreference,
     Future<PackageInfo> Function()? packageInfoLoader,
     DateTime? Function()? lastSyncedAtOf,
+    Future<bool> Function()? refreshConfig,
+    String Function()? latestVersionOf,
   }) {
     final bloc = SettingsBloc(
       settings: settings ?? repo(),
       updatePushPreference: updatePushPreference ?? _grant,
       packageInfoLoader: packageInfoLoader ?? _fakePackageInfo,
       lastSyncedAtOf: lastSyncedAtOf ?? () => null,
+      refreshConfig: refreshConfig ?? () async => true,
+      latestVersionOf: latestVersionOf ?? () => '2.4.1',
     );
     addTearDown(bloc.close);
     return bloc;
@@ -42,13 +48,8 @@ void main() {
       final bloc = build();
       expect(bloc.state.appearance, Appearance.system);
       expect(bloc.state.language, Language.system);
-      expect(bloc.state.devMode, isFalse);
-      expect(bloc.state.versionTaps, 0);
       expect(bloc.state.pushEnabled, isTrue);
       expect(bloc.state.pushUpdating, isFalse);
-      expect(bloc.state.analyticsEnabled, isTrue);
-      expect(bloc.state.crashlyticsEnabled, isTrue);
-      expect(bloc.state.largeText, isFalse);
       expect(bloc.state.liveActivityEnabled, isTrue);
       expect(bloc.state.appVersion, isEmpty);
       expect(bloc.state.powerSyncLastSyncedAt, isNull);
@@ -86,20 +87,13 @@ void main() {
       final bloc = build(
         settings: repo({
           'appearance_mode': 'dark',
-          'dev_mode_enabled': true,
           'push_enabled': false,
-          'analytics_enabled': false,
-          'crashlytics_enabled': false,
           'large_text': true,
           'live_activity_enabled': false,
         }),
       );
       expect(bloc.state.appearance, Appearance.dark);
-      expect(bloc.state.devMode, isTrue);
       expect(bloc.state.pushEnabled, isFalse);
-      expect(bloc.state.analyticsEnabled, isFalse);
-      expect(bloc.state.crashlyticsEnabled, isFalse);
-      expect(bloc.state.largeText, isTrue);
       expect(bloc.state.liveActivityEnabled, isFalse);
     });
   });
@@ -115,16 +109,6 @@ void main() {
       expect(settings.appearanceMode, 'dark');
     });
 
-    test('large text toggle persists', () async {
-      final settings = repo();
-      final bloc = build(settings: settings)
-        ..add(const LargeTextToggled(value: true));
-      await bloc.stream.first;
-
-      expect(bloc.state.largeText, isTrue);
-      expect(settings.largeText, isTrue);
-    });
-
     test('live activity toggle persists', () async {
       final settings = repo();
       final bloc = build(settings: settings)
@@ -133,26 +117,6 @@ void main() {
 
       expect(bloc.state.liveActivityEnabled, isFalse);
       expect(settings.liveActivityEnabled, isFalse);
-    });
-
-    test('analytics toggle persists', () async {
-      final settings = repo();
-      final bloc = build(settings: settings)
-        ..add(const AnalyticsToggled(value: false));
-      await bloc.stream.first;
-
-      expect(bloc.state.analyticsEnabled, isFalse);
-      expect(settings.analyticsEnabled, isFalse);
-    });
-
-    test('crashlytics toggle persists', () async {
-      final settings = repo();
-      final bloc = build(settings: settings)
-        ..add(const CrashlyticsToggled(value: false));
-      await bloc.stream.first;
-
-      expect(bloc.state.crashlyticsEnabled, isFalse);
-      expect(settings.crashlyticsEnabled, isFalse);
     });
 
     test('language selection updates state but is not persisted', () async {
@@ -214,36 +178,98 @@ void main() {
     });
   });
 
-  group('dev mode unlock counter', () {
-    test('unlocks on the fifth tap and persists', () async {
-      final settings = repo();
-      final bloc = build(settings: settings);
+  group('檢查更新', () {
+    /// Builds a bloc whose app version has already settled, since the check
+    /// compares against it and the loader resolves asynchronously.
+    Future<SettingsBloc> ready({
+      Future<bool> Function()? refreshConfig,
+      String Function()? latestVersionOf,
+      Future<PackageInfo> Function()? packageInfoLoader,
+    }) async {
+      final bloc = build(
+        refreshConfig: refreshConfig,
+        latestVersionOf: latestVersionOf,
+        packageInfoLoader: packageInfoLoader,
+      );
+      await bloc.stream.first;
+      return bloc;
+    }
 
-      for (var i = 0; i < 4; i++) {
-        bloc.add(const VersionTapped());
-      }
-      await Future<void>.delayed(Duration.zero);
-      expect(bloc.state.devMode, isFalse);
-      expect(bloc.state.versionTaps, 4);
+    test('a published newer build is offered', () async {
+      final bloc = await ready(latestVersionOf: () => '2.5.0');
+      bloc.add(const UpdateCheckRequested());
+      await bloc.stream.firstWhere(
+        (s) => s.updateCheck != UpdateCheck.checking,
+      );
 
-      bloc.add(const VersionTapped());
-      await Future<void>.delayed(Duration.zero);
-
-      expect(bloc.state.devMode, isTrue);
-      // Counter resets to zero on the unlock transition.
-      expect(bloc.state.versionTaps, 0);
-      expect(settings.devModeEnabled, isTrue);
+      expect(bloc.state.updateCheck, UpdateCheck.available);
+      expect(bloc.state.latestVersion, '2.5.0');
     });
 
-    test('taps after unlock keep incrementing without side effects', () async {
-      // Already unlocked: the guard skips the unlock branch, and the counter
-      // simply advances (matches the pre-bloc behavior).
-      final bloc = build(settings: repo({'dev_mode_enabled': true}))
-        ..add(const VersionTapped());
-      await Future<void>.delayed(Duration.zero);
+    test('the running build being current reports up to date', () async {
+      final bloc = await ready(latestVersionOf: () => '2.4.1');
+      bloc.add(const UpdateCheckRequested());
+      await bloc.stream.firstWhere(
+        (s) => s.updateCheck != UpdateCheck.checking,
+      );
 
-      expect(bloc.state.devMode, isTrue);
-      expect(bloc.state.versionTaps, 1);
+      expect(bloc.state.updateCheck, UpdateCheck.upToDate);
+      expect(bloc.state.latestVersion, isEmpty);
+    });
+
+    test('a failed refresh never reports up to date', () async {
+      // Offline, or Firebase off. Claiming "已是最新版本" off a stale read
+      // would be a lie told to the one rider who explicitly asked.
+      final bloc = await ready(
+        refreshConfig: () async => false,
+        latestVersionOf: () => '2.5.0',
+      );
+      bloc.add(const UpdateCheckRequested());
+      await bloc.stream.firstWhere(
+        (s) => s.updateCheck != UpdateCheck.checking,
+      );
+
+      expect(bloc.state.updateCheck, UpdateCheck.failed);
+      expect(bloc.state.latestVersion, isEmpty);
+    });
+
+    test('an unknown running version cannot answer', () async {
+      final bloc = await ready(
+        packageInfoLoader: () async => throw Exception('boom'),
+        latestVersionOf: () => '2.5.0',
+      );
+      bloc.add(const UpdateCheckRequested());
+      await bloc.stream.firstWhere(
+        (s) => s.updateCheck != UpdateCheck.checking,
+      );
+
+      expect(bloc.state.updateCheck, UpdateCheck.failed);
+    });
+
+    test('a second tap while in flight is ignored', () async {
+      var refreshes = 0;
+      final gate = Completer<void>();
+      final bloc = await ready(
+        refreshConfig: () async {
+          refreshes++;
+          await gate.future;
+          return true;
+        },
+        latestVersionOf: () => '2.5.0',
+      );
+
+      bloc
+        ..add(const UpdateCheckRequested())
+        ..add(const UpdateCheckRequested());
+      await bloc.stream.firstWhere(
+        (s) => s.updateCheck == UpdateCheck.checking,
+      );
+      gate.complete();
+      await bloc.stream.firstWhere(
+        (s) => s.updateCheck != UpdateCheck.checking,
+      );
+
+      expect(refreshes, 1);
     });
   });
 }

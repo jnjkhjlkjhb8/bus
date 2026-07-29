@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:hive_ce_flutter/adapters.dart';
-import 'package:wheres_the_car/data/repositories/saved_place_repository.dart';
-import 'package:wheres_the_car/features/go/model/planned_place.dart';
-import 'package:wheres_the_car/features/go/model/saved_place_icons.dart';
+import 'package:wheres_the_bus/data/repositories/saved_place_repository.dart';
+import 'package:wheres_the_bus/features/go/model/planned_place.dart';
+import 'package:wheres_the_bus/features/go/model/saved_place_icons.dart';
 
 PlannedPlace _place(String name, double lat, double lon, {String? icon}) =>
     PlannedPlace(name: name, latLng: LatLng(lat, lon), iconKey: icon);

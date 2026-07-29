@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 )
 
 const cwaBase = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
@@ -118,7 +118,7 @@ func fetchCWA(ctx context.Context, client *http.Client, url, apiKey string) ([]b
 	if err != nil {
 		return nil, fmt.Errorf("request %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
 		return nil, fmt.Errorf("read %s body: %w", url, readErr)

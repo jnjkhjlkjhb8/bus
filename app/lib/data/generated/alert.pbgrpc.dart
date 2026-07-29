@@ -41,6 +41,15 @@ class Alert_ServiceClient extends $grpc.Client {
         options: options);
   }
 
+  $grpc.ResponseStream<$0.Alert_Msg> busAlert(
+    $0.Alert_Bus_Ask request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createStreamingCall(
+        _$busAlert, $async.Stream.fromIterable([request]),
+        options: options);
+  }
+
   $grpc.ResponseStream<$0.Alert_Msg> metroAlert(
     $0.Alert_Metro_Ask request, {
     $grpc.CallOptions? options,
@@ -74,6 +83,10 @@ class Alert_ServiceClient extends $grpc.Client {
       '/Alert_Service/busNews',
       ($0.Alert_Bus_Ask value) => value.writeToBuffer(),
       $0.Alert_Msg.fromBuffer);
+  static final _$busAlert = $grpc.ClientMethod<$0.Alert_Bus_Ask, $0.Alert_Msg>(
+      '/Alert_Service/busAlert',
+      ($0.Alert_Bus_Ask value) => value.writeToBuffer(),
+      $0.Alert_Msg.fromBuffer);
   static final _$metroAlert =
       $grpc.ClientMethod<$0.Alert_Metro_Ask, $0.Alert_Msg>(
           '/Alert_Service/metroAlert',
@@ -97,6 +110,13 @@ abstract class Alert_ServiceBase extends $grpc.Service {
     $addMethod($grpc.ServiceMethod<$0.Alert_Bus_Ask, $0.Alert_Msg>(
         'busNews',
         busNews_Pre,
+        false,
+        true,
+        ($core.List<$core.int> value) => $0.Alert_Bus_Ask.fromBuffer(value),
+        ($0.Alert_Msg value) => value.writeToBuffer()));
+    $addMethod($grpc.ServiceMethod<$0.Alert_Bus_Ask, $0.Alert_Msg>(
+        'busAlert',
+        busAlert_Pre,
         false,
         true,
         ($core.List<$core.int> value) => $0.Alert_Bus_Ask.fromBuffer(value),
@@ -130,6 +150,14 @@ abstract class Alert_ServiceBase extends $grpc.Service {
   }
 
   $async.Stream<$0.Alert_Msg> busNews(
+      $grpc.ServiceCall call, $0.Alert_Bus_Ask request);
+
+  $async.Stream<$0.Alert_Msg> busAlert_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.Alert_Bus_Ask> $request) async* {
+    yield* busAlert($call, await $request);
+  }
+
+  $async.Stream<$0.Alert_Msg> busAlert(
       $grpc.ServiceCall call, $0.Alert_Bus_Ask request);
 
   $async.Stream<$0.Alert_Msg> metroAlert_Pre($grpc.ServiceCall $call,

@@ -26,7 +26,7 @@ import (
 	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 )
 
 const (
@@ -344,7 +344,7 @@ func parseBearerCredential(header string) string {
 		return ""
 	}
 	credential := header[credentialStart:]
-	if strings.IndexAny(credential, " \t\r\n") >= 0 {
+	if strings.ContainsAny(credential, " \t\r\n") {
 		return ""
 	}
 	return credential

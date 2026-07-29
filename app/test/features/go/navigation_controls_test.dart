@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/features/go/view/go_screen.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/features/go/view/go_screen.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 const JourneyLeg _leg = JourneyLeg(
   kind: JourneyLegKind.bus,
@@ -27,6 +28,10 @@ const JourneyLeg _leg = JourneyLeg(
 );
 
 Widget _harness(JourneySessionBloc bloc) => MaterialApp(
+  locale: const Locale('zh'),
+  localizationsDelegates: AppI18n.localizationsDelegates,
+  supportedLocales: AppI18n.supportedLocales,
+
   home: Scaffold(
     body: BlocProvider<JourneySessionBloc>.value(
       value: bloc,
@@ -40,6 +45,7 @@ void main() {
     // etaStream emits Duration.zero → EtaTicked(0) → suggestBoarding == true.
     final bloc = JourneySessionBloc(
       etaStream: (_) => Stream.value(Duration.zero),
+      liveActivityEnabled: () => true,
     )..add(const JourneyStarted(legs: [_leg]));
 
     await tester.pumpWidget(_harness(bloc));
@@ -59,6 +65,7 @@ void main() {
   testWidgets('tapping board moves to riding and shows alight', (tester) async {
     final bloc = JourneySessionBloc(
       etaStream: (_) => Stream.value(Duration.zero),
+      liveActivityEnabled: () => true,
     )..add(const JourneyStarted(legs: [_leg]));
 
     await tester.pumpWidget(_harness(bloc));
@@ -70,8 +77,8 @@ void main() {
 
     expect(bloc.state.phase, JourneyPhase.riding);
     expect(find.text('我下車了'), findsOneWidget);
-    // 於 {alightStop} 下車・剩 {remaining} 站 — 3 stopLocations, index 0.
-    expect(find.text('於 榮總 下車・剩 3 站'), findsOneWidget);
+    // 於 {alightStop} 下車  剩 {remaining} 站 — 3 stopLocations, index 0.
+    expect(find.text('於 榮總 下車  剩 3 站'), findsOneWidget);
     expect(find.text('我上車了'), findsNothing);
 
     await tester.runAsync(bloc.close);

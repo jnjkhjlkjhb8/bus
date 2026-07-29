@@ -1,26 +1,25 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/models/alert_models.dart';
-import 'package:wheres_the_car/data/repositories/alert_repository.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_state.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/data/models/alert_models.dart';
+import 'package:wheres_the_bus/data/repositories/alert_repository.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_bloc.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_event.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_state.dart';
 
 import '../../../support/helpers/in_memory_settings_store.dart';
 
 void main() {
-  test('AlertReceived adds a non-green alert to active alerts', () async {
+  const traSource = AlertSourceId(AlertSourceKind.tra);
+  const busSource = AlertSourceId(AlertSourceKind.busNews, 'Taipei');
+
+  test("AlertReceived adds a source's alerts to active alerts", () async {
     final bloc = AlertBloc();
     addTearDown(bloc.close);
 
-    const alert = AlertViewModel(
-      message: '中和線延誤',
-      level: AlertSeverity.red,
-      rawJson: {},
-    );
+    const alert = AlertViewModel(message: '中和線延誤', level: AlertSeverity.red);
 
     final next = expectLater(
       bloc.stream,
@@ -33,8 +32,94 @@ void main() {
       ),
     );
 
-    bloc.add(const AlertReceived(alert));
+    bloc.add(const AlertReceived(traSource, [alert]));
     await next;
+  });
+
+  // Each message is that channel's whole current set, so an alert TDX has
+  // stopped publishing has been resolved and must leave the list. Before the
+  // snapshot semantics, a resolved disruption stayed on screen forever.
+  test('a later batch replaces its own source and leaves others', () async {
+    final bloc = AlertBloc();
+    addTearDown(bloc.close);
+
+    bloc
+      ..add(
+        const AlertReceived(traSource, [
+          AlertViewModel(message: '台鐵誤點', level: AlertSeverity.yellow),
+        ]),
+      )
+      ..add(
+        const AlertReceived(busSource, [
+          AlertViewModel(message: '公車改道', level: AlertSeverity.yellow),
+        ]),
+      );
+    await pumpEventQueue();
+    expect(bloc.state.activeAlerts, hasLength(2));
+
+    bloc.add(const AlertReceived(traSource, []));
+    await pumpEventQueue();
+    expect(bloc.state.activeAlerts.map((a) => a.message), ['公車改道']);
+  });
+
+  group('收藏 scope filtering', () {
+    const scoped = AlertViewModel(
+      message: '123 次停駛',
+      level: AlertSeverity.red,
+      routeType: 'tra',
+      routeKeys: ['123'],
+    );
+    const systemWide = AlertViewModel(
+      message: '台鐵今日全線停駛',
+      level: AlertSeverity.red,
+      routeType: 'tra',
+    );
+
+    test('a route-scoped alert outside 訂閱範圍 is not shown', () async {
+      final bloc = AlertBloc();
+      addTearDown(bloc.close);
+
+      bloc.add(const AlertReceived(traSource, [scoped, systemWide]));
+      await pumpEventQueue();
+
+      // Nothing is 收藏ed yet: only the system-wide disruption shows, so a
+      // fresh install still learns that alerts exist.
+      expect(bloc.state.visibleAlerts, [systemWide]);
+
+      bloc.add(const AlertScopeChanged({'tra:123'}));
+      await pumpEventQueue();
+      expect(bloc.state.visibleAlerts, containsAll([scoped, systemWide]));
+    });
+
+    test('changing 收藏 re-filters without refetching', () async {
+      final bloc = AlertBloc();
+      addTearDown(bloc.close);
+
+      bloc
+        ..add(const AlertScopeChanged({'tra:123'}))
+        ..add(const AlertReceived(traSource, [scoped]));
+      await pumpEventQueue();
+      expect(bloc.state.visibleAlerts, [scoped]);
+
+      // Un-收藏ing the train hides its alert from data already in hand.
+      bloc.add(const AlertScopeChanged({}));
+      await pumpEventQueue();
+      expect(bloc.state.visibleAlerts, isEmpty);
+      expect(bloc.state.activeAlerts, [scoped]);
+    });
+
+    test('a resolved (green) alert is never shown', () async {
+      final bloc = AlertBloc();
+      addTearDown(bloc.close);
+
+      bloc.add(
+        const AlertReceived(traSource, [
+          AlertViewModel(message: '已恢復', level: AlertSeverity.green),
+        ]),
+      );
+      await pumpEventQueue();
+      expect(bloc.state.visibleAlerts, isEmpty);
+    });
   });
 
   // These two handlers are what the passthrough seam's onFailure/onRecovered
@@ -118,6 +203,7 @@ void main() {
       bloc = AlertBloc(
         repository: repository,
         alertSourcesConfig: () => config.stream,
+        scopeSource: () => Stream.value(const <String>{}),
       );
     });
 
@@ -132,9 +218,16 @@ void main() {
       config.add('metro:TRTC,bus:Taipei');
       await pumpEventQueue();
 
+      // One bus token opens both of that city's topics.
       expect(
         repository.subscribed,
-        containsAll(['tra', 'thsr', 'metro:TRTC', 'bus:Taipei']),
+        containsAll([
+          'tra',
+          'thsr',
+          'metro:TRTC',
+          'busNews:Taipei',
+          'busAlert:Taipei',
+        ]),
       );
     });
 
@@ -163,8 +256,14 @@ void main() {
         config.add('metro:TRTC,bus:Taichung');
         await pumpEventQueue();
 
-        expect(repository.cancelled, contains('bus:Taipei'));
-        expect(repository.subscribed, contains('bus:Taichung'));
+        expect(
+          repository.cancelled,
+          containsAll(['busNews:Taipei', 'busAlert:Taipei']),
+        );
+        expect(
+          repository.subscribed,
+          containsAll(['busNews:Taichung', 'busAlert:Taichung']),
+        );
         // The kept metro subscription must never be cancelled.
         expect(repository.cancelled, isNot(contains('metro:TRTC')));
         expect(
@@ -184,7 +283,13 @@ void main() {
 
       expect(
         repository.cancelled,
-        containsAll(['tra', 'thsr', 'metro:TRTC', 'bus:Taipei']),
+        containsAll([
+          'tra',
+          'thsr',
+          'metro:TRTC',
+          'busNews:Taipei',
+          'busAlert:Taipei',
+        ]),
       );
     });
   });
@@ -199,23 +304,28 @@ class _RecordingAlertRepository extends AlertRepository {
   final List<String> subscribed = [];
   final List<String> cancelled = [];
 
-  Stream<AlertViewModel> _stream(String key) {
+  Stream<List<AlertViewModel>> _stream(String key) {
     subscribed.add(key);
-    final controller = StreamController<AlertViewModel>(
+    final controller = StreamController<List<AlertViewModel>>(
       onCancel: () => cancelled.add(key),
     );
     return controller.stream;
   }
 
   @override
-  Stream<AlertViewModel> traAlert() => _stream('tra');
+  Stream<List<AlertViewModel>> traAlert() => _stream('tra');
 
   @override
-  Stream<AlertViewModel> thsrAlert() => _stream('thsr');
+  Stream<List<AlertViewModel>> thsrAlert() => _stream('thsr');
 
   @override
-  Stream<AlertViewModel> metroAlert(String system) => _stream('metro:$system');
+  Stream<List<AlertViewModel>> metroAlert(String system) =>
+      _stream('metro:$system');
 
   @override
-  Stream<AlertViewModel> busNews(String city) => _stream('bus:$city');
+  Stream<List<AlertViewModel>> busNews(String city) => _stream('busNews:$city');
+
+  @override
+  Stream<List<AlertViewModel>> busAlert(String city) =>
+      _stream('busAlert:$city');
 }

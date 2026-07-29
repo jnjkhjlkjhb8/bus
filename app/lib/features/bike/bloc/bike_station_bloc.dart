@@ -1,16 +1,31 @@
 import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/data/live/arrival_feed.dart';
-import 'package:wheres_the_car/data/models/bike_models.dart';
-import 'package:wheres_the_car/data/repositories/bike_repository.dart';
-import 'package:wheres_the_car/features/bike/bloc/bike_station_event.dart';
-import 'package:wheres_the_car/features/bike/bloc/bike_station_state.dart';
+import 'package:wheres_the_bus/data/live/arrival_feed.dart';
+import 'package:wheres_the_bus/data/models/bike_models.dart';
+import 'package:wheres_the_bus/data/repositories/bike_repository.dart';
+import 'package:wheres_the_bus/features/bike/bloc/bike_station_event.dart';
+import 'package:wheres_the_bus/features/bike/bloc/bike_station_state.dart';
 
 class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
-  BikeStationBloc({required this.stationUid, BikeRepository? repository})
-    : _repository = repository ?? BikeRepository.instance,
-      super(const BikeStationState()) {
+  /// [name], [lat] and [lon] seed the initial state with what the caller
+  /// already knows (search results carry all three), so the title and camera
+  /// are right on the first frame. The static fetch still runs and overwrites
+  /// them with the authoritative values.
+  BikeStationBloc({
+    required this.stationUid,
+    BikeRepository? repository,
+    String? name,
+    double? lat,
+    double? lon,
+  }) : _repository = repository ?? BikeRepository.instance,
+       super(
+         BikeStationState(
+           name: name ?? '',
+           lat: lat ?? 0,
+           lon: lon ?? 0,
+         ),
+       ) {
     on<BikeStationStarted>(_onStarted);
     on<BikeStationEtaUpdated>(_onEta);
     on<BikeStationEtaFailed>(_onEtaFailed);
@@ -36,8 +51,12 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
         state.copyWith(
           name: info.name,
           capacity: info.capacity,
-          lat: info.lat,
-          lon: info.lon,
+          // A station whose point never landed comes back as 0/0. That is
+          // "unknown", not a location off West Africa, so it must not clobber
+          // coordinates the caller already handed in — passing null here keeps
+          // the seeded pair through `copyWith`.
+          lat: info.lat != 0 ? info.lat : null,
+          lon: info.lon != 0 ? info.lon : null,
           loading: false,
           clearError: true,
         ),
@@ -60,7 +79,7 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
           // `error` above: a station-info success can't paper over a live
           // stream that never came up, so `available == 0` while `liveError`
           // is set reads as stale, not a confirmed empty station (F27).
-          onFailure: (e) => add(BikeStationEtaFailed(e.title)),
+          onFailure: (e) => add(BikeStationEtaFailed(e)),
           onRecovered: () => add(const BikeStationEtaRecovered()),
         ).listen(
           (a) => add(
@@ -82,13 +101,14 @@ class BikeStationBloc extends Bloc<BikeStationEvent, BikeStationState> {
         generalBikes: e.generalBikes,
         electricBikes: e.electricBikes,
         hasLiveData: true,
+        updatedAt: DateTime.now(),
         clearLiveError: true,
       ),
     );
   }
 
   void _onEtaFailed(BikeStationEtaFailed e, Emitter<BikeStationState> emit) {
-    emit(state.copyWith(liveError: e.message));
+    emit(state.copyWith(liveError: e.error));
   }
 
   void _onEtaRecovered(

@@ -1,18 +1,20 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
-import 'package:wheres_the_car/data/models/favorite.dart';
-import 'package:wheres_the_car/data/repositories/firebase_repository.dart';
-import 'package:wheres_the_car/shared/widgets/sheet_detail_header.dart';
+import 'package:wheres_the_bus/data/models/favorite.dart';
+import 'package:wheres_the_bus/shared/widgets/sheet_detail_header.dart';
 
 /// Bookmark toggle for a bus route or rail train, keyed by [routeType] and
 /// [routeKey]. Delegates the toggle/haptic/undo behavior to
-/// [FavoriteToggleButton] and additionally syncs the push-notification
-/// subscription for route types Firebase tracks.
+/// [FavoriteToggleButton].
+///
+/// It deliberately does not touch push subscriptions. The device's 訂閱範圍 is
+/// derived from 收藏 and replaced whole by `SubscriptionSync`, so every screen
+/// that can add or remove a 收藏 syncs by doing nothing at all.
 class BookmarkButton extends StatelessWidget {
   const BookmarkButton({
     required this.routeType,
     required this.routeKey,
     required this.routeLabel,
+    this.onPlate = false,
     super.key,
   });
 
@@ -20,27 +22,16 @@ class BookmarkButton extends StatelessWidget {
   final String routeKey;
   final String routeLabel;
 
+  /// See [FavoriteToggleButton.onPlate].
+  final bool onPlate;
+
   Favorite get _favorite => Favorite(
     type: routeType == 'bus' ? FavoriteType.busRoute : FavoriteType.railTrain,
     refId: routeKey,
     title: routeLabel,
   );
 
-  Future<void> _syncFirebaseSubscription(bool added) async {
-    if (FirebaseGate.enabled && isFirebaseRouteType(routeType)) {
-      try {
-        await FirebaseRepository.instance.setRouteSubscription(
-          routeType: routeType,
-          routeKey: routeKey,
-          enabled: added,
-        );
-      } on Object catch (_) {}
-    }
-  }
-
   @override
-  Widget build(BuildContext context) => FavoriteToggleButton(
-    favorite: _favorite,
-    onToggled: _syncFirebaseSubscription,
-  );
+  Widget build(BuildContext context) =>
+      FavoriteToggleButton(favorite: _favorite, onPlate: onPlate);
 }

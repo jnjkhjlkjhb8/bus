@@ -39,11 +39,12 @@ class Firebase_ServiceClient extends $grpc.Client {
     return $createUnaryCall(_$upsertDevice, request, options: options);
   }
 
-  $grpc.ResponseFuture<$0.Ack> setRouteSubscription(
-    $0.RouteSubscriptionRequest request, {
+  $grpc.ResponseFuture<$0.Ack> replaceRouteSubscriptions(
+    $0.RouteSubscriptionsRequest request, {
     $grpc.CallOptions? options,
   }) {
-    return $createUnaryCall(_$setRouteSubscription, request, options: options);
+    return $createUnaryCall(_$replaceRouteSubscriptions, request,
+        options: options);
   }
 
   $grpc.ResponseFuture<$0.ArrivalReminder> createArrivalReminder(
@@ -74,10 +75,10 @@ class Firebase_ServiceClient extends $grpc.Client {
           '/Firebase_Service/upsertDevice',
           ($0.UpsertDeviceRequest value) => value.writeToBuffer(),
           $0.DeviceState.fromBuffer);
-  static final _$setRouteSubscription =
-      $grpc.ClientMethod<$0.RouteSubscriptionRequest, $0.Ack>(
-          '/Firebase_Service/setRouteSubscription',
-          ($0.RouteSubscriptionRequest value) => value.writeToBuffer(),
+  static final _$replaceRouteSubscriptions =
+      $grpc.ClientMethod<$0.RouteSubscriptionsRequest, $0.Ack>(
+          '/Firebase_Service/replaceRouteSubscriptions',
+          ($0.RouteSubscriptionsRequest value) => value.writeToBuffer(),
           $0.Ack.fromBuffer);
   static final _$createArrivalReminder =
       $grpc.ClientMethod<$0.CreateArrivalReminderRequest, $0.ArrivalReminder>(
@@ -109,13 +110,13 @@ abstract class Firebase_ServiceBase extends $grpc.Service {
         ($core.List<$core.int> value) =>
             $0.UpsertDeviceRequest.fromBuffer(value),
         ($0.DeviceState value) => value.writeToBuffer()));
-    $addMethod($grpc.ServiceMethod<$0.RouteSubscriptionRequest, $0.Ack>(
-        'setRouteSubscription',
-        setRouteSubscription_Pre,
+    $addMethod($grpc.ServiceMethod<$0.RouteSubscriptionsRequest, $0.Ack>(
+        'replaceRouteSubscriptions',
+        replaceRouteSubscriptions_Pre,
         false,
         false,
         ($core.List<$core.int> value) =>
-            $0.RouteSubscriptionRequest.fromBuffer(value),
+            $0.RouteSubscriptionsRequest.fromBuffer(value),
         ($0.Ack value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.CreateArrivalReminderRequest,
             $0.ArrivalReminder>(
@@ -151,13 +152,13 @@ abstract class Firebase_ServiceBase extends $grpc.Service {
   $async.Future<$0.DeviceState> upsertDevice(
       $grpc.ServiceCall call, $0.UpsertDeviceRequest request);
 
-  $async.Future<$0.Ack> setRouteSubscription_Pre($grpc.ServiceCall $call,
-      $async.Future<$0.RouteSubscriptionRequest> $request) async {
-    return setRouteSubscription($call, await $request);
+  $async.Future<$0.Ack> replaceRouteSubscriptions_Pre($grpc.ServiceCall $call,
+      $async.Future<$0.RouteSubscriptionsRequest> $request) async {
+    return replaceRouteSubscriptions($call, await $request);
   }
 
-  $async.Future<$0.Ack> setRouteSubscription(
-      $grpc.ServiceCall call, $0.RouteSubscriptionRequest request);
+  $async.Future<$0.Ack> replaceRouteSubscriptions(
+      $grpc.ServiceCall call, $0.RouteSubscriptionsRequest request);
 
   $async.Future<$0.ArrivalReminder> createArrivalReminder_Pre(
       $grpc.ServiceCall $call,

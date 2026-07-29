@@ -33,7 +33,7 @@ class Thsr_timetable_serviceClient extends $grpc.Client {
   Thsr_timetable_serviceClient(super.channel,
       {super.options, super.interceptors});
 
-  $grpc.ResponseFuture<$0.thsa_fare> fare(
+  $grpc.ResponseFuture<$0.thsa_fares> fare(
     $0.Ask_Thsr request, {
     $grpc.CallOptions? options,
   }) {
@@ -56,12 +56,19 @@ class Thsr_timetable_serviceClient extends $grpc.Client {
         options: options);
   }
 
+  $grpc.ResponseFuture<$0.thsr_station_board> station_board(
+    $0.thsr_ask_station_board request, {
+    $grpc.CallOptions? options,
+  }) {
+    return $createUnaryCall(_$station_board, request, options: options);
+  }
+
   // method descriptors
 
-  static final _$fare = $grpc.ClientMethod<$0.Ask_Thsr, $0.thsa_fare>(
+  static final _$fare = $grpc.ClientMethod<$0.Ask_Thsr, $0.thsa_fares>(
       '/Thsr_timetable_service/fare',
       ($0.Ask_Thsr value) => value.writeToBuffer(),
-      $0.thsa_fare.fromBuffer);
+      $0.thsa_fares.fromBuffer);
   static final _$timetable =
       $grpc.ClientMethod<$0.Ask_Thsr, $0.thsr_timetables>(
           '/Thsr_timetable_service/timetable',
@@ -72,6 +79,11 @@ class Thsr_timetable_serviceClient extends $grpc.Client {
           '/Thsr_timetable_service/available_seats',
           ($0.Ask_Thsr value) => value.writeToBuffer(),
           $0.Resp_thsr_seats.fromBuffer);
+  static final _$station_board =
+      $grpc.ClientMethod<$0.thsr_ask_station_board, $0.thsr_station_board>(
+          '/Thsr_timetable_service/station_board',
+          ($0.thsr_ask_station_board value) => value.writeToBuffer(),
+          $0.thsr_station_board.fromBuffer);
 }
 
 @$pb.GrpcServiceName('Thsr_timetable_service')
@@ -79,13 +91,13 @@ abstract class Thsr_timetable_serviceServiceBase extends $grpc.Service {
   $core.String get $name => 'Thsr_timetable_service';
 
   Thsr_timetable_serviceServiceBase() {
-    $addMethod($grpc.ServiceMethod<$0.Ask_Thsr, $0.thsa_fare>(
+    $addMethod($grpc.ServiceMethod<$0.Ask_Thsr, $0.thsa_fares>(
         'fare',
         fare_Pre,
         false,
         false,
         ($core.List<$core.int> value) => $0.Ask_Thsr.fromBuffer(value),
-        ($0.thsa_fare value) => value.writeToBuffer()));
+        ($0.thsa_fares value) => value.writeToBuffer()));
     $addMethod($grpc.ServiceMethod<$0.Ask_Thsr, $0.thsr_timetables>(
         'timetable',
         timetable_Pre,
@@ -100,14 +112,24 @@ abstract class Thsr_timetable_serviceServiceBase extends $grpc.Service {
         true,
         ($core.List<$core.int> value) => $0.Ask_Thsr.fromBuffer(value),
         ($0.Resp_thsr_seats value) => value.writeToBuffer()));
+    $addMethod(
+        $grpc.ServiceMethod<$0.thsr_ask_station_board, $0.thsr_station_board>(
+            'station_board',
+            station_board_Pre,
+            false,
+            false,
+            ($core.List<$core.int> value) =>
+                $0.thsr_ask_station_board.fromBuffer(value),
+            ($0.thsr_station_board value) => value.writeToBuffer()));
   }
 
-  $async.Future<$0.thsa_fare> fare_Pre(
+  $async.Future<$0.thsa_fares> fare_Pre(
       $grpc.ServiceCall $call, $async.Future<$0.Ask_Thsr> $request) async {
     return fare($call, await $request);
   }
 
-  $async.Future<$0.thsa_fare> fare($grpc.ServiceCall call, $0.Ask_Thsr request);
+  $async.Future<$0.thsa_fares> fare(
+      $grpc.ServiceCall call, $0.Ask_Thsr request);
 
   $async.Future<$0.thsr_timetables> timetable_Pre(
       $grpc.ServiceCall $call, $async.Future<$0.Ask_Thsr> $request) async {
@@ -124,6 +146,15 @@ abstract class Thsr_timetable_serviceServiceBase extends $grpc.Service {
 
   $async.Stream<$0.Resp_thsr_seats> available_seats(
       $grpc.ServiceCall call, $0.Ask_Thsr request);
+
+  $async.Future<$0.thsr_station_board> station_board_Pre(
+      $grpc.ServiceCall $call,
+      $async.Future<$0.thsr_ask_station_board> $request) async {
+    return station_board($call, await $request);
+  }
+
+  $async.Future<$0.thsr_station_board> station_board(
+      $grpc.ServiceCall call, $0.thsr_ask_station_board request);
 }
 
 @$pb.GrpcServiceName('Thsr_Detain_service')

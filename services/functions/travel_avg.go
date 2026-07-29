@@ -2,19 +2,18 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/obs"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 )
 
-// travelAvgDB is the narrow query/exec seam computeTravelAvg and
-// cleanupBusHistory need. *pgxpool.Pool satisfies it structurally; unit tests
-// drive both functions through a pgxmock pool instead of a live database.
+// travelAvgDB is the narrow Postgres query/exec seam computeTravelAvg and
+// cleanupPredictionErrors need. *pgxpool.Pool satisfies it structurally; unit
+// tests drive both functions through a pgxmock pool instead of a live database.
 type travelAvgDB interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
@@ -129,95 +128,63 @@ func batchDeleteOlderThan(ctx context.Context, db travelAvgDB, table, cutoffColu
 	}
 }
 
-// cleanupBusHistory deletes bus_eta_history rows older than 30 days (the
-// retention window) and, piggybacking on the same job, the prediction-error
-// rows past the same window, in capped batches rather than one unbounded
-// DELETE. The two targets are independent: a failure on one does not skip the
-// other, and both failures are joined (not swallowed) so the caller's
-// completion marker only advances once both retention targets fully succeed.
-func cleanupBusHistory(ctx context.Context, db travelAvgDB) error {
-	var errs []error
-
-	historyDeleted, err := batchDeleteOlderThan(ctx, db, "bus_eta_history", "recorded_at", "30 days")
+// cleanupPredictionErrors deletes bus_eta_prediction_error rows older than 30
+// days in capped batches rather than one unbounded DELETE. It is the only
+// retention job left on Postgres: bus_eta_history moved to the MySQL history
+// host, where it is kept indefinitely rather than pruned, so nothing deletes it.
+func cleanupPredictionErrors(ctx context.Context, db travelAvgDB) error {
+	deleted, err := batchDeleteOlderThan(ctx, db, "bus_eta_prediction_error", "predicted_at", "30 days")
 	if err != nil {
-		log.Errorf("[ETA_HISTORY] cleanup error deleted=%d: %v", historyDeleted, err)
-		errs = append(errs, fmt.Errorf("cleanup bus history: %w", err))
-	} else {
-		log.Infof("[ETA_HISTORY] cleanup deleted %d rows", historyDeleted)
+		log.Errorf("[ETA_ERROR] cleanup error deleted=%d: %v", deleted, err)
+		return obs.Transient(fmt.Errorf("cleanup prediction error: %w", err))
 	}
+	log.Infof("[ETA_ERROR] cleanup deleted %d rows", deleted)
+	return nil
+}
 
-	perrDeleted, err := batchDeleteOlderThan(ctx, db, "bus_eta_prediction_error", "predicted_at", "30 days")
-	if err != nil {
-		log.Errorf("[ETA_ERROR] cleanup error deleted=%d: %v", perrDeleted, err)
-		errs = append(errs, fmt.Errorf("cleanup prediction error: %w", err))
-	} else {
-		log.Infof("[ETA_ERROR] cleanup deleted %d rows", perrDeleted)
-	}
+// travelAvgWindow is how much history one rebuild considers. Seven days keeps
+// every day of week represented while bounding the scan.
+const travelAvgWindow = 7 * 24 * time.Hour
 
-	if len(errs) == 0 {
-		return nil
-	}
-	return obs.Transient(errors.Join(errs...))
+// interpolateCrossing returns the instant a stop's estimate crossed zero
+// between two consecutive samples, assuming the estimate fell linearly across
+// the gap. prevEst is the last positive estimate at prevAt and est the first
+// non-positive one at at, so prevEst-est is always positive and the fraction is
+// in (0, 1] — the caller's WHERE clause guarantees both, which is why there is
+// no divide-by-zero guard here.
+func interpolateCrossing(prevAt, at time.Time, prevEst, est int) time.Time {
+	frac := float64(prevEst) / float64(prevEst-est)
+	return prevAt.Add(time.Duration(float64(at.Sub(prevAt)) * frac))
 }
 
 // computeTravelAvg rebuilds bus_travel_avg from the last 7 days of ETA history.
 // It detects each arrival by finding where a stop's estimate crosses from
 // positive to non-positive between consecutive samples and linearly interpolates
-// the crossing instant (the SQL query). Each crossing is matched to the latest
+// the crossing instant (interpolateCrossing). Each crossing is matched to the latest
 // scheduled origin departure at or before it to derive an origin-to-stop travel
 // time; samples outside 0..7200s are discarded as noise. Per (subroute,
 // direction, stop, hour, day-of-week) bucket with at least 10 samples, it upserts
 // the median, and only overwrites an existing average when this run has more
 // samples. Query/upsert failures are wrapped transient so runDaily retries.
-func computeTravelAvg(ctx context.Context, db travelAvgDB) error {
+//
+// The crossing scan reads bus_eta_history from the MySQL history host (hist);
+// the departure lookup and the bus_travel_avg upsert stay on Postgres (db).
+// Nothing joins the two in SQL — crossings are collected first and matched to
+// departures in Go — so splitting the tables across servers costs nothing here.
+// A disabled history host skips the run rather than rebuilding averages from
+// nothing, which would otherwise look like a successful rebuild to zero.
+func computeTravelAvg(ctx context.Context, db travelAvgDB, hist historySource) error {
 	log.Infof("[TRAVEL_AVG] start")
-
-	type crossingRow struct {
-		subRouteUID string
-		direction   int16
-		stopUID     string
-		hour        int16
-		dayOfWeek   int16
-		crossingAt  time.Time
+	if hist == nil {
+		log.Warnf("[TRAVEL_AVG] event=skipped reason=history_disabled")
+		return nil
 	}
 
-	rows, err := db.Query(ctx, `
-		WITH ordered AS (
-			SELECT sub_route_uid, direction, stop_uid, hour, day_of_week, estimate, recorded_at,
-			       LAG(estimate)    OVER w AS prev_est,
-			       LAG(recorded_at) OVER w AS prev_at
-			FROM bus_eta_history
-			WHERE recorded_at >= NOW() - INTERVAL '7 days'
-			WINDOW w AS (PARTITION BY sub_route_uid, direction, stop_uid ORDER BY recorded_at)
-		)
-		SELECT sub_route_uid, direction, stop_uid, hour, day_of_week,
-		       prev_at + make_interval(secs =>
-		           EXTRACT(EPOCH FROM recorded_at - prev_at) *
-		           prev_est::float / (prev_est - estimate)::float
-		       ) AS crossing_at
-		FROM ordered
-		WHERE prev_est > 0 AND estimate <= 0
-		  AND EXTRACT(EPOCH FROM recorded_at - prev_at) < 300`)
+	crossings, err := hist.crossings(ctx, travelAvgWindow)
 	if err != nil {
 		log.Errorf("[TRAVEL_AVG] crossing query error: %v", err)
-		return obs.Transient(fmt.Errorf("query travel crossings: %w", err))
+		return obs.Transient(err)
 	}
-
-	var crossings []crossingRow
-	for rows.Next() {
-		var c crossingRow
-		if err := rows.Scan(&c.subRouteUID, &c.direction, &c.stopUID,
-			&c.hour, &c.dayOfWeek, &c.crossingAt); err != nil {
-			log.Errorf("[TRAVEL_AVG] scan error: %v", err)
-		} else {
-			crossings = append(crossings, c)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return obs.Transient(fmt.Errorf("scan travel crossings: %w", err))
-	}
-	rows.Close()
 	log.Infof("[TRAVEL_AVG] detected %d arrival events", len(crossings))
 
 	seenDepKeys := make(map[depKey]bool)

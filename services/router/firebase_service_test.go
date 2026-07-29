@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -29,7 +29,8 @@ const (
 
 type fakeFirebasePersistence struct {
 	device        *pb.DeviceState
-	subscription  *pb.RouteSubscriptionRequest
+	subscriptions []*pb.RouteSubscription
+	subscribedBy  string
 	reminder      firebaseArrivalReminder
 	cancelledID   string
 	cancelledBy   string
@@ -50,8 +51,8 @@ func (f *fakeFirebasePersistence) AuthorizeInstall(_ context.Context, installID 
 	return f.device != nil && f.device.Identity.InstallId == installID && string(f.secretHash) == string(secretHash), nil
 }
 
-func (f *fakeFirebasePersistence) SetRouteSubscription(_ context.Context, installID, routeType, routeKey string, enabled bool) error {
-	f.subscription = &pb.RouteSubscriptionRequest{InstallId: installID, RouteType: routeType, RouteKey: routeKey, Enabled: enabled}
+func (f *fakeFirebasePersistence) ReplaceRouteSubscriptions(_ context.Context, installID string, subscriptions []*pb.RouteSubscription) error {
+	f.subscribedBy, f.subscriptions = installID, subscriptions
 	return nil
 }
 
@@ -95,13 +96,24 @@ func TestFirebaseServiceDeviceSubscriptionAndReminder(t *testing.T) {
 		t.Fatalf("ListDeviceState() = (%v, %v), token must be blank", listed, err)
 	}
 
-	for _, enabled := range []bool{true, false} {
-		_, err = server.SetRouteSubscription(ctx, &pb.RouteSubscriptionRequest{
-			InstallId: "install-1", RouteType: "bus", RouteKey: "route-1", Enabled: enabled,
-		})
-		if err != nil || store.subscription.GetEnabled() != enabled {
-			t.Fatalf("SetRouteSubscription(%v) error = %v, stored = %v", enabled, err, store.subscription)
-		}
+	// Every route_type the alert path can dispatch must be storable, including
+	// the "*" line-wide marker a rail-station 收藏 resolves to.
+	scope := []*pb.RouteSubscription{
+		{RouteType: "bus", RouteKey: "route-1"},
+		{RouteType: "mrt", RouteKey: "BL"},
+		{RouteType: "tra", RouteKey: "*"},
+		{RouteType: "thsr", RouteKey: "*"},
+	}
+	if _, err = server.ReplaceRouteSubscriptions(ctx, &pb.RouteSubscriptionsRequest{InstallId: "install-1", Subscriptions: scope}); err != nil {
+		t.Fatalf("ReplaceRouteSubscriptions() error = %v", err)
+	}
+	if len(store.subscriptions) != len(scope) {
+		t.Fatalf("stored scope = %v, want %v", store.subscriptions, scope)
+	}
+	// Clearing every 收藏 must clear the stored scope, not leave the last set
+	// standing — that is the ghost-subscription bug this replaces.
+	if _, err = server.ReplaceRouteSubscriptions(ctx, &pb.RouteSubscriptionsRequest{InstallId: "install-1"}); err != nil || len(store.subscriptions) != 0 {
+		t.Fatalf("clearing scope: error = %v, stored = %v", err, store.subscriptions)
 	}
 
 	expires := now.Add(time.Hour)
@@ -195,14 +207,14 @@ func TestFirebaseServiceRejectsWrongInstallationCredential(t *testing.T) {
 	if _, err := server.UpsertDevice(installationContext("install-1", wrongInstallSecret), request); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("upsert conflict code = %v, want %v", status.Code(err), codes.PermissionDenied)
 	}
-	_, err := server.SetRouteSubscription(installationContext("install-1", wrongInstallSecret), &pb.RouteSubscriptionRequest{
-		InstallId: "install-1", RouteType: "bus", RouteKey: "route-1", Enabled: true,
+	_, err := server.ReplaceRouteSubscriptions(installationContext("install-1", wrongInstallSecret), &pb.RouteSubscriptionsRequest{
+		InstallId: "install-1", Subscriptions: []*pb.RouteSubscription{{RouteType: "bus", RouteKey: "route-1"}},
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("wrong secret code = %v, want %v", status.Code(err), codes.PermissionDenied)
 	}
-	_, err = server.SetRouteSubscription(installationContext("other-install", testInstallSecret), &pb.RouteSubscriptionRequest{
-		InstallId: "install-1", RouteType: "bus", RouteKey: "route-1", Enabled: true,
+	_, err = server.ReplaceRouteSubscriptions(installationContext("other-install", testInstallSecret), &pb.RouteSubscriptionsRequest{
+		InstallId: "install-1", Subscriptions: []*pb.RouteSubscription{{RouteType: "bus", RouteKey: "route-1"}},
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("cross-install code = %v, want %v", status.Code(err), codes.PermissionDenied)
@@ -222,7 +234,9 @@ func TestFirebaseServiceRejectsMissingOrShortCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	subscription := &pb.RouteSubscriptionRequest{InstallId: "install-1", RouteType: "bus", RouteKey: "route-1", Enabled: true}
+	subscription := &pb.RouteSubscriptionsRequest{
+		InstallId: "install-1", Subscriptions: []*pb.RouteSubscription{{RouteType: "bus", RouteKey: "route-1"}},
+	}
 	tests := []struct {
 		name string
 		ctx  context.Context
@@ -233,7 +247,7 @@ func TestFirebaseServiceRejectsMissingOrShortCredentials(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := server.SetRouteSubscription(tt.ctx, subscription)
+			_, err := server.ReplaceRouteSubscriptions(tt.ctx, subscription)
 			if status.Code(err) != codes.PermissionDenied {
 				t.Fatalf("code = %v, want %v", status.Code(err), codes.PermissionDenied)
 			}
@@ -243,8 +257,8 @@ func TestFirebaseServiceRejectsMissingOrShortCredentials(t *testing.T) {
 			}
 		})
 	}
-	if store.subscription != nil || store.cancelledID != "" {
-		t.Fatalf("store mutated by unauthorized calls: sub=%v cancelled=%q", store.subscription, store.cancelledID)
+	if store.subscriptions != nil || store.cancelledID != "" {
+		t.Fatalf("store mutated by unauthorized calls: sub=%v cancelled=%q", store.subscriptions, store.cancelledID)
 	}
 }
 
@@ -263,6 +277,23 @@ func TestFirebaseServiceCancelReminderNotFound(t *testing.T) {
 	_, err := server.CancelArrivalReminder(ctx, &pb.CancelArrivalReminderRequest{ReminderId: "gone", InstallId: "install-1"})
 	if status.Code(err) != codes.NotFound {
 		t.Fatalf("code = %v, want %v", status.Code(err), codes.NotFound)
+	}
+}
+
+// Older app builds send Dart's TargetPlatform.iOS.name ("iOS"), which the
+// firebase_device CHECK constraint rejects; the server lowercases it.
+func TestFirebaseServiceUpsertDeviceLowercasesPlatform(t *testing.T) {
+	store := &fakeFirebasePersistence{}
+	server := &FirebaseServer{store: store, now: time.Now}
+	state, err := server.UpsertDevice(installationContext("install-1", testInstallSecret), &pb.UpsertDeviceRequest{
+		Identity: &pb.DeviceIdentity{InstallId: "install-1", FcmToken: "token", Platform: "iOS"},
+		Prefs:    &pb.DevicePrefs{PushEnabled: true},
+	})
+	if err != nil {
+		t.Fatalf("UpsertDevice() error = %v", err)
+	}
+	if got := state.GetIdentity().GetPlatform(); got != "ios" {
+		t.Fatalf("platform = %q, want %q", got, "ios")
 	}
 }
 
@@ -288,14 +319,16 @@ func TestFirebaseServiceValidation(t *testing.T) {
 			_, err := server.UpsertDevice(context.Background(), &pb.UpsertDeviceRequest{Identity: &pb.DeviceIdentity{InstallId: "a", FcmToken: "b", Platform: "web"}, Prefs: &pb.DevicePrefs{}})
 			return err
 		}, codes.InvalidArgument},
-		{"missing route", func() error {
-			_, err := server.SetRouteSubscription(context.Background(), &pb.RouteSubscriptionRequest{InstallId: "a"})
+		{"missing install", func() error {
+			_, err := server.ReplaceRouteSubscriptions(context.Background(), &pb.RouteSubscriptionsRequest{})
 			return err
 		}, codes.InvalidArgument},
-		{"unsupported non-bus subscription", func() error {
-			_, err := server.SetRouteSubscription(context.Background(), &pb.RouteSubscriptionRequest{InstallId: "a", RouteType: "tra", RouteKey: "r"})
+		{"unknown subscription route type", func() error {
+			_, err := server.ReplaceRouteSubscriptions(context.Background(), &pb.RouteSubscriptionsRequest{
+				InstallId: "a", Subscriptions: []*pb.RouteSubscription{{RouteType: "bike", RouteKey: "r"}},
+			})
 			return err
-		}, codes.FailedPrecondition},
+		}, codes.InvalidArgument},
 		{"expired reminder", func() error {
 			_, err := server.CreateArrivalReminder(context.Background(), &pb.CreateArrivalReminderRequest{InstallId: "a", RouteType: "bus", RouteKey: "r", StopKey: "s", Direction: "0", LeadMinutes: 5, ExpiresAtUnix: time.Now().Add(-time.Minute).Unix()})
 			return err

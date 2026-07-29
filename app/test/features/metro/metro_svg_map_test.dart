@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/metro_map_models.dart';
-import 'package:wheres_the_car/features/metro/widgets/metro_svg_map.dart';
+import 'package:wheres_the_bus/data/models/metro_map_models.dart';
+import 'package:wheres_the_bus/features/metro/widgets/metro_svg_map.dart';
 
 void main() {
   testWidgets(
@@ -102,6 +102,52 @@ void main() {
       );
       expect(fade.opacity.value, 1);
       expect(scale.scale.value, 1);
+    },
+  );
+
+  testWidgets(
+    'selecting a station leaves the map transform untouched, so a station '
+    'tapped while zoomed in stays exactly under the finger',
+    (tester) async {
+      // Shorter than the rendered map (693px at this width), so vertical
+      // headroom genuinely exists — this is the geometry in which an
+      // auto-pan would have had room to fire.
+      tester.view.physicalSize = const Size(390, 400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      Widget build(String? id) => MaterialApp(
+        home: Scaffold(
+          body: MetroSvgMap(
+            animate: false,
+            selectedStationId: id,
+            onStationTap: (_) {},
+          ),
+        ),
+      );
+
+      Matrix4 transform() => tester
+          .widget<Transform>(
+            find
+                .descendant(
+                  of: find.byType(InteractiveViewer),
+                  matching: find.byType(Transform),
+                )
+                .first,
+          )
+          .transform;
+
+      await tester.pumpWidget(build(null));
+      final before = transform().clone();
+
+      // 新店 (G01, y=1686 of 1920) renders far below this viewport — the
+      // station the old auto-pan moved the furthest.
+      await tester.pumpWidget(build('G01'));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(transform(), before);
     },
   );
 }

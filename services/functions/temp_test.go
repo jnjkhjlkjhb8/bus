@@ -3,14 +3,14 @@ package main
 import (
 	"testing"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 )
 
 // dirs builds a Directions map with n entries so a subroute's direction count
 // can be set without caring about the Direction contents.
 func dirs(n int) map[int32]*models.Direction {
 	m := make(map[int32]*models.Direction, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		m[int32(i)] = &models.Direction{}
 	}
 	return m

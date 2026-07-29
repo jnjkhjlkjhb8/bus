@@ -3,9 +3,6 @@ package main
 import (
 	"context"
 	"math"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // haversine returns the great-circle distance in meters between two lat/lon
@@ -20,24 +17,31 @@ func haversine(lat1, lon1, lat2, lon2 float64) float64 {
 	return 2 * R * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 }
 
-// saveBusEtaHistory bulk-COPYs collected ETA observations into bus_eta_history,
-// the training data behind travel averages and the ETA model. The column order
-// must match the row order built in processBusEtaCity. An empty batch is a no-op;
-// a copy error is logged, not returned.
-func saveBusEtaHistory(ctx context.Context, db *pgxpool.Pool, rows [][]interface{}) {
+// busEtaHistoryCols is bus_eta_history's insert column list, in the order
+// processBusEtaCity builds each row. id is auto-assigned by MySQL and absent
+// here; recorded_at is supplied explicitly rather than defaulted, so every row
+// in a batch carries the job's own instant instead of the MySQL server's clock
+// and session time zone.
+var busEtaHistoryCols = []string{
+	"sub_route_uid", "stop_uid", "direction", "stop_sequence", "total_stops",
+	"estimate", "next_bus_time", "src_update_time", "city", "hour", "day_of_week",
+	"is_holiday", "temperature", "precipitation", "wind_speed", "humidity",
+	"plate_numb", "bus_speed", "bus_distance_m", "recorded_at",
+}
+
+// saveBusEtaHistory appends collected ETA observations to bus_eta_history on the
+// MySQL history host, the training data behind travel averages and the ETA
+// model. An empty batch is a no-op; an insert error is logged, not returned, so
+// a history write can never disrupt the realtime Redis path. Those rows are then
+// lost rather than retried — Postgres holds no copy to re-read, which is the
+// accepted cost of keeping ~200k rows a day off the 2 GB Azure server.
+func saveBusEtaHistory(ctx context.Context, db archiveExecer, rows [][]interface{}) {
 	if len(rows) == 0 {
 		return
 	}
-	cols := []string{
-		"sub_route_uid", "stop_uid", "direction", "stop_sequence", "total_stops",
-		"estimate", "next_bus_time", "src_update_time", "city", "hour", "day_of_week",
-		"is_holiday", "temperature", "precipitation", "wind_speed", "humidity",
-		"plate_numb", "bus_speed", "bus_distance_m",
+	if err := archiveInsert(ctx, db, "bus_eta_history", busEtaHistoryCols, rows); err != nil {
+		log.Errorf("[ETA_HISTORY] insert error: %v rows=%d", err, len(rows))
+		return
 	}
-	_, err := db.CopyFrom(ctx, pgx.Identifier{"bus_eta_history"}, cols, pgx.CopyFromRows(rows))
-	if err != nil {
-		log.Errorf("[ETA_HISTORY] copy error: %v rows=%d", err, len(rows))
-	} else {
-		log.Infof("[ETA_HISTORY] inserted %d rows", len(rows))
-	}
+	log.Infof("[ETA_HISTORY] inserted %d rows", len(rows))
 }

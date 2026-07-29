@@ -11,11 +11,6 @@ const _kIconMarkerSize = 24.0;
 const _kHighlightIconMarkerSize = 44.0;
 const _kMapMarkerLimit = 60;
 
-/// Fallback radius for the manual "locate me" ping and any query issued
-/// before the map has reported a viewport (see [nearbyRadiusForViewport] for
-/// the actual, viewport-derived query radius).
-const _kNearbyRadiusMeters = 1000;
-
 enum _MarkerStyle { icon, largeDot, smallDot }
 
 _MarkerStyle _markerStyle(double zoom) {
@@ -61,14 +56,14 @@ Future<BitmapDescriptor> _markerIcon(
   final dotSize = _dotMarkerSize(style);
   switch (s.type) {
     case NearStationType.bus:
-      return MapMarkers.dot(const Color(0xFFC03634), size: dotSize);
+      return MapMarkers.dot(AppTheme.markerBus, size: dotSize);
     case NearStationType.bike:
-      return MapMarkers.dot(const Color(0xFFDFE24D), size: dotSize);
+      return MapMarkers.dot(AppTheme.markerBike, size: dotSize);
     case NearStationType.mrt:
       return MapMarkers.dot(_mrtColor(s.stationId), size: dotSize);
     case NearStationType.tra:
     case NearStationType.thsr:
-      return MapMarkers.dot(const Color(0xFF285FF4), size: dotSize);
+      return MapMarkers.dot(AppTheme.markerRail, size: dotSize);
   }
 }
 

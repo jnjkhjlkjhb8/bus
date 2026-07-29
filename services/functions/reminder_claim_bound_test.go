@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/functions/notify"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
 )
 
 // TestReminderClaimTimeoutExceedsInFlightSendBound links three constants that

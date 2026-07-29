@@ -5,14 +5,27 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
+	"time"
 
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
 	defaultNearbyRadius = 670
 	maxNearbyRadius     = 5000
 	defaultNearbyLimit  = 80
+)
+
+const (
+	// Station positions only change at the 03:30 load, so the bound here is
+	// staleness tolerance rather than correctness.
+	nearbyCacheTTL = 10 * time.Minute
+	// Keys are coordinate cells, so a panning client mints a new one per
+	// settled camera position: the cache has to be capped or it grows without
+	// bound inside the router's 230 MiB heap.
+	nearbyCacheMaxEntries = 128
 )
 
 var (
@@ -68,17 +81,64 @@ type walkingRouter interface {
 type nearbyDiscovery struct {
 	store  nearbyStore
 	router walkingRouter
+
+	cacheMu    sync.Mutex
+	cache      *ttlCache
+	cacheCount int
 }
 
 func newNearbyDiscovery(store nearbyStore, router walkingRouter) *nearbyDiscovery {
-	return &nearbyDiscovery{store: store, router: router}
+	return &nearbyDiscovery{store: store, router: router, cache: newTTLCache()}
 }
 
 type nearbyModeResult struct {
 	mode       nearbyMode
-	stations   []*pb.NearStation
+	candidates []nearbyCandidate
 	queryError error
-	error      error
+}
+
+// nearbyCacheKey rounds the origin to ~11 m, well inside GPS accuracy, so a
+// re-query from the same spot reuses the previous walking-time computation.
+func nearbyCacheKey(query nearbyQuery) string {
+	return fmt.Sprintf("near:%.4f:%.4f:%d:%d",
+		query.Origin.Lat, query.Origin.Lon, query.RadiusMeters, query.Limit)
+}
+
+func (d *nearbyDiscovery) cachedResponse(key string) (*pb.RespNear, bool) {
+	d.cacheMu.Lock()
+	cache := d.cache
+	d.cacheMu.Unlock()
+	if cache == nil {
+		return nil, false
+	}
+	data, ok := cache.get(key)
+	if !ok {
+		return nil, false
+	}
+	response := &pb.RespNear{}
+	if err := proto.Unmarshal(data, response); err != nil {
+		return nil, false
+	}
+	return response, true
+}
+
+// on overflow the whole map is dropped rather than evicted per key. Swap
+// in an LRU only if the hit rate after a drop turns out to matter.
+func (d *nearbyDiscovery) cacheResponse(key string, response *pb.RespNear) {
+	data, err := proto.Marshal(response)
+	if err != nil {
+		return
+	}
+	d.cacheMu.Lock()
+	defer d.cacheMu.Unlock()
+	if d.cache == nil {
+		return
+	}
+	if d.cacheCount >= nearbyCacheMaxEntries {
+		d.cache, d.cacheCount = newTTLCache(), 0
+	}
+	d.cacheCount++
+	d.cache.set(key, data, nearbyCacheTTL)
 }
 
 func receiveNearbyModeResult(ctx context.Context, results <-chan nearbyModeResult) (nearbyModeResult, error) {
@@ -125,29 +185,44 @@ func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	cacheKey := nearbyCacheKey(query)
+	if cached, ok := d.cachedResponse(cacheKey); ok {
+		return cached, nil
+	}
+
+	candidates, err := d.findAll(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	response, err := d.enrich(ctx, query.Origin, candidates)
+	if err != nil {
+		return nil, err
+	}
+	d.cacheResponse(cacheKey, response)
+	return response, nil
+}
+
+// findAll queries every mode concurrently and fails the whole request as soon
+// as any single mode errors, so a partial nearby list never reaches the client.
+func (d *nearbyDiscovery) findAll(ctx context.Context, query nearbyQuery) (map[nearbyMode][]nearbyCandidate, error) {
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	results := make(chan nearbyModeResult, len(allNearbyModes))
-	sendResult := func(result nearbyModeResult) {
-		select {
-		case results <- result:
-		case <-workerCtx.Done():
-		}
-	}
 	for _, mode := range allNearbyModes {
 		go func() {
 			candidates, err := d.store.Find(workerCtx, mode, query)
-			if err != nil {
-				sendResult(nearbyModeResult{mode: mode, queryError: err})
-				return
+			select {
+			case results <- nearbyModeResult{mode: mode, candidates: candidates, queryError: err}:
+			case <-workerCtx.Done():
 			}
-			stations, err := d.enrich(workerCtx, query.Origin, candidates)
-			sendResult(nearbyModeResult{mode: mode, stations: stations, error: err})
 		}()
 	}
 
-	response := &pb.RespNear{NearBusStations: make(map[string]*pb.ArrayNear)}
+	byMode := make(map[nearbyMode][]nearbyCandidate, len(allNearbyModes))
 	for range allNearbyModes {
 		result, err := receiveNearbyModeResult(ctx, results)
 		if err != nil {
@@ -161,42 +236,58 @@ func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.
 			cancel()
 			return nil, ErrNearbyUnavailable
 		}
-		if result.error != nil {
-			return nil, result.error
-		}
-		appendNearbyResult(response, result.mode, result.stations)
+		byMode[result.mode] = result.candidates
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return response, nil
+	return byMode, nil
 }
 
-func (d *nearbyDiscovery) enrich(ctx context.Context, origin geoPoint, candidates []nearbyCandidate) ([]*pb.NearStation, error) {
-	if len(candidates) == 0 {
-		return nil, nil
-	}
-
-	points := make([]geoPoint, len(candidates))
-	for i, item := range candidates {
-		points[i] = item.Point
+// enrich attaches walking times with a single OSRM table request covering every
+// mode's candidates. One request per nearby query instead of one per mode: the
+// table service reuses the shared origin search, and the single-core osrm
+// container no longer has five of them contending for it.
+func (d *nearbyDiscovery) enrich(ctx context.Context, origin geoPoint, byMode map[nearbyMode][]nearbyCandidate) (*pb.RespNear, error) {
+	points := make([]geoPoint, 0, len(byMode)*defaultNearbyLimit)
+	for _, mode := range allNearbyModes {
+		for _, item := range byMode[mode] {
+			points = append(points, item.Point)
+		}
 	}
 
 	var metrics []walkingMetric
 	var routeErr error
-	if d.router != nil {
+	if d.router != nil && len(points) > 0 {
 		metrics, routeErr = d.router.RouteMany(ctx, origin, points)
 	}
 	if isContextError(routeErr) {
 		return nil, routeErr
 	}
+	if routeErr != nil {
+		log.Errorf("[NEAR] action=route event=failed count=%d error=%v", len(points), routeErr)
+		metrics = nil
+	}
 
+	response := &pb.RespNear{NearBusStations: make(map[string]*pb.ArrayNear)}
+	offset := 0
+	for _, mode := range allNearbyModes {
+		candidates := byMode[mode]
+		if len(candidates) == 0 {
+			continue
+		}
+		appendNearbyResult(response, mode, nearbyStations(candidates, metrics[min(offset, len(metrics)):]))
+		offset += len(candidates)
+	}
+	return response, nil
+}
+
+// nearbyStations pairs candidates with the leading window of metrics; a short
+// or absent window falls back to the geodesic estimate at 80 m per minute.
+func nearbyStations(candidates []nearbyCandidate, metrics []walkingMetric) []*pb.NearStation {
 	stations := make([]*pb.NearStation, 0, len(candidates))
 	for i, item := range candidates {
 		walk := int32(item.GeodesicMeters / 80)
 		distance := int32(item.GeodesicMeters)
 		routed := false
-		if routeErr == nil && i < len(metrics) && metrics[i].DurationSeconds != nil {
+		if i < len(metrics) && metrics[i].DurationSeconds != nil {
 			walk = int32(*metrics[i].DurationSeconds / 60)
 			routed = true
 			if metrics[i].DistanceMeters != nil {
@@ -209,7 +300,7 @@ func (d *nearbyDiscovery) enrich(ctx context.Context, origin geoPoint, candidate
 			Walk: walk, Distance: distance, Routed: routed,
 		})
 	}
-	return stations, nil
+	return stations
 }
 
 func appendNearbyResult(response *pb.RespNear, mode nearbyMode, stations []*pb.NearStation) {

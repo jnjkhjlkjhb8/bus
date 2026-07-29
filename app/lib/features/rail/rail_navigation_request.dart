@@ -1,4 +1,4 @@
-import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
 
 /// One-shot hand-off channel into the rail screen.
 ///

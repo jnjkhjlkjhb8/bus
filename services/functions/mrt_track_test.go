@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jnjkhjlkjhb8/wheres_the_car/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 )
 
 func mrtTestState(current, target, lead int32, status string) *models.MrtTrackState {

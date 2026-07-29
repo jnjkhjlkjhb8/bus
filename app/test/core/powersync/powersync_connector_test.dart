@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:powersync/powersync.dart';
-import 'package:wheres_the_car/core/powersync/powersync_service.dart';
+import 'package:wheres_the_bus/core/powersync/powersync_service.dart';
 
 String tokenExpiringAt(DateTime time) {
   final header = base64Url.encode(utf8.encode('{"alg":"none"}'));

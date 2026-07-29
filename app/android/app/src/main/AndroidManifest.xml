@@ -12,9 +12,17 @@
             android:name="com.google.android.geo.API_KEY"
             android:value="@string/google_maps_api_key"
             />
+        <!-- Impeller on the OpenGLES backend. Impeller ships precompiled
+             shaders, so the map settle no longer stalls the raster thread on
+             runtime Skia shader compilation; pinning the backend away from
+             Vulkan keeps the ErrorOutOfHostMemory case that closed Impeller
+             out in the first place (docs/requirements.md) off the table. -->
         <meta-data
             android:name="io.flutter.embedding.android.EnableImpeller"
-            android:value="false" />
+            android:value="true" />
+        <meta-data
+            android:name="io.flutter.embedding.android.ImpellerBackend"
+            android:value="opengles" />
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="@string/fcm_default_channel_id" />

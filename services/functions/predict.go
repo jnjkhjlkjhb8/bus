@@ -183,8 +183,8 @@ func loadModel() {
 	encData, err := os.ReadFile(encPath)
 	if err != nil {
 		log.Infof("[MODEL] encoders not found at %s: %v", encPath, err)
-	} else {
-		json.Unmarshal(encData, &modelEncoders)
+	} else if err := json.Unmarshal(encData, &modelEncoders); err != nil {
+		log.Infof("[MODEL] encoders parse failed at %s: %v", encPath, err)
 	}
 	etaModel = m
 	log.Infof("[MODEL] loaded from %s", path)

@@ -1,12 +1,14 @@
 import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/core/errors/app_error.dart';
-import 'package:wheres_the_car/data/live/arrival_feed.dart';
-import 'package:wheres_the_car/data/repositories/thsr_repository.dart';
-import 'package:wheres_the_car/data/repositories/tra_repository.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_event.dart';
-import 'package:wheres_the_car/features/rail/bloc/rail_state.dart';
+import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/data/live/arrival_feed.dart';
+import 'package:wheres_the_bus/data/models/rail_fare_quote.dart';
+import 'package:wheres_the_bus/data/repositories/thsr_repository.dart';
+import 'package:wheres_the_bus/data/repositories/tra_repository.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_state.dart';
 
 class RailBloc extends Bloc<RailEvent, RailState> {
   RailBloc({
@@ -96,6 +98,20 @@ class RailBloc extends Bloc<RailEvent, RailState> {
       ),
     );
 
+    // Remembered on request, not on success: the pair is what the rider asked
+    // for, so a query that fails offline should still prefill next time.
+    // Recorded here rather than in the query sheet so hand-offs that bypass
+    // the sheet (station detail, home sheet) are covered by the same funnel.
+    unawaited(
+      HiveStore.addRecentOdQuery(
+        system: system.name,
+        originId: event.origin.id ?? '',
+        originName: originName,
+        destId: event.destination.id ?? '',
+        destName: destName,
+      ),
+    );
+
     // A TRA delay subscription must not outlive its request: only the TRA
     // branch below starts a new one, so any request — TRA or THSR — first
     // cancels whatever the previous request left running. Without this, a
@@ -108,7 +124,11 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     try {
       final originId = _stationId(event.origin);
       final destId = _stationId(event.destination);
-      final fareFuture = _loadFare(system, event.date, originId, destId);
+      // Kept as a future so the fares and the timetable load concurrently.
+      // TRA has no O/D-wide fare to fetch — see RailTimetableLoaded.fareQuote.
+      final fareFuture = system == RailSystem.thsr
+          ? _loadFares(event.date, originId, destId)
+          : Future<RailFareQuote?>.value();
       if (system == RailSystem.tra) {
         final items = await _traRepository.timetable(
           event.date,
@@ -116,13 +136,14 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           destId,
         );
         if (gen != _timetableGeneration) return;
+        final fares = await fareFuture;
         emit(
           RailTimetableLoaded(
             system: system,
             originName: originName,
             destName: destName,
             date: event.date,
-            fare: await fareFuture,
+            fareQuote: fares,
             traItems: _sortedFiltered(
               items,
               (item) => item.departureTime,
@@ -146,13 +167,14 @@ class RailBloc extends Bloc<RailEvent, RailState> {
           destId,
         );
         if (gen != _timetableGeneration) return;
+        final fares = await fareFuture;
         emit(
           RailTimetableLoaded(
             system: system,
             originName: originName,
             destName: destName,
             date: event.date,
-            fare: await fareFuture,
+            fareQuote: fares,
             thsrItems: _sortedFiltered(
               items,
               (item) => item.departureTime,
@@ -169,23 +191,23 @@ class RailBloc extends Bloc<RailEvent, RailState> {
     }
   }
 
-  /// Best-effort adult (全票) fare for the O/D pair. Station ids are already
-  /// resolved here, so this is a direct RPC. Returns null on any failure (e.g.
-  /// no landed fare, or non-prod without TDX data) so the timetable still
-  /// renders without a price.
-  Future<int?> _loadFare(
-    RailSystem system,
+  /// Best-effort THSR fares for the O/D pair, every fare class and cabin class
+  /// the pair prices. Station ids are already resolved here, so this is a
+  /// direct RPC. Returns null on any failure (e.g. no landed fare, or non-prod
+  /// without TDX data) so the timetable still renders without a price.
+  ///
+  /// The set is not narrowed to one price here: which fare a rider is quoted
+  /// depends on their persisted ticket type, and the view resolves that so a
+  /// preference change re-labels the screen without a refetch.
+  Future<RailFareQuote?> _loadFares(
     String date,
     String originId,
     String destId,
   ) async {
     try {
-      if (system == RailSystem.thsr) {
-        final fare = await _thsrRepository.fare(date, originId, destId);
-        return fare.price;
-      }
-      final fare = await _traRepository.fare(originId, destId);
-      return fare.price;
+      return RailFareQuote.thsr(
+        fares: await _thsrRepository.fares(date, originId, destId),
+      );
     } on Object {
       return null;
     }

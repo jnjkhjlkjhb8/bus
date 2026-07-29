@@ -1,15 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/data/repositories/maas_repository.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/repositories/maas_repository.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_event.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_state.dart';
 
 class PlanBloc extends Bloc<PlanEvent, PlanState> {
   PlanBloc({MaasRepository? repository})
     : _repository = repository ?? MaasRepository.instance,
       super(const PlanState()) {
     on<PlanSearchRequested>(_onSearch);
+    on<PlanSearchCancelled>(_onSearchCancelled);
     on<RouteSelected>(_onRouteSelected);
     on<PreviewClosed>(_onPreviewClosed);
     on<NavigationStarted>(_onNavigationStarted);
@@ -27,6 +30,15 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
   // PlanSearchRequested handlers run concurrently (no transformer); a slow
   // earlier search can otherwise resolve after a newer one and clobber it.
   var _searchGeneration = 0;
+
+  // The in-flight plan stream, held so a new search or a cancel can drop the
+  // RPC rather than leaving it running to the router's 20s ceiling. _planFinish
+  // releases the event handler that is parked on that stream.
+  // Cancelled in _stopPlanStream, which every exit path — a new search, an
+  // explicit cancel, bloc close — goes through.
+  // ignore: cancel_subscriptions
+  StreamSubscription<PlanUpdate>? _planSub;
+  void Function()? _planFinish;
 
   List<PlanRoute> _readSavedRoutes() {
     if (!HiveStore.savedPlansReady) return const [];
@@ -99,47 +111,98 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
         previewing: false,
         previewFromSaved: false,
         clearError: true,
+        geometryPending: false,
       ),
     );
-    try {
-      final result = await _repository.plan(
-        fromLat: event.fromLat,
-        fromLon: event.fromLon,
-        toLat: event.toLat,
-        toLon: event.toLon,
-        date: event.date,
-        time: event.time,
-        arriveBy: event.arriveBy,
-        gc: event.gc,
-        transitModes: event.transitModes,
-        top: event.top,
-        transferMin: event.transferMin,
-        transferMax: event.transferMax,
-        firstMileMode: event.firstMileMode,
-        firstMileTime: event.firstMileTime,
-        lastMileMode: event.lastMileMode,
-        lastMileTime: event.lastMileTime,
-      );
-      if (gen != _searchGeneration) return;
-      // Results phase: the fastest route (index 0) is the default selection.
-      emit(
-        state.copyWith(
-          status: PlanStatus.success,
-          result: result,
-          selectedRouteIndex: 0,
-          previewing: false,
-          previewFromSaved: false,
-        ),
-      );
-    } on Object catch (e) {
-      if (gen != _searchGeneration) return;
-      emit(
-        state.copyWith(
-          status: PlanStatus.failure,
-          error: e.toString(),
-        ),
-      );
+    // The router answers in two messages — routes, then the same routes with
+    // map geometry — so the list can render while the walk paths resolve. The
+    // handler stays open on `done` until the stream ends, because emitting
+    // after it returns is an error; _stopPlanStream both drops the RPC and
+    // releases the handler waiting on it.
+    //
+    // Everything from here to the assignment below is synchronous on purpose:
+    // these handlers run concurrently, and an await before `_planSub` is set
+    // would let a second search overwrite the field without having cancelled
+    // the first subscription.
+    _stopPlanStream();
+    final done = Completer<void>();
+    void finish() {
+      if (!done.isCompleted) done.complete();
     }
+
+    _planFinish = finish;
+    _planSub = _repository
+        .planStream(
+          fromLat: event.fromLat,
+          fromLon: event.fromLon,
+          toLat: event.toLat,
+          toLon: event.toLon,
+          date: event.date,
+          time: event.time,
+          arriveBy: event.arriveBy,
+          gc: event.gc,
+          transitModes: event.transitModes,
+          top: event.top,
+          transferMin: event.transferMin,
+          transferMax: event.transferMax,
+          firstMileMode: event.firstMileMode,
+          firstMileTime: event.firstMileTime,
+          lastMileMode: event.lastMileMode,
+          lastMileTime: event.lastMileTime,
+        )
+        .listen(
+          (update) {
+            if (gen != _searchGeneration || emit.isDone) return;
+            // Results phase: the fastest route (index 0) is the default
+            // selection.
+            emit(
+              state.copyWith(
+                status: PlanStatus.success,
+                result: update.result,
+                selectedRouteIndex: 0,
+                previewing: false,
+                previewFromSaved: false,
+                geometryPending: !update.complete,
+              ),
+            );
+          },
+          onError: (Object e) {
+            if (gen == _searchGeneration && !emit.isDone) {
+              emit(
+                state.copyWith(
+                  status: PlanStatus.failure,
+                  error: e.toString(),
+                  failure: e is PlanFailure ? e.kind : PlanFailureKind.unknown,
+                  geometryPending: false,
+                ),
+              );
+            }
+            finish();
+          },
+          onDone: finish,
+          cancelOnError: true,
+        );
+    await done.future;
+  }
+
+  // Cancelling drops the in-flight RPC and rewinds to the pre-search planner,
+  // keeping the saved snapshots so the entry surface still has its 路線箱.
+  void _onSearchCancelled(PlanSearchCancelled _, Emitter<PlanState> emit) {
+    _searchGeneration++;
+    _stopPlanStream();
+    emit(PlanState(savedRoutes: state.savedRoutes));
+  }
+
+  // Drops the in-flight plan stream and lets its handler return. Cancelling a
+  // subscription never fires onDone, so the waiting handler has to be released
+  // here or it would sit open for the life of the bloc.
+  void _stopPlanStream() {
+    final sub = _planSub;
+    final finish = _planFinish;
+    _planSub = null;
+    _planFinish = null;
+    unawaited(sub?.cancel());
+    finish?.call();
   }
 
   // Selecting a route enters the plan-preview phase.
@@ -184,5 +247,11 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
 
   void _onNavigationEnded(NavigationEnded _, Emitter<PlanState> emit) {
     emit(state.copyWith(clearNavigation: true));
+  }
+
+  @override
+  Future<void> close() {
+    _stopPlanStream();
+    return super.close();
   }
 }

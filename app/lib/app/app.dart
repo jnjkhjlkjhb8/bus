@@ -1,39 +1,36 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hive_ce_flutter/adapters.dart';
-import 'package:wheres_the_car/app/router/app_router.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/bootstrap/app_bootstrap.dart';
-import 'package:wheres_the_car/core/live_activity/live_activity_channel.dart';
-import 'package:wheres_the_car/core/live_activity/pip_mode.dart';
-import 'package:wheres_the_car/core/location/location_service.dart';
-import 'package:wheres_the_car/core/storage/hive_store.dart';
-import 'package:wheres_the_car/core/update/force_update.dart';
-import 'package:wheres_the_car/data/repositories/favorites_repository.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_bloc.dart';
-import 'package:wheres_the_car/features/alerts/bloc/alert_event.dart';
-import 'package:wheres_the_car/features/alerts/view/notification_toast.dart';
-import 'package:wheres_the_car/features/favorites/bloc/favorites_bloc.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/view/journey_pip_card.dart';
+import 'package:wheres_the_bus/app/router/app_router.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/bootstrap/app_bootstrap.dart';
+import 'package:wheres_the_bus/core/live_activity/live_activity_channel.dart';
+import 'package:wheres_the_bus/core/live_activity/mrt_cancel_channel.dart';
+import 'package:wheres_the_bus/core/live_activity/pip_mode.dart';
+import 'package:wheres_the_bus/core/location/location_service.dart';
+import 'package:wheres_the_bus/core/storage/hive_store.dart';
+import 'package:wheres_the_bus/core/update/update_gate.dart';
+import 'package:wheres_the_bus/data/repositories/favorites_repository.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_bloc.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_event.dart';
+import 'package:wheres_the_bus/features/alerts/view/notification_toast.dart';
+import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/view/journey_pip_card.dart';
+import 'package:wheres_the_bus/features/metro/bloc/mrt_track_bloc.dart';
+import 'package:wheres_the_bus/features/metro/bloc/mrt_track_event.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/map/marker_factory.dart';
 
 // the floor must never double as a ceiling — it must not silently roll
 // back a larger system-level accessibility preference. Keep this
 // clamp-min-only; any max clamp lives in a separate step (see
-// [applyLargeTextCeiling]) so both compose without either one reintroducing
-// the old regression.
-TextScaler applyLargeTextFloor(TextScaler systemScaler) =>
-    systemScaler.clamp(minScaleFactor: 1.3);
-
-/// Caps very large system text scales so fixed-height rows (list tiles,
-/// chips, the nav bar) don't clip. Applied on top of [applyLargeTextFloor]
-/// (or standalone when the large-text toggle is off) — never inside it.
-TextScaler applyLargeTextCeiling(TextScaler systemScaler) =>
-    systemScaler.clamp(maxScaleFactor: 2);
 
 class App extends StatefulWidget {
   const App({required this.bootstrap, this.debugRouter, super.key});
@@ -117,9 +114,11 @@ class _BootstrapGateApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '我車呢？',
+      onGenerateTitle: (context) => AppI18n.of(context).appTitle,
       theme: AppTheme.light,
       darkTheme: AppTheme.dark,
+      localizationsDelegates: AppI18n.localizationsDelegates,
+      supportedLocales: AppI18n.supportedLocales,
       debugShowCheckedModeBanner: false,
       home: child,
     );
@@ -161,10 +160,10 @@ class _BootstrapFailedView extends StatelessWidget {
   final AppBootstrapFailurePhase? phase;
   final VoidCallback onRetry;
 
-  String get _message => switch (phase) {
-    AppBootstrapFailurePhase.storage => '本機儲存空間初始化失敗，請確認裝置儲存空間充足後再試一次。',
-    AppBootstrapFailurePhase.network => '連線設定初始化失敗，請檢查網路連線後再試一次。',
-    null => '啟動失敗，請再試一次。',
+  String _message(AppI18n i18n) => switch (phase) {
+    AppBootstrapFailurePhase.storage => i18n.bootstrapFailedStorage,
+    AppBootstrapFailurePhase.network => i18n.bootstrapFailedNetwork,
+    null => i18n.bootstrapFailedUnknown,
   };
 
   @override
@@ -185,7 +184,7 @@ class _BootstrapFailedView extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  _message,
+                  _message(AppI18n.of(context)),
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 15, color: Colors.black87),
                 ),
@@ -196,7 +195,7 @@ class _BootstrapFailedView extends StatelessWidget {
                   style: FilledButton.styleFrom(
                     backgroundColor: AppTheme.inkLight,
                   ),
-                  child: const Text('重試'),
+                  child: Text(AppI18n.of(context).commonRetry),
                 ),
               ],
             ),
@@ -234,9 +233,24 @@ class _AppShell extends StatelessWidget {
         ),
         BlocProvider(
           create: (context) => StopBoardBloc(
+            i18n: AppI18n.of(context),
             channel: liveActivityChannel,
             session: context.read<JourneySessionBloc>(),
           ),
+        ),
+        BlocProvider(
+          // The metro alight-reminder session shares the single Live Activity
+          // channel; restoring on startup re-lights the bell and re-watches a
+          // session that survived a restart (ADR-0015).
+          create: (_) {
+            final bloc = MrtTrackBloc(channel: liveActivityChannel)
+              ..add(const MrtTrackRestored());
+            // Android Live Update 取消追蹤 action → CancelTrack on this bloc.
+            MrtTrackCancelChannel.bind(
+              () => bloc.add(const MrtTrackCancelled()),
+            );
+            return bloc;
+          },
         ),
         BlocProvider(
           create: (_) =>
@@ -262,40 +276,65 @@ class _AppShellView extends StatefulWidget {
 }
 
 class _AppShellViewState extends State<_AppShellView> {
+  // Cancellable so a shell disposed before the delay elapses (tests, hot
+  // restart) doesn't leave a pending timer behind.
+  Timer? _alertStartTimer;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      context.read<AlertBloc>().add(const AlertStarted());
+      // Delayed so the alert streams (TRA/THSR gRPC + Remote Config) don't
+      // compete with home's first interactive frame.
+      _alertStartTimer = Timer(const Duration(seconds: 2), () {
+        if (!mounted) return;
+        context.read<AlertBloc>().add(const AlertStarted());
+      });
     });
+  }
+
+  @override
+  void dispose() {
+    _alertStartTimer?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<Box<dynamic>>(
       valueListenable: HiveStore.settings.listenable(
-        keys: const ['large_text', 'appearance_mode'],
+        keys: const [
+          'large_text',
+          'appearance_mode',
+          SettingsRepository.languageKey,
+        ],
       ),
       builder: (context, _, child) => MaterialApp.router(
-        title: '我車呢？',
+        onGenerateTitle: (context) => AppI18n.of(context).appTitle,
         theme: AppTheme.light,
         darkTheme: AppTheme.dark,
         themeMode: SettingsRepository.instance.themeMode,
+        // Null for the 'system' preference, which is what hands resolution
+        // back to the device's locale list.
+        locale: SettingsRepository.instance.locale,
+        localizationsDelegates: AppI18n.localizationsDelegates,
+        supportedLocales: AppI18n.supportedLocales,
         routerConfig: widget.router ?? AppRouter.router,
         debugShowCheckedModeBanner: false,
         builder: (context, child) {
-          var base = child!;
-          final mq = MediaQuery.of(context);
-          final floored = HiveStore.largeText
-              ? applyLargeTextFloor(mq.textScaler)
-              : mq.textScaler;
-          base = MediaQuery(
-            data: mq.copyWith(textScaler: applyLargeTextCeiling(floored)),
-            child: base,
+          final base = child!;
+          // Marker bitmaps are painted off-tree on a ui.Canvas, so this is the
+          // one place they can learn the device pixel ratio and text size to
+          // paint at: the only builder that sees every screen and rebuilds
+          // when either changes. Any app-level text-scale override must be
+          // installed above this read to be picked up here.
+          MapMarkers.configure(
+            devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+            textScaler: MediaQuery.textScalerOf(context),
           );
           return _PipGate(
-            child: ForceUpdateGate(child: NotificationToastHost(child: base)),
+            child: UpdateGate(child: NotificationToastHost(child: base)),
           );
         },
       ),

@@ -20,8 +20,8 @@ import (
 
 	legacyredis "github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
-	pb "github.com/jnjkhjlkjhb8/wheres_the_car/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_car/services/shared"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/pashagolub/pgxmock/v4"
 	redisv9 "github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
@@ -911,7 +911,7 @@ func TestMaasServerCloseVersusPlanRaceLeavesNoLeakedPermitOrCacheCommand(t *test
 
 	var wg sync.WaitGroup
 	errs := make([]error, attempts)
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -1201,5 +1201,194 @@ func TestBatchSectionFaresPicksFullTraFare(t *testing.T) {
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// recordingPlanStream captures every MaasPlanUpdate PlanStream sends, so a test
+// can assert on the staging rather than only the final content.
+type recordingPlanStream struct {
+	grpc.ServerStreamingServer[pb.MaasPlanUpdate]
+	ctx     context.Context
+	updates []*pb.MaasPlanUpdate
+}
+
+func (s *recordingPlanStream) Context() context.Context { return s.ctx }
+
+func (s *recordingPlanStream) Send(update *pb.MaasPlanUpdate) error {
+	// The two sends carry the same message object, mutated in between, so the
+	// recording has to be a snapshot — otherwise both entries would read as the
+	// enriched one and the staging assertion would pass vacuously.
+	s.updates = append(s.updates, proto.Clone(update).(*pb.MaasPlanUpdate))
+	return nil
+}
+
+const maasStreamTDXRoute = `{"result":"success","data":{"routes":[{
+  "travel_time":1500,"start_time":"2027-01-01T08:00:00","end_time":"2027-01-01T08:25:00","transfers":0,
+  "sections":[{
+    "type":"pedestrian","travelSummary":{"duration":600,"length":800},
+    "transport":{"mode":"pedestrian"},
+    "departure":{"time":"2027-01-01T08:00:00","place":{"name":"起點","location":{"lat":25.00,"lng":121.50}}},
+    "arrival":{"time":"2027-01-01T08:10:00","place":{"name":"終點","location":{"lat":25.02,"lng":121.52}}}
+  }]}]}}`
+
+// The routes must reach the rider before the map geometry is paid for: the
+// first update carries the itinerary with no walkPath, the second the same
+// route with OSRM's path attached.
+func TestPlanStreamSendsRoutesBeforeGeometry(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, maasStreamTDXRoute)
+	}))
+	defer upstream.Close()
+
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
+	cache := newControlledMaasCache()
+	server := newMaasServerWithCache(cache, nil, tdx, defaultMaasSharedWorkConfig)
+	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
+	server.osrmClient = osrmClientReturning(200, osrmTransferRoute)
+	defer server.Close()
+
+	req := &pb.MaasPlanRequest{
+		FromLat: 25.0, FromLon: 121.5, ToLat: 25.02, ToLon: 121.52,
+		Date: "2027-01-01", Time: "08:00",
+	}
+	stream := &recordingPlanStream{ctx: context.Background()}
+	if err := server.PlanStream(req, stream); err != nil {
+		t.Fatalf("PlanStream: %v", err)
+	}
+
+	if len(stream.updates) != 2 {
+		t.Fatalf("updates = %d, want 2", len(stream.updates))
+	}
+	first, last := stream.updates[0], stream.updates[1]
+	if first.Complete {
+		t.Fatal("first update must not be marked complete")
+	}
+	if len(first.Plan.Routes) != 1 || first.Plan.Routes[0].TravelTime != 1500 {
+		t.Fatalf("first update routes = %+v, want one 1500s route", first.Plan.Routes)
+	}
+	if got := first.Plan.Routes[0].Sections[0].Departure.Name; got != "起點" {
+		t.Fatalf("first update departure = %q, want 起點", got)
+	}
+	if len(first.Plan.Routes[0].Sections[0].WalkPath) != 0 {
+		t.Fatal("first update must not carry map geometry")
+	}
+	if !last.Complete {
+		t.Fatal("last update must be marked complete")
+	}
+	if len(last.Plan.Routes[0].Sections[0].WalkPath) != 3 {
+		t.Fatalf("walkPath len = %d, want 3 on the complete update",
+			len(last.Plan.Routes[0].Sections[0].WalkPath))
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1", got)
+	}
+}
+
+// A cached plan is already geometry-complete, so it answers in one message and
+// never reaches TDX.
+func TestPlanStreamCacheHitSendsSingleCompleteUpdate(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, maasStreamTDXRoute)
+	}))
+	defer upstream.Close()
+
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
+	cache := newControlledMaasCache()
+	server := newMaasServerWithCache(cache, nil, tdx, defaultMaasSharedWorkConfig)
+	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
+	server.osrmClient = osrmClientReturning(200, osrmTransferRoute)
+	defer server.Close()
+
+	req := &pb.MaasPlanRequest{
+		FromLat: 25.0, FromLon: 121.5, ToLat: 25.02, ToLon: 121.52,
+		Date: "2027-01-01", Time: "08:00",
+	}
+	if err := server.PlanStream(req, &recordingPlanStream{ctx: context.Background()}); err != nil {
+		t.Fatalf("first PlanStream: %v", err)
+	}
+
+	second := &recordingPlanStream{ctx: context.Background()}
+	if err := server.PlanStream(req, second); err != nil {
+		t.Fatalf("second PlanStream: %v", err)
+	}
+	if len(second.updates) != 1 || !second.updates[0].Complete {
+		t.Fatalf("cache hit updates = %+v, want one complete update", second.updates)
+	}
+	if len(second.updates[0].Plan.Routes[0].Sections[0].WalkPath) != 3 {
+		t.Fatal("cache hit must carry the enriched geometry")
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("upstream hits = %d, want 1 (second call served from cache)", got)
+	}
+}
+
+// TDX answering 404 is an empty result, not a router fault: the stream ends
+// with NotFound and no partial update is sent.
+func TestPlanStreamMapsNoRouteToNotFound(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer upstream.Close()
+
+	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
+	server := newMaasServerWithCache(newControlledMaasCache(), nil, tdx, defaultMaasSharedWorkConfig)
+	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
+	defer server.Close()
+
+	stream := &recordingPlanStream{ctx: context.Background()}
+	err := server.PlanStream(&pb.MaasPlanRequest{Date: "2027-01-01", Time: "08:00"}, stream)
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("PlanStream error = %v, want NotFound", err)
+	}
+	if len(stream.updates) != 0 {
+		t.Fatalf("updates = %d, want 0", len(stream.updates))
+	}
+}
+
+// The TDX quota is per caller, not per method: spending it on plan must leave
+// nothing for planStream. Without a shared bucket the streaming method would
+// hand every caller a second allowance.
+func TestMaasQuotaIsSharedBetweenPlanAndPlanStream(t *testing.T) {
+	rl := newRateLimiter()
+	config := maasResourceConfig{RateLimit: 1, RateWindow: time.Minute}
+	unary := maasResourceInterceptor(rl, config)
+	streamed := maasResourceStreamInterceptor(rl, config)
+	ctx := limiterContext("203.0.113.77:5555")
+
+	_, err := unary(ctx, &pb.MaasPlanRequest{},
+		&grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName},
+		func(context.Context, interface{}) (interface{}, error) { return "ok", nil })
+	if err != nil {
+		t.Fatalf("first plan = %v, want allowed", err)
+	}
+
+	called := false
+	err = streamed(nil, &recordingPlanStream{ctx: ctx},
+		&grpc.StreamServerInfo{FullMethod: pb.MaasService_PlanStream_FullMethodName},
+		func(interface{}, grpc.ServerStream) error { called = true; return nil })
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("planStream after quota spent = %v, want ResourceExhausted", err)
+	}
+	if called {
+		t.Fatal("planStream handler ran despite exhausted quota")
+	}
+}
+
+// Methods outside the plan family are none of this interceptor's business.
+func TestMaasResourceStreamInterceptorIgnoresOtherMethods(t *testing.T) {
+	rl := newRateLimiter()
+	streamed := maasResourceStreamInterceptor(rl, maasResourceConfig{RateLimit: 0, RateWindow: time.Minute})
+	called := false
+	err := streamed(nil, &recordingPlanStream{ctx: limiterContext("203.0.113.78:5555")},
+		&grpc.StreamServerInfo{FullMethod: "/Bus_Route_Service/Live"},
+		func(interface{}, grpc.ServerStream) error { called = true; return nil })
+	if err != nil || !called {
+		t.Fatalf("unrelated stream = (err=%v called=%v), want passthrough", err, called)
 	}
 }

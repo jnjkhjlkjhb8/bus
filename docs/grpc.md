@@ -14,6 +14,7 @@ made by claude
 - Near_Station_Service
 - Alert_Service
 - MaasService
+- Feedback_Service
 
 ## Bus_Route_Service (`models/bus.proto`)
 ### static
@@ -115,6 +116,22 @@ made by claude
 - Redis channel
   - `tra:delay:all`
 
+### station_board
+- RPC：`station_board(ask_station_board) -> tra_station_board`
+- 輸入
+  - `station_id`（數字站碼或站名，站名走 `resolveRailStationID` 的 臺/台 相容解析）
+  - `date`
+  - `after`（`HH:mm:ss` 發車時間下界；由呼叫端帶自己的時鐘，router 跑在 UTC）
+  - `direction`（0 順行 / 1 逆行）
+  - `limit`（0 = 預設 20，上限 50）
+- 行為
+  - 讀 `tra_timetable`，排除以本站為終點的班次（發車看板不列無法上車的到站班次）
+  - Redis 快取「整個服務日」的看板，時間窗在 handler 切；同一站同方向的乘客共用一份
+  - 當日剩餘班次不足 `limit` 時，往後補次日班次（深夜開啟時只剩兩班不算答案）；每列自帶 `TrainDate`
+  - 該日完全沒有資料才回 `NotFound`；已落地但當日班次跑完會回空看板，兩者在 app 上是不同訊息
+- Redis key
+  - `TRA_StationBoard:{date}:{station_id}:{direction}`
+
 ## TRA_Detain_service (`models/tra.proto`)
 ### stops
 - RPC：`stops(ask_detain) -> tra_stoptimes`
@@ -157,6 +174,15 @@ made by claude
 - Redis key
   - `THSR_timetable:{date}:{origin_station_id}:{destination_station_id}`
 
+### station_board
+- RPC：`station_board(thsr_ask_station_board) -> thsr_station_board`
+- 輸入
+  - `station_id`、`date`、`after`、`direction`（0 南下 / 1 北上）、`limit`
+- 行為
+  - 與 TRA `station_board` 相同：讀 `thsr_timetable`、快取整日、深夜補次日、NotFound 只代表該日未落地
+- Redis key
+  - `THSR_StationBoard:{date}:{station_id}:{direction}`
+
 ## Thsr_Detain_service (`models/thsr.proto`)
 ### stops
 - RPC：`stops(thsr_ask_detain) -> thsr_stoptimes`
@@ -170,8 +196,16 @@ made by claude
 
 ## Alert_Service (`models/alert.proto`)
 
-來源：TDX MQTT 訊息，由 `server/functions` 接收後存入 Redis Pub/Sub。
-串流資料為 TDX 原始 JSON（`bytes data`）。
+來源：TDX MQTT 訊息，由 `services/functions` 接收後**正規化**再存入 Redis
+Pub/Sub。TDX 三種 payload 形狀（裸陣列、`{"Alerts":[...]}` 信封、單一物件）在寫入
+時就攤平成 `Alert_Msg { repeated Alert_Item items }`，router 只做 protojson →
+proto 的轉型，app 端不再解析任何 TDX 欄位名（ADR-0016）。
+
+每則訊息是該 channel 的**當前快照**，不是增量：訂閱者應以整批取代該來源既有的
+告警，TDX 不再發布的那則即代表已排除。
+
+`Alert_Item.route_keys` 是該告警的適用範圍（公車子路線、台鐵車次、捷運路線）；
+空陣列代表未指名路線，屬全系統告警。
 
 ### busNews
 - RPC：`busNews(Alert_Bus_Ask) -> stream Alert_Msg`
@@ -181,6 +215,17 @@ made by claude
   - 訂閱 Redis Pub/Sub 串流
 - Redis channel
   - `mqtt:v2:Bus:News:City:{city}`
+
+### busAlert
+- RPC：`busAlert(Alert_Bus_Ask) -> stream Alert_Msg`
+- 輸入
+  - `city`：城市代碼（如 `Taipei`）
+- 行為
+  - 訂閱 Redis Pub/Sub 串流。與 `busNews` 分開是因為 TDX 把公告與通阻發在不同
+    topic，各自鏡射自己的 latest-payload key；合流會讓後寫的那類決定新訂閱者
+    看到什麼
+- Redis channel
+  - `mqtt:v2:Bus:Alert:City:{city}`
 
 ### metroAlert
 - RPC：`metroAlert(Alert_Metro_Ask) -> stream Alert_Msg`
@@ -236,3 +281,35 @@ made by claude
   - `Leg.mode`：WALK/BUS/SUBWAY/RAIL/TRAM/FERRY
 - Redis key
   - `maas:plan:{sha256_hex8}` TTL 90 s
+
+### planStream
+- RPC：`planStream(MaasPlanRequest) -> stream MaasPlanUpdate`
+- 與 `plan` 同一份查詢，但**分兩則訊息**送出。App 目前一律走這條；unary `plan` 保留給已上架的舊版本。
+- 分段的位置
+  1. `complete=false`：TDX 路線 + 票價 + 通知識別（`convertRoutes`）。結果清單需要的東西全在這裡，卡片畫得出來、按得下去。
+  2. `complete=true`：補上 OSRM 步行路徑與軌道線形（`enrichGeometry`）。這段慢，而且只有地圖上的線需要它——section 的 `walkPath` / `transitPath` 為空時 App 本來就會退回直線。
+- 快取命中只送一則 `complete=true`。
+- 行為差異
+  - **不走 singleflight**：同一分鐘內兩筆完全相同的查詢可能各打一次 TDX，由 90 秒快取與 4 個 work slot 收斂。要讓等待者也收到 leader 的第一則訊息得做 per-key broadcast，那是為了極少發生的碰撞（同座標、同選項、同分鐘）而加的機制。
+  - 客戶端斷線會取消 work context（`context.AfterFunc`），不像 unary 那樣把工作留給其他等待者。
+  - 幾何補完後、送出最後一則之前就寫快取：工作已經付出代價，不因為對方剛好斷線而丟掉。
+- 配額：`plan` 與 `planStream` 共用同一個 rate-limiter bucket（`maasQuotaScope`）。分開計會讓呼叫端換個方法就多拿一份 TDX 額度。
+
+## Feedback_Service (`models/feedback.proto`)
+### postFeedback
+- RPC：`postFeedback(PostFeedbackRequest) -> FeedbackReceipt`
+- 輸入
+  - `install_id`：匿名安裝識別（與 `firebase_device` 同一組，但**不是** FK——關掉推播或裝置列被清掉的使用者仍要能回報）
+  - `category`：`route_data` | `eta` | `crash` | `suggestion`，伺服器與 `feedback_thread` 的 CHECK 兩邊都限制
+  - `body`：自由文字，上限 2000 runes（不是 bytes：中文報告用 byte 上限只剩三分之一可用長度）
+  - `diagnostics`：`app_version` / `platform` / `os_version` / `screen` / `locale`，每欄 128 字元上限，空值不寫入
+- 驗證
+  - 與其他 device-scoped RPC 相同：`x-install-id` + `x-install-secret` metadata 比對 `firebase_device.install_secret_hash`（共用 `authorizeInstallation`）
+  - 這道驗證是配額有意義的前提——未驗證的呼叫端可以每次換一組 `install_id`
+- 行為
+  - thread 與開頭 message 以**單一 statement**（data-modifying CTE）寫入，兩者同時成立或同時不成立
+  - 每個 install 24 小時內上限 10 則，配額寫在 INSERT 的 WHERE 裡而非前一句 SELECT，所以兩個並行請求無法各自讀到未達上限的計數後都寫入；配額用盡 → `ResourceExhausted`
+  - 寫入成功後以獨立 goroutine POST 到 `FEEDBACK_WEBHOOK_URL`（Discord shape，`allowed_mentions.parse = []` 讓使用者文字無法 ping 頻道）。**通知不是成功條件**：已寫進 Postgres 的回報就是收到了，webhook 連不上只留一行 log
+- 回傳
+  - `thread_id`（UUID）、`created_at_unix`
+  - App 顯示 `thread_id` 的第一段作為使用者可引用的回報編號；那是查詢前綴，不是鍵，所以沒有任何東西以它為索引

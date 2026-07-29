@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_switch.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_switch.dart';
 
 /// A labelled group of settings rows.
 class SettingsGroup extends StatelessWidget {

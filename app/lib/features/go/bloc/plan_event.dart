@@ -1,4 +1,4 @@
-import 'package:wheres_the_car/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
 
 abstract class PlanEvent {
   const PlanEvent();
@@ -57,6 +57,13 @@ class PlanSearchRequested extends PlanEvent {
   final int firstMileTime;
   final int lastMileMode;
   final int lastMileTime;
+}
+
+/// Give up on the in-flight query. Cancels the RPC and returns to the state the
+/// planner had before the search, so the fields survive and the rider can edit
+/// them instead of leaving the screen.
+class PlanSearchCancelled extends PlanEvent {
+  const PlanSearchCancelled();
 }
 
 /// Select a route and enter the plan-preview phase (single itinerary shown).

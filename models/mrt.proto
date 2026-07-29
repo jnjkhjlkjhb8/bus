@@ -1,5 +1,5 @@
 syntax = "proto3";
-option go_package = "github.com/jnjkhjlkjhb8/wheres_the_car/models";
+option go_package = "github.com/jnjkhjlkjhb8/wheres_the_bus/models";
 service Mrt_Service{
   rpc eta(Ask_mrt) returns (stream Resp_Mrt_eta) {}
   // Metro alight reminder (捷運下車提醒, ADR-0015): a car-bound tracking session.

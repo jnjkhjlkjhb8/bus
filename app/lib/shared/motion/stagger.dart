@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
 
 class StaggerItem extends StatefulWidget {
   const StaggerItem({

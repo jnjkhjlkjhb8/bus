@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/widget_previews.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/data/models/arrival_display.dart';
-import 'package:wheres_the_car/data/models/eta_status.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/data/models/arrival_display.dart';
+import 'package:wheres_the_bus/data/models/eta_status.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
 
-export 'package:wheres_the_car/data/models/eta_status.dart';
+export 'package:wheres_the_bus/data/models/eta_status.dart';
 
 @Preview(name: 'EtaListTile — arriving', group: 'ETA')
 @Preview(name: 'EtaListTile — minutes', group: 'ETA')
@@ -143,7 +144,7 @@ class EtaListTile extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                '往 $destination',
+                AppI18n.of(context).towardsSpaced(destination),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 // A custom destination style (metro's heading2) is used
@@ -190,7 +191,9 @@ class EtaListTile extends StatelessWidget {
 
     return Pressable(
       onTap: onTap,
-      semanticLabel: '$routeNo 往 $destination',
+      semanticLabel: AppI18n.of(
+        context,
+      ).etaTowardsSemantics(routeNo, destination),
       child: Container(
         // Margin + padding sum to 16 on each side either way, so the highlight
         // tint insets without shifting the row's content off the 16px column.
@@ -228,14 +231,14 @@ class EtaValue extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return switch (status) {
       EtaArriving() => Text(
-        '進站中',
+        AppI18n.of(context).etaArriving,
         style: AppTextStyles.heading2.copyWith(
           fontWeight: FontWeight.w700,
           color: AppTheme.statusArrivingText,
         ),
       ),
       EtaApproaching() => Text(
-        '即將進站',
+        AppI18n.of(context).etaApproaching,
         style: AppTextStyles.heading2.copyWith(
           fontWeight: FontWeight.w700,
           color: AppTheme.etaApproaching,
@@ -248,16 +251,35 @@ class EtaValue extends StatelessWidget {
         children: [
           Text(
             '$value',
-            style: AppTextStyles.memo.copyWith(
-              fontSize: AppTextStyles.heading1.fontSize,
-              fontWeight: AppTextStyles.heading1.fontWeight,
-              color: cs.onSurface,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
+            style: _bigTime(cs),
           ),
           const SizedBox(width: 2),
           Text(
-            '分',
+            AppI18n.of(context).goMinutesUnit,
+            style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
+          ),
+        ],
+      ),
+      EtaMinutesSeconds(:final minutes, :final seconds) => Row(
+        textBaseline: TextBaseline.alphabetic,
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            '$minutes',
+            style: _bigTime(cs),
+          ),
+          Text(
+            AppI18n.of(context).goMinutesUnit,
+            style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
+          ),
+          const SizedBox(width: 2),
+          Text(
+            seconds.toString().padLeft(2, '0'),
+            style: _bigTime(cs),
+          ),
+          Text(
+            AppI18n.of(context).etaSecondsUnit,
             style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
           ),
         ],
@@ -285,7 +307,7 @@ class EtaValue extends StatelessWidget {
       ),
       EtaUnknown() => Text(
         '—',
-        semanticsLabel: '目前無到站資訊',
+        semanticsLabel: AppI18n.of(context).etaNoInfo,
         style: AppTextStyles.bodyLarge.copyWith(color: cs.outline),
       ),
     };
@@ -294,3 +316,12 @@ class EtaValue extends StatelessWidget {
 
 final _clockPattern = RegExp(r'^\d{2}:\d{2}$');
 bool _isClock(String text) => _clockPattern.hasMatch(text);
+
+/// The prominent mono time-value style (heading1 size/weight, tabular figures)
+/// shared by the minute and minute+second countdowns.
+TextStyle _bigTime(ColorScheme cs) => AppTextStyles.memo.copyWith(
+  fontSize: AppTextStyles.heading1.fontSize,
+  fontWeight: AppTextStyles.heading1.fontWeight,
+  color: cs.onSurface,
+  fontFeatures: const [FontFeature.tabularFigures()],
+);

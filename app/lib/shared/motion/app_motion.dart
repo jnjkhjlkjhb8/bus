@@ -23,6 +23,16 @@ abstract final class AppMotion {
   /// Loop duration for shimmer/skeleton loading placeholders.
   static const Duration shimmerLoop = Duration(milliseconds: 900);
 
+  /// One-shot map scan sweep confirming a deliberate nearby search covered an
+  /// area. Longer than a UI transition because it travels the width of the
+  /// screen; it conveys reach, not a state change.
+  static const Duration scan = Duration(milliseconds: 700);
+
+  /// The quiet variant of [scan]: the ring fades in and out at its final size,
+  /// so the area is still stated but nothing travels. Used for the frequent,
+  /// incidental searches a map pan triggers, and for reduce-motion throughout.
+  static const Duration scanStill = Duration(milliseconds: 480);
+
   /// Expressive ease-out curve.
   static const Curve easeOut = Cubic(0.23, 1, 0.32, 1);
 

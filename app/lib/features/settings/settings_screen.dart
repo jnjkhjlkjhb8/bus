@@ -1,26 +1,28 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:ui' show ImageFilter;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
-import 'package:material_symbols_icons/symbols.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:wheres_the_car/app/router/app_routes.dart';
-import 'package:wheres_the_car/app/theme/app_text_styles.dart';
-import 'package:wheres_the_car/app/theme/app_theme.dart';
-import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
-import 'package:wheres_the_car/core/haptics/haptic_service.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_bloc.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_event.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_state.dart';
-import 'package:wheres_the_car/shared/motion/app_motion.dart';
-import 'package:wheres_the_car/shared/motion/pressable.dart';
-import 'package:wheres_the_car/shared/widgets/app_snackbar.dart';
-import 'package:wheres_the_car/shared/widgets/app_switch.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
+import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
+import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_gate.dart';
+import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/core/update/update_status.dart';
+import 'package:wheres_the_bus/data/models/fare_type.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_bloc.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_event.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_state.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/app_switch.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({
@@ -29,6 +31,8 @@ class SettingsScreen extends StatelessWidget {
     this.settings,
     this.packageInfoLoader,
     this.lastSyncedAtOf,
+    this.refreshConfig,
+    this.latestVersionOf,
   });
 
   final PushUpdater? updatePushPreference;
@@ -42,6 +46,12 @@ class SettingsScreen extends StatelessWidget {
   /// Injectable for tests; forwarded to [SettingsBloc].
   final DateTime? Function()? lastSyncedAtOf;
 
+  /// Injectable for tests; forwarded to [SettingsBloc].
+  final Future<bool> Function()? refreshConfig;
+
+  /// Injectable for tests; forwarded to [SettingsBloc].
+  final String Function()? latestVersionOf;
+
   @override
   Widget build(BuildContext context) {
     return BlocProvider(
@@ -50,17 +60,22 @@ class SettingsScreen extends StatelessWidget {
         updatePushPreference: updatePushPreference,
         packageInfoLoader: packageInfoLoader,
         lastSyncedAtOf: lastSyncedAtOf,
+        refreshConfig: refreshConfig,
+        latestVersionOf: latestVersionOf,
       ),
       child: const _SettingsView(),
     );
   }
 }
 
-/// Formats [dt] for the "資料庫狀態" freshness row: same-day syncs read
-/// "今日 HH:mm"; anything older reads "MM/dd HH:mm" so a stale sync is
+/// Formats [dt] for the data-source freshness row: same-day syncs read
+/// "today HH:mm"; anything older reads "MM/dd HH:mm" so a stale sync is
 /// visibly stale rather than silently rendered like a fresh one.
-String formatSyncFreshness(DateTime? dt) {
-  if (dt == null) return '尚未同步';
+///
+/// Only the same-day form is localized — the older form is date + clock, which
+/// carries no words to translate.
+String formatSyncFreshness(AppI18n i18n, DateTime? dt) {
+  if (dt == null) return i18n.settingsSyncNever;
   final local = dt.toLocal();
   final now = DateTime.now();
   final isToday =
@@ -68,44 +83,101 @@ String formatSyncFreshness(DateTime? dt) {
       local.month == now.month &&
       local.day == now.day;
   final time = DateFormat('HH:mm').format(local);
-  return isToday ? '今日 $time' : '${DateFormat('MM/dd').format(local)} $time';
+  return isToday
+      ? i18n.settingsSyncToday(time)
+      : '${DateFormat('MM/dd').format(local)} $time';
 }
 
 class _SettingsView extends StatelessWidget {
   const _SettingsView();
 
-  Future<void> _pickAppearance(
+  /// Runs the shared single-choice picker screen over [values], which the
+  /// picker identifies by label rather than by enum — so every label is
+  /// resolved once, here, against the locale in force when the sheet opens.
+  Future<T?> _pick<T>(
     BuildContext context,
-    Appearance current,
+    String route,
+    List<T> values,
+    T current,
+    String Function(T) labelOf,
   ) async {
     final result = await context.push<String>(
-      AppRoutes.settingsAppearance,
+      route,
       extra: {
-        'options': Appearance.values.map((e) => e.label).toList(),
-        'selected': current.label,
+        'options': [for (final v in values) labelOf(v)],
+        'selected': labelOf(current),
       },
     );
-    if (result != null && context.mounted) {
-      final picked = Appearance.values.firstWhere(
-        (e) => e.label == result,
-        orElse: () => current,
-      );
+    if (result == null || !context.mounted) return null;
+    return values.firstWhere(
+      (v) => labelOf(v) == result,
+      orElse: () => current,
+    );
+  }
+
+  Future<void> _pickAppearance(
+    BuildContext context,
+    AppI18n i18n,
+    Appearance current,
+  ) async {
+    final picked = await _pick(
+      context,
+      AppRoutes.settingsAppearance,
+      Appearance.values,
+      current,
+      (e) => e.labelOf(i18n),
+    );
+    if (picked != null && context.mounted) {
       context.read<SettingsBloc>().add(AppearanceSelected(picked));
+    }
+  }
+
+  /// Picks the app's language. The choice writes through to the settings box,
+  /// which the root app listens on, so the whole UI re-renders in the new
+  /// locale without a restart.
+  Future<void> _pickLanguage(
+    BuildContext context,
+    AppI18n i18n,
+    Language current,
+  ) async {
+    final picked = await _pick(
+      context,
+      AppRoutes.settingsLanguage,
+      Language.values,
+      current,
+      (e) => e.labelOf(i18n),
+    );
+    if (picked != null && context.mounted) {
+      context.read<SettingsBloc>().add(LanguageSelected(picked));
+    }
+  }
+
+  /// Picks the rider's ticket type, on the shared single-choice picker screen.
+  Future<void> _pickFareType(
+    BuildContext context,
+    AppI18n i18n,
+    FareType current,
+  ) async {
+    final picked = await _pick(
+      context,
+      AppRoutes.settingsFareType,
+      FareType.values,
+      current,
+      (e) => e.labelOf(i18n),
+    );
+    if (picked != null && context.mounted) {
+      context.read<SettingsBloc>().add(FareTypeSelected(picked));
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return BlocListener<SettingsBloc, SettingsState>(
-      // Announce dev mode only on the false -> true unlock transition.
-      listenWhen: (prev, curr) => !prev.devMode && curr.devMode,
-      listener: (context, state) => AppSnackbar.show(context, '開發者模式已啟用'),
-      child: BlocBuilder<SettingsBloc, SettingsState>(builder: _buildBody),
-    );
+    return BlocBuilder<SettingsBloc, SettingsState>(builder: _buildBody);
   }
 
   Widget _buildBody(BuildContext context, SettingsState state) {
     final bloc = context.read<SettingsBloc>();
+    final i18n = AppI18n.of(context);
     final topPadding = MediaQuery.paddingOf(context).top;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
@@ -116,7 +188,7 @@ class _SettingsView extends StatelessWidget {
           SliverPersistentHeader(
             pinned: true,
             delegate: _LargeTitleHeader(
-              title: '設定',
+              title: i18n.settingsTitle,
               topPadding: topPadding,
               reduceMotion: reduceMotion,
             ),
@@ -126,151 +198,102 @@ class _SettingsView extends StatelessWidget {
             sliver: SliverList.list(
               children: [
                 _SettingsSection(
-                  title: '外觀與語言',
+                  title: i18n.settingsSectionAppearance,
                   children: [
                     _SettingsRow(
                       icon: Icons.dark_mode_outlined,
-                      label: '外觀',
-                      value: state.appearance.label,
+                      label: i18n.settingsAppearance,
+                      value: state.appearance.labelOf(i18n),
                       chevron: true,
-                      onTap: () => _pickAppearance(context, state.appearance),
+                      onTap: () =>
+                          _pickAppearance(context, i18n, state.appearance),
                     ),
-                    // Language selection is memory-only (not wired to
-                    // MaterialApp's locale), so the picker is disabled rather
-                    // than offered as a working affordance (F48).
-                    const _SettingsRow(
+                    _SettingsRow(
                       icon: Icons.language_rounded,
-                      label: '語言',
-                      comingSoon: true,
+                      label: i18n.settingsLanguage,
+                      value: state.language.labelOf(i18n),
+                      chevron: true,
+                      onTap: () => _pickLanguage(context, i18n, state.language),
                     ),
-                    _SettingsSwitchRow(
-                      icon: Icons.text_fields_rounded,
-                      label: '大字體模式',
-                      value: state.largeText,
-                      onChanged: (v) => bloc.add(LargeTextToggled(value: v)),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                _SettingsSection(
-                  title: '導航',
-                  // Row-level explanation moved to a group footer (HIG
-                  // footnote): the switch row stays a single scannable line.
-                  footer: '在鎖定畫面、動態島與狀態列顯示班次即時資訊。',
-                  children: [
-                    _SettingsSwitchRow(
-                      icon: Icons.dashboard_customize_outlined,
-                      label: '即時動態',
-                      value: state.liveActivityEnabled,
-                      onChanged: (v) => bloc.add(LiveActivityToggled(value: v)),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 24),
-                _SettingsSection(
-                  title: '隱私與資料',
-                  footer: '匿名的使用與當機資料協助我們改善 App，不含個人身分資訊，可隨時關閉。',
-                  children: [
                     _SettingsSwitchRow(
                       icon: Icons.notifications_none_rounded,
-                      label: '推播通知',
+                      label: i18n.settingsPush,
                       value: state.pushEnabled,
                       onChanged: state.pushUpdating
                           ? null
                           : (v) => bloc.add(PushToggled(value: v)),
                     ),
-                    _SettingsSwitchRow(
-                      icon: Icons.analytics_outlined,
-                      label: 'Analytics 使用資料',
-                      value: state.analyticsEnabled,
-                      onChanged: (value) =>
-                          bloc.add(AnalyticsToggled(value: value)),
-                    ),
-                    _SettingsSwitchRow(
-                      icon: Icons.bug_report_outlined,
-                      label: 'Crashlytics 錯誤回報',
-                      value: state.crashlyticsEnabled,
-                      onChanged: (value) =>
-                          bloc.add(CrashlyticsToggled(value: value)),
+                    if (!Platform.isAndroid) ...[
+                        _SettingsSwitchRow(
+                          icon: Icons.dashboard_customize_outlined,
+                          label: i18n.settingsLiveActivity,
+                          value: state.liveActivityEnabled,
+                          onChanged: (v) =>
+                              bloc.add(LiveActivityToggled(value: v)),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 24),
+                _SettingsSection(
+                  title: i18n.settingsSectionFare,
+                  // The setting is worth explaining once here rather than
+                  // repeating a picker on every fare on every screen: it is
+                  // set once and read everywhere.
+                  footer: i18n.settingsFareFooter,
+                  children: [
+                    _SettingsRow(
+                      icon: Icons.confirmation_number_outlined,
+                      label: i18n.settingsFareType,
+                      value: state.fareType.labelOf(i18n),
+                      chevron: true,
+                      onTap: () => _pickFareType(context, i18n, state.fareType),
                     ),
                   ],
                 ),
                 const SizedBox(height: 24),
                 _SettingsSection(
-                  title: '關於',
+                  title: i18n.settingsSectionAbout,
                   children: [
-                    // These destinations don't exist yet; a live chevron with
-                    // an empty handler would be a dead affordance (F45), so
-                    // each row is disabled with a static "即將推出" marker.
-                    const _SettingsRow(
+                    // FAQ and the privacy policy have no destination yet; a
+                    // live chevron with an empty handler would be a dead
+                    // affordance (F45), so each is disabled with a static
+                    // coming-soon marker until it has somewhere to go.
+                    _SettingsRow(
                       icon: Icons.help_outline_rounded,
-                      label: '常見問題 FAQ',
+                      label: i18n.settingsFaq,
                       comingSoon: true,
                     ),
-                    const _SettingsRow(
-                      icon: Icons.bug_report_outlined,
-                      label: '回報問題',
-                      comingSoon: true,
+                    _SettingsSwitchRow(
+                      icon: Icons.vibration_rounded,
+                      label: i18n.settingsShakeToReport,
+                      value: state.shakeToReport,
+                      onChanged: (v) =>
+                          bloc.add(ShakeToReportToggled(value: v)),
                     ),
-                    const _SettingsRow(
+                    _SettingsRow(
                       icon: Icons.lock_outline_rounded,
-                      label: '隱私權政策',
+                      label: i18n.settingsPrivacyPolicy,
                       comingSoon: true,
                     ),
                     _SettingsRow(
                       icon: Icons.info_outline_rounded,
-                      label: '目前版本',
+                      label: i18n.settingsAppVersion,
                       value: state.appVersion.isEmpty ? '—' : state.appVersion,
                       monoValue: true,
-                      onTap: () => bloc.add(const VersionTapped()),
                     ),
+                    _UpdateCheckRow(state: state, bloc: bloc),
                     if (FirebaseGate.appEnv != 'prod' &&
                         FirebaseGate.appEnv != 'production')
-                      const _SettingsRow(
+                      _SettingsRow(
                         icon: Icons.developer_mode_rounded,
-                        label: '環境',
+                        label: i18n.settingsEnvironment,
                         value: FirebaseGate.appEnv,
                       ),
                   ],
                 ),
                 const SizedBox(height: 24),
-                _SettingsSection(
-                  title: '資料庫狀態',
-                  footer: '離線搜尋所用的靜態班表。每日凌晨自動同步。',
-                  children: [
-                    _SettingsRow(
-                      icon: Symbols.database_rounded,
-                      label: 'TDX 靜態資料',
-                      value: formatSyncFreshness(state.powerSyncLastSyncedAt),
-                      monoValue: true,
-                      valueColor: state.powerSyncLastSyncedAt == null
-                          ? null
-                          : AppTheme.statusArrivingText,
-                      statusIcon: state.powerSyncLastSyncedAt == null
-                          ? null
-                          : Icons.check_circle_rounded,
-                    ),
-                  ],
-                ),
-                // UI Kit routes exist only in debug builds, so the unlock
-                // affordance is compiled out of release builds with them.
-                if (kDebugMode && state.devMode) ...[
-                  const SizedBox(height: 24),
-                  _SettingsSection(
-                    title: '開發者',
-                    children: [
-                      _SettingsRow(
-                        icon: Icons.palette_outlined,
-                        label: 'UI Kit',
-                        chevron: true,
-                        onTap: () {
-                          unawaited(HapticService.instance.lightTap());
-                          unawaited(context.push(AppRoutes.uiKit));
-                        },
-                      ),
-                    ],
-                  ),
-                ],
+                const _TdxAttribution(),
                 _AppIdentityFooter(version: state.appVersion),
               ],
             ),
@@ -300,6 +323,14 @@ class _LargeTitleHeader extends SliverPersistentHeaderDelegate {
   static const double _bar = 44;
   static const double _largeBlock = 52;
 
+  // BackdropFilter re-samples the backdrop on every distinct sigma, so a
+  // sigma that tracks scroll offset continuously forces a fresh blur pass
+  // almost every frame. Quantizing to a handful of steps lets consecutive
+  // scroll frames share the same sigma (and its cached blur) while still
+  // reading as a smooth collapse; the translucent fill's alpha keeps
+  // tracking scroll continuously so the crossfade itself stays smooth.
+  static const int _blurSteps = 6;
+
   @override
   double get minExtent => topPadding + _bar;
 
@@ -314,6 +345,7 @@ class _LargeTitleHeader extends SliverPersistentHeaderDelegate {
     // Each layer fades on its own eased curve so the crossfade reads as one
     // material collapsing, not two opacities racing.
     final chrome = AppMotion.easeOut.transform(t);
+    final blurChrome = (chrome * _blurSteps).round() / _blurSteps;
     final compact = AppMotion.easeInOut.transform(
       ((t - 0.35) / 0.65).clamp(0.0, 1.0),
     );
@@ -330,8 +362,8 @@ class _LargeTitleHeader extends SliverPersistentHeaderDelegate {
               child: ClipRect(
                 child: BackdropFilter(
                   filter: ImageFilter.blur(
-                    sigmaX: 18 * chrome,
-                    sigmaY: 18 * chrome,
+                    sigmaX: 18 * blurChrome,
+                    sigmaY: 18 * blurChrome,
                   ),
                   child: DecoratedBox(
                     decoration: BoxDecoration(
@@ -408,8 +440,8 @@ class _BackButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
-      onTap: () => Navigator.of(context, rootNavigator: true).maybePop(),
-      semanticLabel: '返回',
+      onTap: () => context.pop(),
+      semanticLabel: AppI18n.of(context).commonBack,
       child: SizedBox(
         width: 44,
         height: 44,
@@ -545,13 +577,105 @@ class _SettingsSection extends StatelessWidget {
   }
 }
 
+class _TdxAttribution extends StatelessWidget {
+  const _TdxAttribution();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final i18n = AppI18n.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(6, 12, 6, 0),
+      child: Text(
+        i18n.settingsSource,
+        style: AppTextStyles.bodySmall.copyWith(
+          color: cs.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
+/// 設定 › 關於 › 檢查更新.
+///
+/// One row, five states, and the label itself carries the change: once a
+/// release is found the row stops being a check and becomes 「前往更新」, so
+/// the affordance matches what a tap now does instead of needing a caption to
+/// explain it. The result lives in the trailing slot rather than a toast — the
+/// answer belongs next to the question, and a rider who taps twice sees the
+/// text swap to 「檢查中⋯」 both times, so the row never looks unresponsive.
+///
+/// [UpdateCheck.failed] is rendered, not swallowed: offline, this row says it
+/// could not check rather than claiming the build is current.
+class _UpdateCheckRow extends StatelessWidget {
+  const _UpdateCheckRow({required this.state, required this.bloc});
+
+  final SettingsState state;
+  final SettingsBloc bloc;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final i18n = AppI18n.of(context);
+    final found = state.updateCheck == UpdateCheck.available;
+    // A found release is only actionable with a store link that passes the
+    // allowlist; without one the row states the version and stops being
+    // tappable, rather than offering a chevron that goes nowhere (F45).
+    final url = found ? storeUrl() : null;
+    // The label follows what a tap actually does, not merely what was found:
+    // 「前往更新」 on a row that cannot navigate anywhere would be the same
+    // dead affordance one level up from the chevron.
+    final label = switch ((found, url)) {
+      (true, != null) => i18n.settingsUpdateGo,
+      (true, _) => i18n.settingsUpdateAvailable,
+      _ => i18n.settingsUpdateCheck,
+    };
+
+    final value = switch (state.updateCheck) {
+      UpdateCheck.idle => null,
+      UpdateCheck.checking => i18n.settingsUpdateChecking,
+      UpdateCheck.upToDate => i18n.settingsUpdateUpToDate,
+      UpdateCheck.failed => i18n.settingsUpdateFailed,
+      UpdateCheck.available => state.latestVersion,
+    };
+
+    return _SettingsRow(
+      icon: Icons.system_update_rounded,
+      label: label,
+      value: value,
+      // Versions are figures, so they get mono like every other one; the
+      // status strings are prose and stay in the body face.
+      monoValue: found,
+      // Ink, not a status colour: the design system reserves hue for transit
+      // line identity, so a found release is emphasised by contrast alone.
+      valueColor: found ? cs.onSurface : null,
+      chevron: url != null,
+      onTap: switch (state.updateCheck) {
+        UpdateCheck.checking => null,
+        UpdateCheck.available =>
+          url == null
+              ? null
+              : () {
+                  unawaited(HapticService.instance.lightTap());
+                  unawaited(
+                    launchUrl(url, mode: LaunchMode.externalApplication),
+                  );
+                },
+        _ => () {
+          unawaited(HapticService.instance.lightTap());
+          bloc.add(const UpdateCheckRequested());
+        },
+      },
+    );
+  }
+}
+
 class _SettingsRow extends StatelessWidget {
   const _SettingsRow({
     required this.icon,
     required this.label,
     this.value,
     this.valueColor,
-    this.statusIcon,
     this.chevron = false,
     this.monoValue = false,
     this.onTap,
@@ -561,7 +685,6 @@ class _SettingsRow extends StatelessWidget {
   final String label;
   final String? value;
   final Color? valueColor;
-  final IconData? statusIcon;
   final bool chevron;
 
   /// Renders the trailing value in IBM Plex Mono (tabular): versions and sync
@@ -569,7 +692,7 @@ class _SettingsRow extends StatelessWidget {
   final bool monoValue;
   final VoidCallback? onTap;
 
-  /// Renders a static, disabled "即將推出" marker instead of the usual
+  /// Renders a static, disabled coming-soon marker instead of the usual
   /// value/chevron and drops the tap handler, for a destination that
   /// doesn't exist yet (F45, F48). Never pulses — the design system reserves
   /// motion for live state, not placeholders.
@@ -578,6 +701,7 @@ class _SettingsRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final i18n = AppI18n.of(context);
     // Trailing detail is secondary, at label size — the label leads, the
     // value supports (HIG). Mono values keep tabular figures.
     final baseValue = monoValue ? AppTextStyles.memo : AppTextStyles.bodyLarge;
@@ -591,7 +715,9 @@ class _SettingsRow extends StatelessWidget {
       constraints: const BoxConstraints(minHeight: 48),
       child: Pressable(
         onTap: comingSoon ? null : onTap,
-        semanticLabel: comingSoon ? '$label，即將推出' : label,
+        semanticLabel: comingSoon
+            ? i18n.commonComingSoonSemantics(label)
+            : label,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 10),
           child: Row(
@@ -601,16 +727,12 @@ class _SettingsRow extends StatelessWidget {
               Expanded(child: Text(label, style: AppTextStyles.bodyLarge)),
               if (comingSoon)
                 Text(
-                  '即將推出',
+                  i18n.commonComingSoon,
                   style: AppTextStyles.bodySmall.copyWith(
                     color: cs.onSurfaceVariant,
                   ),
                 )
               else ...[
-                if (statusIcon != null) ...[
-                  Icon(statusIcon, size: 18, color: valueColor),
-                  const SizedBox(width: 6),
-                ],
                 if (value != null)
                   Text(value!, textAlign: TextAlign.right, style: valueStyle),
                 if (chevron) ...[
@@ -630,8 +752,8 @@ class _SettingsRow extends StatelessWidget {
   }
 }
 
-/// Closes the list with the app's own name and version, so "關於" isn't the
-/// only place the app identifies itself.
+/// Closes the list with the app's own name and version, so the About group
+/// isn't the only place the app identifies itself.
 class _AppIdentityFooter extends StatelessWidget {
   const _AppIdentityFooter({required this.version});
 
@@ -645,7 +767,7 @@ class _AppIdentityFooter extends StatelessWidget {
       child: Column(
         children: [
           Text(
-            '我車呢',
+            AppI18n.of(context).appName,
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onSurfaceVariant,
               fontWeight: FontWeight.w600,

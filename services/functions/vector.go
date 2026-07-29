@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,47 +15,6 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 )
-
-// busSubroutes is a bus subroute row scanned for embedding-text construction.
-type busSubroutes struct {
-	SubRouteUid  string `db:"sub_route_uid"`
-	SubRouteName string `db:"sub_route_name"`
-	City         string `db:"city"`
-	Departure    string `db:"depart"`
-	Destination  string `db:"destin"`
-}
-
-// busStationData is a bus station-group row shape for embedding-text construction.
-type busStationData struct {
-	StationUid  string `db:"station_uid"`
-	StationName string `db:"station_name"`
-	City        string `db:"city"`
-	Geom        string `db:"st_astext"`
-}
-
-// bikeStationData is a bike station row shape for embedding-text construction.
-type bikeStationData struct {
-	StationUid  string `db:"station_uid"`
-	StationName string `db:"name"`
-	City        string `db:"city"`
-	Position    string `db:"st_astext"`
-}
-
-// mrtStationData is a metro station row shape for embedding-text construction.
-type mrtStationData struct {
-	Position  string `db:"st_astext"`
-	System    string `db:"system"`
-	Name      string `db:"name"`
-	StationId string `db:"station_id"`
-}
-
-// railStationData is a TRA/THSR station row shape for embedding-text construction.
-type railStationData struct {
-	StationId string `db:"station_id"`
-	Name      string `db:"name"`
-	City      string `db:"city"`
-	Geom      string `db:"st_astext"`
-}
 
 // resp is the metadata for one item being embedded, carried alongside its input
 // text so the resulting embedding can be upserted into search_vector with the
@@ -511,7 +471,7 @@ func changeToVector(ctx context.Context, rc vectorRedis, db vectorDB, embedder e
 
 	cutoff := time.Now().UTC()
 	lower, err := rc.Get("LastTimeUpdate").Result()
-	if err != nil && err != redis.Nil {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("get vector watermark: %w", err)
 	}
 	if lower == "" {

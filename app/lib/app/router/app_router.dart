@@ -1,25 +1,28 @@
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:wheres_the_car/app/router/app_routes.dart';
-import 'package:wheres_the_car/app/router/debug_ui_kit_routes.dart';
-import 'package:wheres_the_car/core/firebase/firebase_gate.dart';
-import 'package:wheres_the_car/data/repositories/settings_repository.dart';
-import 'package:wheres_the_car/features/bike/view/bike_station_screen.dart';
-import 'package:wheres_the_car/features/bus/view/bus_route_screen.dart';
-import 'package:wheres_the_car/features/bus/view/bus_stop_screen.dart';
-import 'package:wheres_the_car/features/favorites/view/favorites_screen.dart';
-import 'package:wheres_the_car/features/go/view/go_screen.dart';
-import 'package:wheres_the_car/features/home/home_screen.dart';
-import 'package:wheres_the_car/features/metro/view/metro_screen.dart';
-import 'package:wheres_the_car/features/rail/view/rail_screen.dart';
-import 'package:wheres_the_car/features/search/view/search_screen.dart';
-import 'package:wheres_the_car/features/settings/bloc/settings_state.dart';
-import 'package:wheres_the_car/features/settings/settings_option_screen.dart';
-import 'package:wheres_the_car/features/settings/settings_screen.dart';
-import 'package:wheres_the_car/shared/widgets/main_scaffold.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart' show LatLng;
+import 'package:wheres_the_bus/app/router/app_routes.dart';
+import 'package:wheres_the_bus/core/firebase/firebase_gate.dart';
+import 'package:wheres_the_bus/data/models/fare_type.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/bike/view/bike_station_screen.dart';
+import 'package:wheres_the_bus/features/bus/view/bus_route_screen.dart';
+import 'package:wheres_the_bus/features/bus/view/bus_stop_screen.dart';
+import 'package:wheres_the_bus/features/favorites/view/favorites_screen.dart';
+import 'package:wheres_the_bus/features/feedback/view/feedback_screen.dart';
+import 'package:wheres_the_bus/features/go/model/planned_place.dart';
+import 'package:wheres_the_bus/features/go/view/go_screen.dart';
+import 'package:wheres_the_bus/features/home/home_screen.dart';
+import 'package:wheres_the_bus/features/metro/view/metro_screen.dart';
+import 'package:wheres_the_bus/features/rail/view/rail_screen.dart';
+import 'package:wheres_the_bus/features/search/view/search_screen.dart';
+import 'package:wheres_the_bus/features/settings/bloc/settings_state.dart';
+import 'package:wheres_the_bus/features/settings/settings_option_screen.dart';
+import 'package:wheres_the_bus/features/settings/settings_screen.dart';
+import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/widgets/main_scaffold.dart';
 
 Page<T> _page<T>(Widget child) => MaterialPage<T>(child: child);
 
@@ -76,10 +79,8 @@ class _DeferredAnalyticsObserver extends NavigatorObserver {
 }
 
 /// Builds the app's route graph: one [StatefulShellRoute] branch whose shell
-/// is [MainScaffold] (banners + floating NavMiniBar over the content), plus
-/// the debug-only UI Kit gallery when [includeDebugRoutes] is set.
+/// is [MainScaffold] (banners + floating NavMiniBar over the content).
 List<RouteBase> buildAppRoutes({
-  required bool includeDebugRoutes,
   bool firebaseEnabled = FirebaseGate.enabled,
 }) => [
   StatefulShellRoute.indexedStack(
@@ -97,27 +98,52 @@ List<RouteBase> buildAppRoutes({
             path: AppRoutes.settings,
             pageBuilder: (_, _) => _page(const SettingsScreen()),
             routes: [
+              // Each picker resolves its own labels rather than relying on the
+              // ones the settings screen passed through `extra`, so a cold
+              // deep link into the route lands on a fully labelled screen.
               GoRoute(
                 path: 'appearance',
-                pageBuilder: (_, state) => _settingsOptionPage<String>(
-                  state.extra,
-                  title: '外觀',
-                  options: [for (final e in Appearance.values) e.label],
-                  selected: Appearance.fromKey(
-                    SettingsRepository.instance.appearanceMode,
-                  ).label,
-                ),
+                pageBuilder: (context, state) {
+                  final i18n = AppI18n.of(context);
+                  return _settingsOptionPage<String>(
+                    state.extra,
+                    title: i18n.settingsAppearance,
+                    options: [
+                      for (final e in Appearance.values) e.labelOf(i18n),
+                    ],
+                    selected: Appearance.fromKey(
+                      SettingsRepository.instance.appearanceMode,
+                    ).labelOf(i18n),
+                  );
+                },
+              ),
+              GoRoute(
+                path: 'fare-type',
+                pageBuilder: (context, state) {
+                  final i18n = AppI18n.of(context);
+                  return _settingsOptionPage<String>(
+                    state.extra,
+                    title: i18n.settingsFareType,
+                    options: [for (final e in FareType.values) e.labelOf(i18n)],
+                    selected: SettingsRepository.instance.fareType.labelOf(
+                      i18n,
+                    ),
+                  );
+                },
               ),
               GoRoute(
                 path: 'language',
-                pageBuilder: (_, state) => _settingsOptionPage<String>(
-                  state.extra,
-                  title: '語言',
-                  options: [for (final e in Language.values) e.label],
-                  // Language is UI-only state (not persisted), so a cold link
-                  // starts from the default.
-                  selected: Language.system.label,
-                ),
+                pageBuilder: (context, state) {
+                  final i18n = AppI18n.of(context);
+                  return _settingsOptionPage<String>(
+                    state.extra,
+                    title: i18n.settingsLanguage,
+                    options: [for (final e in Language.values) e.labelOf(i18n)],
+                    selected: Language.fromKey(
+                      SettingsRepository.instance.languageCode,
+                    ).labelOf(i18n),
+                  );
+                },
               ),
             ],
           ),
@@ -142,6 +168,8 @@ List<RouteBase> buildAppRoutes({
                   stopName: args.stopName,
                   stopId: args.stopId,
                   city: args.city,
+                  lat: args.lat,
+                  lon: args.lon,
                 ),
               );
             },
@@ -154,7 +182,14 @@ List<RouteBase> buildAppRoutes({
                 state.extra,
               );
               if (args == null) return _page(RouteErrorScreen(uri: state.uri));
-              return _page(BikeStationScreen(stationUid: args.stationUid));
+              return _page(
+                BikeStationScreen(
+                  stationUid: args.stationUid,
+                  name: args.name,
+                  lat: args.lat,
+                  lon: args.lon,
+                ),
+              );
             },
           ),
           GoRoute(
@@ -175,14 +210,31 @@ List<RouteBase> buildAppRoutes({
                 _page(MetroScreen(initialStation: state.extra as String?)),
           ),
           GoRoute(
+            path: AppRoutes.feedback,
+            pageBuilder: (_, state) => _page(
+              FeedbackScreen(fromScreen: state.uri.queryParameters['from']),
+            ),
+          ),
+          GoRoute(
             path: AppRoutes.go,
-            pageBuilder: (_, _) => _page(const GoScreen()),
+            pageBuilder: (_, state) {
+              final args = GoRouteArgs.from(state.uri.queryParameters);
+              return _page(
+                GoScreen(
+                  initialDestination: args == null
+                      ? null
+                      : PlannedPlace(
+                          name: args.name,
+                          latLng: LatLng(args.lat, args.lon),
+                        ),
+                ),
+              );
+            },
           ),
         ],
       ),
     ],
   ),
-  ...debugUiKitRoutes(enabled: includeDebugRoutes),
 ];
 
 class AppRouter {
@@ -193,16 +245,14 @@ class AppRouter {
   static final GoRouter router = createRouter(navigatorKey: rootNavigatorKey);
 
   /// Production configuration behind an injectable entry point: tests create
-  /// throwaway routers pinned to a deep-link [initialLocation] or with
-  /// release-graph semantics ([includeDebugRoutes] false).
+  /// throwaway routers pinned to a deep-link [initialLocation].
   static GoRouter createRouter({
     GlobalKey<NavigatorState>? navigatorKey,
-    bool includeDebugRoutes = kDebugMode,
     String initialLocation = AppRoutes.home,
   }) => GoRouter(
     navigatorKey: navigatorKey,
     initialLocation: initialLocation,
     errorPageBuilder: (_, state) => _page(RouteErrorScreen(uri: state.uri)),
-    routes: buildAppRoutes(includeDebugRoutes: includeDebugRoutes),
+    routes: buildAppRoutes(),
   );
 }

@@ -1,5 +1,5 @@
 # Build context: repo root
-# docker build -f services/router/Dockerfile -t wheres_the_car-router .
+# docker build -f services/router/Dockerfile -t wheres_the_bus-router .
 
 ARG PROTOC_GEN_GO_VERSION=v1.36.11
 ARG PROTOC_GEN_GO_GRPC_VERSION=v1.6.2

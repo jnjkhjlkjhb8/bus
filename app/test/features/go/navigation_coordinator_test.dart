@@ -3,16 +3,16 @@ import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:wheres_the_car/data/models/plan_models.dart';
-import 'package:wheres_the_car/data/repositories/maas_repository.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_bloc.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_event.dart';
-import 'package:wheres_the_car/features/go/bloc/plan_state.dart';
-import 'package:wheres_the_car/features/go/navigation/navigation_coordinator.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_car/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_car/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/repositories/maas_repository.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_event.dart';
+import 'package:wheres_the_bus/features/go/bloc/plan_state.dart';
+import 'package:wheres_the_bus/features/go/navigation/navigation_coordinator.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
 
 void main() {
   late PlanBloc planBloc;
@@ -21,7 +21,14 @@ void main() {
 
   setUp(() {
     planBloc = PlanBloc(repository: _FakeMaasRepository());
-    journeyBloc = JourneySessionBloc(etaStream: (_) => const Stream.empty());
+    journeyBloc = JourneySessionBloc(
+      etaStream: (_) => const Stream.empty(),
+      // This bloc's own setting-gate is exercised by NavigationCoordinator's
+      // `liveActivityEnabled` closure in each test below, not by this one;
+      // leaving the default here would hit SettingsRepository (and an
+      // unopened Hive box) instead.
+      liveActivityEnabled: () => true,
+    );
     pipValues = [];
   });
 
@@ -1085,7 +1092,7 @@ class _FakeMaasRepository implements MaasRepository {
   final List<PlanRoute> routes;
 
   @override
-  Future<PlanResult> plan({
+  Stream<PlanUpdate> planStream({
     required double fromLat,
     required double fromLon,
     required double toLat,
@@ -1102,5 +1109,5 @@ class _FakeMaasRepository implements MaasRepository {
     int firstMileTime = 10,
     int lastMileMode = 0,
     int lastMileTime = 10,
-  }) async => PlanResult(routes: routes);
+  }) => Stream.value((result: PlanResult(routes: routes), complete: true));
 }

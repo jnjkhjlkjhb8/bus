@@ -1,4 +1,4 @@
-import 'package:wheres_the_car/features/live_activity/bloc/stop_board_state.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_state.dart';
 
 /// Pure derivation for the stop screen's Live Activity toggle button. Kept
 /// out of the screen widget so it can be unit-tested directly.

@@ -1,5 +1,5 @@
-import 'package:wheres_the_car/data/generated/firebase.pb.dart';
-import 'package:wheres_the_car/data/models/firebase_models.dart';
+import 'package:wheres_the_bus/data/generated/firebase.pb.dart';
+import 'package:wheres_the_bus/data/models/firebase_models.dart';
 
 class FirebaseDecoder {
   const FirebaseDecoder._();
@@ -13,9 +13,6 @@ class FirebaseDecoder {
     platform: s.identity.platform,
     appVersion: s.identity.appVersion,
     pushEnabled: s.prefs.pushEnabled,
-    analyticsEnabled: s.prefs.analyticsEnabled,
-    crashlyticsEnabled: s.prefs.crashlyticsEnabled,
-    performanceEnabled: s.prefs.performanceEnabled,
   );
 
   ArrivalReminderReceipt decodeReminder(ArrivalReminder r) =>

@@ -47,7 +47,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
     }
 
     @available(iOS 16.1, *)
-    private func updateActivity(args: [String: Any], result: FlutterResult) {
+    private func updateActivity(args: [String: Any], result: @escaping FlutterResult) {
         guard let id = activityID,
               let activity = Activity<BusLiveActivityAttributes>.activities.first(where: { $0.id == id })
         else { result(nil); return }
@@ -58,7 +58,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
     }
 
     @available(iOS 16.1, *)
-    private func stopActivity(result: FlutterResult) {
+    private func stopActivity(result: @escaping FlutterResult) {
         guard let id = activityID,
               let activity = Activity<BusLiveActivityAttributes>.activities.first(where: { $0.id == id })
         else { result(nil); return }
@@ -84,7 +84,13 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
             plate: args["plate"] as? String,
             routeNumber: args["routeNumber"] as? String,
             stopName: args["stopName"] as? String,
-            routes: boardRows(from: args["routes"])
+            routes: boardRows(from: args["routes"]),
+            lineCode: args["lineCode"] as? String,
+            lineColorHex: args["lineColorHex"] as? String,
+            stationCount: args["stationCount"] as? Int,
+            targetIndex: args["targetIndex"] as? Int,
+            currentIndex: args["currentIndex"] as? Int,
+            endedStatus: args["endedStatus"] as? String
         )
     }
 

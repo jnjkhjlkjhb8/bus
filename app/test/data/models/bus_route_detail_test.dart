@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_car/data/models/bus_route_detail.dart';
+import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
 
 void main() {
   test('tripsForDirection returns only that direction', () {

@@ -14,7 +14,7 @@ import (
 // during a wait. The last observed error is returned once attempts run out.
 func Retry(ctx context.Context, attempts int, base time.Duration, fn func() error) error {
 	var err error
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
