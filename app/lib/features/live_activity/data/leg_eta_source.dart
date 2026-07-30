@@ -84,7 +84,15 @@ Stream<Duration?> scheduledCountdown(
 /// Everything the Live Activity needs for a rail track session comes from here:
 /// the remaining-stop count, the arrival ETA, the continuous progress fraction
 /// (inferred from the timetable + clock), and the true next-stop name.
-({int remainingStops, Duration etaToAlight, double progress, String nextStop})
+({
+  int remainingStops,
+  Duration etaToAlight,
+  double progress,
+  String nextStop,
+  bool aboard,
+  Duration etaToBoard,
+  Duration delay,
+})
 railProgress(List<RailStopSchedule> schedule, Duration delay, DateTime now) {
   final n = schedule.length;
   DateTime eff(int i) => schedule[i].scheduledArrival.add(delay);
@@ -114,11 +122,24 @@ railProgress(List<RailStopSchedule> schedule, Duration delay, DateTime now) {
   // The stop the train is heading to (the alight once it's the last hop).
   final nextIdx = passed >= n ? n - 1 : (passed == 0 ? 0 : passed);
 
+  // Nothing has passed yet, so the train has not reached the stop the rider is
+  // standing at: they are waiting on the platform, not riding. The card has to
+  // say so — counting 還剩 N 站 at someone who has not boarded is a lie about
+  // where they are, and the number would not move for the whole wait.
+  final aboard = passed > 0;
+  final toBoardRaw = eff(0).difference(now);
+
   return (
     remainingStops: remaining,
     etaToAlight: eta,
     progress: progress,
     nextStop: schedule[nextIdx].name,
+    aboard: aboard,
+    etaToBoard: toBoardRaw.isNegative ? Duration.zero : toBoardRaw,
+    // Handed back rather than only folded into the times: the waiting card
+    // names the slip ("08:20 開 · 誤點 5 分") instead of quietly restating the
+    // timetable, because a rider compares it against the printed board.
+    delay: delay,
   );
 }
 
@@ -128,6 +149,9 @@ typedef RailTrackFrame = ({
   Duration etaToAlight,
   double progress,
   String nextStop,
+  bool aboard,
+  Duration etaToBoard,
+  Duration delay,
 });
 
 typedef RailTrackStream = Stream<RailTrackFrame> Function(JourneyLeg leg);

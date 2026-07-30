@@ -506,6 +506,7 @@ class _NavSheet extends StatelessWidget {
                 for (final (i, s) in sections.indexed)
                   _StepRow(
                     section: s,
+                    waitMinutes: waitMinutesBefore(sections, i),
                     isFirst: i == 0,
                     isLast: i == sections.length - 1,
                     status: i < activeLeg
@@ -923,12 +924,16 @@ class _StepRow extends StatelessWidget {
     required this.status,
     required this.isFirst,
     required this.isLast,
+    this.waitMinutes = 0,
   });
 
   final PlanSection section;
   final _StepStatus status;
   final bool isFirst;
   final bool isLast;
+
+  /// Scheduled wait before this leg departs; 0 hides the line.
+  final int waitMinutes;
 
   @override
   Widget build(BuildContext context) {
@@ -1010,6 +1015,13 @@ class _StepRow extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: AppTextStyles.bodySmall.copyWith(color: subColor),
                     ),
+                  ],
+                  // Waiting is stated on the leg it delays, not folded into the
+                  // walk that got the rider here; it takes the row's own done
+                  // dimming so a finished transfer recedes with its leg.
+                  if (waitMinutes > 0) ...[
+                    const SizedBox(height: 2),
+                    _WaitLine(minutes: waitMinutes, color: subColor),
                   ],
                 ],
               ),

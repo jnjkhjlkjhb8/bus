@@ -129,6 +129,7 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         resValue("string", "google_maps_api_key", dartEnvironmentVariables.GOOGLE_MAPS_API_KEY)
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     kotlinOptions {
         jvmTarget = "17"
@@ -170,7 +171,27 @@ flutter {
 }
 
 dependencies {
+    // Pinned explicitly rather than inherited from the Flutter embedding:
+    // the alight-tracking Live Update is built entirely through
+    // NotificationCompat (ProgressStyle, setRequestPromotedOngoing,
+    // setShortCriticalText), which needs core 1.16+. Letting the transitive
+    // version decide would silently drop the promoted card back to a plain
+    // notification on a Flutter upgrade.
+    // 1.17.0, not the newest: core 1.18+ requires compileSdk 37 / AGP 9.1,
+    // which Flutter's pinned toolchain does not reach yet. 1.17 is the last
+    // line that builds against compileSdk 36 and still carries ProgressStyle
+    // (added in 1.16.0).
+    implementation "androidx.core:core-ktx:1.17.0"
     testImplementation "junit:junit:4.13.2"
+    // The tracking card can only be judged on a real Android 16+ device: the
+    // promotion decision (hasPromotableCharacteristics) lives in the platform,
+    // not in our builder.
+    // Pinned to 1.3.0 by integration_test (Flutter's consistent resolution
+    // rejects anything newer), and deliberately just the runner: the
+    // androidx.test:core that androidx.test.ext:junit drags in at this
+    // version declares activities without android:exported and fails the
+    // manifest merge on target 12+.
+    androidTestImplementation "androidx.test:runner:1.3.0"
 }
 
 // Fail closed before any release task executes: neither a missing/blank

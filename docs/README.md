@@ -15,4 +15,5 @@
 | `docs/remote-config.md` | Remote Config 候選項目與實作規劃 |
 | `docs/slo.md` | SLI/SLO 定義與測量來源 |
 | `docs/runbooks/` | Operator runbook（deploy、incident response、backup/restore、Redis loss、單機 live capacity） |
+| `docs/agents/` | agent 工作規則：`workflow.md`、`issue-tracker.md`、`triage-labels.md`、`domain.md` |
 

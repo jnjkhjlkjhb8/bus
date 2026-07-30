@@ -11,8 +11,6 @@ import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event
 import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
 import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
 
-typedef PipNavigationSetter = Future<void> Function({required bool navigating});
-
 // GPS-noise tunables for decideNavAction. Bump these if real-world
 // testing shows false triggers; the ceiling is "wide enough to fire near a
 // stop, narrow enough not to fire from the next block over".
@@ -130,7 +128,6 @@ class NavigationCoordinator {
   NavigationCoordinator({
     required PlanBloc planBloc,
     required JourneySessionBloc journeySessionBloc,
-    required PipNavigationSetter setPipNavigating,
     required bool Function() liveActivityEnabled,
     Stream<Position> Function()? positions,
     // `arrived` mirrors advance()'s NavigationAdvanceResult.arrived; keeping
@@ -144,7 +141,6 @@ class NavigationCoordinator {
     void Function(Position fix)? onFollowUpdate,
   }) : _planBloc = planBloc,
        _journeySessionBloc = journeySessionBloc,
-       _setPipNavigating = setPipNavigating,
        _liveActivityEnabled = liveActivityEnabled,
        _positions = positions,
        _onAutoAction = onAutoAction,
@@ -153,7 +149,6 @@ class NavigationCoordinator {
 
   final PlanBloc _planBloc;
   final JourneySessionBloc _journeySessionBloc;
-  final PipNavigationSetter _setPipNavigating;
   final bool Function() _liveActivityEnabled;
   final Stream<Position> Function()? _positions;
   // Mirrors the constructor parameter's positional trio; see its comment.
@@ -199,7 +194,6 @@ class NavigationCoordinator {
     final legs = JourneyLeg.legsFromRoute(route);
     if (legs.isNotEmpty && _liveActivityEnabled()) {
       _journeySessionBloc.add(JourneyStarted(legs: legs));
-      await _setPipNavigating(navigating: true);
     }
     _lastAutoAdvancedLeg = null;
     _lastAutoBoardedLeg = null;
@@ -322,7 +316,6 @@ class NavigationCoordinator {
     unawaited(_posSub?.cancel());
     _planBloc.add(const NavigationEnded());
     _journeySessionBloc.add(const JourneyCancelled());
-    await _setPipNavigating(navigating: false);
   }
 
   /// Called when JourneySession reaches `done` on its own (last transit leg
@@ -331,7 +324,6 @@ class NavigationCoordinator {
   /// walk section after the last transit leg must keep running so the
   /// autopilot (or the manual button) can finish it.
   Future<bool> reconcileJourneyDone() async {
-    await _setPipNavigating(navigating: false);
     final activeLeg = _planBloc.state.activeLegIndex;
     if (activeLeg == null) {
       unawaited(_posSub?.cancel());

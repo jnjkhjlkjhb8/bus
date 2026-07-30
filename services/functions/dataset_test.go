@@ -9,12 +9,23 @@ import "testing"
 func TestDatasetRegistryConsistency(t *testing.T) {
 	reg := datasetRegistry()
 
-	// Every fetched table is consumed: it has a standalone loader or is folded
-	// into another dataset's multi-table loader. A fetched-but-unconsumed table
-	// would silently waste a nightly request.
+	// Every fetched table is consumed: it has a standalone loader, is folded into
+	// another dataset's multi-table loader, or is an exportOnly table the GTFS
+	// feed builder reads straight out of raw_tdx. A fetched table in none of
+	// those categories would silently waste a nightly request.
 	for _, d := range reg {
-		if d.fetched() && d.loadKey == "" && d.foldedInto == "" {
-			t.Errorf("fetched dataset %q has neither a loader nor foldedInto", d.rawTable)
+		if d.fetched() && d.loadKey == "" && d.foldedInto == "" && !d.exportOnly {
+			t.Errorf("fetched dataset %q has neither a loader, foldedInto, nor exportOnly", d.rawTable)
+		}
+	}
+
+	// exportOnly is the absence of a loader, not an alternative spelling of one:
+	// a table carrying both would be loaded and silently ignored by this file's
+	// other invariants.
+	for _, d := range reg {
+		if d.exportOnly && (d.loadKey != "" || d.foldedInto != "") {
+			t.Errorf("exportOnly dataset %q also has loadKey %q / foldedInto %q",
+				d.rawTable, d.loadKey, d.foldedInto)
 		}
 	}
 

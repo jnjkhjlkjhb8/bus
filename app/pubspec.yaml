@@ -110,15 +110,11 @@ flutter:
   # To add assets to your application, add an assets section, like this:
   assets:
     - assets/grpc.crt
-    - assets/tdxlogo.png
     - assets/marker/
-    - assets/sprites/
     - assets/rails/
     - assets/rails/notes/
     - assets/mrt/
     - assets/mrt/TRTC/
-    - assets/mrt/KRTC/
-    - assets/mrt/KLRT/
   fonts:
     - family: IBMPlexSans
       fonts:

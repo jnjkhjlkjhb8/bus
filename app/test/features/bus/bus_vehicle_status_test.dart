@@ -57,16 +57,28 @@ void main() {
       expect(a.stale, isTrue);
     });
 
-    test('very recent reads as 剛剛', () {
-      expect(busGpsAge(zhStrings, at(5), now).text, '剛剛');
-    });
-
-    test('seconds bucket', () {
+    test('seconds are spelled out from the very first one', () {
+      // No "剛剛" band at the front: the bubble ticks once a second, so a bucket
+      // over the freshest part of a fix's life would read as a frozen clock.
+      expect(busGpsAge(zhStrings, at(0), now).text, '0秒前');
+      expect(busGpsAge(zhStrings, at(5), now).text, '5秒前');
       expect(busGpsAge(zhStrings, at(22), now).text, '22秒前');
+      expect(busGpsAge(zhStrings, at(59), now).text, '59秒前');
     });
 
-    test('minutes bucket', () {
+    test(
+      'a fix ahead of the device clock clamps rather than going negative',
+      () {
+        // Clock skew, not time travel.
+        expect(busGpsAge(zhStrings, at(-4), now).text, '0秒前');
+      },
+    );
+
+    test('minutes take over at 60', () {
+      expect(busGpsAge(zhStrings, at(60), now).text, '1分前');
       expect(busGpsAge(zhStrings, at(90), now).text, '1分前');
+      expect(busGpsAge(zhStrings, at(120), now).text, '2分前');
+      expect(busGpsAge(zhStrings, at(179), now).text, '2分前');
     });
 
     test('past 3 minutes is stale', () {

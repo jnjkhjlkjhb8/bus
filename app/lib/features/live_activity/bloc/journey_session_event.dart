@@ -9,8 +9,14 @@ class JourneyStarted extends JourneySessionEvent {
     required this.legs,
     this.trackOnly = false,
     this.plate,
+    this.leadStops = 1,
   });
   final List<JourneyLeg> legs;
+
+  /// The rider's 提前站數. Decides when the tracking card's bar turns amber —
+  /// the same threshold the arrival reminder fires on, so one number defines
+  /// "close" for both.
+  final int leadStops;
 
   /// A standalone arrival-countdown session (bus stop / rail departure
   /// tracking): the session never rides and ends itself once the tracked
@@ -73,11 +79,23 @@ class RailTrackTicked extends JourneySessionEvent {
     required this.remainingStops,
     required this.progress,
     required this.nextStop,
+    required this.aboard,
+    required this.etaToBoard,
+    required this.delay,
     required this.generation,
   });
   final Duration eta;
   final int remainingStops;
   final double progress;
   final String nextStop;
+
+  /// Whether the train has reached the boarding stop yet. False means the
+  /// rider is still on the platform and the card counts minutes to departure
+  /// rather than stops to the alight.
+  final bool aboard;
+  final Duration etaToBoard;
+
+  /// Live delay against the timetable. Zero on THSR, which has no live feed.
+  final Duration delay;
   final int generation;
 }

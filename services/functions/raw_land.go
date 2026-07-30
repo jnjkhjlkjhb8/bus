@@ -134,10 +134,12 @@ func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
 		key, partVal = famSeg{familyBikeCity, "Station"}, cityOf()
 	case seg[1] == "Rail" && len(seg) >= 4 && seg[2] == "Metro":
 		key, partVal = famSeg{familyMetroSystem, seg[3]}, seg[len(seg)-1]
-	// /v2/Rail/Shape is the bare TRA line-shape endpoint: no TRA/THSR/Metro
-	// segment, unlike every other Rail family below.
-	case seg[1] == "Rail" && len(seg) == 3 && seg[2] == "Shape":
-		key = famSeg{familyRailSingle, "Shape"}
+	// Bare /v2/Rail/<Dataset> endpoints carry no TRA/THSR/Metro segment, unlike
+	// every other Rail family below: /v2/Rail/Shape (TRA line shapes) and
+	// /v2/Rail/Operator (all rail operators). The segment itself keys the index,
+	// so a new bare endpoint needs only its registry entry.
+	case seg[1] == "Rail" && len(seg) == 3:
+		key = famSeg{familyRailSingle, seg[2]}
 	case seg[1] == "Rail" && len(seg) >= 4 && (seg[2] == "TRA" || seg[2] == "THSR"):
 		pair := seg[2] + "/" + seg[3]
 		if pair == "TRA/DailyTimetable" || pair == "THSR/DailyTimetable" {

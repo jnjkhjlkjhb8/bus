@@ -11,15 +11,10 @@ import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
-import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
 import 'package:wheres_the_bus/features/alerts/view/inline_notice.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_stop_bloc.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_stop_state.dart';
 import 'package:wheres_the_bus/features/bus/view/bus_stop_detail_view.dart';
-import 'package:wheres_the_bus/features/bus/widgets/stop_board_toggle.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_bloc.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_event.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_state.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_bus/shared/map/marker_factory.dart';
@@ -169,27 +164,6 @@ class _BusStopScreenState extends State<BusStopScreen> {
     unawaited(_moveToCurrentLocation());
   }
 
-  /// Toggles the 站牌看板 Live Activity for this stop. [isActive] reflects
-  /// whether the shared [StopBoardBloc] is currently broadcasting *this*
-  /// stop (matched by name — the bloc is a single app-wide instance shared
-  /// with the journey/track card, so any other active board reads as off
-  /// here and a tap takes over as this stop's board).
-  void _toggleBoard(bool isActive) {
-    unawaited(HapticService.instance.lightTap());
-    final bloc = context.read<StopBoardBloc>();
-    if (isActive) {
-      bloc.add(const StopBoardStopped());
-    } else {
-      bloc.add(
-        StopBoardStarted(
-          widget.city ?? '',
-          widget.stopId ?? '',
-          widget.stopName,
-        ),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -278,33 +252,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                FloatingAppBar(
-                  trailing:
-                      SettingsRepository.instance.liveActivityEnabled &&
-                          (widget.stopId?.isNotEmpty ?? false)
-                      ? BlocBuilder<StopBoardBloc, StopBoardState>(
-                          builder: (context, state) {
-                            final isActive = isStopBoardActive(
-                              state,
-                              widget.stopName,
-                            );
-                            return AppBarCircleButton(
-                              onTap: () => _toggleBoard(isActive),
-                              semanticLabel: isActive
-                                  ? AppI18n.of(context).busLiveActivityOff
-                                  : AppI18n.of(context).busLiveActivityOn,
-                              child: Icon(
-                                isActive
-                                    ? Icons.wifi_tethering_rounded
-                                    : Icons.wifi_tethering_off_rounded,
-                                size: AppBarMetrics.icon,
-                                color: cs.onSurface,
-                              ),
-                            );
-                          },
-                        )
-                      : null,
-                ),
+                const FloatingAppBar(),
                 // Scoped to the routes this stop actually serves: a
                 // disruption on a line that doesn't stop here is not this
                 // screen's business.

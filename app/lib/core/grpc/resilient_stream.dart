@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:grpc/grpc.dart';
 import 'package:wheres_the_bus/core/errors/app_error.dart';
 import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
+import 'package:wheres_the_bus/core/lifecycle/app_foreground.dart';
 
 typedef RetryDelay = Duration Function(Duration delay);
 
@@ -18,6 +20,7 @@ class ResilientSubscription<T> {
     Duration maxDelay = const Duration(seconds: 30),
     void Function(Object, StackTrace)? reportError,
     RetryDelay? retryDelay,
+    ValueListenable<bool>? foreground,
   }) : _source = source,
        _onData = onData,
        _onFailure = onFailure,
@@ -26,8 +29,10 @@ class ResilientSubscription<T> {
        _baseDelay = baseDelay,
        _maxDelay = maxDelay,
        _reportError = reportError ?? CrashReporter.record,
-       _retryDelay = retryDelay ?? _jitteredDelay {
-    _listen();
+       _retryDelay = retryDelay ?? _jitteredDelay,
+       _foreground = foreground ?? AppForeground.value {
+    _foreground.addListener(_onForegroundChanged);
+    if (_foreground.value) _listen();
   }
 
   final Stream<T> Function() _source;
@@ -39,6 +44,7 @@ class ResilientSubscription<T> {
   final Duration _maxDelay;
   final void Function(Object, StackTrace) _reportError;
   final RetryDelay _retryDelay;
+  final ValueListenable<bool> _foreground;
 
   StreamSubscription<T>? _sub;
   Timer? _timer;
@@ -46,9 +52,32 @@ class ResilientSubscription<T> {
   int _cleanCloses = 0;
   bool _notified = false;
   bool _closed = false;
+  bool _terminal = false;
+
+  /// Backgrounding drops the open stream — see [AppForeground]. Resuming
+  /// re-listens with the backoff reset, because coming back on screen is not a
+  /// failure and the user is waiting for a fresh frame. A terminal error
+  /// (unauthenticated, permission denied, unimplemented) stays terminal: those
+  /// never fix themselves, so a resume must not re-hammer the endpoint.
+  void _onForegroundChanged() {
+    if (_closed || _terminal) return;
+    if (!_foreground.value) {
+      _timer?.cancel();
+      _timer = null;
+      unawaited(_sub?.cancel() ?? Future<void>.value());
+      _sub = null;
+      return;
+    }
+    if (_sub != null) return;
+    _timer?.cancel();
+    _timer = null;
+    _failures = 0;
+    _cleanCloses = 0;
+    _listen();
+  }
 
   void _listen() {
-    if (_closed) return;
+    if (_closed || !_foreground.value) return;
     // A source factory can fail synchronously (e.g. a gRPC client that
     // validates arguments before opening the channel) instead of returning a
     // stream that later emits an error. Both must be handled identically —
@@ -96,6 +125,7 @@ class ResilientSubscription<T> {
       _onFailure(AppError.from(e));
     }
     if (terminal) {
+      _terminal = true;
       unawaited(_sub?.cancel() ?? Future<void>.value());
       _sub = null;
       return;
@@ -125,6 +155,7 @@ class ResilientSubscription<T> {
 
   Future<void> cancel() async {
     _closed = true;
+    _foreground.removeListener(_onForegroundChanged);
     _timer?.cancel();
     await _sub?.cancel();
   }

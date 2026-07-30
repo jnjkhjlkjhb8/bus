@@ -7,6 +7,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/data/models/metro_map_models.dart';
 import 'package:wheres_the_bus/shared/motion/app_motion.dart';
+import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
 
 final RegExp _mapDigits = RegExp(r'\d+');
 
@@ -56,6 +57,19 @@ class MetroSvgMap extends StatefulWidget {
   /// Zoom the map opens at. Below 1 so the network reads as a whole on first
   /// sight instead of filling the viewport edge to edge.
   static const double _initialScale = .8;
+
+  /// Blank canvas above the map, so it opens clear of the floating app bar
+  /// instead of starting at the viewport's top edge with the northern end of
+  /// the network (淡水/北投) behind the status bar and the system pill.
+  ///
+  /// Part of the canvas rather than a translation in the transform: it grows
+  /// the pan boundary with it, so the gap can't be dragged away and the map
+  /// can't slide back under the bar. Measured in map pixels — on screen it is
+  /// this times the current zoom, which is the top inset plus one bar at
+  /// [_initialScale].
+  static double _topGutter(BuildContext context) =>
+      (MediaQuery.paddingOf(context).top + AppBarMetrics.barHeight) /
+      _initialScale;
 
   /// Starts rasterizing the current theme's map bitmap so it is ready before
   /// the user navigates here — the one-time ~400ms rasterization otherwise
@@ -147,57 +161,60 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
         maxScale: 4,
         constrained: false,
         boundaryMargin: const EdgeInsets.all(MetroSvgMap._boundaryMargin),
-        child: SizedBox(
-          width: constraints.maxWidth,
-          height: mapH,
-          child: Stack(
-            children: [
-              Positioned.fill(
-                // Isolates the static map raster from the marker/label
-                // layers above, which animate on selection — without this,
-                // every ping/label frame repaints the whole map bitmap too.
-                child: RepaintBoundary(
-                  child: _RasterSvg(
-                    asset: isDark
-                        ? 'assets/mrt/TRTC_map_dark.svg'
-                        : 'assets/mrt/TRTC_map_light.svg',
-                  ),
-                ),
-              ),
-              for (final station in metroMapStations)
-                if (station.id == selectedStationId)
-                  _SelectedMarker(
-                    key: ValueKey(selectedStationId),
-                    x: station.x * s,
-                    y: station.y * s,
-                    scale: s,
-                    color: metroLineColor(station.id),
-                    animate: widget.animate,
-                  ),
-              _StationHitLayer(
-                stations: metroMapStations,
-                scale: s,
-                onStationTap: widget.onStationTap,
-                semanticsReady: _semanticsReady,
-              ),
-              for (final station in metroMapStations)
-                if (widget.stationLabels[station.id] case final label?)
-                  Positioned(
-                    left: station.x * s - 24,
-                    top: station.y * s - 2,
-                    width: 48,
-                    child: IgnorePointer(
-                      child: _AnimatedLabel(
-                        key: ValueKey(station.id),
-                        label: label,
-                        delayMs: getDelayMs(station),
-                        animate: widget.animate,
-                        isSelected: station.id == selectedStationId,
-                        color: isDark ? Colors.white : Colors.black,
-                      ),
+        child: Padding(
+          padding: EdgeInsets.only(top: MetroSvgMap._topGutter(context)),
+          child: SizedBox(
+            width: constraints.maxWidth,
+            height: mapH,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  // Isolates the static map raster from the marker/label
+                  // layers above, which animate on selection — without this,
+                  // every ping/label frame repaints the whole map bitmap too.
+                  child: RepaintBoundary(
+                    child: _RasterSvg(
+                      asset: isDark
+                          ? 'assets/mrt/TRTC_map_dark.svg'
+                          : 'assets/mrt/TRTC_map_light.svg',
                     ),
                   ),
-            ],
+                ),
+                for (final station in metroMapStations)
+                  if (station.id == selectedStationId)
+                    _SelectedMarker(
+                      key: ValueKey(selectedStationId),
+                      x: station.x * s,
+                      y: station.y * s,
+                      scale: s,
+                      color: metroLineColor(station.id),
+                      animate: widget.animate,
+                    ),
+                _StationHitLayer(
+                  stations: metroMapStations,
+                  scale: s,
+                  onStationTap: widget.onStationTap,
+                  semanticsReady: _semanticsReady,
+                ),
+                for (final station in metroMapStations)
+                  if (widget.stationLabels[station.id] case final label?)
+                    Positioned(
+                      left: station.x * s - 24,
+                      top: station.y * s - 2,
+                      width: 48,
+                      child: IgnorePointer(
+                        child: _AnimatedLabel(
+                          key: ValueKey(station.id),
+                          label: label,
+                          delayMs: getDelayMs(station),
+                          animate: widget.animate,
+                          isSelected: station.id == selectedStationId,
+                          color: isDark ? Colors.white : Colors.black,
+                        ),
+                      ),
+                    ),
+              ],
+            ),
           ),
         ),
       );

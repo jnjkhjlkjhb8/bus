@@ -16,6 +16,9 @@ class JourneySessionState extends Equatable {
     this.pinnedStopsRemaining,
     this.railProgress,
     this.railNextStop,
+    this.leadStops = 1,
+    this.railAboard = true,
+    this.railDelay = Duration.zero,
   });
 
   final JourneyPhase phase;
@@ -44,6 +47,18 @@ class JourneySessionState extends Equatable {
   /// The rail track leg's live next-stop name. Null for non-rail sessions.
   final String? railNextStop;
 
+  /// The rider's 提前站數: the threshold at which the tracking card's bar
+  /// turns amber, which is also when the arrival reminder fires.
+  final int leadStops;
+
+  /// Whether a rail track's train has reached the boarding stop. Defaults true
+  /// so no non-rail session is ever read as waiting on a platform; the first
+  /// rail frame sets the real value.
+  final bool railAboard;
+
+  /// Live delay on a rail track leg. Zero on THSR and off the rails.
+  final Duration railDelay;
+
   JourneyLeg? get currentLeg => legIndex < legs.length ? legs[legIndex] : null;
 
   bool get isLastLeg => legIndex >= legs.length - 1;
@@ -66,6 +81,9 @@ class JourneySessionState extends Equatable {
     int? pinnedStopsRemaining,
     double? railProgress,
     String? railNextStop,
+    int? leadStops,
+    bool? railAboard,
+    Duration? railDelay,
   }) {
     return JourneySessionState(
       phase: phase ?? this.phase,
@@ -79,6 +97,9 @@ class JourneySessionState extends Equatable {
       pinnedStopsRemaining: pinnedStopsRemaining ?? this.pinnedStopsRemaining,
       railProgress: railProgress ?? this.railProgress,
       railNextStop: railNextStop ?? this.railNextStop,
+      leadStops: leadStops ?? this.leadStops,
+      railAboard: railAboard ?? this.railAboard,
+      railDelay: railDelay ?? this.railDelay,
     );
   }
 
@@ -95,5 +116,8 @@ class JourneySessionState extends Equatable {
     pinnedStopsRemaining,
     railProgress,
     railNextStop,
+    leadStops,
+    railAboard,
+    railDelay,
   ];
 }

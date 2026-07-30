@@ -21,6 +21,8 @@ import 'package:wheres_the_bus/features/rail/rail_timetable_derivation.dart';
 import 'package:wheres_the_bus/features/rail/widgets/rail_booking_sheet.dart';
 import 'package:wheres_the_bus/features/rail/widgets/rail_service_marks.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_bell.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_sheet.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
 import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
 import 'package:wheres_the_bus/shared/widgets/app_card.dart';
@@ -1204,12 +1206,22 @@ class _TrackButton extends StatelessWidget {
     return fallback;
   }
 
-  JourneyLeg? _buildLeg(AppI18n i18n) {
-    if (stops.isEmpty) return null;
-    // Track the segment the user actually searched, falling back to the
-    // train's own run when this screen was opened by train number alone.
-    final board = _stopFor(userOrigin, stops.first)!;
-    final alight = _stopFor(userDest, stops.last)!;
+  /// The boarding stop: the one the rider actually searched from, falling back
+  /// to the train's origin when this screen was opened by train number alone.
+  RailTrainStop? get _board =>
+      stops.isEmpty ? null : _stopFor(userOrigin, stops.first);
+
+  /// Stops the train still calls at after boarding — the 下車站 candidates.
+  List<RailTrainStop> get _ahead {
+    final board = _board;
+    if (board == null) return const [];
+    final at = stops.indexOf(board);
+    return at < 0 ? const [] : stops.sublist(at + 1);
+  }
+
+  JourneyLeg? _buildLeg(AppI18n i18n, RailTrainStop alight) {
+    final board = _board;
+    if (board == null) return null;
     final departRaw = board.depart.isNotEmpty ? board.depart : board.arrive;
     final arriveRaw = alight.arrive.isNotEmpty ? alight.arrive : alight.depart;
     final departAt = DateTime.tryParse('$date ${hhmm(departRaw)}');
@@ -1248,66 +1260,83 @@ class _TrackButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final leg = _buildLeg(AppI18n.of(context));
-    // Nothing to track until the stop list has landed.
-    if (leg == null) return const SizedBox.shrink();
-    final session = context.read<JourneySessionBloc>();
+    // Nothing to set a reminder on until the stop list has landed.
+    if (_ahead.isEmpty) return const SizedBox.shrink();
 
     return BlocSelector<JourneySessionBloc, JourneySessionState, bool>(
       selector: _isTracking,
       builder: (context, active) {
-        return Pressable(
-          onTap: () {
-            unawaited(HapticService.instance.lightTap());
-            session.add(
-              active
-                  ? const JourneyCancelled()
-                  : JourneyStarted(trackOnly: true, legs: [leg]),
-            );
-          },
-          minTapSize: 44,
+        final i18n = AppI18n.of(context);
+        return AlightTrackBell(
+          active: active,
           semanticLabel: active
-              ? AppI18n.of(
-                  context,
-                ).railTrackingSemantics(trainLabel, trainNo)
-              : AppI18n.of(
-                  context,
-                ).railTrackSemantics(trainLabel, trainNo),
-          child: Container(
-            height: 28,
-            padding: const EdgeInsets.symmetric(horizontal: 11),
-            decoration: BoxDecoration(
-              color: active ? cs.onSurface : Colors.transparent,
-              borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-              // Keep the border in both states so the button width is stable.
-              border: Border.all(color: cs.onSurface),
-            ),
-            alignment: Alignment.center,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.radar_rounded,
-                  size: 13,
-                  color: active ? cs.surface : cs.onSurface,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  active
-                      ? AppI18n.of(context).railTracking
-                      : AppI18n.of(context).railTrack,
-                  style: AppTextStyles.bodyVerySmall.copyWith(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: active ? cs.surface : cs.onSurface,
-                  ),
-                ),
-              ],
-            ),
-          ),
+              ? i18n.railTrackingSemantics(trainLabel, trainNo)
+              : i18n.railTrackSemantics(trainLabel, trainNo),
+          onTap: () {
+            final session = context.read<JourneySessionBloc>();
+            if (active) {
+              session.add(const JourneyCancelled());
+              return;
+            }
+            unawaited(_openSheet(context, session));
+          },
         );
       },
+    );
+  }
+
+  Future<void> _openSheet(BuildContext context, JourneySessionBloc session) {
+    final i18n = AppI18n.of(context);
+    // A single data colour per network: at 8px the useful distinction is
+    // TRA-versus-THSR, and the train type is already named on the screen.
+    final dot = isThsr ? AppTheme.trainThsr : AppTheme.markerRail;
+    return AlightTrackSheet.show(
+      context: context,
+      child: AlightTrackSheet(
+        bindingRow: _BindingLine(trainLabel: trainLabel, trainNo: trainNo),
+        stops: [
+          for (final stop in _ahead)
+            AlightStopOption(id: stop.name, name: stop.name, dotColor: dot),
+        ],
+        onStart: (stopId, lead) {
+          final alight = _ahead.firstWhere(
+            (s) => s.name == stopId,
+            orElse: () => _ahead.last,
+          );
+          final leg = _buildLeg(i18n, alight);
+          if (leg == null) return;
+          session.add(
+            JourneyStarted(trackOnly: true, legs: [leg], leadStops: lead),
+          );
+          unawaited(Navigator.of(context).maybePop());
+        },
+      ),
+    );
+  }
+}
+
+/// What the rail reminder is bound to: the train, not a vehicle within it.
+class _BindingLine extends StatelessWidget {
+  const _BindingLine({required this.trainLabel, required this.trainNo});
+
+  final String trainLabel;
+  final String trainNo;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final i18n = AppI18n.of(context);
+    return Wrap(
+      spacing: 8,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text(
+          i18n.mrtAlightBound,
+          style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
+        ),
+        AlightBindingChip(label: '$trainLabel $trainNo'),
+      ],
     );
   }
 }

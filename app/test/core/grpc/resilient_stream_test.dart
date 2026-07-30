@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grpc/grpc.dart';
 import 'package:wheres_the_bus/core/errors/app_error.dart';
@@ -225,6 +226,67 @@ void main() {
 
     await eventually(() => observed != null);
     expect(observed, const Duration(seconds: 2));
+    await sub.cancel();
+  });
+
+  test('drops the source in the background and re-listens on resume', () async {
+    final foreground = ValueNotifier<bool>(true);
+    addTearDown(foreground.dispose);
+    var subscribeCount = 0;
+    var cancelCount = 0;
+    final controllers = <StreamController<int>>[];
+    final sub = ResilientSubscription<int>(
+      source: () {
+        subscribeCount++;
+        final controller = StreamController<int>(
+          onCancel: () => cancelCount++,
+        );
+        controllers.add(controller);
+        return controller.stream;
+      },
+      onData: (_) {},
+      onFailure: (_) {},
+      reportError: (_, _) {},
+      foreground: foreground,
+    );
+
+    expect(subscribeCount, 1);
+
+    foreground.value = false;
+    await eventually(() => cancelCount == 1);
+    expect(subscribeCount, 1, reason: 'background must not reconnect');
+
+    foreground.value = true;
+    await eventually(() => subscribeCount == 2);
+
+    await sub.cancel();
+    for (final controller in controllers) {
+      await controller.close();
+    }
+  });
+
+  test('a terminal error stays terminal across a resume', () async {
+    final foreground = ValueNotifier<bool>(true);
+    addTearDown(foreground.dispose);
+    var subscribeCount = 0;
+    final sub = ResilientSubscription<int>(
+      source: () {
+        subscribeCount++;
+        return Stream<int>.error(const GrpcError.unauthenticated());
+      },
+      onData: (_) {},
+      onFailure: (_) {},
+      reportError: (_, _) {},
+      foreground: foreground,
+    );
+
+    await eventually(() => subscribeCount == 1);
+    foreground
+      ..value = false
+      ..value = true;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(subscribeCount, 1);
     await sub.cancel();
   });
 }

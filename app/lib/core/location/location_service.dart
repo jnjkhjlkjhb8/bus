@@ -93,21 +93,23 @@ class LocationService {
     ),
   );
 
-  /// Higher-accuracy stream for active navigation. iOS continues in the
-  /// background (UIBackgroundModes location) with the system indicator shown;
-  /// stops when the subscription is cancelled at journey end.
+  /// Higher-accuracy stream for active navigation; stops when the subscription
+  /// is cancelled at journey end.
+  ///
+  /// Foreground only, on both platforms. The app ships neither the iOS
+  /// `location` background mode nor Android's ACCESS_BACKGROUND_LOCATION, so
+  /// the OS stops delivering fixes once the app leaves the screen and the
+  /// journey card resumes from the next fix after the app comes back.
   Stream<Position> navigationStream() {
     late final LocationSettings settings;
     if (defaultTargetPlatform == TargetPlatform.iOS) {
-      // AppleSettings.accuracy defaults to best and allowBackgroundLocation
-      // updates default to true; both are omitted here to satisfy the analyzer
-      // while keeping full-accuracy background tracking.
+      // AppleSettings.accuracy defaults to best; omitted here to satisfy the
+      // analyzer while keeping full-accuracy foreground tracking.
       settings = AppleSettings(
         activityType: ActivityType.otherNavigation,
         // 5 m keeps the follow camera moving at walking pace; 25 m delivered a
         // fix only every ~20 s of walking, which read as "not following".
         distanceFilter: 5,
-        showBackgroundLocationIndicator: true,
       );
     } else {
       settings = AndroidSettings(distanceFilter: 5);

@@ -6,10 +6,10 @@ import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/errors/app_error.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/data/models/arrival_display.dart';
 import 'package:wheres_the_bus/data/models/favorite.dart';
 import 'package:wheres_the_bus/data/models/metro_map_models.dart';
+import 'package:wheres_the_bus/features/metro/data/metro_line_names.dart';
 import 'package:wheres_the_bus/features/metro/bloc/metro_eta_bloc.dart';
 import 'package:wheres_the_bus/features/metro/bloc/metro_eta_event.dart';
 import 'package:wheres_the_bus/features/metro/bloc/metro_eta_state.dart';
@@ -19,6 +19,7 @@ import 'package:wheres_the_bus/features/metro/bloc/mrt_track_state.dart';
 import 'package:wheres_the_bus/features/metro/widgets/mrt_alight_setup_sheet.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_bell.dart';
 import 'package:wheres_the_bus/shared/motion/stagger.dart';
 import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_bus/shared/widgets/eta_list_tile.dart';
@@ -29,29 +30,19 @@ import 'package:wheres_the_bus/shared/widgets/transport_icon.dart';
 
 part '../widgets/metro_station_detail_widgets.dart';
 
-// Built per call rather than held in a const map: line names follow the
-// rider's language.
-Map<String, String> _kLineNames(AppI18n i18n) => {
-  'BL': i18n.metroLineBannan,
-  'R': i18n.metroLineTamsuiXinyi,
-  'G': i18n.metroLineSongshanXindian,
-  'BR': i18n.metroLineWenhu,
-  'O': i18n.metroLineZhongheXinlu,
-  'Y': i18n.metroLineCircular,
-};
 
 final RegExp _digits = RegExp(r'\d+');
 
 String _lineCode(String id) => id.split('_').first.replaceAll(_digits, '');
 
 String _lineName(AppI18n i18n, String id) =>
-    _kLineNames(i18n)[_lineCode(id)] ?? _lineCode(id);
+    metroLineNames(i18n)[_lineCode(id)] ?? _lineCode(id);
 
 /// Line label for a (possibly interchange) id, e.g. `板南線  文湖線`.
 String _stationLineLabel(AppI18n i18n, String id) => id
     .split('_')
     .map((p) => p.replaceAll(_digits, ''))
-    .map((code) => _kLineNames(i18n)[code] ?? code)
+    .map((code) => metroLineNames(i18n)[code] ?? code)
     .join('  ');
 
 TransportType _getTransportType(String line) {

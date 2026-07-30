@@ -13,7 +13,6 @@ import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
-import 'package:wheres_the_bus/core/live_activity/pip_mode.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
 import 'package:wheres_the_bus/data/repositories/maas_repository.dart';
@@ -166,8 +165,6 @@ class _GoScreenState extends State<GoScreen> {
     _navigationCoordinator = NavigationCoordinator(
       planBloc: context.read<PlanBloc>(),
       journeySessionBloc: context.read<JourneySessionBloc>(),
-      setPipNavigating: ({required navigating}) =>
-          PipMode.instance.setNavigating(navigating),
       liveActivityEnabled: () =>
           SettingsRepository.instance.liveActivityEnabled,
       positions: LocationService.instance.navigationStream,

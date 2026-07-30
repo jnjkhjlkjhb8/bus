@@ -11,6 +11,7 @@ import 'package:wheres_the_bus/data/models/favorite.dart';
 import 'package:wheres_the_bus/data/models/journey_info.dart';
 import 'package:wheres_the_bus/data/models/metro_map_models.dart';
 import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
+import 'package:wheres_the_bus/features/metro/data/metro_line_names.dart';
 import 'package:wheres_the_bus/features/metro/bloc/metro_bloc.dart';
 import 'package:wheres_the_bus/features/metro/bloc/metro_event.dart';
 import 'package:wheres_the_bus/features/metro/bloc/metro_state.dart';
@@ -29,23 +30,13 @@ import 'package:wheres_the_bus/shared/widgets/transport_icon.dart';
 part '../widgets/metro_placeholder_widgets.dart';
 part '../widgets/metro_system_widgets.dart';
 
-// Built per call rather than held in a const map: line names follow the
-// rider's language.
-Map<String, String> _kLineNames(AppI18n i18n) => {
-  'BL': i18n.metroLineBannan,
-  'R': i18n.metroLineTamsuiXinyi,
-  'G': i18n.metroLineSongshanXindian,
-  'BR': i18n.metroLineWenhu,
-  'O': i18n.metroLineZhongheXinlu,
-  'Y': i18n.metroLineCircular,
-};
 
 final RegExp _digits = RegExp(r'\d+');
 
 String _lineCode(String id) => id.split('_').first.replaceAll(_digits, '');
 
 String _lineName(AppI18n i18n, String id) =>
-    _kLineNames(i18n)[_lineCode(id)] ?? _lineCode(id);
+    metroLineNames(i18n)[_lineCode(id)] ?? _lineCode(id);
 
 TransportType _getTransportType(String line) {
   switch (line) {

@@ -14,11 +14,15 @@ bool isWalk(PlanSection s) => s.type.toLowerCase() != 'transit';
 IconData sectionIcon(PlanSection s) =>
     isWalk(s) ? Icons.directions_walk_rounded : transitIcon(s.transport.mode);
 
+// TDX MaaS reports modes in its own vocabulary (BUS/HighwayBus/MRT/SUBWAY/
+// TRA/THSR) and the router forwards them verbatim, so every branch has to
+// accept those spellings alongside the generic ones. Kept in step with the Go
+// side's isBusMode/isMetroMode/isRailMode/isThsrMode.
 IconData transitIcon(String mode) => switch (mode.toLowerCase()) {
-  'walk' => Icons.directions_walk_rounded,
-  'subway' || 'tram' => Icons.directions_subway_rounded,
-  'bus' => Icons.directions_bus_rounded,
-  'rail' => Icons.train_rounded,
+  'walk' || 'pedestrian' => Icons.directions_walk_rounded,
+  'subway' || 'metro' || 'mrt' || 'tram' => Icons.directions_subway_rounded,
+  'bus' || 'highwaybus' => Icons.directions_bus_rounded,
+  'rail' || 'tra' || 'train' || 'thsr' || 'hsr' => Icons.train_rounded,
   _ => Icons.directions_transit_rounded,
 };
 
@@ -29,20 +33,18 @@ Color transitColor(PlanTransport t, ColorScheme cs) {
     final value = int.tryParse(padded, radix: 16);
     if (value != null) return Color(value);
   }
-  switch (t.mode.toLowerCase()) {
-    case 'walk':
-      return cs.onSurfaceVariant;
-    case 'subway':
-    case 'tram':
-      return AppTheme.mrtBL;
-    case 'rail':
-      return t.category.toUpperCase() == 'HSR'
+  // Same mode vocabulary as transitIcon; THSR is matched before the rail
+  // aliases so it keeps its own color instead of the TRA fallback.
+  return switch (t.mode.toLowerCase()) {
+    'walk' || 'pedestrian' => cs.onSurfaceVariant,
+    'subway' || 'metro' || 'mrt' || 'tram' => AppTheme.mrtBL,
+    'thsr' || 'hsr' => AppTheme.trainThsr,
+    'rail' || 'tra' || 'train' =>
+      t.category.toUpperCase() == 'HSR'
           ? AppTheme.trainThsr
-          : AppTheme.trainRangecar;
-    case 'bus':
-    default:
-      return cs.onSurface;
-  }
+          : AppTheme.trainRangecar,
+    _ => cs.onSurface,
+  };
 }
 
 String sectionLabel(AppI18n i18n, PlanSection s) {

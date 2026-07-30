@@ -70,6 +70,12 @@ var mrtSystemLabels = []mrtSystemLabel{
 	{code: "NTMC", current: "新北捷運", legacy: []string{"NTMC"}},
 	{code: "NTDLRT", current: "淡海輕軌"},
 	{code: "KHLRT", current: "高雄輕軌"},
+	// Landed since the metro system sets widened to everything TDX serves.
+	// New codes carry no legacy label: no vector was ever written for them, so
+	// there is nothing to invalidate.
+	{code: "TMRT", current: "台中捷運"},
+	{code: "NTALRT", current: "安坑輕軌"},
+	{code: "TRTCMG", current: "貓空纜車"},
 }
 
 // mrtSystemNames maps a metro system code to its Chinese display name for the

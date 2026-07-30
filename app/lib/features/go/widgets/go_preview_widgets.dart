@@ -398,7 +398,7 @@ class _PreviewItinerary extends StatelessWidget {
           minutes: sectionMinutes(s),
           content: walk
               ? _walkContent(context, i, s)
-              : _transitContent(context, s),
+              : _transitContent(context, i, s),
         ),
       );
     }
@@ -471,7 +471,7 @@ class _PreviewItinerary extends StatelessWidget {
     );
   }
 
-  Widget _transitContent(BuildContext context, PlanSection s) {
+  Widget _transitContent(BuildContext context, int i, PlanSection s) {
     final cs = Theme.of(context).colorScheme;
     final color = transitColor(s.transport, cs);
     final rideStops = s.intermediateStops.length + 1;
@@ -479,9 +479,17 @@ class _PreviewItinerary extends StatelessWidget {
     final legLine = headsign.isNotEmpty
         ? AppI18n.of(context).rideStopsTowards(rideStops, headsign)
         : AppI18n.of(context).rideStops(rideStops);
+    // The wait belongs to the place the rider stands in, so it sits above the
+    // line badge — chronologically the wait comes before boarding, and the
+    // row's minutes column stays the ride itself.
+    final wait = waitMinutesBefore(route.sections, i);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (wait > 0) ...[
+          _WaitLine(minutes: wait),
+          const SizedBox(height: 6),
+        ],
         AppBadge(label: sectionLabel(AppI18n.of(context), s), color: color),
         const SizedBox(height: 6),
         Text(
@@ -499,6 +507,36 @@ class _PreviewItinerary extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
+        ),
+      ],
+    );
+  }
+}
+
+/// Scheduled waiting at a boarding place, stated on the leg that departs from
+/// it. Shared by the preview itinerary and the navigation sheet's step list —
+/// both are `part of go_screen.dart`, so one private widget serves both.
+class _WaitLine extends StatelessWidget {
+  const _WaitLine({required this.minutes, this.color});
+
+  final int minutes;
+
+  /// Overrides the muted default so the navigation sheet can dim the line on a
+  /// completed leg along with the rest of that row.
+  final Color? color;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tone = color ?? cs.onSurfaceVariant;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.hourglass_empty_rounded, size: 14, color: tone),
+        const SizedBox(width: 4),
+        Text(
+          AppI18n.of(context).transferWaitMinutes(minutes),
+          style: AppTextStyles.bodySmall.copyWith(color: tone),
         ),
       ],
     );

@@ -37,7 +37,10 @@ const (
 // the reverse path. name is the If-Modified-Since cache identity per partition.
 // loadKey names the standalone loader transform ("" when none). landOnly marks a
 // whitelisted-but-never-fetched table; foldedInto names the loader that consumes
-// a fetched table without a standalone transform of its own.
+// a fetched table without a standalone transform of its own. exportOnly marks a
+// table landed for the GTFS export path, which reads raw_tdx directly: it is
+// fetched and consumed, but by no loader, so it carries neither loadKey nor
+// foldedInto.
 type datasetSpec struct {
 	rawTable   string
 	partCol    string
@@ -49,6 +52,7 @@ type datasetSpec struct {
 	loadKey    string
 	foldedInto string
 	landOnly   bool
+	exportOnly bool
 	staleOK    bool
 }
 
@@ -162,6 +166,26 @@ func railSingle(apiSeg, rawTable, loadKey, imsName string) datasetSpec {
 	}
 }
 
+// railSingleExport and metroExport build the GTFS-export datasets: landed for
+// the feed builder, which reads raw_tdx directly, and therefore bound to no
+// loader transform. They are separate constructors rather than a flag on the
+// existing ones so an export dataset can never acquire a loadKey by accident.
+func railSingleExport(apiSeg, rawTable, imsName string) datasetSpec {
+	spec := railSingle(apiSeg, rawTable, "", imsName)
+	spec.exportOnly = true
+	return spec
+}
+
+func metroExport(apiSeg, rawTable, imsPrefix string, systems func() []string) datasetSpec {
+	return datasetSpec{
+		rawTable: rawTable, partCol: "system",
+		partitions: systems,
+		family:     familyMetroSystem, apiSeg: apiSeg,
+		name:       func(part string) string { return imsPrefix + part },
+		exportOnly: true,
+	}
+}
+
 // datasetRegistry is the ordered dataset table. Slice order is the load order:
 // filtering to loadKey-bearing entries yields the loaderRegistry order. The
 // bus_route owns the one atomic bus snapshot load. Operator and the other seven
@@ -223,6 +247,24 @@ func datasetRegistry() []datasetSpec {
 		// kept) but is never fetched: nothing loads raw_tdx.tra_traintype, and
 		// train-type data arrives inside the daily-timetable payloads.
 		{rawTable: "tra_traintype", family: familyRailSingle, apiSeg: "TRA/TrainType", landOnly: true},
+
+		// GTFS export datasets. These land for the feed builder only — no loader
+		// reads them, so they appear after the load-ordered entries above and
+		// carry exportOnly. Metro/Route is the route source rather than
+		// Metro/Line: branches and short-turn services (Xinbeitou, Xiaobitan, the
+		// Daan-Beitou short working) exist only at the Route level, so building
+		// routes from Line would drop them. Metro/Line is landed alongside it
+		// purely for LineColor, which Route does not carry.
+		metroExport("Route", "metro_route", "metro_route_", func() []string { return metroSystemsAll }),
+		metroExport("StationOfRoute", "metro_stationofroute", "metro_sor_", func() []string { return metroSystemsAll }),
+		metroExport("Line", "metro_line", "metro_line_", func() []string { return metroSystemsAll }),
+		metroExport("Frequency", "metro_frequency", "metro_freq_", func() []string { return ingestMetroFrequency }),
+		metroExport("StationExit", "metro_stationexit", "metro_exit_", func() []string { return ingestMetroExit }),
+		metroExport("StationTimeTable", "metro_stationtimetable", "metro_stt_", func() []string { return ingestMetroTimetable }),
+		railSingleExport("TRA/Line", "tra_line", "tra_line"),
+		railSingleExport("TRA/StationOfLine", "tra_stationofline", "tra_stationofline"),
+		railSingleExport("THSR/StationExit", "thsr_stationexit", "thsr_stationexit"),
+		railSingleExport("Operator", "rail_operator", "rail_operator"),
 	}
 }
 

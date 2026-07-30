@@ -41,14 +41,42 @@ var ingestBikeSkip = map[string]bool{
 	"LienchiangCounty": true, "InterCity": true, "HualienCounty": true,
 }
 
-// Metro system codes to land per endpoint. The lists differ because not every
-// system publishes every dataset (e.g. NTMC has stations but no first/last
-// timetable or OD fare feed).
+// Metro system codes to land per endpoint. Each list is every system its
+// endpoint accepts, so coverage is as wide as TDX allows; the lists differ only
+// because TDX publishes a different system set per dataset, and answers an
+// unsupported system with HTTP 400 rather than an empty payload.
+//
+// The lists are the endpoints' own answers, not a guess: TDX enumerates every
+// accepted value in the 400 body, so one request with an invalid system returns
+// the authoritative set. Re-probe that way when a system is added:
+//
+//	GET /v2/Rail/Metro/<Endpoint>/ZZZZ
 var (
-	ingestMetroStationSystems = []string{"TRTC", "KRTC", "KLRT", "TYMC", "NTMC"}
-	ingestMetroFirstLast      = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
-	ingestMetroODFare         = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
-	ingestMetroTravelGraph    = []string{"TRTC"}
+	// metroSystemsAll is every rail system TDX serves. Station, Shape, ODFare,
+	// Route, StationOfRoute and Line all accept the full set.
+	metroSystemsAll = []string{
+		"TRTC", "KRTC", "TYMC", "KLRT", "NTDLRT", "NTALRT", "TMRT", "NTMC", "TRTCMG",
+	}
+
+	ingestMetroStationSystems = metroSystemsAll
+	ingestMetroODFare         = metroSystemsAll
+	// FirstLastTimetable omits the two newest light-rail lines.
+	ingestMetroFirstLast = []string{"TRTC", "KRTC", "TYMC", "KLRT", "TMRT", "NTMC", "TRTCMG"}
+	// The travel graph lands S2STravelTime and LineTransfer together, and
+	// loadMrtTrtcTravelTime reads both tables for the same system, so this is
+	// their intersection rather than either list. S2STravelTime alone would also
+	// accept KLRT and TMRT, but LineTransfer answers 400 for them and the loader
+	// has no half-graph mode, so widening past the intersection buys nothing.
+	ingestMetroTravelGraph = []string{"TRTC", "KRTC", "TYMC", "NTMC"}
+	// The GTFS export endpoints. Their asymmetry is what the feed builder has to
+	// work around: TMRT has routes and headways but no timetable, so Taichung is
+	// expressible only as frequencies.txt; the three light-rail systems are the
+	// reverse, with timetables but no headways; and TRTCMG (Maokong Gondola) has
+	// routes, stations and exits but neither timetable nor headway, so it lands
+	// with no service data at all and the builder must skip it (FDPL-6).
+	ingestMetroFrequency = []string{"TRTC", "KRTC", "TYMC", "TMRT", "NTMC"}
+	ingestMetroExit      = []string{"TRTC", "KRTC", "TYMC", "TMRT", "NTMC", "TRTCMG"}
+	ingestMetroTimetable = []string{"TRTC", "KRTC", "TYMC", "KLRT", "NTDLRT", "NTALRT", "NTMC"}
 )
 
 const ingestTimeout = 20 * time.Minute

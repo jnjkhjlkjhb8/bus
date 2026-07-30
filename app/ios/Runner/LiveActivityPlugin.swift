@@ -1,110 +1,224 @@
-import Flutter
 import ActivityKit
+import Flutter
 
+/// Bridges Dart's `AlightTrackChannel` to one ActivityKit Live Activity.
+///
+/// The whole plugin is gated on iOS 16.2 rather than the project's 16.1
+/// deployment floor. 16.2 is where `ActivityContent` — and with it `staleDate`,
+/// the system's own "this reading is old" mechanism — arrived, and carrying a
+/// second code path for one point release would buy nothing: on 16.1 the
+/// tracking card simply never appears, which is the same graceful nothing the
+/// plugin already does on a device that refuses Live Activities.
 class LiveActivityPlugin: NSObject, FlutterPlugin {
     static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
             name: "com.wheres.bus/live_activity",
             binaryMessenger: registrar.messenger()
         )
-        registrar.addMethodCallDelegate(LiveActivityPlugin(), channel: channel)
+        registrar.addMethodCallDelegate(LiveActivityPlugin(channel: channel), channel: channel)
     }
 
+    private let channel: FlutterMethodChannel
     private var activityID: String?
 
-    func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-        guard #available(iOS 16.1, *) else { result(nil); return }
-        let args = call.arguments as? [String: Any] ?? [:]
-        switch call.method {
-        case "start":  startActivity(args: args, result: result)
-        case "update": updateActivity(args: args, result: result)
-        case "stop":   stopActivity(result: result)
-        default:       result(FlutterMethodNotImplemented)
+    /// The phase the card last rendered. The reminder alert fires on the
+    /// crossing into `approaching`, not on every update that happens to be past
+    /// the threshold — otherwise the card would buzz once per station for the
+    /// rest of the ride.
+    private var lastPhase: AlightTrackAttributes.Phase?
+
+    init(channel: FlutterMethodChannel) {
+        self.channel = channel
+        super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(cardCancelled),
+            name: .alightTrackCancelled,
+            object: nil
+        )
+    }
+
+    /// The 取消追蹤 button has already ended the activity; Dart still owns the
+    /// session and has to hear about it to release its own lease.
+    @objc private func cardCancelled() {
+        activityID = nil
+        lastPhase = nil
+        DispatchQueue.main.async { [channel] in
+            channel.invokeMethod("onCancelTrack", arguments: nil)
         }
     }
 
-    @available(iOS 16.1, *)
-    private func startActivity(args: [String: Any], result: FlutterResult) {
-        let attrs = BusLiveActivityAttributes(
-            routeOrTrain: args["routeOrTrain"] as? String ?? "",
-            fromStation: args["fromStation"] as? String ?? "",
-            toStation: args["alightStation"] as? String ?? "",
-            type: args["type"] as? String ?? "tra"
+    func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard #available(iOS 16.2, *) else { result(nil); return }
+        let args = call.arguments as? [String: Any] ?? [:]
+        switch call.method {
+        case "start": start(args: args, result: result)
+        case "update": update(args: args, result: result)
+        case "stop": stop(result: result)
+        default: result(FlutterMethodNotImplemented)
+        }
+    }
+
+    // MARK: - Commands
+
+    @available(iOS 16.2, *)
+    private func start(args: [String: Any], result: FlutterResult) {
+        let state = contentState(from: args)
+        let attributes = AlightTrackAttributes(
+            mode: AlightTrackAttributes.Mode(rawValue: args["mode"] as? String ?? "") ?? .bus,
+            boardStation: args["boardStation"] as? String ?? "",
+            targetStation: args["targetStation"] as? String ?? ""
         )
         do {
-            let activity = try Activity<BusLiveActivityAttributes>.request(
-                attributes: attrs,
-                contentState: contentState(from: args),
+            let activity = try Activity.request(
+                attributes: attributes,
+                content: content(state, mode: attributes.mode),
                 pushType: nil
             )
             activityID = activity.id
+            lastPhase = state.phase
             result(activity.id)
         } catch {
-            result(FlutterError(code: "LA_START_FAILED",
-                                message: error.localizedDescription,
-                                details: nil))
+            result(FlutterError(
+                code: "LA_START_FAILED",
+                message: error.localizedDescription,
+                details: nil
+            ))
         }
     }
 
-    @available(iOS 16.1, *)
-    private func updateActivity(args: [String: Any], result: @escaping FlutterResult) {
-        guard let id = activityID,
-              let activity = Activity<BusLiveActivityAttributes>.activities.first(where: { $0.id == id })
-        else { result(nil); return }
+    @available(iOS 16.2, *)
+    private func update(args: [String: Any], result: @escaping FlutterResult) {
+        guard let activity = current() else { result(nil); return }
+        let state = contentState(from: args)
+        // Computed before `lastPhase` moves: the alert is a crossing, not a
+        // condition.
+        let alert = reminderAlert(for: state, target: activity.attributes.targetStation)
+        lastPhase = state.phase
+
+        // A terminal reading is ended natively with a linger rather than left
+        // for Dart to dismiss on a timer: an ending has to be seen, and a timer
+        // in the app cannot fire once iOS has suspended it.
+        if !state.phase.isLive {
+            Task {
+                await activity.end(
+                    content(state, mode: activity.attributes.mode),
+                    dismissalPolicy: .after(Date().addingTimeInterval(Self.lingerSeconds))
+                )
+                result(nil)
+            }
+            return
+        }
+
         Task {
-            await activity.update(using: contentState(from: args))
+            await activity.update(
+                content(state, mode: activity.attributes.mode),
+                alertConfiguration: alert
+            )
             result(nil)
         }
     }
 
-    @available(iOS 16.1, *)
-    private func stopActivity(result: @escaping FlutterResult) {
-        guard let id = activityID,
-              let activity = Activity<BusLiveActivityAttributes>.activities.first(where: { $0.id == id })
-        else { result(nil); return }
+    @available(iOS 16.2, *)
+    private func stop(result: @escaping FlutterResult) {
+        guard let activity = current() else { result(nil); return }
+        activityID = nil
+        lastPhase = nil
         Task {
-            await activity.end(using: nil, dismissalPolicy: .immediate)
-            activityID = nil
+            await activity.end(nil, dismissalPolicy: .immediate)
             result(nil)
         }
     }
 
-    @available(iOS 16.1, *)
-    private func contentState(from args: [String: Any]) -> BusLiveActivityAttributes.ContentState {
-        let ms = (args["etaMs"] as? Int) ?? (args["arrivalTimeMs"] as? Int) ?? 0
-        return BusLiveActivityAttributes.ContentState(
-            mode: args["mode"] as? String ?? "riding",
-            nextStation: args["nextStation"] as? String ?? "",
-            previousStation: args["previousStation"] as? String,
-            alightStation: args["alightStation"] as? String,
-            remainingStops: args["remainingStops"] as? Int,
-            progressPercent: args["progressPercent"] as? Double ?? 0.0,
-            etaDate: ms > 0 ? Date(timeIntervalSince1970: Double(ms) / 1000) : nil,
-            walkMinutes: args["walkMinutes"] as? Int ?? 0,
-            plate: args["plate"] as? String,
-            routeNumber: args["routeNumber"] as? String,
-            stopName: args["stopName"] as? String,
-            routes: boardRows(from: args["routes"]),
-            lineCode: args["lineCode"] as? String,
-            lineColorHex: args["lineColorHex"] as? String,
-            stationCount: args["stationCount"] as? Int,
-            targetIndex: args["targetIndex"] as? Int,
-            currentIndex: args["currentIndex"] as? Int,
-            endedStatus: args["endedStatus"] as? String
+    @available(iOS 16.2, *)
+    private func current() -> Activity<AlightTrackAttributes>? {
+        guard let id = activityID else { return nil }
+        return Activity<AlightTrackAttributes>.activities.first { $0.id == id }
+    }
+
+    // MARK: - Payload
+
+    /// How long a terminal card stays on screen before the system dismisses it.
+    private static let lingerSeconds: TimeInterval = 8
+
+    @available(iOS 16.2, *)
+    private func content(
+        _ state: AlightTrackAttributes.ContentState,
+        mode: AlightTrackAttributes.Mode
+    ) -> ActivityContent<AlightTrackAttributes.ContentState> {
+        ActivityContent(state: state, staleDate: staleDate(state, mode: mode))
+    }
+
+    /// When the system should start treating this reading as old.
+    ///
+    /// Updates are local-only, so a suspended app leaves the card frozen with
+    /// no way to say so; `staleDate` is how the platform says it instead. The
+    /// window is per mode because the feeds behind them are not the same
+    /// cadence: bus ETA lands every 30 s, a metro card moves once per station
+    /// hop, and a train can sit between two rural stations for a long time
+    /// while nothing is wrong. A single number would cry stale on TRA or stay
+    /// quiet far too long on a bus.
+    @available(iOS 16.2, *)
+    private func staleDate(
+        _ state: AlightTrackAttributes.ContentState,
+        mode: AlightTrackAttributes.Mode
+    ) -> Date? {
+        // A waiting card carries a self-ticking countdown to a fixed date, so
+        // it stays true without new data right up to the arrival it names.
+        if state.phase == .waiting { return state.etaDate }
+        guard state.phase.isLive else { return nil }
+        let window: TimeInterval
+        switch mode {
+        case .bus: window = 3 * 60
+        case .metro: window = 6 * 60
+        case .tra, .thsr: window = 20 * 60
+        }
+        return state.asOf.addingTimeInterval(window)
+    }
+
+    /// The 提前站數 reminder, on the one update that crosses the threshold.
+    ///
+    /// ADR-0015 asks for a vibration with nothing entering the notification
+    /// centre; an alerting Live Activity update is the platform's closest
+    /// primitive. `AlertConfiguration` offers no silent option, so on a device
+    /// that is not on silent this also makes the default alert sound.
+    @available(iOS 16.2, *)
+    private func reminderAlert(
+        for state: AlightTrackAttributes.ContentState,
+        target: String
+    ) -> AlertConfiguration? {
+        guard state.phase == .approaching, lastPhase != .approaching else { return nil }
+        return AlertConfiguration(
+            title: "準備下車",
+            body: "\(target) 還剩 \(state.remainingStops) 站",
+            sound: .default
         )
     }
 
-    /// Decodes the `routes` arg (an array of `{route, destination, eta}`
-    /// dictionaries sent by the board-mode Dart channel) into `BoardRow`s.
-    /// Returns nil when absent so non-board content states are unaffected.
-    private func boardRows(from raw: Any?) -> [BusLiveActivityAttributes.BoardRow]? {
-        guard let rows = raw as? [[String: Any]] else { return nil }
-        return rows.map {
-            BusLiveActivityAttributes.BoardRow(
-                route: $0["route"] as? String ?? "",
-                destination: $0["destination"] as? String ?? "",
-                eta: $0["eta"] as? String ?? ""
-            )
+    /// Dart's `AlightTrackContent.toArgs()`, one field at a time.
+    private func contentState(from args: [String: Any]) -> AlightTrackAttributes.ContentState {
+        let etaDate = (args["etaMs"] as? Int).flatMap { ms in
+            ms > 0 ? Date(timeIntervalSince1970: Double(ms) / 1000) : nil
         }
+        return AlightTrackAttributes.ContentState(
+            phase: AlightTrackAttributes.Phase(rawValue: args["phase"] as? String ?? "") ?? .riding,
+            vehicleLabel: args["vehicleLabel"] as? String ?? "",
+            vehicleId: args["vehicleId"] as? String,
+            nextStation: args["nextStation"] as? String ?? "",
+            hopCount: max(1, args["hopCount"] as? Int ?? 1),
+            currentIndex: args["currentIndex"] as? Int ?? 0,
+            remainingStops: max(0, args["remainingStops"] as? Int ?? 0),
+            leadStops: max(1, args["leadStops"] as? Int ?? 1),
+            etaDate: etaDate,
+            etaMinutes: args["etaMinutes"] as? Int,
+            walkMinutes: args["walkMinutes"] as? Int ?? 0,
+            lineCode: args["lineCode"] as? String,
+            lineColorHex: args["lineColorHex"] as? String,
+            // Stamped here rather than sent from Dart: Dart pushes an update
+            // when data arrives, so the moment the command lands *is* "as of
+            // when", and a field travelling over the channel could only be a
+            // less accurate copy of it.
+            asOf: Date()
+        )
     }
 }

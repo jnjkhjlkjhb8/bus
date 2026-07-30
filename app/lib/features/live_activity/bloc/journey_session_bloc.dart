@@ -1,8 +1,9 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:wheres_the_bus/core/live_activity/live_activity_channel.dart';
+import 'package:wheres_the_bus/core/live_activity/alight_track.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
 import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
@@ -26,7 +27,7 @@ class JourneySessionBloc
     LegEtaStream etaStream = defaultLegEtaStream,
     RouteEtaStream routeEtaStream = defaultRouteEtaStream,
     RailTrackStream railTrackStream = defaultRailTrackStream,
-    LiveActivityChannel? channel,
+    AlightTrackChannel? channel,
     Stream<Position> Function()? positions,
     bool Function()? liveActivityEnabled,
     this.sessionTimeout = const Duration(hours: 8),
@@ -53,7 +54,7 @@ class JourneySessionBloc
   final LegEtaStream _etaStream;
   final RouteEtaStream _routeEtaStream;
   final RailTrackStream _railTrackStream;
-  final LiveActivityChannel? _channel;
+  final AlightTrackChannel? _channel;
   final Stream<Position> Function()? _positions;
 
   /// Injected so tests can start a session without touching Hive. Defaults to
@@ -78,8 +79,8 @@ class JourneySessionBloc
   /// Bumped on every [JourneyStarted]; see class doc.
   int _generation = 0;
 
-  /// Lease on the shared [LiveActivityChannel]'s current activity, handed
-  /// back by `start`/`startBoard`. Null until this journey has one.
+  /// Lease on the shared [AlightTrackChannel]'s current card, handed back by
+  /// `start`. Null until this journey has one.
   int? _lease;
 
   Future<void> _onStarted(
@@ -101,6 +102,7 @@ class JourneySessionBloc
         legs: event.legs,
         trackOnly: event.trackOnly,
         plate: event.plate,
+        leadStops: event.leadStops,
       ),
     );
     if (state.isRailTrack) {
@@ -330,6 +332,9 @@ class JourneySessionBloc
           remainingStops: f.remainingStops,
           progress: f.progress,
           nextStop: f.nextStop,
+          aboard: f.aboard,
+          etaToBoard: f.etaToBoard,
+          delay: f.delay,
           generation: generation,
         ),
       ),
@@ -343,10 +348,14 @@ class JourneySessionBloc
     final arrived = e.eta <= Duration.zero;
     emit(
       state.copyWith(
-        eta: e.eta,
+        // Before boarding the meaningful countdown is to the train's departure,
+        // not to a stop the rider cannot reach yet.
+        eta: e.aboard ? e.eta : e.etaToBoard,
         pinnedStopsRemaining: e.remainingStops,
         railProgress: e.progress,
         railNextStop: e.nextStop,
+        railAboard: e.aboard,
+        railDelay: e.delay,
       ),
     );
     _pushUpdate();
@@ -391,38 +400,83 @@ class JourneySessionBloc
     }
   }
 
-  LiveActivityContent _content(JourneySessionState s) {
+  AlightTrackContent _content(JourneySessionState s) {
     final leg = s.currentLeg!;
-    final total = leg.stopLocations.length;
+    final rail = s.isRailTrack;
+    // A pinned vehicle is being followed toward the alight stop even though
+    // the internal phase never leaves `waiting` — for the card that is the
+    // same reading as riding, so it counts stops rather than minutes.
+    //
+    // A rail track is the exception: the rider can arm it from the timetable
+    // long before the train pulls in, and until it does they are standing on a
+    // platform, not riding. `railAboard` comes from the schedule (delay
+    // included), so the card only starts counting stops once the train has
+    // actually reached the boarding stop.
+    final aboard = s.phase == JourneyPhase.riding ||
+        (rail && s.railAboard) ||
+        (!rail && s.plate != null);
+
     final names = [...leg.stopNames, leg.alightStop];
     final nextName =
         s.phase == JourneyPhase.riding && s.nextStopIndex < names.length
         ? names[s.nextStopIndex]
         : leg.boardStop;
-    final rail = s.isRailTrack;
-    return LiveActivityContent(
-      mode: rail
-          ? 'riding'
-          : (s.phase == JourneyPhase.riding ? 'riding' : 'waiting'),
-      type: leg.kind.name == 'metro' ? 'mrt' : leg.kind.name,
-      routeOrTrain: leg.routeLabel,
-      fromStation: leg.boardStop,
+
+    // One segment per hop, board→alight. A rail leg carries its geometry as
+    // railSchedule; a bus leg as stopLocations.
+    final geometryHops = rail
+        ? leg.railSchedule.length - 1
+        : leg.stopLocations.length;
+    final remaining = max(
+      0,
+      s.pinnedStopsRemaining ??
+          (s.phase == JourneyPhase.riding
+              ? leg.stopLocations.length - s.nextStopIndex
+              : geometryHops),
+    );
+    // A pinned vehicle reports its own stops-remaining even on a leg whose
+    // stop list never landed (geometryHops == 0). The bar stretches to fit
+    // that count rather than clamping it: 還剩 3 站 collapsing to 1 would be
+    // the card lying about the ride.
+    final hopCount = max(1, max(geometryHops, remaining));
+    final clampedRemaining = remaining.clamp(0, hopCount);
+
+    return AlightTrackContent(
+      mode: switch (leg.kind) {
+        JourneyLegKind.metro => AlightTrackMode.metro,
+        JourneyLegKind.tra => AlightTrackMode.tra,
+        JourneyLegKind.thsr => AlightTrackMode.thsr,
+        JourneyLegKind.bus || JourneyLegKind.other => AlightTrackMode.bus,
+      },
+      phase: switch (s.phase) {
+        JourneyPhase.done => AlightTrackPhase.arrived,
+        _ when !aboard => AlightTrackPhase.waiting,
+        _ when clampedRemaining <= s.leadStops => AlightTrackPhase.approaching,
+        _ => AlightTrackPhase.riding,
+      },
+      vehicleLabel: leg.routeLabel.split(' 往').first.trim(),
+      vehicleId: s.plate,
+      boardStation: leg.boardStop,
+      targetStation: leg.alightStop,
       nextStation: rail ? (s.railNextStop ?? leg.boardStop) : nextName,
-      alightStation: leg.alightStop,
-      remainingStops:
-          s.pinnedStopsRemaining ??
-          (s.phase == JourneyPhase.riding ? total - s.nextStopIndex : null),
-      progressPercent: rail
-          ? (s.railProgress ?? 0.0)
-          : (s.phase == JourneyPhase.riding && total > 0
-                ? s.nextStopIndex / total
-                : 0.0),
+      hopCount: hopCount,
+      currentIndex: hopCount - clampedRemaining,
+      remainingStops: clampedRemaining,
+      leadStops: s.leadStops,
       etaMs: s.eta == null
           ? null
           : DateTime.now().add(s.eta!).millisecondsSinceEpoch,
-      walkMinutes: s.phase == JourneyPhase.waiting ? leg.leadingWalkMinutes : 0,
-      plate: s.plate,
-      routeNumber: leg.routeLabel.split(' 往').first.trim(),
+      etaMinutes: s.eta == null
+          ? null
+          : max(0, (s.eta!.inSeconds / 60).ceil()),
+      walkMinutes: aboard ? 0 : leg.leadingWalkMinutes,
+      // Only while the train is still to come: a rider on the platform reads
+      // the timetable and the slip against it, not a stop count. Both drop
+      // away the moment they are aboard.
+      scheduledDepartureMs: rail && !aboard
+          ? leg.railSchedule.first.scheduledArrival.millisecondsSinceEpoch
+          : null,
+      delayMinutes: rail && !aboard ? s.railDelay.inMinutes : 0,
     );
   }
 

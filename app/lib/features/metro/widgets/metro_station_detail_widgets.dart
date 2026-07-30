@@ -410,10 +410,8 @@ class _CongestionCar extends StatelessWidget {
   }
 }
 
-/// The 下車提醒 bell: outline = idle, filled (ink) = a session is active for
-/// this train. Tapping an idle bell opens the setup sheet; tapping an active
-/// one cancels the session (reversible — the rider can rebind). 40px circle in
-/// a 44px touch target.
+/// The 下車提醒 bell for this train. The bell itself is [AlightTrackBell],
+/// shared with bus and rail; this only wires it to the metro session.
 class _MetroAlightBell extends StatelessWidget {
   const _MetroAlightBell({required this.arrival});
 
@@ -421,45 +419,22 @@ class _MetroAlightBell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
     return BlocBuilder<MrtTrackBloc, MrtTrackBlocState>(
       buildWhen: (p, n) => p.tracks(arrival) != n.tracks(arrival),
       builder: (context, state) {
         final active = state.tracks(arrival);
-        return Pressable(
+        return AlightTrackBell(
+          active: active,
           semanticLabel: active
               ? AppI18n.of(context).metroAlightReminderCancel
               : AppI18n.of(context).metroAlightReminderSet,
           onTap: () {
-            unawaited(HapticService.instance.mediumTap());
             if (active) {
               context.read<MrtTrackBloc>().add(const MrtTrackCancelled());
             } else {
               unawaited(MrtAlightSetupSheet.show(context, arrival));
             }
           },
-          child: SizedBox(
-            width: 44,
-            height: 44,
-            child: Center(
-              child: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: active ? cs.onSurface : cs.surface,
-                  border: Border.all(color: cs.outlineVariant),
-                ),
-                child: Icon(
-                  active
-                      ? Icons.notifications_active_rounded
-                      : Icons.notifications_none_rounded,
-                  size: 18,
-                  color: active ? cs.surface : cs.onSurface,
-                ),
-              ),
-            ),
-          ),
         );
       },
     );
@@ -716,7 +691,7 @@ class _ScheduleLineHeader extends StatelessWidget {
           ),
           const SizedBox(width: 7),
           Text(
-            _kLineNames(AppI18n.of(context))[line] ?? line,
+            metroLineNames(AppI18n.of(context))[line] ?? line,
             style: AppTextStyles.bodySmall.copyWith(
               color: cs.onSurfaceVariant,
             ),

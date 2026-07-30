@@ -14,24 +14,26 @@
 		3261CEB5F79CF7F829603A9C /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = C41849BD0B2BF1EED8247BE8 /* GoogleService-Info.plist */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
-		57838263B4EC57098E256419 /* BusLiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC79046B4330AEF139E6CBF5 /* BusLiveActivityAttributes.swift */; };
+		57838263B4EC57098E256419 /* AlightTrackAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC79046B4330AEF139E6CBF5 /* AlightTrackAttributes.swift */; };
 		5EC660A00B69805102F5E877 /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 68B4939565BA034577D1AC25 /* Pods_Runner.framework */; };
 		6451B8EABEAFBA576B05B8B2 /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DFB3B08F13D359F9A70F6988 /* Pods_RunnerTests.framework */; };
-		7221B24990D25D2DCF9C5CE8 /* BusLiveActivityLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3C5E9AC7E80CEF0742F242 /* BusLiveActivityLiveActivity.swift */; };
+		7221B24990D25D2DCF9C5CE8 /* AlightTrackCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF3C5E9AC7E80CEF0742F242 /* AlightTrackCard.swift */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
 		755173F65EEC2377A088F941 /* ConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46DFF30AD268D782E4549016 /* ConfigurationTests.swift */; };
 		7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */; };
 		78A318202AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile; productRef = 78A3181F2AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage */; };
 		7A5A15E3144F78B7114DEA52 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 23AA873E256F55703AE6FB1C /* Foundation.framework */; };
-		96CF47A3FB708D01276BFCAD /* BusLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86BA370A5D653BC6FACADA97 /* BusLiveActivityBundle.swift */; };
+		96CF47A3FB708D01276BFCAD /* AlightTrackBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86BA370A5D653BC6FACADA97 /* AlightTrackBundle.swift */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		A2276EA40E40123022D565FA /* ActivityKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74E04EA9E4E4FB0696114787 /* ActivityKit.framework */; };
 		B459D7855953BCAB77507B44 /* LiveActivityPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E79F3F99D5409A3366A8B90 /* LiveActivityPlugin.swift */; };
+		CA4E1E7A0002B0B0C0D0E0F0 /* CancelTrackIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA4E1E7A0001B0B0C0D0E0F0 /* CancelTrackIntent.swift */; };
+		CA4E1E7A0003B0B0C0D0E0F0 /* CancelTrackIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA4E1E7A0001B0B0C0D0E0F0 /* CancelTrackIntent.swift */; };
 		B9F5E11C90EBC1649EC01C9D /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 96ECAF6483D7AF9C8039237E /* WidgetKit.framework */; };
 		D131D17A019C7AE341EF1528 /* DartDefinesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D9C73E3E93000C8DAA84410 /* DartDefinesTests.swift */; };
-		EF0A397C2A6DC5EFB35DA182 /* BusLiveActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC79046B4330AEF139E6CBF5 /* BusLiveActivityAttributes.swift */; };
+		EF0A397C2A6DC5EFB35DA182 /* AlightTrackAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC79046B4330AEF139E6CBF5 /* AlightTrackAttributes.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -97,7 +99,7 @@
 		7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDelegate.swift; sourceTree = "<group>"; };
 		78E0A7A72DC9AD7400C4905E /* FlutterGeneratedPluginSwiftPackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = FlutterGeneratedPluginSwiftPackage; path = Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
-		86BA370A5D653BC6FACADA97 /* BusLiveActivityBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BusLiveActivityBundle.swift; sourceTree = "<group>"; };
+		86BA370A5D653BC6FACADA97 /* AlightTrackBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AlightTrackBundle.swift; sourceTree = "<group>"; };
 		8E79F3F99D5409A3366A8B90 /* LiveActivityPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LiveActivityPlugin.swift; sourceTree = "<group>"; };
 		96ECAF6483D7AF9C8039237E /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = Flutter/Debug.xcconfig; sourceTree = "<group>"; };
@@ -113,9 +115,10 @@
 		C41849BD0B2BF1EED8247BE8 /* GoogleService-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; name = "GoogleService-Info.plist"; path = "Runner/GoogleService-Info.plist"; sourceTree = "<group>"; };
 		DFB3B08F13D359F9A70F6988 /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		E1B2DC2BBCDE0973D6138DC5 /* Pods-Runner.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"; sourceTree = "<group>"; };
-		EF3C5E9AC7E80CEF0742F242 /* BusLiveActivityLiveActivity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BusLiveActivityLiveActivity.swift; sourceTree = "<group>"; };
+		EF3C5E9AC7E80CEF0742F242 /* AlightTrackCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AlightTrackCard.swift; sourceTree = "<group>"; };
 		FBD7869A1C5316742839AD8B /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
-		FC79046B4330AEF139E6CBF5 /* BusLiveActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BusLiveActivityAttributes.swift; sourceTree = "<group>"; };
+		FC79046B4330AEF139E6CBF5 /* AlightTrackAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AlightTrackAttributes.swift; sourceTree = "<group>"; };
+		CA4E1E7A0001B0B0C0D0E0F0 /* CancelTrackIntent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CancelTrackIntent.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -176,9 +179,10 @@
 		7FB0D55A06DD3A8060D30113 /* BusLiveActivity */ = {
 			isa = PBXGroup;
 			children = (
-				FC79046B4330AEF139E6CBF5 /* BusLiveActivityAttributes.swift */,
-				86BA370A5D653BC6FACADA97 /* BusLiveActivityBundle.swift */,
-				EF3C5E9AC7E80CEF0742F242 /* BusLiveActivityLiveActivity.swift */,
+				FC79046B4330AEF139E6CBF5 /* AlightTrackAttributes.swift */,
+				86BA370A5D653BC6FACADA97 /* AlightTrackBundle.swift */,
+				EF3C5E9AC7E80CEF0742F242 /* AlightTrackCard.swift */,
+				CA4E1E7A0001B0B0C0D0E0F0 /* CancelTrackIntent.swift */,
 				C1C4E1E882A8DA374C476970 /* Info.plist */,
 			);
 			path = BusLiveActivity;
@@ -575,7 +579,8 @@
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				B459D7855953BCAB77507B44 /* LiveActivityPlugin.swift in Sources */,
 				1958ED8D54BED962EDE1B9CA /* DartDefines.swift in Sources */,
-				57838263B4EC57098E256419 /* BusLiveActivityAttributes.swift in Sources */,
+				57838263B4EC57098E256419 /* AlightTrackAttributes.swift in Sources */,
+				CA4E1E7A0002B0B0C0D0E0F0 /* CancelTrackIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -583,9 +588,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				96CF47A3FB708D01276BFCAD /* BusLiveActivityBundle.swift in Sources */,
-				7221B24990D25D2DCF9C5CE8 /* BusLiveActivityLiveActivity.swift in Sources */,
-				EF0A397C2A6DC5EFB35DA182 /* BusLiveActivityAttributes.swift in Sources */,
+				96CF47A3FB708D01276BFCAD /* AlightTrackBundle.swift in Sources */,
+				7221B24990D25D2DCF9C5CE8 /* AlightTrackCard.swift in Sources */,
+				EF0A397C2A6DC5EFB35DA182 /* AlightTrackAttributes.swift in Sources */,
+				CA4E1E7A0003B0B0C0D0E0F0 /* CancelTrackIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -634,7 +640,7 @@
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BusLiveActivity/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -792,7 +798,7 @@
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BusLiveActivity/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -989,7 +995,7 @@
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = BusLiveActivity/Info.plist;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

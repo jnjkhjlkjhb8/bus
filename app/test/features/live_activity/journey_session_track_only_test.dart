@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:wheres_the_bus/core/live_activity/live_activity_channel.dart';
+import 'package:wheres_the_bus/core/live_activity/alight_track.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
 import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
@@ -11,18 +11,18 @@ import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart'
 
 /// Captures the last content pushed through the platform channel so tests
 /// can assert on `_content()`'s output without the method channel firing.
-class _CapturingChannel extends LiveActivityChannel {
-  LiveActivityContent? last;
+class _CapturingChannel extends AlightTrackChannel {
+  AlightTrackContent? last;
   int _lease = 0;
 
   @override
-  Future<int> start(LiveActivityContent content) async {
+  Future<int> start(AlightTrackContent content) async {
     last = content;
     return ++_lease;
   }
 
   @override
-  Future<void> update(int lease, LiveActivityContent content) async {
+  Future<void> update(int lease, AlightTrackContent content) async {
     last = content;
   }
 
@@ -58,7 +58,7 @@ void main() {
   late StreamController<List<BusStopEtaViewModel>> routeEtaCtrl;
   JourneySessionBloc bloc({
     Duration linger = const Duration(minutes: 2),
-    LiveActivityChannel? channel,
+    AlightTrackChannel? channel,
     // Defaults on so the many tests unrelated to this setting don't touch
     // SettingsRepository (and, through it, an unopened Hive box).
     bool Function() liveActivityEnabled = _alwaysEnabled,
@@ -195,8 +195,8 @@ void main() {
       );
       expect(first.pinnedStopsRemaining, 3);
       expect(channel.last?.remainingStops, 3);
-      expect(channel.last?.plate, 'KKA-1288');
-      expect(channel.last?.routeNumber, '307');
+      expect(channel.last?.vehicleId, 'KKA-1288');
+      expect(channel.last?.vehicleLabel, '307');
 
       // The bus advances two stops — the count MUST decrease. This is the
       // regression guard for the constant-count bug.
@@ -312,9 +312,11 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(routeEtaCtrl.hasListener, isFalse);
     expect(b.state.pinnedStopsRemaining, isNull);
-    expect(channel.last?.remainingStops, isNull);
-    expect(channel.last?.plate, isNull);
-    expect(channel.last?.routeNumber, '307');
+    expect(channel.last?.vehicleId, isNull);
+    expect(channel.last?.vehicleLabel, '307');
+    // Nothing is being followed, so the card counts minutes to the board
+    // stop rather than stops to an alight stop.
+    expect(channel.last?.phase, AlightTrackPhase.waiting);
     await b.close();
   });
 

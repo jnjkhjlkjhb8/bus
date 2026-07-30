@@ -17,7 +17,6 @@ import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart'
 void main() {
   late PlanBloc planBloc;
   late JourneySessionBloc journeyBloc;
-  late List<bool> pipValues;
 
   setUp(() {
     planBloc = PlanBloc(repository: _FakeMaasRepository());
@@ -29,7 +28,6 @@ void main() {
       // unopened Hive box) instead.
       liveActivityEnabled: () => true,
     );
-    pipValues = [];
   });
 
   tearDown(() async {
@@ -50,15 +48,13 @@ void main() {
   }) => NavigationCoordinator(
     planBloc: planBloc,
     journeySessionBloc: journeyBloc,
-    setPipNavigating: ({required navigating}) async =>
-        pipValues.add(navigating),
     liveActivityEnabled: () => liveActivityEnabled,
     positions: positions,
     onAutoAction: onAutoAction,
     onAutopilotStatus: onAutopilotStatus,
   );
 
-  test('enabled start begins plan, transit journey, and PiP', () async {
+  test('enabled start begins the plan and the transit journey', () async {
     final route = _route([_walkSection(25), _transitSection(25.1)]);
     final planReady = expectLater(
       planBloc.stream,
@@ -81,7 +77,6 @@ void main() {
     await journeyReady;
     expect(planBloc.state.selectedRouteIndex, 2);
     expect(journeyBloc.state.legs, hasLength(1));
-    expect(pipValues, [true]);
     expect(cameraPoint, const PlanPoint(lat: 25, lng: 121));
   });
 
@@ -98,7 +93,6 @@ void main() {
 
     await planReady;
     expect(journeyBloc.state.phase, JourneyPhase.idle);
-    expect(pipValues, isEmpty);
   });
 
   test(
@@ -120,7 +114,6 @@ void main() {
       expect(result.arrived, isFalse);
       expect(result.nextCameraPoint, const PlanPoint(lat: 25.1, lng: 121));
       expect(journeyBloc.state.phase, JourneyPhase.idle);
-      expect(pipValues, isEmpty);
     },
   );
 
@@ -139,10 +132,9 @@ void main() {
     await _waitForPlanLeg(planBloc, null);
     expect(result.arrived, isTrue);
     expect(result.nextCameraPoint, isNull);
-    expect(pipValues, [false]);
   });
 
-  test('explicit end stops plan, journey, and PiP', () async {
+  test('explicit end stops the plan and the journey', () async {
     final route = _route([_transitSection(25)]);
     planBloc.add(const NavigationStarted());
     journeyBloc.add(JourneyStarted(legs: JourneyLeg.legsFromRoute(route)));
@@ -153,7 +145,6 @@ void main() {
 
     await _waitForJourneyPhase(journeyBloc, JourneyPhase.done);
     await _waitForPlanLeg(planBloc, null);
-    expect(pipValues, [false]);
   });
 
   test('self-completed journey reconciliation ends the active plan', () async {
@@ -166,7 +157,6 @@ void main() {
 
     await _waitForPlanLeg(planBloc, null);
     expect(shouldResetCamera, isTrue);
-    expect(pipValues, [false]);
   });
 
   test('route without transit starts plan without journey or PiP', () async {
@@ -182,7 +172,6 @@ void main() {
 
     await planReady;
     expect(journeyBloc.state.phase, JourneyPhase.idle);
-    expect(pipValues, isEmpty);
   });
 
   group('decideNavAction', () {
@@ -462,8 +451,6 @@ void main() {
       await NavigationCoordinator(
         planBloc: autopilotPlanBloc,
         journeySessionBloc: journeyBloc,
-        setPipNavigating: ({required navigating}) async =>
-            pipValues.add(navigating),
         liveActivityEnabled: () => true,
         positions: () => controller.stream,
         onAutoAction: (action, target, arrived) =>
@@ -504,7 +491,6 @@ void main() {
       expect(autoActions[0].$3, isFalse);
       expect(autoActions[1].$3, isFalse);
       expect(autoActions[2].$3, isTrue);
-      expect(pipValues, [true, false]);
     });
 
     test(
@@ -535,8 +521,6 @@ void main() {
         final coordinator = NavigationCoordinator(
           planBloc: autopilotPlanBloc,
           journeySessionBloc: journeyBloc,
-          setPipNavigating: ({required navigating}) async =>
-              pipValues.add(navigating),
           liveActivityEnabled: () => true,
           positions: () => controller.stream,
           onAutoAction: (action, target, arrived) => autoActions.add(action),
@@ -590,8 +574,6 @@ void main() {
         await NavigationCoordinator(
           planBloc: autopilotPlanBloc,
           journeySessionBloc: journeyBloc,
-          setPipNavigating: ({required navigating}) async =>
-              pipValues.add(navigating),
           liveActivityEnabled: () => true,
           positions: () => controller.stream,
           onAutoAction: (action, target, arrived) => autoActions.add(action),
@@ -654,8 +636,6 @@ void main() {
         await NavigationCoordinator(
           planBloc: autopilotPlanBloc,
           journeySessionBloc: journeyBloc,
-          setPipNavigating: ({required navigating}) async =>
-              pipValues.add(navigating),
           liveActivityEnabled: () => false,
           positions: () => controller.stream,
           onAutoAction: (action, target, arrived) => autoActions.add(action),
@@ -721,8 +701,6 @@ void main() {
         await NavigationCoordinator(
           planBloc: autopilotPlanBloc,
           journeySessionBloc: journeyBloc,
-          setPipNavigating: ({required navigating}) async =>
-              pipValues.add(navigating),
           liveActivityEnabled: () => true,
           positions: () => controller.stream,
           onAutoAction: (action, target, arrived) => autoActions.add(action),
@@ -861,8 +839,6 @@ void main() {
         final coord = NavigationCoordinator(
           planBloc: testPlanBloc,
           journeySessionBloc: journeyBloc,
-          setPipNavigating: ({required navigating}) async =>
-              pipValues.add(navigating),
           liveActivityEnabled: () => false,
         );
         await coord.start(route: route, routeIndex: 0);
@@ -877,7 +853,6 @@ void main() {
 
         expect(shouldResetCamera, isFalse);
         expect(testPlanBloc.state.activeLegIndex, 1);
-        expect(pipValues, [false]);
       },
     );
 
@@ -904,8 +879,6 @@ void main() {
         final coord = NavigationCoordinator(
           planBloc: testPlanBloc,
           journeySessionBloc: journeyBloc,
-          setPipNavigating: ({required navigating}) async =>
-              pipValues.add(navigating),
           liveActivityEnabled: () => false,
         );
         await coord.start(route: route, routeIndex: 0);
@@ -917,7 +890,6 @@ void main() {
 
         await _waitForPlanLeg(testPlanBloc, null);
         expect(shouldResetCamera, isTrue);
-        expect(pipValues, [false]);
       },
     );
   });

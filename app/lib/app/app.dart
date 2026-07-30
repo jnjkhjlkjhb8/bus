@@ -7,9 +7,9 @@ import 'package:hive_ce_flutter/adapters.dart';
 import 'package:wheres_the_bus/app/router/app_router.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/bootstrap/app_bootstrap.dart';
-import 'package:wheres_the_bus/core/live_activity/live_activity_channel.dart';
-import 'package:wheres_the_bus/core/live_activity/mrt_cancel_channel.dart';
-import 'package:wheres_the_bus/core/live_activity/pip_mode.dart';
+import 'package:wheres_the_bus/core/lifecycle/app_foreground.dart';
+import 'package:wheres_the_bus/core/live_activity/alight_track.dart';
+import 'package:wheres_the_bus/core/live_activity/alight_track_cancel_channel.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
 import 'package:wheres_the_bus/core/update/update_gate.dart';
@@ -21,8 +21,8 @@ import 'package:wheres_the_bus/features/alerts/view/notification_toast.dart';
 import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/stop_board_bloc.dart';
-import 'package:wheres_the_bus/features/live_activity/view/journey_pip_card.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
+import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
 import 'package:wheres_the_bus/features/metro/bloc/mrt_track_bloc.dart';
 import 'package:wheres_the_bus/features/metro/bloc/mrt_track_event.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
@@ -60,6 +60,7 @@ class _AppState extends State<App> {
   @override
   void initState() {
     super.initState();
+    AppForeground.start();
     widget.bootstrap.addListener(_syncInitialized);
     _syncInitialized();
   }
@@ -215,40 +216,52 @@ class _AppShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Shared across JourneySessionBloc and StopBoardBloc: only one Live
-    // Activity can exist, so both drivers must target the same channel.
-    final liveActivityChannel = LiveActivityChannel();
+    // Shared across JourneySessionBloc and MrtTrackBloc: only one tracking
+    // card can exist, so both drivers must target the same channel.
+    final liveActivityChannel = AlightTrackChannel();
     return MultiBlocProvider(
       providers: [
         BlocProvider(create: (_) => AlertBloc()),
         BlocProvider(create: (_) => PlanBloc()),
         BlocProvider(
-          create: (_) => JourneySessionBloc(
+          create: (_) {
             // iOS drives the Live Activity / Dynamic Island; Android drives
             // the promoted Live Update notification + status-bar chip
             // (supersedes spec 決策 3, which kept Android on PiP only).
-            channel: liveActivityChannel,
-            positions: LocationService.instance.navigationStream,
-          ),
-        ),
-        BlocProvider(
-          create: (context) => StopBoardBloc(
-            i18n: AppI18n.of(context),
-            channel: liveActivityChannel,
-            session: context.read<JourneySessionBloc>(),
-          ),
+            final bloc = JourneySessionBloc(
+              channel: liveActivityChannel,
+              positions: LocationService.instance.navigationStream,
+            );
+            // Bus, TRA and THSR sessions live here, so the card's 取消追蹤 has
+            // to reach this bloc too — bound only to the metro one, the button
+            // did nothing at all on a train.
+            //
+            // Both owners listen and the non-owner ignores it: only one card
+            // exists at a time, so "am I running a session" is the whole
+            // routing rule, and it beats teaching the platform side which bloc
+            // to talk to.
+            AlightTrackCancelChannel.bind(() {
+              if (bloc.state.phase == JourneyPhase.idle) return;
+              bloc.add(const JourneyCancelled());
+            });
+            return bloc;
+          },
         ),
         BlocProvider(
           // The metro alight-reminder session shares the single Live Activity
           // channel; restoring on startup re-lights the bell and re-watches a
           // session that survived a restart (ADR-0015).
-          create: (_) {
-            final bloc = MrtTrackBloc(channel: liveActivityChannel)
-              ..add(const MrtTrackRestored());
-            // Android Live Update 取消追蹤 action → CancelTrack on this bloc.
-            MrtTrackCancelChannel.bind(
-              () => bloc.add(const MrtTrackCancelled()),
-            );
+          create: (context) {
+            final bloc = MrtTrackBloc(
+              i18n: AppI18n.of(context),
+              channel: liveActivityChannel,
+            )..add(const MrtTrackRestored());
+            // Tracking card 取消追蹤 action → CancelTrack, but only while this
+            // bloc is the one holding the card (see the journey binding above).
+            AlightTrackCancelChannel.bind(() {
+              if (bloc.state.session == null) return;
+              bloc.add(const MrtTrackCancelled());
+            });
             return bloc;
           },
         ),
@@ -333,28 +346,11 @@ class _AppShellViewState extends State<_AppShellView> {
             devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
             textScaler: MediaQuery.textScalerOf(context),
           );
-          return _PipGate(
-            child: UpdateGate(child: NotificationToastHost(child: base)),
-          );
+          return UpdateGate(child: NotificationToastHost(child: base));
         },
       ),
     );
   }
 }
 
-/// Swaps the whole UI for [JourneyPipCard] while Android picture-in-picture is
-/// active. On iOS / other platforms [PipMode.isPip] stays false, so [child]
-/// always renders.
-class _PipGate extends StatelessWidget {
-  const _PipGate({required this.child});
 
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<bool>(
-      valueListenable: PipMode.instance.isPip,
-      builder: (context, pip, _) => pip ? const JourneyPipCard() : child,
-    );
-  }
-}

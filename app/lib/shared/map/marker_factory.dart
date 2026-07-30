@@ -2,7 +2,6 @@ import 'dart:collection';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
@@ -10,8 +9,11 @@ import 'package:wheres_the_bus/app/theme/app_theme.dart';
 class MapMarkers {
   const MapMarkers._();
 
-  // LRU-bounded: sprite frames x themes plus eta bubbles/plates would
-  // otherwise grow the cache monotonically for the life of the app.
+  // LRU-bounded: stop plates x live states x themes, plus selected capsules and
+  // vehicle bubbles keyed by plate and GPS age, would otherwise grow the cache
+  // monotonically for the life of the app. Sized so one frame of the longest
+  // route plus its vehicles fits without evicting itself — asserted by
+  // stop_marker_test.
   static const int _cacheCap = 256;
   static final LinkedHashMap<String, Object> _cache =
       LinkedHashMap<String, Object>();
@@ -72,50 +74,96 @@ class MapMarkers {
     });
   }
 
-  /// Live-vehicle marker: the bus sprite grounded with a soft contact shadow
-  /// so it sits on the map instead of floating. Works with the existing
-  /// turntable sprites; shape/scale are untouched.
-  static Future<BitmapDescriptor> busMarker(
-    String asset, {
-    double size = 54,
+  /// Live-vehicle mark: a solid disc carrying a heading chevron, painted
+  /// north-up and published with `Marker.rotation`, so heading is a continuous
+  /// marker property rather than one of 60 pre-rendered perspective frames. A
+  /// turning bus turns instead of cutting between 6° steps, one bitmap serves
+  /// every heading, and the rotation can be interpolated by the caller's glide.
+  ///
+  /// **The silhouette stays a plain circle; the heading cue lives inside it.**
+  /// That is the load-bearing decision here, arrived at by building the
+  /// alternative and looking at it: a disc with a point on one side is pin
+  /// geometry, and a pin means *a place*, not a vehicle — at 28pt it renders as
+  /// a map pin or a blood drop however the corner where point meets disc is
+  /// tuned. A circle also cannot restyle itself as it rotates, the way a
+  /// rounded square turns into a diamond at 45°, so a whole fleet keeps one
+  /// silhouette while driving.
+  ///
+  /// States escalate by **fill before colour**, the grammar the stop ladder
+  /// already uses (`docs/design.md`) — an ink [body] with no [ring] is a bus
+  /// with nothing to report, an ink body plus a status [ring] is a notice, and
+  /// a status-coloured [body] is a warning. [halo] is the basemap-coloured
+  /// outline every state carries, separating the mark from the route polyline
+  /// it rides on; the chevron is drawn in it too, so it reads at full contrast
+  /// on every body colour without needing a colour of its own.
+  ///
+  /// Solid body against the stop ladder's hollow plates is what keeps the two
+  /// apart at a glance, so the disc must never be painted hollow here.
+  ///
+  /// [showHeading] false drops the chevron, for a vehicle with no usable
+  /// heading — a plain disc, which is honest. The sprite atlas had no way to
+  /// say that, and pointed such a bus at true north.
+  ///
+  /// Scaled by [_dpr] alone rather than [_unit]: the mark carries no text, so
+  /// the text setting has nothing to scale here — the same reasoning as
+  /// [busBubble]'s clearance.
+  static Future<BitmapDescriptor> busMark({
+    required Color body,
+    required Color halo,
+    Color? ring,
+    bool showHeading = true,
+    bool shadow = true,
+    double size = 28,
   }) {
-    return _memo('bus:$asset:$size', () async {
-      final data = await rootBundle.load(asset);
-      final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
-      final sprite = (await codec.getNextFrame()).image;
-      final px = (size * _dpr).round();
-      final image = await _record(px, (canvas) {
-        // Contact shadow: soft ellipse under the bus.
-        canvas.drawOval(
-          Rect.fromCenter(
-            center: Offset(px * 0.5, px * 0.72),
-            width: px * 0.68,
-            height: px * 0.15,
-          ),
-          Paint()
-            ..color = const Color(0x50000000)
-            ..maskFilter = MaskFilter.blur(BlurStyle.normal, px * 0.035),
-        );
-        // Sprite, nudged up so its wheels meet the shadow.
-        final side = px * 0.98;
-        canvas.drawImageRect(
-          sprite,
-          Rect.fromLTWH(
-            0,
-            0,
-            sprite.width.toDouble(),
-            sprite.height.toDouble(),
-          ),
-          Rect.fromLTWH(
-            (px - side) / 2,
-            (px - side) / 2 - px * 0.02,
-            side,
-            side,
-          ),
-          Paint()..filterQuality = FilterQuality.high,
-        );
+    final key =
+        'busmark:${body.toARGB32()}:${halo.toARGB32()}:${ring?.toARGB32()}:'
+        '$showHeading:$shadow:$size';
+    return _memo(key, () async {
+      // One unit = one logical px at the designed 28pt body, so every constant
+      // below reads as its measurement from the design mock.
+      final u = size / 28 * _dpr;
+      // Square canvas with the body dead centre, because `Marker.rotation`
+      // turns the bitmap about its anchor — an off-centre body would orbit its
+      // own position as it turned. 24 = radius 14 + the halo's 4 + room for
+      // the shadow's offset and blur.
+      final half = 24 * u;
+      final c = Offset(half, half);
+      final disc = Path()..addOval(Rect.fromCircle(center: c, radius: 14 * u));
+
+      Paint outline(Color color, double width) => Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = width * u;
+
+      final image = await _record((half * 2).round(), (canvas) {
+        if (shadow) {
+          canvas.drawPath(
+            disc.shift(Offset(0, 1.5 * u)),
+            Paint()
+              ..color = const Color(0x24000000)
+              ..maskFilter = MaskFilter.blur(BlurStyle.normal, 3 * u),
+          );
+        }
+        // Widened when a ring is coming, which eats into the halo's band.
+        canvas.drawPath(disc, outline(halo, ring == null ? 5 : 7.5));
+        if (ring != null) canvas.drawPath(disc, outline(ring, 2.5));
+        // Over both strokes, so they read as bands around the mark rather than
+        // rings biting into it.
+        canvas.drawPath(disc, Paint()..color = body);
+        if (showHeading) {
+          // Sits a shade forward of centre: dead-centre reads as an ornament,
+          // and any further forward crowds the halo.
+          canvas.drawPath(
+            Path()
+              ..moveTo(c.dx - 6.5 * u, c.dy + 2.5 * u)
+              ..lineTo(c.dx, c.dy - 4.5 * u)
+              ..lineTo(c.dx + 6.5 * u, c.dy + 2.5 * u),
+            outline(halo, 3.2)
+              ..strokeCap = StrokeCap.round
+              ..strokeJoin = StrokeJoin.round,
+          );
+        }
       });
-      sprite.dispose();
       return _toBitmap(image);
     });
   }
@@ -484,14 +532,18 @@ class MapMarkers {
 
   /// Live-vehicle info bubble: the vehicle's headline status on top (勤務／行車
   /// 狀況, colored by [statusColor]), plate + GPS freshness below, with a tail
-  /// pointing down at the bus sprite. Rendered as its own marker anchored
+  /// pointing down at the vehicle mark. Rendered as its own marker anchored
   /// (0.5, 1.0) at the vehicle position; [clearance] is transparent space below
-  /// the tail so the bubble floats above the sprite.
+  /// the tail so the bubble floats above the mark.
+  ///
+  /// Only the pinned bus and any vehicle in a warning state gets one — see
+  /// `bus_route_screen.dart`, which decides that.
   ///
   /// [clearance] is the one measurement here scaled by the raw device pixel
-  /// ratio rather than [_unit]: it has to clear [busMarker]'s sprite, which
-  /// carries no text and so does not grow with the text setting. Scaling it
-  /// would lift the bubble off a sprite that never moved.
+  /// ratio rather than [_unit]: it has to clear [busMark], which carries no
+  /// text and so does not grow with the text setting. Scaling it would lift the
+  /// bubble off a mark that never moved. The default clears the mark's 14pt
+  /// radius plus its halo, with a few pt of air left over.
   static Future<BitmapDescriptor> busBubble({
     required String plate,
     required Color fill,
@@ -500,7 +552,7 @@ class MapMarkers {
     required Color statusColor,
     required String gpsText,
     String? trackGlyph,
-    double clearance = 26,
+    double clearance = 22,
   }) {
     final key =
         'bubble:$plate:$statusLabel:$gpsText:${fill.toARGB32()}:'

@@ -29,6 +29,35 @@ int walkMinutes(PlanRoute route) {
   return total;
 }
 
+/// Scheduled wait before `sections[i]` departs: the gap between the previous
+/// section's arrival and this one's departure. TDX covers transfer waiting with
+/// no section of its own — it exists only as this gap, which is why the leg
+/// durations alone fall short of the route total. Applies to any pair of
+/// sections, so a same-platform metro transfer (no pedestrian leg between the
+/// two rides) reports its wait too.
+///
+/// Zero when either timestamp is missing or unparseable, and when the gap is
+/// negative. A walk section whose duration OSRM could not resolve keeps TDX's
+/// own figure, which may already span the wait; that case leaves no gap here
+/// and still reads as walking.
+int waitMinutesBefore(List<PlanSection> sections, int i) {
+  if (i <= 0 || i >= sections.length) return 0;
+  final arrival = DateTime.tryParse(sections[i - 1].arrival.time);
+  final departure = DateTime.tryParse(sections[i].departure.time);
+  if (arrival == null || departure == null) return 0;
+  final seconds = departure.difference(arrival).inSeconds;
+  return seconds <= 0 ? 0 : (seconds / 60).round();
+}
+
+/// Total scheduled waiting across all of a route's transfers.
+int waitMinutes(PlanRoute route) {
+  var total = 0;
+  for (var i = 1; i < route.sections.length; i++) {
+    total += waitMinutesBefore(route.sections, i);
+  }
+  return total;
+}
+
 class RouteOptionCard extends StatelessWidget {
   const RouteOptionCard({
     required this.route,

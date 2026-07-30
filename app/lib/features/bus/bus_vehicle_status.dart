@@ -37,12 +37,21 @@ typedef BusGpsAge = ({String text, bool stale});
 /// How fresh the vehicle's GPS fix is, for the bubble's second line.
 /// [gpsUnix] is the fix time in epoch seconds (0 when TDX sent none). Beyond
 /// 3 minutes the position is treated as stale — likely a bus whose GPS dropped.
+///
+/// Seconds are spelled out for the whole first minute; minutes take
+/// over from 60 on. There is deliberately no "剛剛" band at the front:
+/// the bubble's clock ticks once a second (`bus_route_screen.dart`),
+/// and a bucket over the first 15 would leave it frozen through the
+/// freshest — and most-looked-at — part of a live frame's life.
 BusGpsAge busGpsAge(AppI18n i18n, int gpsUnix, DateTime now) {
   if (gpsUnix <= 0) return (text: i18n.busGpsNone, stale: true);
-  final age = now.millisecondsSinceEpoch ~/ 1000 - gpsUnix;
+  final reported = now.millisecondsSinceEpoch ~/ 1000 - gpsUnix;
+  // Clock skew can put the fix slightly ahead of the device clock. A
+  // fix cannot come from the future, so clamp instead of counting
+  // backwards — the old "剛剛" band absorbed this, and a bare counter
+  // would print "-3秒前".
+  final age = reported < 0 ? 0 : reported;
   if (age >= 180) return (text: i18n.busGpsStale, stale: true);
-  // Clock skew can put the fix slightly ahead of the device clock; read fresh.
-  if (age < 15) return (text: i18n.commonJustNow, stale: false);
   if (age < 60) return (text: i18n.busGpsSecondsAgo(age), stale: false);
   return (text: i18n.busGpsMinutesAgo(age ~/ 60), stale: false);
 }
