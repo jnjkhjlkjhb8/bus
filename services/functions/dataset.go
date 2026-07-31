@@ -222,12 +222,17 @@ func datasetRegistry() []datasetSpec {
 		{rawTable: "metro_odfare", partCol: "system", partitions: func() []string { return ingestMetroODFare },
 			family: familyMetroSystem, apiSeg: "ODFare",
 			name: func(p string) string { return "metro_od_" + p }, loadKey: "mrt_odfare"},
-		{rawTable: "metro_s2straveltime", partCol: "system", partitions: func() []string { return ingestMetroTravelGraph },
-			family: familyMetroSystem, apiSeg: "S2STravelTime",
-			name: func(p string) string { return "metro_s2s_" + p }, loadKey: "mrt_trtc_traveltime"},
-		{rawTable: "metro_linetransfer", partCol: "system", partitions: func() []string { return ingestMetroTravelGraph },
+		// Landed wider than it is loaded here: mrt_traveltime needs a LineTransfer
+		// row set alongside each S2STravelTime one, so it loads only the systems
+		// both endpoints serve, while the appended mrt_adjacency loadSpec reads
+		// this table alone and consumes all six.
+		{rawTable: "metro_s2straveltime", partCol: "system", partitions: func() []string { return ingestMetroS2STravelTime },
+			loadParts: func() []string { return ingestMetroLineTransfer },
+			family:    familyMetroSystem, apiSeg: "S2STravelTime",
+			name: func(p string) string { return "metro_s2s_" + p }, loadKey: "mrt_traveltime"},
+		{rawTable: "metro_linetransfer", partCol: "system", partitions: func() []string { return ingestMetroLineTransfer },
 			family: familyMetroSystem, apiSeg: "LineTransfer",
-			name: func(p string) string { return "metro_transfer_" + p }, foldedInto: "mrt_trtc_traveltime"},
+			name: func(p string) string { return "metro_transfer_" + p }, foldedInto: "mrt_traveltime"},
 		railSingle("TRA/Station", "tra_station", "tra_station", "tra_station"),
 		railSingle("THSR/Station", "thsr_station", "thsr_station", "thsr_station"),
 		railSingle("TRA/ODFare", "tra_odfare", "tra_fare", "tra_odfare"),

@@ -740,7 +740,7 @@ func loadMrtTrtcTravelTime(ctx context.Context, src loadSource, sink copyUpsertS
 		return nil
 	}
 	return sink.copyUpsert(ctx, copyUpsertSpec{
-		key: "mrt_trtc_traveltime",
+		key: "mrt_traveltime",
 		createSQL: `CREATE TEMP TABLE temp_mrt_travel_time (
 			travel_time_min int, from_station_id text, to_station_id text, system text
 		) ON COMMIT DROP`,

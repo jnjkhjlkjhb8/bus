@@ -87,7 +87,7 @@ Metro 系統碼各端點不同（不是每個系統都發佈每種 feed）：
 
 > `bus_dailytimetable` 是唯一寫入 **Redis** 而非環境 schema 靜態表的 load spec（`loadBusDailyTimetable`）。`tra_traintype` 已落地但沒有對應 load spec；`bus_stop` 為白名單目標但未被抓取（見 Stage 1 註）。
 >
-> `mrt_adjacency` 與 `mrt_trtc_traveltime`（把 OD 旅行時間補進 `mrt_journey_matrix`）都讀同一張已落地的 `metro_s2straveltime`。一張 `raw_tdx` 表在 `datasetRegistry` 只對應一個 `loadKey`，故 `mrt_adjacency` 是在 `loaderRegistry` 尾端**手動追加**的 loadSpec，而非由 `datasetRegistry` 衍生。
+> `mrt_adjacency` 與 `mrt_traveltime`（把 OD 旅行時間補進 `mrt_journey_matrix`）都讀同一張已落地的 `metro_s2straveltime`。一張 `raw_tdx` 表在 `datasetRegistry` 只對應一個 `loadKey`，故 `mrt_adjacency` 是在 `loaderRegistry` 尾端**手動追加**的 loadSpec，而非由 `datasetRegistry` 衍生。
 
 ## Fixture 匯出與 replay
 

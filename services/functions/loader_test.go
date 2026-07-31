@@ -319,7 +319,7 @@ func TestLoaderExceptionalBindingsUseSemanticSink(t *testing.T) {
 		{key: "bus", operation: "bus city assembly", part: "Taipei"},
 		{key: "bus_dailytimetable", operation: "bus daily timetable", part: "Taipei"},
 		{key: "mrt_odfare", operation: "MRT journey matrix", part: "TRTC"},
-		{key: "mrt_trtc_traveltime", operation: "MRT travel time", part: "TRTC"},
+		{key: "mrt_traveltime", operation: "MRT travel time", part: "TRTC"},
 		{key: "thsr_station", operation: "THSR stations", part: ""},
 	}
 	bindings := loaderTransforms(&fakeLoadSource{})

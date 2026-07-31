@@ -514,7 +514,7 @@ func loaderTransforms(src loadSource) map[string]loaderBinding {
 		"mrt_odfare": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
 			return sink.loadMrtJourneyMatrix(ctx, dec, part)
 		}},
-		"mrt_trtc_traveltime": {load: func(ctx context.Context, _ *json.Decoder, sink loadSink, part string) error {
+		"mrt_traveltime": {load: func(ctx context.Context, _ *json.Decoder, sink loadSink, part string) error {
 			return sink.loadMrtTravelTime(ctx, src, part)
 		}},
 		"tra_station": {load: loadTraStation,
@@ -560,15 +560,20 @@ func loaderRegistry(src loadSource) []loadSpec {
 		})
 	}
 	// mrt_adjacency reads the same landed metro_s2straveltime table as
-	// mrt_trtc_traveltime but produces a different target (the same-line ride
-	// graph, ADR-0015). A raw_tdx table maps to one datasetRegistry entry (and
-	// thus one loadKey), so this second consumer is appended as a standalone
-	// loadSpec rather than a second dataset. TRTC only.
+	// mrt_traveltime but produces a different target (the same-line ride graph,
+	// ADR-0015). A raw_tdx table maps to one datasetRegistry entry (and thus one
+	// loadKey), so this second consumer is appended as a standalone loadSpec
+	// rather than a second dataset.
+	//
+	// It covers every system that table lands, which is two more than
+	// mrt_traveltime loads: adjacency needs only the segment list, while
+	// mrt_traveltime also needs a LineTransfer row set and LineTransfer serves
+	// neither KLRT nor TMRT.
 	specs = append(specs, loadSpec{
 		key:        "mrt_adjacency",
 		table:      "metro_s2straveltime",
 		partCol:    "system",
-		partitions: func() []string { return []string{"TRTC"} },
+		partitions: func() []string { return ingestMetroS2STravelTime },
 		load:       loadMrtAdjacency,
 	})
 	return specs

@@ -62,12 +62,18 @@ var (
 	ingestMetroODFare         = metroSystemsAll
 	// FirstLastTimetable omits the two newest light-rail lines.
 	ingestMetroFirstLast = []string{"TRTC", "KRTC", "TYMC", "KLRT", "TMRT", "NTMC", "TRTCMG"}
-	// The travel graph lands S2STravelTime and LineTransfer together, and
-	// loadMrtTrtcTravelTime reads both tables for the same system, so this is
-	// their intersection rather than either list. S2STravelTime alone would also
-	// accept KLRT and TMRT, but LineTransfer answers 400 for them and the loader
-	// has no half-graph mode, so widening past the intersection buys nothing.
-	ingestMetroTravelGraph = []string{"TRTC", "KRTC", "TYMC", "NTMC"}
+	// S2STravelTime and LineTransfer feed the travel graph and are landed to
+	// their own accepted sets, which differ. Two consumers read the result and
+	// they need different subsets, so the split matters:
+	//
+	//   mrt_traveltime  reads BOTH tables per system and has no half-graph mode,
+	//                   so it loads only the intersection (ingestMetroLineTransfer).
+	//   mrt_adjacency   reads S2STravelTime alone, so it loads the full six.
+	//
+	// Landing the wider set therefore costs two extra requests and buys KLRT and
+	// TMRT their same-line ride graphs.
+	ingestMetroS2STravelTime = []string{"TRTC", "KRTC", "TYMC", "KLRT", "TMRT", "NTMC"}
+	ingestMetroLineTransfer  = []string{"TRTC", "KRTC", "TYMC", "NTMC"}
 	// The GTFS export endpoints. Their asymmetry is what the feed builder has to
 	// work around: TMRT has routes and headways but no timetable, so Taichung is
 	// expressible only as frequencies.txt; the three light-rail systems are the
