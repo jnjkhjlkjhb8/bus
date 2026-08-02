@@ -57,7 +57,7 @@ type FeedbackServer struct {
 // report that is durable in Postgres has been received, whether or not a chat
 // webhook was reachable at that moment.
 func (s *FeedbackServer) PostFeedback(ctx context.Context, request *pb.PostFeedbackRequest) (*pb.ReportReceipt, error) {
-	if !validText(request.GetInstallId(), 128) {
+	if !ValidText(request.GetInstallId(), 128) {
 		return nil, status.Error(codes.InvalidArgument, "install_id is required")
 	}
 	if !validFeedbackCategory(request.GetCategory()) {
@@ -79,11 +79,11 @@ func (s *FeedbackServer) PostFeedback(ctx context.Context, request *pb.PostFeedb
 	if err := authorizeInstallation(ctx, s.devices, request.InstallId); err != nil {
 		return nil, err
 	}
-	threadID, err := newUUIDv4()
+	threadID, err := NewUUIDv4()
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to open report")
 	}
-	messageID, err := newUUIDv4()
+	messageID, err := NewUUIDv4()
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to open report")
 	}
@@ -136,7 +136,7 @@ func feedbackDiagnostics(diagnostics *pb.ReportDiagnostics) (map[string]string, 
 		if value == "" {
 			continue
 		}
-		if !validText(value, feedbackFieldLimit) {
+		if !ValidText(value, feedbackFieldLimit) {
 			return nil, status.Errorf(codes.InvalidArgument, "diagnostics.%s is malformed", name)
 		}
 		kept[name] = value
@@ -169,7 +169,7 @@ type webhookNotifier struct {
 	client *http.Client
 }
 
-func newFeedbackNotifier() feedbackNotifier {
+func NewFeedbackNotifier() feedbackNotifier {
 	url := os.Getenv("FEEDBACK_WEBHOOK_URL")
 	if url == "" {
 		log.Infof("[feedback] action=configure event=webhook_disabled reason=empty_url")

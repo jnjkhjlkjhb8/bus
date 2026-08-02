@@ -126,11 +126,10 @@ class _MiniBar extends StatelessWidget {
                 if (arrival.isNotEmpty)
                   Text(
                     arrival,
-                    style: AppTextStyles.memo.copyWith(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
+                    style: AppTextStyles.timeValue(
+                      size: 16,
+                      weight: FontWeight.w700,
                       color: cs.onSurface,
-                      fontFeatures: AppTextStyles.tabularFigures,
                     ),
                   ),
                 const SizedBox(width: 4),

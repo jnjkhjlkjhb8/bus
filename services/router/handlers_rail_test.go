@@ -24,3 +24,34 @@ func TestParseRailDate(t *testing.T) {
 		t.Fatal("expected zero time for unparseable date")
 	}
 }
+
+// TestRailCacheDateCollapsesSpellings pins the fix for the split the timetable
+// and stop-time keys used to carry: they keyed on the raw wire string while
+// querying on the parsed date, so the two accepted spellings of one service day
+// minted two cache entries for one answer.
+func TestRailCacheDateCollapsesSpellings(t *testing.T) {
+	dateOnly := railCacheDate("2026-07-07")
+	rfc := railCacheDate("2026-07-07T00:00:00Z")
+	if dateOnly != rfc {
+		t.Fatalf("one service day, two keys: %q vs %q", dateOnly, rfc)
+	}
+	if dateOnly != "2026-07-07" {
+		t.Fatalf("got %q, want the queried date 2026-07-07", dateOnly)
+	}
+}
+
+// TestRailCacheStationCollapsesSpellings pins the other half: resolveRailStationID
+// treats 臺 and 台 as one station in SQL, so a key that keeps them apart caches
+// one station's fares twice. A name and its numeric id still key separately —
+// collapsing those would cost a resolve round trip on every cache hit.
+func TestRailCacheStationCollapsesSpellings(t *testing.T) {
+	if got, want := railCacheStation("臺北"), railCacheStation("台北"); got != want {
+		t.Fatalf("one station, two keys: %q vs %q", got, want)
+	}
+	if got := railCacheStation("  台北 "); got != "台北" {
+		t.Fatalf("surrounding space survived into the key: %q", got)
+	}
+	if got := railCacheStation("1000"); got != "1000" {
+		t.Fatalf("numeric id must pass through unchanged, got %q", got)
+	}
+}

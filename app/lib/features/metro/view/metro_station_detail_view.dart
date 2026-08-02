@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
@@ -16,8 +14,11 @@ import 'package:wheres_the_bus/features/metro/bloc/metro_eta_state.dart';
 import 'package:wheres_the_bus/features/metro/bloc/mrt_track_bloc.dart';
 import 'package:wheres_the_bus/features/metro/bloc/mrt_track_event.dart';
 import 'package:wheres_the_bus/features/metro/bloc/mrt_track_state.dart';
-import 'package:wheres_the_bus/features/metro/widgets/mrt_alight_setup_sheet.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:go_router/go_router.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
+import 'package:wheres_the_bus/features/metro/view/metro_screen.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_confirm_bar.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
 import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_bell.dart';
 import 'package:wheres_the_bus/shared/motion/stagger.dart';
@@ -29,7 +30,6 @@ import 'package:wheres_the_bus/shared/widgets/state_cards.dart';
 import 'package:wheres_the_bus/shared/widgets/transport_icon.dart';
 
 part '../widgets/metro_station_detail_widgets.dart';
-
 
 final RegExp _digits = RegExp(r'\d+');
 

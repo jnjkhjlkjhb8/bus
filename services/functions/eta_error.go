@@ -19,7 +19,6 @@ const (
 	sourceTDX         = "tdx"
 	sourcePropagation = "propagation"
 	sourceModel       = "model"
-	sourceTravelAvg   = "travel_avg"
 	sourceSchedule    = "schedule"
 )
 
@@ -153,8 +152,7 @@ func aggregateMAE(errs []matchedError) []maeStat {
 }
 
 // predictionMatchWindow bounds how long after a prediction an arrival may occur
-// and still be treated as the arrival that prediction was about. It replaces the
-// INTERVAL '30 minutes' the correlated UPDATE used to carry.
+// and still be treated as the arrival that prediction was about.
 const predictionMatchWindow = 30 * time.Minute
 
 // predictionLookback is how far back measurePredictionError considers still-open
@@ -231,21 +229,18 @@ func fillPredictionActuals(ctx context.Context, db *pgxpool.Pool, hist historySo
 	}
 	preds, err := loadOpenPredictions(ctx, db)
 	if err != nil {
-		log.Errorf("[ETA_ERROR] load predictions error: %v", err)
-		return 0, obs.Transient(err)
+		return 0, obs.Transient(fmt.Errorf("load open predictions: %w", err))
 	}
 	if len(preds) == 0 {
 		return 0, nil
 	}
 	arrivals, err := hist.arrivals(ctx, time.Now().Add(-predictionLookback))
 	if err != nil {
-		log.Errorf("[ETA_ERROR] load arrivals error: %v", err)
-		return 0, obs.Transient(err)
+		return 0, obs.Transient(fmt.Errorf("load history arrivals: %w", err))
 	}
 	n, err := writePredictionActuals(ctx, db, matchPredictionActual(preds, arrivals, predictionMatchWindow))
 	if err != nil {
-		log.Errorf("[ETA_ERROR] fill actuals error: %v", err)
-		return 0, obs.Transient(err)
+		return 0, obs.Transient(fmt.Errorf("fill prediction actuals: %w", err))
 	}
 	return n, nil
 }
@@ -261,10 +256,9 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historyS
 
 	// Fill actual arrivals for predictions still missing one, by matching each to
 	// the first estimate-zero crossing at its stop after the prediction was made.
-	// This used to be one correlated UPDATE joining bus_eta_history; that table
-	// now lives on the MySQL history host, so the two sides are loaded separately
-	// and paired by matchPredictionActual — the same rule the SQL encoded, and
-	// the version that was already unit-tested.
+	// bus_eta_history lives on the MySQL history host, so the two sides cannot be
+	// joined in one correlated UPDATE: they are loaded separately and paired by
+	// matchPredictionActual, which encodes the same rule in Go and is unit-tested.
 	filled, err := fillPredictionActuals(ctx, db, hist)
 	if err != nil {
 		return err
@@ -281,7 +275,6 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historyS
 		GROUP BY sub_route_uid, source
 		ORDER BY sub_route_uid, source`)
 	if err != nil {
-		log.Errorf("[ETA_ERROR] aggregate query error: %v", err)
 		return obs.Transient(fmt.Errorf("aggregate prediction error: %w", err))
 	}
 	defer rows.Close()
@@ -298,8 +291,7 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historyS
 		count++
 	}
 	if err := rows.Err(); err != nil {
-		log.Errorf("[ETA_ERROR] aggregate rows error: %v", err)
-		return obs.Transient(fmt.Errorf("aggregate prediction error: %w", err))
+		return obs.Transient(fmt.Errorf("aggregate prediction error rows: %w", err))
 	}
 	log.Infof("[ETA_ERROR] complete groups=%d", count)
 	return nil
@@ -313,9 +305,9 @@ func recordPredictionErrors(ctx context.Context, db *pgxpool.Pool, preds []predi
 	if len(preds) == 0 {
 		return
 	}
-	rows := make([][]interface{}, 0, len(preds))
+	rows := make([][]any, 0, len(preds))
 	for _, p := range preds {
-		rows = append(rows, []interface{}{
+		rows = append(rows, []any{
 			p.subRouteUID, p.direction, p.stopUID, p.source, p.predictedAt, p.predictedSecs,
 		})
 	}

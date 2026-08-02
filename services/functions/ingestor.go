@@ -62,18 +62,19 @@ var (
 	ingestMetroODFare         = metroSystemsAll
 	// FirstLastTimetable omits the two newest light-rail lines.
 	ingestMetroFirstLast = []string{"TRTC", "KRTC", "TYMC", "KLRT", "TMRT", "NTMC", "TRTCMG"}
-	// S2STravelTime and LineTransfer feed the travel graph and are landed to
-	// their own accepted sets, which differ. Two consumers read the result and
-	// they need different subsets, so the split matters:
-	//
-	//   mrt_traveltime  reads BOTH tables per system and has no half-graph mode,
-	//                   so it loads only the intersection (ingestMetroLineTransfer).
-	//   mrt_adjacency   reads S2STravelTime alone, so it loads the full six.
-	//
-	// Landing the wider set therefore costs two extra requests and buys KLRT and
-	// TMRT their same-line ride graphs.
+	// S2STravelTime and LineTransfer feed the travel graph. Both consumers
+	// (mrt_traveltime, mrt_adjacency) run over the S2STravelTime set; a system
+	// with no LineTransfer partition reads as an empty array, which is the right
+	// answer for a single-line system that has no line-to-line interchange.
 	ingestMetroS2STravelTime = []string{"TRTC", "KRTC", "TYMC", "KLRT", "TMRT", "NTMC"}
-	ingestMetroLineTransfer  = []string{"TRTC", "KRTC", "TYMC", "NTMC"}
+	// LineTransfer is narrower than the four systems TDX accepts, because TYMC
+	// serves an empty array and sends no Last-Modified header with it. The
+	// landing path requires a marker (raw_land.go), so that partition fails every
+	// run and never self-heals — it cannot record the state that would let a
+	// later 304 pass. Airport MRT is single-line and genuinely has no interchange,
+	// so there is nothing to lose by not asking. Restore TYMC here if it ever
+	// gains a second line.
+	ingestMetroLineTransfer = []string{"TRTC", "KRTC", "NTMC"}
 	// The GTFS export endpoints. Their asymmetry is what the feed builder has to
 	// work around: TMRT has routes and headways but no timetable, so Taichung is
 	// expressible only as frequencies.txt; the three light-rail systems are the
@@ -224,7 +225,7 @@ func fetchRaw(ctx context.Context, tdx rawFetcher, url, name, landingCycle strin
 	return fetchRawWithVerifier(ctx, tdx, url, name, landingCycle, verifyAndTouchRawLanding)
 }
 
-type rawLandingVerifier func(context.Context, string, string, string, string, string) error
+type rawLandingVerifier func(context.Context, rawTarget, string, string) error
 
 func fetchRawWithVerifier(
 	ctx context.Context,
@@ -235,13 +236,13 @@ func fetchRawWithVerifier(
 	if landingCycle == "" {
 		return errors.New("fetch raw: empty landing cycle")
 	}
-	table, partCol, partVal, mapped := rawDumpTarget(url)
+	target, mapped := rawDumpTarget(url)
 	for attempt := range 2 {
 		result, err := tdx.GetInto(ctx, url, name, func(commit shared.TDXIntoCommit) error {
 			if !mapped {
 				return nil
 			}
-			return dumpRawTDXReader(ctx, table, partCol, partVal, commit.Marker, landingCycle, commit.Body)
+			return dumpRawTDXReader(ctx, target, commit.Marker, landingCycle, commit.Body)
 		})
 		if err != nil {
 			if errors.Is(err, errRawDump) {
@@ -259,13 +260,12 @@ func fetchRawWithVerifier(
 			return nil
 		}
 
-		err = verify(ctx, table, partCol, partVal, result.Marker, landingCycle)
+		err = verify(ctx, target, result.Marker, landingCycle)
 		if err == nil {
 			log.Warnf("[INGEST] url=%s event=skip reason=not_modified", url)
 			return nil
 		}
 		if !errors.Is(err, errRawLandingStateMismatch) {
-			log.Errorf("[INGEST] url=%s event=state_verify_error error=%v", url, err)
 			return fmt.Errorf("verify raw %s: %w", url, err)
 		}
 		if attempt == 1 {

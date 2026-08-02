@@ -35,7 +35,7 @@ type feedbackThreadRecord struct {
 // both stores need — rather than declaring an identical second interface.
 type feedbackStore struct{ db firebaseDB }
 
-func newFeedbackStore(db *pgxpool.Pool) *feedbackStore { return &feedbackStore{db: db} }
+func NewFeedbackStore(db *pgxpool.Pool) *feedbackStore { return &feedbackStore{db: db} }
 
 // OpenThread writes a thread and its opening message as one statement, and
 // returns when the thread was created.

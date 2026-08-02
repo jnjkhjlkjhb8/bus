@@ -14,18 +14,18 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 )
 
-// bookingProxy exchanges rail booking parameters for a short-lived TDX deeplink
+// BookingProxy exchanges rail booking parameters for a short-lived TDX deeplink
 // redirect URL. It is the router's second deliberate TDX carve-out alongside
 // MaaS (ADR-0005 amendment, ADR-0012): a request/response proxy, not a
 // cacheable read, so it cannot be pre-materialised into Redis. The returned URL
 // is HMAC-signed by TDX and expires in minutes, so it must be minted per click.
-type bookingProxy struct {
+type BookingProxy struct {
 	tra  *resty.Client
 	thsr *resty.Client
 }
 
-func newBookingProxy(tdx *shared.TDXClient) *bookingProxy {
-	return &bookingProxy{
+func NewBookingProxy(tdx *shared.TDXClient) *BookingProxy {
+	return &BookingProxy{
 		tra:  tdx.NewAuthedClient("https://tdx.transportdata.tw/api/maas-tra"),
 		thsr: tdx.NewAuthedClient("https://tdx.transportdata.tw/api/maas-thsr"),
 	}
@@ -116,7 +116,7 @@ func parseTicketCounts(c *gin.Context) (map[string]int, error) {
 // route selects the upstream client and resource path for an (agency, kind)
 // pair. kind is the deeplink variant: "direct" (App Link → opens the operator
 // app if installed) or "web" (→ pre-filled booking web page).
-func (b *bookingProxy) route(agency, kind string) (*resty.Client, string, bool) {
+func (b *BookingProxy) route(agency, kind string) (*resty.Client, string, bool) {
 	if kind != "web" && kind != "direct" {
 		return nil, "", false
 	}
@@ -227,7 +227,7 @@ func bookingParams(r bookingRequest) map[string]string {
 	return q
 }
 
-func (b *bookingProxy) exchange(ctx context.Context, client *resty.Client, resource string, r bookingRequest) (string, string, error) {
+func (b *BookingProxy) exchange(ctx context.Context, client *resty.Client, resource string, r bookingRequest) (string, string, error) {
 	var body tdxBookingResponse
 	res, err := client.R().
 		SetContext(ctx).
@@ -243,11 +243,11 @@ func (b *bookingProxy) exchange(ctx context.Context, client *resty.Client, resou
 	return body.Data.Deeplink, body.Data.Expired, nil
 }
 
-// handleBookingDeeplink proxies a rail booking exchange to TDX. The app picks
+// HandleBookingDeeplink proxies a rail booking exchange to TDX. The app picks
 // `kind` from a client-side install probe (ADR-0012); a missing-credentials
 // upstream (non-prod) surfaces as 503 so the app falls back to a plain booking
 // site link.
-func handleBookingDeeplink(booking *bookingProxy) gin.HandlerFunc {
+func HandleBookingDeeplink(booking *BookingProxy) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if booking == nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "booking unavailable"})

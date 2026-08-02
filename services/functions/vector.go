@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
+	"github.com/redis/go-redis/v9"
 )
 
 // resp is the metadata for one item being embedded, carried alongside its input
@@ -33,7 +33,7 @@ type resp struct {
 
 type vectorWrite struct {
 	sql  string
-	args []interface{}
+	args []any
 }
 
 // cityNames maps a TDX city code to its Chinese display name, embedded into the
@@ -172,7 +172,7 @@ func mrtLegacyVectorCleanupWrites(uid, system string) []vectorWrite {
 		for _, legacy := range label.legacy {
 			writes = append(writes, vectorWrite{
 				sql:  mrtLegacyVectorCleanupSQL,
-				args: []interface{}{uid, legacy, system},
+				args: []any{uid, legacy, system},
 			})
 		}
 		return writes
@@ -194,13 +194,13 @@ type embeddingClient interface {
 }
 
 type vectorDB interface {
-	Query(context.Context, string, ...interface{}) (pgx.Rows, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
 	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
 }
 
 type vectorRedis interface {
-	Get(string) *redis.StringCmd
-	Set(string, interface{}, time.Duration) *redis.StatusCmd
+	Get(context.Context, string) *redis.StringCmd
+	Set(context.Context, string, any, time.Duration) *redis.StatusCmd
 }
 
 // Per-entity queries select rows not already present with an identical,
@@ -244,16 +244,16 @@ type vectorDataset struct {
 	key        string
 	vectorType string
 	query      string
-	queryArgs  func(string, interface{}) []interface{}
+	queryArgs  func(string, any) []any
 	process    func(pgx.Rows) (string, resp, error)
 }
 
-func watermarkWindowQueryArgs(lower string, upper interface{}) []interface{} {
-	return []interface{}{lower, upper}
+func watermarkWindowQueryArgs(lower string, upper any) []any {
+	return []any{lower, upper}
 }
 
-func upperCutoffQueryArgs(_ string, upper interface{}) []interface{} {
-	return []interface{}{upper}
+func upperCutoffQueryArgs(_ string, upper any) []any {
+	return []any{upper}
 }
 
 var vectorDatasets = []vectorDataset{
@@ -476,7 +476,7 @@ func changeToVector(ctx context.Context, rc vectorRedis, db vectorDB, embedder e
 	}
 
 	cutoff := time.Now().UTC()
-	lower, err := rc.Get("LastTimeUpdate").Result()
+	lower, err := rc.Get(ctx, "LastTimeUpdate").Result()
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("get vector watermark: %w", err)
 	}
@@ -490,7 +490,7 @@ func changeToVector(ctx context.Context, rc vectorRedis, db vectorDB, embedder e
 		}
 	}
 	watermark := cutoff.Format(time.RFC3339Nano)
-	if err := rc.Set("LastTimeUpdate", watermark, 0).Err(); err != nil {
+	if err := rc.Set(ctx, "LastTimeUpdate", watermark, 0).Err(); err != nil {
 		return fmt.Errorf("set vector watermark: %w", err)
 	}
 	log.Infof("[vector] action=vector event=complete cutoff=%s", watermark)
@@ -544,7 +544,7 @@ func (e *httpEmbedder) Embed(ctx context.Context, input []string) (embeddings []
 	response, err := e.client.R().
 		SetContext(ctx).
 		SetDoNotParseResponse(true).
-		SetBody(map[string]interface{}{
+		SetBody(map[string]any{
 			"model": "qwen3-embedding:0.6b",
 			"input": input,
 		}).

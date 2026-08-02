@@ -49,7 +49,7 @@ func TestPredictNextBusTime_NoDepartureReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestPredictNextBusTime_NoTravelAverageReturnsDeparture(t *testing.T) {
+func TestPredictNextBusTime_NoStopOffsetReturnsDeparture(t *testing.T) {
 	old := etaModel
 	etaModel = &leaves.Ensemble{}
 	t.Cleanup(func() { etaModel = old })
@@ -57,9 +57,8 @@ func TestPredictNextBusTime_NoTravelAverageReturnsDeparture(t *testing.T) {
 	now := time.Date(2026, 7, 3, 8, 0, 0, 0, taipei)
 	dep := time.Date(2026, 1, 1, 9, 30, 0, 0, taipei)
 	got := predictNextBusTime(nil, busStopCtx{}, predictionInputs{
-		now:       now,
-		nextDep:   dep,
-		travelAvg: 0,
+		now:     now,
+		nextDep: dep,
 	})
 	want := time.Date(2026, 7, 3, 9, 30, 0, 0, taipei).Format(time.RFC3339)
 	if got != want {
@@ -72,14 +71,14 @@ func TestBaselineArrival(t *testing.T) {
 	dep := time.Date(2026, 1, 1, 8, 5, 0, 0, taipei)
 
 	t.Run("no departure yields zero time", func(t *testing.T) {
-		if got := baselineArrival(busStopCtx{}, predictionInputs{now: now}); !got.IsZero() {
+		if got := baselineArrival(predictionInputs{now: now}); !got.IsZero() {
 			t.Fatalf("want zero time, got %v", got)
 		}
 	})
 
-	t.Run("departure plus travel average", func(t *testing.T) {
-		got := baselineArrival(busStopCtx{}, predictionInputs{
-			now: now, nextDep: dep, travelAvg: 120, hasTravelAvg: true,
+	t.Run("departure plus stop offset", func(t *testing.T) {
+		got := baselineArrival(predictionInputs{
+			now: now, nextDep: dep, offsetSec: 120, hasOffset: true,
 		})
 		want := time.Date(2026, 7, 6, 8, 7, 0, 0, taipei)
 		if !got.Equal(want) {
@@ -87,20 +86,9 @@ func TestBaselineArrival(t *testing.T) {
 		}
 	})
 
-	t.Run("no travel average and no max yields bare departure", func(t *testing.T) {
-		got := baselineArrival(busStopCtx{}, predictionInputs{now: now, nextDep: dep})
+	t.Run("no stop offset yields bare departure", func(t *testing.T) {
+		got := baselineArrival(predictionInputs{now: now, nextDep: dep})
 		want := time.Date(2026, 7, 6, 8, 5, 0, 0, taipei)
-		if !got.Equal(want) {
-			t.Fatalf("got %v, want %v", got, want)
-		}
-	})
-
-	t.Run("interpolates from route max by sequence ratio", func(t *testing.T) {
-		got := baselineArrival(
-			busStopCtx{stopSequence: 5, totalStops: 10},
-			predictionInputs{now: now, nextDep: dep, maxTravelAvg: 600},
-		)
-		want := time.Date(2026, 7, 6, 8, 10, 0, 0, taipei)
 		if !got.Equal(want) {
 			t.Fatalf("got %v, want %v", got, want)
 		}

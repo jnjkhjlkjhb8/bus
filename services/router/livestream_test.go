@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -33,32 +33,32 @@ func newFakeLiveSource() *fakeLiveSource {
 	}
 }
 
-func (f *fakeLiveSource) get(key string) ([]byte, bool) {
+func (f *fakeLiveSource) get(_ context.Context, key string) ([]byte, bool) {
 	f.ops = append(f.ops, "get:"+key)
 	v, ok := f.values[key]
 	return v, ok
 }
 
-func (f *fakeLiveSource) scanKeys(pattern string) []string {
+func (f *fakeLiveSource) scanKeys(_ context.Context, pattern string) []string {
 	f.ops = append(f.ops, "scan:"+pattern)
 	return f.scans[pattern]
 }
 
-func (f *fakeLiveSource) subscribe(channel string) (<-chan []byte, func(), error) {
+func (f *fakeLiveSource) subscribe(_ context.Context, channel string) (<-chan []byte, func(), error) {
 	f.ops = append(f.ops, "subscribe:"+channel)
 	return f.ch, func() { f.ops = append(f.ops, "close:"+channel) }, nil
 }
 
 // run streamLive in a goroutine, collecting sent frames; returns a cancel
 // func and a way to wait for the final error.
-func startStream(t *testing.T, src *fakeLiveSource, spec liveStreamSpec) (sent func() [][]byte, cancel func(), wait func() error) {
+func startStream(t *testing.T, src *fakeLiveSource, spec LiveStreamSpec) (sent func() [][]byte, cancel func(), wait func() error) {
 	t.Helper()
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	var frames [][]byte
 	got := make(chan []byte, 16)
 	errc := make(chan error, 1)
 	go func() {
-		errc <- streamLive(ctx, src, spec, func(b []byte) error {
+		errc <- StreamLive(ctx, src, spec, func(b []byte) error {
 			got <- b
 			return nil
 		})
@@ -79,7 +79,7 @@ func startStream(t *testing.T, src *fakeLiveSource, spec liveStreamSpec) (sent f
 func TestStreamLiveSeedsThenForwards(t *testing.T) {
 	src := newFakeLiveSource()
 	src.values["k1"] = []byte("seed")
-	spec := liveStreamSpec{channel: "k1", seedKeys: []string{"k1"}}
+	spec := LiveStreamSpec{channel: "k1", seedKeys: []string{"k1"}}
 	sent, cancel, wait := startStream(t, src, spec)
 	src.ch <- []byte("live")
 	frames := sent()
@@ -95,7 +95,7 @@ func TestStreamLiveSeedsThenForwards(t *testing.T) {
 func TestStreamLiveSubscribesBeforeSeeding(t *testing.T) {
 	src := newFakeLiveSource()
 	src.values["k1"] = []byte("seed")
-	spec := liveStreamSpec{channel: "k1", seedKeys: []string{"k1"}}
+	spec := LiveStreamSpec{channel: "k1", seedKeys: []string{"k1"}}
 	sent, cancel, wait := startStream(t, src, spec)
 	sent()
 	cancel()
@@ -108,7 +108,7 @@ func TestStreamLiveSubscribesBeforeSeeding(t *testing.T) {
 func TestStreamLiveSkipsEmptyAndUnusable(t *testing.T) {
 	src := newFakeLiveSource()
 	src.values["k1"] = []byte("") // empty seed must not be sent
-	spec := liveStreamSpec{
+	spec := LiveStreamSpec{
 		channel:  "k1",
 		seedKeys: []string{"k1", "missing"},
 		usable:   func(b []byte) bool { return string(b) != "junk" && len(b) > 0 },
@@ -129,7 +129,7 @@ func TestStreamLiveSeedsFromScan(t *testing.T) {
 	src.scans["pre:*"] = []string{"pre:a", "pre:b"}
 	src.values["pre:a"] = []byte("A")
 	src.values["pre:b"] = []byte("B")
-	spec := liveStreamSpec{channel: "pre", seedScan: "pre:*"}
+	spec := LiveStreamSpec{channel: "pre", seedScan: "pre:*"}
 	sent, cancel, wait := startStream(t, src, spec)
 	frames := sent()
 	cancel()
@@ -141,7 +141,7 @@ func TestStreamLiveSeedsFromScan(t *testing.T) {
 
 func TestStreamLiveClosedChannelReturnsError(t *testing.T) {
 	src := newFakeLiveSource()
-	spec := liveStreamSpec{channel: "k1"}
+	spec := LiveStreamSpec{channel: "k1"}
 	_, _, wait := startStream(t, src, spec)
 	close(src.ch)
 	if err := wait(); !errors.Is(err, errLiveSourceClosed) {
@@ -156,7 +156,7 @@ func TestStreamLiveClosedChannelReturnsError(t *testing.T) {
 // an upstream disconnect.
 func TestStreamLiveReturnsUnavailableWhenHubEvictsSlowSubscriber(t *testing.T) {
 	src := newHubSource()
-	hub := newLiveHubWithQueueSize(src, 10, 4)
+	hub := NewLiveHubWithQueueSize(src, 10, 4)
 
 	firstSendStarted := make(chan struct{})
 	release := make(chan struct{})
@@ -164,7 +164,7 @@ func TestStreamLiveReturnsUnavailableWhenHubEvictsSlowSubscriber(t *testing.T) {
 
 	errc := make(chan error, 1)
 	go func() {
-		errc <- streamLive(context.Background(), hub, liveStreamSpec{channel: "route:1"}, func([]byte) error {
+		errc <- StreamLive(context.Background(), hub, LiveStreamSpec{channel: "route:1"}, func([]byte) error {
 			once.Do(func() { close(firstSendStarted) })
 			<-release
 			return nil
@@ -209,14 +209,14 @@ func TestStreamLiveIncrementsStreamDisconnectOnEveryTermination(t *testing.T) {
 	before := parseCounterTotal(t, "router_stream_disconnects_total")
 
 	closedSrc := newFakeLiveSource()
-	_, _, waitClosed := startStream(t, closedSrc, liveStreamSpec{channel: "k1"})
+	_, _, waitClosed := startStream(t, closedSrc, LiveStreamSpec{channel: "k1"})
 	close(closedSrc.ch)
 	_ = waitClosed()
 
 	sendErrSrc := newFakeLiveSource()
 	sendErrDone := make(chan error, 1)
 	go func() {
-		sendErrDone <- streamLive(context.Background(), sendErrSrc, liveStreamSpec{channel: "k1"}, func([]byte) error {
+		sendErrDone <- StreamLive(context.Background(), sendErrSrc, LiveStreamSpec{channel: "k1"}, func([]byte) error {
 			return errors.New("client gone")
 		})
 	}()
@@ -224,7 +224,7 @@ func TestStreamLiveIncrementsStreamDisconnectOnEveryTermination(t *testing.T) {
 	<-sendErrDone
 
 	subscribeErrSrc := &subscribeErrLiveSource{err: errors.New("capacity reached")}
-	_ = streamLive(context.Background(), subscribeErrSrc, liveStreamSpec{channel: "k1"}, func([]byte) error { return nil })
+	_ = StreamLive(context.Background(), subscribeErrSrc, LiveStreamSpec{channel: "k1"}, func([]byte) error { return nil })
 
 	after := parseCounterTotal(t, "router_stream_disconnects_total")
 	if after != before+2 {
@@ -236,9 +236,9 @@ func TestStreamLiveIncrementsStreamDisconnectOnEveryTermination(t *testing.T) {
 // streamLive's earliest return path (before any stream is established).
 type subscribeErrLiveSource struct{ err error }
 
-func (s *subscribeErrLiveSource) get(string) ([]byte, bool) { return nil, false }
-func (s *subscribeErrLiveSource) scanKeys(string) []string  { return nil }
-func (s *subscribeErrLiveSource) subscribe(string) (<-chan []byte, func(), error) {
+func (s *subscribeErrLiveSource) get(context.Context, string) ([]byte, bool) { return nil, false }
+func (s *subscribeErrLiveSource) scanKeys(context.Context, string) []string  { return nil }
+func (s *subscribeErrLiveSource) subscribe(context.Context, string) (<-chan []byte, func(), error) {
 	return nil, nil, s.err
 }
 
@@ -248,16 +248,16 @@ func (s *subscribeErrLiveSource) subscribe(string) (<-chan []byte, func(), error
 // not -- see redisLiveSource.get's doc comment for why that distinction
 // matters (an absent key is expected traffic, not a Redis health signal).
 func TestRedisLiveSourceRecordsRedisErrorButNotNil(t *testing.T) {
-	unreachable := redisLiveSource{rc: redis.NewClient(&redis.Options{
+	unreachable := RedisLiveSource{rc: redis.NewClient(&redis.Options{
 		Addr:        "127.0.0.1:1", // nothing listens here; every call fails fast
 		DialTimeout: 200 * time.Millisecond,
 	})}
 
 	before := parseCounterTotal(t, "router_redis_errors_total")
-	if _, ok := unreachable.get("any-key"); ok {
+	if _, ok := unreachable.get(context.Background(), "any-key"); ok {
 		t.Fatal("get against an unreachable Redis must report ok=false")
 	}
-	unreachable.scanKeys("any:*")
+	unreachable.scanKeys(context.Background(), "any:*")
 	after := parseCounterTotal(t, "router_redis_errors_total")
 	if after != before+2 {
 		t.Fatalf("router_redis_errors_total = %d, want %d (before %d + get + scanKeys failures)", after, before+2, before)
@@ -283,7 +283,7 @@ func TestStreamLiveSendErrorStopsStream(t *testing.T) {
 	sendErr := errors.New("client gone")
 	errc := make(chan error, 1)
 	go func() {
-		errc <- streamLive(context.Background(), src, liveStreamSpec{channel: "k1"}, func([]byte) error {
+		errc <- StreamLive(context.Background(), src, LiveStreamSpec{channel: "k1"}, func([]byte) error {
 			return sendErr
 		})
 	}()

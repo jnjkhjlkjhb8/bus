@@ -138,3 +138,83 @@ func TestBatchNextDepartures(t *testing.T) {
 		t.Fatalf("23:00: expected no departure (frequency window closed), got %s", dep.Format("15:04:05"))
 	}
 }
+
+// TestBatchStopOffsets covers the two judgements the offset query makes: hops
+// accumulate along the stop sequence so every stop carries its running time from
+// the origin, and a direction missing one hop is withheld entirely rather than
+// returned with the gap silently absorbed.
+//
+// The second half is what the ETA path depends on. Accumulating past an
+// unobserved hop leaves every stop after it early by that hop's duration, and
+// the prediction reads as confident while being wrong for the rest of the route.
+func TestBatchStopOffsets(t *testing.T) {
+	pool := predictTestPool(t)
+	defer pool.Close()
+	ctx := context.Background()
+
+	provisionBusSinks(t, ctx, pool)
+	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS bus_segment_time (
+		sub_route_uid text NOT NULL, direction smallint NOT NULL,
+		from_stop_uid text NOT NULL, to_stop_uid text NOT NULL,
+		secs int NOT NULL, sample_count int NOT NULL,
+		updated_at timestamptz NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (sub_route_uid, direction, from_stop_uid, to_stop_uid))`); err != nil {
+		t.Fatalf("provision bus_segment_time: %v", err)
+	}
+
+	const whole, holed = "ZZ_OFFSET_WHOLE", "ZZ_OFFSET_HOLED"
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM bus_station_stop_map WHERE sub_route_uid IN ($1, $2)`, whole, holed)
+		_, _ = pool.Exec(ctx, `DELETE FROM bus_segment_time WHERE sub_route_uid IN ($1, $2)`, whole, holed)
+	}
+	cleanup()
+	defer cleanup()
+
+	// Three stops each; the holed route is missing the S2->S3 segment.
+	for _, uid := range []string{whole, holed} {
+		for seq, stop := range []string{"S1", "S2", "S3"} {
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO bus_station_stop_map (sub_route_uid, direction, stop_uid, stop_sequence)
+				VALUES ($1, 0, $2, $3)`, uid, stop, seq+1); err != nil {
+				t.Fatalf("insert stop map: %v", err)
+			}
+		}
+	}
+	segments := []struct {
+		uid, from, to string
+		secs          int
+	}{
+		{whole, "S1", "S2", 90},
+		{whole, "S2", "S3", 150},
+		{holed, "S1", "S2", 90},
+	}
+	for _, s := range segments {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO bus_segment_time
+			  (sub_route_uid, direction, from_stop_uid, to_stop_uid, secs, sample_count)
+			VALUES ($1, 0, $2, $3, $4, 5)`, s.uid, s.from, s.to, s.secs); err != nil {
+			t.Fatalf("insert segment: %v", err)
+		}
+	}
+
+	offsets := batchStopOffsets(ctx, pool, []string{whole, holed})
+
+	for _, want := range []struct {
+		stop string
+		secs int
+	}{{"S1", 0}, {"S2", 90}, {"S3", 240}} {
+		offset, ok := offsets[stopOffsetKey{whole, 0, want.stop}]
+		if !ok {
+			t.Fatalf("%s %s: no offset returned", whole, want.stop)
+		}
+		if offset != want.secs {
+			t.Errorf("%s %s offset = %d, want %d", whole, want.stop, offset, want.secs)
+		}
+	}
+	for _, stop := range []string{"S1", "S2", "S3"} {
+		if offset, ok := offsets[stopOffsetKey{holed, 0, stop}]; ok {
+			t.Errorf("%s %s returned offset %d, want the incomplete direction withheld",
+				holed, stop, offset)
+		}
+	}
+}

@@ -23,49 +23,23 @@ func (f *fakeExecer) ExecContext(_ context.Context, q string, a ...any) (sql.Res
 	return nil, f.err
 }
 
-// fakeHistory stands in for the MySQL history host. The historySource seam is
-// stated in domain rows precisely so tests can do this without a driver.
-type fakeHistory struct {
-	crossingRows []crossing
-	arrivalRows  []arrivalEvent
-	err          error
-	since        time.Time
-}
-
-func (f *fakeHistory) crossings(_ context.Context, _ time.Duration) ([]crossing, error) {
-	return f.crossingRows, f.err
-}
-
-func (f *fakeHistory) arrivals(_ context.Context, since time.Time) ([]arrivalEvent, error) {
-	f.since = since
-	return f.arrivalRows, f.err
-}
-
-// The interpolated crossing must land proportionally between the two samples:
-// an estimate falling 60 → -20 over 40s crosses zero at 75% of the gap.
-func TestInterpolateCrossing(t *testing.T) {
-	prevAt := time.Date(2026, 7, 30, 8, 0, 0, 0, time.UTC)
-	got := interpolateCrossing(prevAt, prevAt.Add(40*time.Second), 60, -20)
-	if want := prevAt.Add(30 * time.Second); !got.Equal(want) {
-		t.Errorf("crossing = %s, want %s", got, want)
-	}
-}
-
-// An estimate that lands exactly on zero crossed at the later sample, not
-// somewhere before it.
-func TestInterpolateCrossingExactZero(t *testing.T) {
-	prevAt := time.Date(2026, 7, 30, 8, 0, 0, 0, time.UTC)
-	at := prevAt.Add(30 * time.Second)
-	if got := interpolateCrossing(prevAt, at, 45, 0); !got.Equal(at) {
-		t.Errorf("crossing = %s, want %s", got, at)
-	}
-}
-
-// With no history host configured the rebuild must not run: upserting from zero
-// crossings would look like a successful rebuild that found nothing.
-func TestComputeTravelAvgSkipsWithoutHistory(t *testing.T) {
-	if err := computeTravelAvg(context.Background(), nil, nil); err != nil {
+// With no database configured the rebuild must not run: writing from zero
+// segments would look like a successful rebuild that found nothing.
+func TestComputeSegmentTimesSkipsWithoutDB(t *testing.T) {
+	if err := computeSegmentTimes(context.Background(), nil, fixtureHistory{}); err != nil {
 		t.Errorf("want a silent skip, got %v", err)
+	}
+}
+
+// An unreachable history host is the same situation: the hops are nowhere, so
+// the rebuild must skip rather than write a table full of nothing over yesterday's
+// figures.
+func TestSegmentRebuildsSkipWithoutHistory(t *testing.T) {
+	if err := computeSegmentTimes(context.Background(), nil, nil); err != nil {
+		t.Errorf("computeSegmentTimes: want a silent skip, got %v", err)
+	}
+	if err := computeSegmentTimesFromEstimates(context.Background(), nil, nil); err != nil {
+		t.Errorf("computeSegmentTimesFromEstimates: want a silent skip, got %v", err)
 	}
 }
 

@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 
 /// In-between-stop progress card.
-/// Shows:  [prevStation → nextStation] header
-///         horizontal track with black notch at [progress 0..1]
-///         vehicle ID below notch
+///
+/// Shows a [fromStation] → [toStation] header, a horizontal track with a
+/// black notch positioned at [progress] (0..1), and [vehicleId] below the
+/// notch.
 class ProgressCard extends StatelessWidget {
   const ProgressCard({
     required this.fromStation,

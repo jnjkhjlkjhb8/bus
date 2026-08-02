@@ -22,14 +22,19 @@ type holidaySnapshot struct {
 
 var currentHolidaySnapshot atomic.Pointer[holidaySnapshot]
 
-var taipei *time.Location
+var taipei = mustLoadTaipei()
 
-func init() {
-	var err error
-	taipei, err = time.LoadLocation("Asia/Taipei")
+// mustLoadTaipei resolves the one timezone the whole schedule domain is
+// expressed in. It replaces an init(): package-level var initialization is
+// ordered by dependency rather than by filename, so anything else in the
+// package that reads taipei at init time is guaranteed a loaded location.
+// A missing tzdata is a broken build, not a runtime condition to handle.
+func mustLoadTaipei() *time.Location {
+	loc, err := time.LoadLocation("Asia/Taipei")
 	if err != nil {
 		panic("cannot load Asia/Taipei: " + err.Error())
 	}
+	return loc
 }
 
 // loadHolidays fetches one complete immutable snapshot. The atomic pointer is

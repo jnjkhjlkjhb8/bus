@@ -2,15 +2,12 @@
 # scripts/check-dependency-boundaries.sh fails on any pair NOT listed here.
 # Do not add new pairs without an architecture review; when a coupling is
 # removed, delete its line so the ratchet tightens.
-app/lib/features/bus/view/bus_route_screen.dart|live_activity
 app/lib/features/bus/view/bus_stop_screen.dart|alerts
-app/lib/features/bus/view/bus_stop_screen.dart|live_activity
-app/lib/features/bus/widgets/stop_board_toggle.dart|live_activity
-# navigation_coordinator.dart adopted as pre-existing code (Task 0); coupling
-# to live_activity predates the ratchet, same seam as go_screen.dart below.
-app/lib/features/go/navigation/navigation_coordinator.dart|live_activity
-app/lib/features/go/view/go_screen.dart|live_activity
 app/lib/features/home/home_screen.dart|alerts
+# home_screen.dart owns the BusStopBloc for the station group open in its
+# sheet — the same seam home_station_detail.dart|bus below already carries,
+# moved up a level when the map took ownership of the group's lifetime.
+app/lib/features/home/home_screen.dart|bus
 app/lib/features/home/home_screen.dart|favorites
 app/lib/features/home/home_screen.dart|metro
 app/lib/features/home/home_screen.dart|rail
@@ -19,6 +16,4 @@ app/lib/features/home/widgets/home_station_detail.dart|bus
 app/lib/features/home/widgets/home_station_detail.dart|metro
 app/lib/features/home/widgets/home_station_detail.dart|rail
 app/lib/features/metro/view/metro_screen.dart|favorites
-app/lib/features/metro/view/metro_station_detail_view.dart|favorites
-app/lib/features/rail/view/rail_screen.dart|live_activity
 app/lib/features/search/view/search_screen.dart|rail

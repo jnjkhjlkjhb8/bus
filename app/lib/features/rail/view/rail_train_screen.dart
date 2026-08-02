@@ -7,12 +7,12 @@ import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/errors/app_error.dart';
 import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/data/models/fare_type.dart';
-import 'package:wheres_the_bus/data/models/plan_models.dart';
 import 'package:wheres_the_bus/data/models/rail_fare_quote.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
+import 'package:wheres_the_bus/data/tracking/tracking_session.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_train_bloc.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_train_event.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_train_state.dart';
@@ -21,9 +21,10 @@ import 'package:wheres_the_bus/features/rail/rail_timetable_derivation.dart';
 import 'package:wheres_the_bus/features/rail/widgets/rail_booking_sheet.dart';
 import 'package:wheres_the_bus/features/rail/widgets/rail_service_marks.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
-import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_bell.dart';
-import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_sheet.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_confirm_bar.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_pick_capsule.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_bell.dart';
 import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
 import 'package:wheres_the_bus/shared/widgets/app_card.dart';
 import 'package:wheres_the_bus/shared/widgets/app_spinner.dart';
@@ -127,10 +128,31 @@ class RailTrainScreen extends StatefulWidget {
   State<RailTrainScreen> createState() => _RailTrainScreenState();
 }
 
+/// Where the 下車提醒 flow is on this screen.
+///
+/// [confirm] is normally reached straight from [idle]: this screen is opened
+/// from an O/D result, so the 下車站 is already settled and asking for it again
+/// would be asking twice. [picking] happens only when the screen was opened by
+/// train number alone, or when the rider taps 改選.
+enum _AlightMode { idle, picking, confirm, manage }
+
 class _RailTrainScreenState extends State<RailTrainScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
   late final RailTrainBloc _bloc;
+
+  _AlightMode _alightMode = _AlightMode.idle;
+
+  /// Station name of the chosen 下車站, or null before one is settled.
+  String? _alightTarget;
+
+  /// Whether [_alightTarget] came from the rider's own O/D search rather than
+  /// from a tap on the timetable.
+  bool _alightFromSearch = false;
+
+  /// 提前站數, two on every network: one stop is often under a minute's warning
+  /// on a fast train, three is most of a short ride.
+  int _alightLead = 2;
 
   @override
   void initState() {
@@ -152,6 +174,125 @@ class _RailTrainScreenState extends State<RailTrainScreen>
     super.dispose();
   }
 
+  // trainNo lives in identity.routeKey and the service date in
+  // identity.direction (trackOnly rail legs carry no real O/D keys), so both
+  // must match to recognise this train as the one being tracked.
+  bool _isTrackingThisTrain(JourneySessionState s) => isTrackingTrain(
+    s,
+    trainNo: widget.trainNo,
+    serviceDate: widget.date,
+  );
+
+  /// The boarding stop: the one the rider actually searched from, falling back
+  /// to the train's origin when this screen was opened by train number alone.
+  RailTrainStop? _boardStop(List<RailTrainStop> stops) {
+    if (stops.isEmpty) return null;
+    final origin = widget.userOrigin;
+    if (origin == null) return stops.first;
+    for (final s in stops) {
+      if (sameStation(s.name, origin)) return s;
+    }
+    return stops.first;
+  }
+
+  /// Stops the train still calls at after boarding — the 下車站 candidates.
+  List<RailTrainStop> _aheadStops(List<RailTrainStop> stops) {
+    final board = _boardStop(stops);
+    if (board == null) return const [];
+    final at = stops.indexOf(board);
+    return at < 0 ? const [] : stops.sublist(at + 1);
+  }
+
+  JourneyLeg? _buildLeg(
+    AppI18n i18n,
+    List<RailTrainStop> stops,
+    RailTrainStop alight,
+    int delayMinutes,
+    String trainLabel,
+  ) {
+    final board = _boardStop(stops);
+    if (board == null) return null;
+    final departRaw = board.depart.isNotEmpty ? board.depart : board.arrive;
+    final arriveRaw = alight.arrive.isNotEmpty ? alight.arrive : alight.depart;
+    final departAt = DateTime.tryParse('${widget.date} ${hhmm(departRaw)}');
+    return railTrackingLeg(
+      i18n: i18n,
+      isThsr: widget.type == '高鐵',
+      trainNo: widget.trainNo,
+      trainLabel: trainLabel,
+      serviceDate: widget.date,
+      boardName: board.name,
+      alightName: alight.name,
+      scheduledDeparture: departAt,
+      scheduledArrival: DateTime.tryParse('${widget.date} ${hhmm(arriveRaw)}'),
+      delayMinutes: delayMinutes,
+      // The whole board→alight segment travels on the leg so the live tracker
+      // can keep deriving 還剩 N 站 / progress after this screen is disposed.
+      // Delay is NOT folded in here — the tracker applies live 誤點 itself.
+      railSchedule: railTrackSchedule(
+        stops,
+        widget.date,
+        board: board.name,
+        alight: alight.name,
+      ),
+    );
+  }
+
+  /// Opens the flow from the bell. The O/D search already answered "which
+  /// station", so the usual landing is the confirm bar, not a picker.
+  void _enterAlight(List<RailTrainStop> stops) {
+    final ahead = _aheadStops(stops);
+    if (ahead.isEmpty) return;
+    final dest = widget.userDest;
+    final known = dest == null
+        ? null
+        : ahead.where((s) => sameStation(s.name, dest)).firstOrNull;
+    setState(() {
+      _alightTarget = known?.name;
+      _alightFromSearch = known != null;
+      _alightLead = 2;
+      _alightMode = known == null ? _AlightMode.picking : _AlightMode.confirm;
+    });
+  }
+
+  void _pickAlight(String stationName) {
+    unawaited(HapticService.instance.selectionClick());
+    setState(() {
+      _alightTarget = stationName;
+      _alightFromSearch = false;
+      _alightMode = _AlightMode.confirm;
+    });
+  }
+
+  void _cancelAlight() {
+    setState(() {
+      _alightMode = _AlightMode.idle;
+      _alightTarget = null;
+      _alightFromSearch = false;
+    });
+  }
+
+  void _startAlight(List<RailTrainStop> stops, String trainLabel, int delay) {
+    final target = _alightTarget;
+    if (target == null) return;
+    final alight = _aheadStops(
+      stops,
+    ).where((s) => sameStation(s.name, target)).firstOrNull;
+    if (alight == null) return;
+    final leg = _buildLeg(
+      AppI18n.of(context),
+      stops,
+      alight,
+      delay,
+      trainLabel,
+    );
+    if (leg == null) return;
+    context.read<JourneySessionBloc>().add(
+      JourneyStarted(trackOnly: true, legs: [leg], leadStops: _alightLead),
+    );
+    setState(() => _alightMode = _AlightMode.idle);
+  }
+
   @override
   Widget build(BuildContext context) {
     final trainLabel = TrainTypeChip.canonicalLabel(
@@ -171,16 +312,40 @@ class _RailTrainScreenState extends State<RailTrainScreen>
             // at the default text scale, and tracking is a deliberate act on a
             // chosen train, not something glanced at down a list.
             BlocBuilder<RailTrainBloc, RailTrainState>(
-              builder: (context, state) => _TrackButton(
-                trainLabel: trainLabel,
-                trainNo: widget.trainNo,
-                date: widget.date,
-                isThsr: widget.type == '高鐵',
-                delayMinutes: state.liveDelayMinutes ?? widget.delayMinutes,
-                stops: state.stops,
-                userOrigin: widget.userOrigin,
-                userDest: widget.userDest,
-              ),
+              builder: (context, state) {
+                // Nothing to set a reminder on until the stop list has landed.
+                if (_aheadStops(state.stops).isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return BlocSelector<
+                  JourneySessionBloc,
+                  JourneySessionState,
+                  bool
+                >(
+                  selector: _isTrackingThisTrain,
+                  builder: (context, armed) => AlightTrackBell(
+                    active: armed,
+                    semanticLabel: armed
+                        ? AppI18n.of(
+                            context,
+                          ).railTrackingSemantics(trainLabel, widget.trainNo)
+                        : AppI18n.of(
+                            context,
+                          ).railTrackSemantics(trainLabel, widget.trainNo),
+                    onTap: () {
+                      // Armed opens the manage card rather than cancelling on
+                      // the spot; idle opens the flow; mid-flow it backs out.
+                      if (armed) {
+                        setState(() => _alightMode = _AlightMode.manage);
+                      } else if (_alightMode == _AlightMode.idle) {
+                        _enterAlight(state.stops);
+                      } else {
+                        _cancelAlight();
+                      }
+                    },
+                  ),
+                );
+              },
             ),
             BookmarkButton(
               routeType: widget.type,
@@ -200,6 +365,40 @@ class _RailTrainScreenState extends State<RailTrainScreen>
           builder: (context, state) {
             if (state.status != RailTrainStatus.loaded) {
               return const SizedBox.shrink();
+            }
+            // While the reminder is being set the bottom edge belongs to it:
+            // two bars stacked is one bar too many, and 訂購 is not the task
+            // the rider is in the middle of.
+            final target = _alightTarget;
+            if (_alightMode == _AlightMode.confirm && target != null) {
+              return AlightConfirmBar(
+                targetName: target,
+                fromSearch: _alightFromSearch,
+                lead: _alightLead,
+                onLeadChanged: (v) => setState(() => _alightLead = v),
+                onRepick: () =>
+                    setState(() => _alightMode = _AlightMode.picking),
+                onCancel: _cancelAlight,
+                onStart: () => _startAlight(
+                  state.stops,
+                  trainLabel,
+                  state.liveDelayMinutes ?? widget.delayMinutes,
+                ),
+              );
+            }
+            if (_alightMode == _AlightMode.manage) {
+              final leg = context.read<JourneySessionBloc>().state.currentLeg;
+              return AlightManageBar(
+                targetName: leg?.alightStop ?? target ?? '',
+                lead: _alightLead,
+                onClose: () => setState(() => _alightMode = _AlightMode.idle),
+                onCancel: () {
+                  context.read<JourneySessionBloc>().add(
+                    const JourneyCancelled(),
+                  );
+                  _cancelAlight();
+                },
+              );
             }
             // Scoped to the user's own boarding stop when known, so a THSR
             // hand-off pre-fills the departure they searched rather than the
@@ -264,42 +463,48 @@ class _RailTrainScreenState extends State<RailTrainScreen>
                   ),
                 );
               case RailTrainStatus.loaded:
-                return Column(
-                  children: [
-                    RouteTabBar(
-                      controller: _tabController,
-                      tabs: [
-                        AppI18n.of(context).railTabTimetable,
-                        AppI18n.of(context).railTabDetails,
-                      ],
-                    ),
-                    Expanded(
-                      child: TabBarView(
+                return AlightPickCapsuleHost(
+                  picking: _alightMode == _AlightMode.picking,
+                  onCancel: _cancelAlight,
+                  child: Column(
+                    children: [
+                      RouteTabBar(
                         controller: _tabController,
-                        children: [
-                          _TimetableTab(
-                            stops: state.stops,
-                            serviceDate: widget.date,
-                            delayMinutes:
-                                state.liveDelayMinutes ?? widget.delayMinutes,
-                            userOrigin: widget.userOrigin,
-                            alight: widget.userDest,
-                          ),
-                          _InfoTab(
-                            type: widget.type,
-                            trainNo: widget.trainNo,
-                            stops: state.stops,
-                            fullFare: state.fullFare,
-                            userFare: state.userFare,
-                            userOrigin: widget.userOrigin,
-                            userDest: widget.userDest,
-                            marks: widget.marks,
-                            remark: widget.remark,
-                          ),
+                        tabs: [
+                          AppI18n.of(context).railTabTimetable,
+                          AppI18n.of(context).railTabDetails,
                         ],
                       ),
-                    ),
-                  ],
+                      Expanded(
+                        child: TabBarView(
+                          controller: _tabController,
+                          children: [
+                            _TimetableTab(
+                              stops: state.stops,
+                              serviceDate: widget.date,
+                              delayMinutes:
+                                  state.liveDelayMinutes ?? widget.delayMinutes,
+                              userOrigin: widget.userOrigin,
+                              alight: _alightTarget ?? widget.userDest,
+                              picking: _alightMode == _AlightMode.picking,
+                              onPickStop: _pickAlight,
+                            ),
+                            _InfoTab(
+                              type: widget.type,
+                              trainNo: widget.trainNo,
+                              stops: state.stops,
+                              fullFare: state.fullFare,
+                              userFare: state.userFare,
+                              userOrigin: widget.userOrigin,
+                              userDest: widget.userDest,
+                              marks: widget.marks,
+                              remark: widget.remark,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 );
             }
           },
@@ -418,11 +623,10 @@ class _BookingBar extends StatelessWidget {
                         padding: const EdgeInsets.only(left: 8),
                         child: Text(
                           'NT\$ ${resolved.price}$suffix',
-                          style: AppTextStyles.memo.copyWith(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
+                          style: AppTextStyles.timeValue(
+                            size: 14,
+                            weight: FontWeight.w600,
                             color: cs.onPrimary.withValues(alpha: 0.82),
-                            fontFeatures: AppTextStyles.tabularFigures,
                           ),
                         ),
                       );
@@ -445,7 +649,15 @@ class _TimetableTab extends StatefulWidget {
     required this.delayMinutes,
     required this.alight,
     this.userOrigin,
+    this.picking = false,
+    this.onPickStop,
   });
+
+  /// Whether the rider is choosing a 下車站 right now. Stops the train has
+  /// already called at, and the boarding stop itself, stay untappable.
+  final bool picking;
+
+  final ValueChanged<String>? onPickStop;
 
   final List<RailTrainStop> stops;
   final String serviceDate;
@@ -522,9 +734,13 @@ class _TimetableTabState extends State<_TimetableTab> {
     for (var i = collapseUntil + 1; i < stops.length; i++) {
       final stop = stops[i];
       final travelled = position != null && i <= position;
+      final pickable = widget.picking && i > boardIndex;
       children.add(
         _StopRow(
           stop: stop,
+          onPick: pickable && widget.onPickStop != null
+              ? () => widget.onPickStop!(stop.name)
+              : null,
           isFirst: i == 0,
           isLast: i == last,
           elapsed: i > boardIndex
@@ -686,7 +902,13 @@ class _StopRow extends StatelessWidget {
     required this.isBoard,
     required this.isAlight,
     required this.showElapsed,
+    this.onPick,
   });
+
+  /// Set only while the rider is choosing a 下車站 and this row is a candidate.
+  /// Rows without it stay plain text, which is what makes the pickable ones
+  /// read as the choice on offer.
+  final VoidCallback? onPick;
 
   final RailTrainStop stop;
 
@@ -727,7 +949,7 @@ class _StopRow extends StatelessWidget {
     // information. Only a wait worth noticing is called out.
     final dwell = isLast ? 0 : dwellMinutes(stop);
 
-    return Container(
+    final row = Container(
       constraints: const BoxConstraints(minHeight: 48),
       // The static, non-pulsing highlight the design system reserves for
       // "find this row" cases — fill and weight only, no new colour.
@@ -808,11 +1030,10 @@ class _StopRow extends StatelessWidget {
                       child: Text(
                         primaryTime.isEmpty ? '' : hhmm(primaryTime),
                         textAlign: TextAlign.right,
-                        style: AppTextStyles.memo.copyWith(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
+                        style: AppTextStyles.timeValue(
+                          size: 15,
+                          weight: FontWeight.w600,
                           color: cs.onSurface,
-                          fontFeatures: AppTextStyles.tabularFigures,
                         ),
                       ),
                     ),
@@ -828,10 +1049,9 @@ class _StopRow extends StatelessWidget {
                               ? ''
                               : AppI18n.of(context).railElapsedPlus(elapsed!),
                           textAlign: TextAlign.right,
-                          style: AppTextStyles.memo.copyWith(
-                            fontSize: 12,
+                          style: AppTextStyles.timeValue(
+                            size: 12,
                             color: cs.onSurfaceVariant,
-                            fontFeatures: AppTextStyles.tabularFigures,
                           ),
                         ),
                       ),
@@ -843,6 +1063,13 @@ class _StopRow extends StatelessWidget {
           ],
         ),
       ),
+    );
+
+    if (onPick == null) return row;
+    return Pressable(
+      onTap: onPick,
+      semanticLabel: AppI18n.of(context).alightPickStopSemantics(stop.name),
+      child: row,
     );
   }
 }
@@ -949,15 +1176,15 @@ class _InfoTab extends StatelessWidget {
                   spacing: 5,
                   children: [
                     if (marks.isNotEmpty) ...[
-                    RailServiceMarkChips(marks: marks),
+                      RailServiceMarkChips(marks: marks),
                     ],
                     Text(
                       remark.trim(),
                       style: AppTextStyles.bodyRegular.copyWith(
                         color: cs.onSurface,
                       ),
-                    )
-                  ]
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -1156,187 +1383,6 @@ class _InfoTab extends StatelessWidget {
           ],
         );
       },
-    );
-  }
-}
-
-/// 追蹤 toggle for this train, shown in the app bar beside the bookmark.
-///
-/// Moved here from the O/D result card, whose header could not fit chip,
-/// number, fare, 追蹤 and 訂購 on one line even at the default text scale.
-class _TrackButton extends StatelessWidget {
-  const _TrackButton({
-    required this.trainLabel,
-    required this.trainNo,
-    required this.date,
-    required this.isThsr,
-    required this.delayMinutes,
-    required this.stops,
-    required this.userOrigin,
-    required this.userDest,
-  });
-
-  final String trainLabel;
-  final String trainNo;
-  final String date;
-  final bool isThsr;
-  final int delayMinutes;
-  final List<RailTrainStop> stops;
-  final String? userOrigin;
-  final String? userDest;
-
-  // trainNo lives in identity.routeKey and the service date in
-  // identity.direction (trackOnly rail legs carry no real O/D keys), so both
-  // must match to recognise this train as the one being tracked.
-  bool _isTracking(JourneySessionState s) {
-    final leg = s.currentLeg;
-    return s.trackOnly &&
-        s.phase == JourneyPhase.waiting &&
-        leg != null &&
-        (leg.kind == JourneyLegKind.tra || leg.kind == JourneyLegKind.thsr) &&
-        leg.identity.routeKey == trainNo &&
-        leg.identity.direction == date;
-  }
-
-  RailTrainStop? _stopFor(String? name, RailTrainStop fallback) {
-    if (name == null) return fallback;
-    for (final s in stops) {
-      if (sameStation(s.name, name)) return s;
-    }
-    return fallback;
-  }
-
-  /// The boarding stop: the one the rider actually searched from, falling back
-  /// to the train's origin when this screen was opened by train number alone.
-  RailTrainStop? get _board =>
-      stops.isEmpty ? null : _stopFor(userOrigin, stops.first);
-
-  /// Stops the train still calls at after boarding — the 下車站 candidates.
-  List<RailTrainStop> get _ahead {
-    final board = _board;
-    if (board == null) return const [];
-    final at = stops.indexOf(board);
-    return at < 0 ? const [] : stops.sublist(at + 1);
-  }
-
-  JourneyLeg? _buildLeg(AppI18n i18n, RailTrainStop alight) {
-    final board = _board;
-    if (board == null) return null;
-    final departRaw = board.depart.isNotEmpty ? board.depart : board.arrive;
-    final arriveRaw = alight.arrive.isNotEmpty ? alight.arrive : alight.depart;
-    final departAt = DateTime.tryParse('$date ${hhmm(departRaw)}');
-    // Fold the current delay into the countdown so 追蹤 reflects live 誤點.
-    final scheduledDeparture = departAt?.add(Duration(minutes: delayMinutes));
-    return JourneyLeg(
-      kind: isThsr ? JourneyLegKind.thsr : JourneyLegKind.tra,
-      routeLabel: i18n.railTrainTowards(trainLabel, trainNo, alight.name),
-      boardStop: board.name,
-      alightStop: alight.name,
-      stopNames: const [],
-      identity: PlanIdentity(
-        routeType: isThsr ? 'thsr' : 'tra',
-        routeKey: trainNo,
-        direction: date,
-        departureStopKey: '',
-        arrivalStopKey: '',
-        supported: false,
-      ),
-      leadingWalkMinutes: 0,
-      scheduledDeparture: scheduledDeparture,
-      scheduledArrival: DateTime.tryParse('$date ${hhmm(arriveRaw)}'),
-      boardLocation: const PlanPoint(lat: 0, lng: 0),
-      stopLocations: const [],
-      // The whole board→alight segment travels on the leg so the live tracker
-      // can keep deriving 還剩 N 站 / progress after this screen is disposed.
-      // Delay is NOT folded in here — the tracker applies live 誤點 itself.
-      railSchedule: railTrackSchedule(
-        stops,
-        date,
-        board: board.name,
-        alight: alight.name,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // Nothing to set a reminder on until the stop list has landed.
-    if (_ahead.isEmpty) return const SizedBox.shrink();
-
-    return BlocSelector<JourneySessionBloc, JourneySessionState, bool>(
-      selector: _isTracking,
-      builder: (context, active) {
-        final i18n = AppI18n.of(context);
-        return AlightTrackBell(
-          active: active,
-          semanticLabel: active
-              ? i18n.railTrackingSemantics(trainLabel, trainNo)
-              : i18n.railTrackSemantics(trainLabel, trainNo),
-          onTap: () {
-            final session = context.read<JourneySessionBloc>();
-            if (active) {
-              session.add(const JourneyCancelled());
-              return;
-            }
-            unawaited(_openSheet(context, session));
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> _openSheet(BuildContext context, JourneySessionBloc session) {
-    final i18n = AppI18n.of(context);
-    // A single data colour per network: at 8px the useful distinction is
-    // TRA-versus-THSR, and the train type is already named on the screen.
-    final dot = isThsr ? AppTheme.trainThsr : AppTheme.markerRail;
-    return AlightTrackSheet.show(
-      context: context,
-      child: AlightTrackSheet(
-        bindingRow: _BindingLine(trainLabel: trainLabel, trainNo: trainNo),
-        stops: [
-          for (final stop in _ahead)
-            AlightStopOption(id: stop.name, name: stop.name, dotColor: dot),
-        ],
-        onStart: (stopId, lead) {
-          final alight = _ahead.firstWhere(
-            (s) => s.name == stopId,
-            orElse: () => _ahead.last,
-          );
-          final leg = _buildLeg(i18n, alight);
-          if (leg == null) return;
-          session.add(
-            JourneyStarted(trackOnly: true, legs: [leg], leadStops: lead),
-          );
-          unawaited(Navigator.of(context).maybePop());
-        },
-      ),
-    );
-  }
-}
-
-/// What the rail reminder is bound to: the train, not a vehicle within it.
-class _BindingLine extends StatelessWidget {
-  const _BindingLine({required this.trainLabel, required this.trainNo});
-
-  final String trainLabel;
-  final String trainNo;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final i18n = AppI18n.of(context);
-    return Wrap(
-      spacing: 8,
-      runSpacing: 6,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        Text(
-          i18n.mrtAlightBound,
-          style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
-        ),
-        AlightBindingChip(label: '$trainLabel $trainNo'),
-      ],
     );
   }
 }

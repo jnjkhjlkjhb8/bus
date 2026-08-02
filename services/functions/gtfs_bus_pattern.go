@@ -1,0 +1,182 @@
+package main
+
+// Stop times for the bus networks that publish a departure but not a journey.
+//
+// Taipei, New Taipei, Taoyuan and Tainan land no multi-stop timetable at all:
+// across 84,056 timetable entries in raw_tdx.bus_schedule, exactly zero carry
+// more than one StopUID. busScheduleSource requires more than one distinct call,
+// so without this every trip in those four cities is filtered out and the cities
+// reach the feed with routes and stops but nothing to ride.
+//
+// What they do publish is the origin departure. The rest of the journey is the
+// running time between stops, which bus_segment_time now holds for 99.9% of route
+// directions — so a trip can be laid out the way metroPatternSQL lays out a metro
+// trip: anchor on the departure, accumulate the hops.
+//
+// These are kept separate from gtfs_files.go so the feed's own file list stays
+// one session's to edit. The wiring is four UNION ALL branches over there: trips,
+// stop_times, the stop reference list and shapes. busScheduleServiceSQL already
+// emits the service ids, as it reads every schedule entry regardless of how many
+// calls it carries.
+
+// busPatternSQL is the ordered stop list of every bus route direction, each stop
+// carrying its cumulative seconds from the origin.
+//
+// complete is the same all-or-nothing judgement metroPatternSQL makes, and for
+// the same reason: a journey is laid out by accumulating hops, so one unknown
+// segment silently compresses everything after it and the direction has to be
+// dropped rather than published wrong. The stop_count guard is the other half —
+// a route direction with a single stop has no hops to miss, so it would pass a
+// pure BOOL_AND and produce a trip that never moves.
+//
+// The known_stop test is the third: bus_station_stop_map carries stops that
+// bus_stopofroute does not, so stops.txt never declares them — TNN33591 is on
+// four Tainan directions and in no stop inventory. Emitting a call there is a
+// dangling reference, which is an invalid feed rather than a merely thin one.
+// The stop cannot simply be skipped either: dropping it from the middle of a
+// sequence makes the surrounding running times describe a journey that omits a
+// stop the bus actually serves. So the direction goes, exactly as it does for a
+// missing segment.
+const busPatternSQL = `
+  WITH known_stop AS (
+    SELECT DISTINCT c->>'StopUID' AS stop_uid
+    FROM raw_tdx.bus_stopofroute s
+    CROSS JOIN LATERAL jsonb_array_elements(s.stops) c
+    WHERE jsonb_typeof(s.stops) = 'array' AND COALESCE(c->>'StopUID', '') <> ''
+  ), linked AS (
+    SELECT m.sub_route_uid, m.direction, m.stop_uid, m.stop_sequence,
+           LAG(m.stop_uid) OVER w AS prev_stop_uid,
+           count(*) OVER (PARTITION BY m.sub_route_uid, m.direction) AS stop_count
+    FROM bus_station_stop_map m
+    WINDOW w AS (PARTITION BY m.sub_route_uid, m.direction ORDER BY m.stop_sequence)
+  )
+  SELECT l.sub_route_uid, l.direction, l.stop_sequence, l.stop_uid,
+         SUM(COALESCE(g.secs, 0)) OVER (PARTITION BY l.sub_route_uid, l.direction
+                                        ORDER BY l.stop_sequence
+                                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS offset_secs,
+         (l.stop_count > 1
+          AND BOOL_AND(l.prev_stop_uid IS NULL OR g.secs IS NOT NULL)
+              OVER (PARTITION BY l.sub_route_uid, l.direction)
+          AND BOOL_AND(k.stop_uid IS NOT NULL)
+              OVER (PARTITION BY l.sub_route_uid, l.direction)) AS complete
+  FROM linked l
+  LEFT JOIN known_stop k ON k.stop_uid = l.stop_uid
+  LEFT JOIN bus_segment_time g
+    ON g.sub_route_uid = l.sub_route_uid
+   AND g.direction     = l.direction
+   AND g.from_stop_uid = l.prev_stop_uid
+   AND g.to_stop_uid   = l.stop_uid`
+
+// busOriginTripSource is one trip per origin departure, for the schedule entries
+// that carry only that departure.
+//
+// The single-call test is what keeps this disjoint from busScheduleSource, which
+// takes the entries with more than one call: an entry satisfies exactly one of
+// them, so no trip is emitted twice and the two can be unioned without a
+// deduplicating pass.
+//
+// That holds per entry, not per trip_id. A subroute that publishes the same
+// departure and mask twice — once as a call list, once as an origin alone —
+// would give both sources the same trip_id, and stop_times would union a real
+// call list with an accumulated one into a journey neither source describes.
+// The richer entry wins, since it states times rather than deriving them.
+var busOriginTripSource = `
+  SELECT
+    s.routeuid,
+    s.subrouteuid,
+    COALESCE(s.direction, 0) AS direction_id,
+    s.subrouteuid || ':' || COALESCE(s.direction, 0)::text || ':'
+      || replace(t.value->'StopTimes'->0->>'DepartureTime', ':', '') || ':'
+      || ` + gtfsWeekMaskSQL("t.value->'ServiceDay'") + ` AS trip_id,
+    ` + gtfsWeekMaskSQL("t.value->'ServiceDay'") + ` AS service_id,
+    s.subroutename->>'Zh_tw' AS headsign,
+    CASE WHEN (t.value->>'IsLowFloor')::boolean THEN 1 ELSE 0 END AS wheelchair,
+    split_part(t.value->'StopTimes'->0->>'DepartureTime', ':', 1)::int * 3600
+      + split_part(t.value->'StopTimes'->0->>'DepartureTime', ':', 2)::int * 60 AS origin_secs
+  FROM raw_tdx.bus_schedule s
+  CROSS JOIN LATERAL jsonb_array_elements(s.timetables) t
+  WHERE jsonb_typeof(s.timetables) = 'array'
+    AND jsonb_typeof(t.value->'StopTimes') = 'array'
+    AND jsonb_typeof(t.value->'ServiceDay') = 'object'
+    AND COALESCE(s.subrouteuid, '') <> ''
+    AND COALESCE(s.routeuid, '') <> ''
+    AND (t.value->'StopTimes'->0->>'DepartureTime') ~ '^[0-9]{1,2}:[0-9]{2}$'
+    -- Exactly one call: the origin. Anything richer is busScheduleSource's.
+    AND (
+      SELECT count(DISTINCT c->>'StopUID') FROM jsonb_array_elements(t.value->'StopTimes') c
+      WHERE COALESCE(c->>'StopUID', '') <> ''
+    ) = 1
+    -- The same departure and mask published again with a real call list belongs
+    -- to busScheduleSource. Only this row's own timetables are searched: a
+    -- trip_id names one subroute and direction, so that is the whole collision
+    -- domain. The departure is compared as raw text because trip_id is built
+    -- from raw text — '6:10' and '06:10' are different trips downstream, so they
+    -- are different trips here.
+    AND NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(s.timetables) o
+      WHERE jsonb_typeof(o.value->'StopTimes') = 'array'
+        AND jsonb_typeof(o.value->'ServiceDay') = 'object'
+        AND (o.value->'StopTimes'->0->>'DepartureTime')
+              = (t.value->'StopTimes'->0->>'DepartureTime')
+        AND ` + gtfsWeekMaskSQL("o.value->'ServiceDay'") + `
+              = ` + gtfsWeekMaskSQL("t.value->'ServiceDay'") + `
+        AND (
+          SELECT count(DISTINCT c->>'StopUID')
+          FROM jsonb_array_elements(o.value->'StopTimes') c
+          WHERE COALESCE(c->>'StopUID', '') <> ''
+        ) > 1
+    )`
+
+// busPatternTripsSQL is the trips.txt branch: an origin departure only becomes a
+// trip when its route direction has a complete pattern to hang on.
+var busPatternTripsSQL = `
+  SELECT
+    b.routeuid AS route_id,
+    b.service_id,
+    b.trip_id,
+    COALESCE(b.headsign, '') AS trip_headsign,
+    '' AS trip_short_name,
+    b.direction_id,
+    b.wheelchair AS wheelchair_accessible,
+    CASE WHEN EXISTS (
+      SELECT 1 FROM raw_tdx.bus_shape sh
+      WHERE sh.subrouteuid = b.subrouteuid
+        AND COALESCE(sh.direction, 0) = b.direction_id
+        AND sh.geometry LIKE 'LINESTRING%'
+    ) THEN 'B:' || b.subrouteuid || ':' || b.direction_id::text
+    ELSE '' END AS shape_id
+  FROM (` + busOriginTripSource + `) b
+  WHERE EXISTS (
+    SELECT 1 FROM (` + busPatternSQL + `) p
+    WHERE p.sub_route_uid = b.subrouteuid AND p.direction = b.direction_id AND p.complete
+  )`
+
+// busPatternStopTimesSQL is the stop_times.txt branch: the origin departure plus
+// each stop's cumulative offset. Arrival and departure are the same instant —
+// the running times carry no dwell, so claiming one would be inventing it. The
+// trailing 0 is the suspended flag the calls CTE carries for rail; a bus call is
+// never suspended.
+var busPatternStopTimesSQL = `
+  SELECT
+    b.trip_id,
+    p.stop_sequence,
+    p.stop_uid AS stop_id,
+    b.origin_secs + p.offset_secs AS arr,
+    b.origin_secs + p.offset_secs AS dep,
+    0 AS suspended
+  FROM (` + busOriginTripSource + `) b
+  JOIN (` + busPatternSQL + `) p
+    ON p.sub_route_uid = b.subrouteuid AND p.direction = b.direction_id
+  WHERE p.complete`
+
+// busPatternStopRefsSQL is the stop reference list these trips add to stops.txt.
+// Without it stop_times would name stops the feed never declares, which is an
+// invalid feed rather than a merely incomplete one.
+var busPatternStopRefsSQL = `
+  SELECT DISTINCT p.stop_uid AS ref
+  FROM (` + busPatternSQL + `) p
+  WHERE p.complete
+    AND EXISTS (
+      SELECT 1 FROM (` + busOriginTripSource + `) b
+      WHERE b.subrouteuid = p.sub_route_uid AND b.direction_id = p.direction
+    )`

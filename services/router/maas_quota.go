@@ -1,0 +1,77 @@
+package main
+
+// The MaaS per-caller TDX quota: config, accounting, and the unary/stream
+// interceptors that charge it. Kept apart from MaasServer because it governs
+// who may start work, while MaasServer governs the work already in flight.
+
+import (
+	"context"
+	"time"
+
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+)
+
+type MaasResourceConfig struct {
+	RateLimit  int
+	RateWindow time.Duration
+}
+
+var DefaultMaasResourceConfig = MaasResourceConfig{
+	RateLimit:  5,
+	RateWindow: time.Minute,
+}
+
+// maasQuotaScope is the rate-limiter bucket both plan methods spend from. They
+// share one name deliberately: plan and planStream cost the same TDX call, so
+// billing them separately would hand every caller a second allowance for
+// switching method.
+const maasQuotaScope = "maas:plan"
+
+// maasPlanQuota charges one plan against the per-caller TDX quota, returning the
+// error to fail the RPC with, or nil to proceed. Cancellation is checked on both
+// sides of the accounting so a caller that left neither spends quota
+// unnecessarily nor gets work started on its behalf.
+func maasPlanQuota(ctx context.Context, rl *RateLimiter, config MaasResourceConfig) error {
+	if err := ctx.Err(); err != nil {
+		return status.FromContextError(err).Err()
+	}
+	if !AllowRequest(ctx, rl, maasQuotaScope, config.RateLimit, config.RateWindow) {
+		return status.Error(codes.ResourceExhausted, "MaaS rate limit exceeded")
+	}
+	if err := ctx.Err(); err != nil {
+		return status.FromContextError(err).Err()
+	}
+	return nil
+}
+
+// MaasResourceInterceptor contains the per-caller TDX quota independently from
+// unrelated gRPC methods. Shared-work concurrency and deadlines belong to
+// MaasServer so singleflight work retains them after an individual caller exits.
+func MaasResourceInterceptor(rl *RateLimiter, config MaasResourceConfig) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if info.FullMethod != pb.MaasService_Plan_FullMethodName {
+			return handler(ctx, req)
+		}
+		if err := maasPlanQuota(ctx, rl, config); err != nil {
+			return nil, err
+		}
+		return handler(ctx, req)
+	}
+}
+
+// MaasResourceStreamInterceptor is the streaming half of the same quota. Without
+// it planStream would reach TDX with no per-caller ceiling at all.
+func MaasResourceStreamInterceptor(rl *RateLimiter, config MaasResourceConfig) grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		if info.FullMethod != pb.MaasService_PlanStream_FullMethodName {
+			return handler(srv, ss)
+		}
+		if err := maasPlanQuota(ss.Context(), rl, config); err != nil {
+			return err
+		}
+		return handler(srv, ss)
+	}
+}

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"github.com/redis/go-redis/v9"
 )
 
 // ConnectRedis dials REDIS_ADDR with a fixed pool and verifies the connection
@@ -30,16 +30,32 @@ func ConnectRedis() *redis.Client {
 		PoolSize:     20,
 		MinIdleConns: 3,
 		PoolTimeout:  5 * time.Second,
+
+		// v9 retries three times when MaxRetries is zero, where v6 did not retry
+		// at all; -1 keeps the no-retry behavior the callers were written against.
+		MaxRetries: -1,
+		// Pin RESP2. v9 negotiates RESP3 by default, which changes reply shapes
+		// for some commands; the wire protocol is not what this migration is
+		// changing.
+		Protocol: 2,
+		// Without this, v9 applies only the socket timeouts and ignores context
+		// deadlines — the whole point of moving off v6.
+		ContextTimeoutEnabled: true,
+		// Skip the CLIENT SETINFO handshake v9 sends on every new connection.
+		DisableIdentity: true,
 	})
 	// Redis answers PING with "LOADING ..." right after a restart until its
 	// dataset is in memory, and may not be dialable at all if it starts a beat
 	// behind us. Retry for ~10s so a transient startup race no longer crashes
 	// the process; a still-failing Redis after that is a real outage and panics.
 	// Fixed 10 attempts at 1s; widen if a restart's dataset load runs longer.
+	// Process bootstrap is a top-level entry point, so the readiness probe owns
+	// its context rather than inheriting one.
+	ctx := context.Background()
 	var err error
 	for i := 0; ; i++ {
 		var pong string
-		pong, err = client.Ping().Result()
+		pong, err = client.Ping(ctx).Result()
 		if err == nil {
 			obs.Logf("[REDIS] action=connect event=success pong=%s", pong)
 			return client

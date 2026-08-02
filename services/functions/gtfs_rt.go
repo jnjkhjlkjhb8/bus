@@ -1,0 +1,552 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/MobilityData/gtfs-realtime-bindings/golang/gtfs"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
+	"github.com/robfig/cron/v3"
+	"google.golang.org/protobuf/proto"
+)
+
+// The GTFS-RT feed builder (ADR-0019).
+//
+// The static feed states the plan; this states what is happening to it today.
+// The first producer is 減班: a departure the weekly schedule places today but
+// that TDX's daily timetable does not list is reported as a cancelled trip.
+//
+// The snapshot is rebuilt here and served by services/router, handed over as
+// one serialized FeedMessage in Redis. The router owns HTTP, this process owns
+// periodic work, and neither changes shape. The key's TTL is the failure mode:
+// if this builder stops, the key expires and the endpoint 503s, so a planner
+// falls back to the static timetable rather than being served a snapshot that
+// is silently hours old.
+//
+// Nothing here guesses. Every subroute whose two sources cannot be shown to
+// describe the same departures is dropped whole — an omitted cancellation costs
+// a planner the static timetable, an invented one actively misroutes.
+
+const (
+	// gtfsRTCadence matches the bus ETA refresh. Cancellations themselves move
+	// at most hourly (the daily timetable's incremental load), but the delay
+	// producer FDPL-29 adds to this same snapshot moves at the ETA's pace, and
+	// one cadence is cheaper to reason about than two.
+	gtfsRTCadence = "@every 30s"
+	// gtfsRTSnapshotTTL outlives several rebuild periods so an ordinary slow
+	// tick cannot blank the feed, while still expiring fast enough that a dead
+	// builder is noticed as a 503 rather than served as fresh data.
+	gtfsRTSnapshotTTL = 3 * time.Minute
+	// gtfsRTBuildTimeout bounds one rebuild. The Redis scan dominates it; the
+	// static index is already in memory.
+	gtfsRTBuildTimeout = 60 * time.Second
+	// gtfsRTIndexTimeout bounds the once-a-day static index query, which repeats
+	// the same lateral expansion of raw_tdx.bus_schedule the GTFS static build
+	// pays for.
+	gtfsRTIndexTimeout = 10 * time.Minute
+	// gtfsRTIndexReadyHour is the local hour from which the index may be rebuilt
+	// for a new day: the 03:00 landing and 03:30 load are both done by then, so
+	// the index is derived from the same raw rows the static feed was.
+	gtfsRTIndexReadyHour = 4
+	// gtfsRTMGetBatch bounds one MGET. A few thousand subroutes is a handful of
+	// round trips at this size, and no single reply is large enough to matter.
+	gtfsRTMGetBatch = 256
+)
+
+// gtfsRTRouteKey identifies one canonical subroute direction — the granularity
+// at which the daily timetable is published and the gate is decided.
+type gtfsRTRouteKey struct {
+	subRouteUID string
+	direction   int32
+}
+
+// gtfsRTTrip is one static bus trip reduced to what a cancellation needs: the
+// id to name it by, the days it runs, and the origin departure that identifies
+// it within its subroute direction.
+type gtfsRTTrip struct {
+	tripID string
+	// departure is minutes since midnight. The trip_id embeds the departure as
+	// TDX spelled it ("6:10" and "06:10" are different trip_ids on purpose), but
+	// matching across two feeds cannot depend on formatting, so the match key is
+	// normalized while the id is not.
+	departure int
+	// week is Sunday-first, matching both time.Weekday and the EXTRACT(DOW)
+	// ordering gtfsWeekArraySQL emits.
+	week [7]bool
+}
+
+// gtfsRTIndex is the static half, rebuilt once a day.
+type gtfsRTIndex struct {
+	// builtFor is the service date the index was loaded for, in Taipei local
+	// time. A different date past gtfsRTIndexReadyHour triggers a reload.
+	builtFor string
+	trips    map[gtfsRTRouteKey][]gtfsRTTrip
+}
+
+// gtfsRTDailyReader returns one canonical subroute's daily timetable, or nil
+// when TDX published none for it today. It is the seam the Redis client sits
+// behind so the diff can be tested without one.
+type gtfsRTDailyReader func(ctx context.Context, subRouteUIDs []string) (map[string]*models.Bus_DailyTimetables, error)
+
+// gtfsRTStats records why trips did not reach the feed. Silence is the designed
+// behaviour, so it has to be measurable or the feed's coverage is unknowable.
+type gtfsRTStats struct {
+	routesConsidered int
+	routesNoDaily    int
+	routesGateFailed int
+	tripsActive      int
+	cancellations    int
+}
+
+// gtfsRTTripIndexSQL is every bus trip the static feed can emit, reduced to the
+// three columns a cancellation needs.
+//
+// It reads the same two sources gtfs_files.go builds trips.txt from, so the
+// trip_ids here are the trip_ids in the published feed by construction rather
+// than by a second definition that could drift. The subroute and departure are
+// recovered from the trip_id instead of being selected again, which is the same
+// thing gtfsShapesSQL already does (split_part(trip_id, ':', 1)) and keeps this
+// query from having to reach back into the sources' own SELECT lists.
+//
+// city comes along because canonicalisation needs it: InterCity encodes
+// direction in the UID suffix and everything else does not.
+var gtfsRTTripIndexSQL = `
+SELECT DISTINCT trip_id, direction_id, service_id
+FROM (
+  SELECT trip_id, direction_id, service_id FROM (` + busScheduleSource + `) s
+  UNION ALL
+  SELECT trip_id, direction_id, service_id FROM (` + busOriginTripSource + `) o
+) t
+WHERE trip_id <> '' AND service_id LIKE 'W:%'`
+
+// registerGTFSRTCron schedules the snapshot rebuild. Like the other live jobs it
+// never fails the process: a rebuild that errors leaves the previous snapshot in
+// Redis to expire on its own.
+func registerGTFSRTCron(r *cron.Cron, db *pgxpool.Pool, rc *redis.Client) {
+	builder := &gtfsRTBuilder{db: db, rc: rc}
+	_, _ = addStaticCron(r, gtfsRTCadence, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), gtfsRTBuildTimeout)
+		defer cancel()
+		if err := builder.run(ctx, time.Now().In(taipei)); err != nil {
+			log.Errorf("[GTFS_RT] action=build event=failed error=%v", err)
+		}
+	})
+}
+
+// gtfsRTBuilder owns the static index between ticks. Only the cron entry touches
+// it, and addStaticCron's non-overlap guard keeps that single-threaded.
+type gtfsRTBuilder struct {
+	db    *pgxpool.Pool
+	rc    *redis.Client
+	index *gtfsRTIndex
+}
+
+func (b *gtfsRTBuilder) run(ctx context.Context, now time.Time) error {
+	if err := b.refreshIndex(ctx, now); err != nil {
+		return err
+	}
+	if b.index == nil || len(b.index.trips) == 0 {
+		return errors.New("gtfs-rt: static trip index is empty")
+	}
+	entities, stats := buildGTFSRTCancellations(ctx, b.index, now, b.readDailyTimetables)
+	payload, err := marshalGTFSRTFeed(entities, now)
+	if err != nil {
+		return err
+	}
+	if err := b.rc.Set(ctx, shared.GTFSRealtimeKey(), payload, gtfsRTSnapshotTTL).Err(); err != nil {
+		return fmt.Errorf("gtfs-rt: publish snapshot: %w", err)
+	}
+	log.Infof("[GTFS_RT] action=build event=success bytes=%d entities=%d routes_considered=%d routes_no_daily=%d routes_gate_failed=%d trips_active=%d",
+		len(payload), len(entities), stats.routesConsidered, stats.routesNoDaily,
+		stats.routesGateFailed, stats.tripsActive)
+	return nil
+}
+
+// refreshIndex reloads the static half when the service date has moved on and
+// today's landing and load have had time to finish. Before that hour the
+// previous day's index is still the one the published static feed matches.
+func (b *gtfsRTBuilder) refreshIndex(ctx context.Context, now time.Time) error {
+	today := now.Format(time.DateOnly)
+	if b.index != nil && (b.index.builtFor == today || now.Hour() < gtfsRTIndexReadyHour) {
+		return nil
+	}
+	indexCtx, cancel := context.WithTimeout(ctx, gtfsRTIndexTimeout)
+	defer cancel()
+	index, err := loadGTFSRTIndex(indexCtx, b.db, today)
+	if err != nil {
+		// A failed reload keeps yesterday's index rather than emptying the feed:
+		// the two differ only by whatever TDX republished overnight, which is far
+		// less wrong than cancelling nothing at all for a day.
+		if b.index != nil {
+			log.Warnf("[GTFS_RT] action=index event=reload_failed keeping=%s error=%v", b.index.builtFor, err)
+			return nil
+		}
+		return err
+	}
+	b.index = index
+	log.Infof("[GTFS_RT] action=index event=loaded date=%s routes=%d", index.builtFor, len(index.trips))
+	return nil
+}
+
+// loadGTFSRTIndex reads every schedule-derived bus trip and groups it by the
+// canonical subroute direction the daily timetable is keyed by.
+func loadGTFSRTIndex(ctx context.Context, db *pgxpool.Pool, today string) (*gtfsRTIndex, error) {
+	rows, err := db.Query(ctx, gtfsRTTripIndexSQL)
+	if err != nil {
+		return nil, fmt.Errorf("gtfs-rt: load trip index: %w", err)
+	}
+	defer rows.Close()
+	index := &gtfsRTIndex{builtFor: today, trips: make(map[gtfsRTRouteKey][]gtfsRTTrip, 8192)}
+	for rows.Next() {
+		var tripID, serviceID string
+		var direction int32
+		if err := rows.Scan(&tripID, &direction, &serviceID); err != nil {
+			return nil, fmt.Errorf("gtfs-rt: load trip index: scan: %w", err)
+		}
+		trip, key, ok := parseGTFSRTTrip(tripID, serviceID, direction)
+		if !ok {
+			continue
+		}
+		index.trips[key] = append(index.trips[key], trip)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("gtfs-rt: load trip index: rows: %w", err)
+	}
+	return index, nil
+}
+
+// parseGTFSRTTrip recovers a trip's identity from its id and service id.
+//
+// The id's shape is <SubRouteUID>:<direction>:<HHMM>:<service_id>, and the
+// service id is itself "W:<mask>" — so the id has five colon-separated parts,
+// not four. Anything that does not decompose that way is skipped rather than
+// guessed at: a trip we cannot place is a trip we must not cancel.
+func parseGTFSRTTrip(tripID, serviceID string, direction int32) (gtfsRTTrip, gtfsRTRouteKey, bool) {
+	parts := strings.Split(tripID, ":")
+	if len(parts) != 5 {
+		return gtfsRTTrip{}, gtfsRTRouteKey{}, false
+	}
+	tdxUID, departure := parts[0], parts[2]
+	if tdxUID == "" || departure == "" {
+		return gtfsRTTrip{}, gtfsRTRouteKey{}, false
+	}
+	if direction < 0 || direction > 1 {
+		return gtfsRTTrip{}, gtfsRTRouteKey{}, false
+	}
+	minutes, ok := parseGTFSRTCompactTime(departure)
+	if !ok {
+		return gtfsRTTrip{}, gtfsRTRouteKey{}, false
+	}
+	week, ok := parseGTFSRTWeekMask(serviceID)
+	if !ok {
+		return gtfsRTTrip{}, gtfsRTRouteKey{}, false
+	}
+	uid, dir := canonicalGTFSRTSubroute(tdxUID, uint8(direction))
+	return gtfsRTTrip{tripID: tripID, departure: minutes, week: week},
+		gtfsRTRouteKey{subRouteUID: uid, direction: int32(dir)}, true
+}
+
+// canonicalGTFSRTSubroute maps a TDX-native subroute UID onto the canonical one
+// the Redis keys use. Only InterCity differs, and its UIDs are the ones carrying
+// the THB prefix, so the city CanonicalSubroute needs is recovered from the UID
+// rather than carried through the query.
+func canonicalGTFSRTSubroute(tdxUID string, direction uint8) (string, uint8) {
+	city := ""
+	if len(tdxUID) >= 3 {
+		city = citymap2[tdxUID[:3]]
+	}
+	return shared.CanonicalSubroute(city, tdxUID, direction)
+}
+
+// parseGTFSRTCompactTime reads the colon-stripped departure the trip_id carries
+// ("610", "0610", "2405" for a trip past midnight) as minutes since midnight.
+// The last two digits are always the minute; whatever precedes them is the hour,
+// which is how a service day can legitimately run past 24:00.
+func parseGTFSRTCompactTime(compact string) (int, bool) {
+	if len(compact) < 3 || len(compact) > 4 {
+		return 0, false
+	}
+	hour, err := strconv.Atoi(compact[:len(compact)-2])
+	if err != nil {
+		return 0, false
+	}
+	minute, err := strconv.Atoi(compact[len(compact)-2:])
+	if err != nil || minute > 59 {
+		return 0, false
+	}
+	return hour*60 + minute, true
+}
+
+// parseGTFSRTClockTime reads TDX's "H:MM"/"HH:MM" as minutes since midnight.
+func parseGTFSRTClockTime(clock string) (int, bool) {
+	hourText, minuteText, found := strings.Cut(strings.TrimSpace(clock), ":")
+	if !found {
+		return 0, false
+	}
+	hour, err := strconv.Atoi(hourText)
+	if err != nil || hour < 0 {
+		return 0, false
+	}
+	minute, err := strconv.Atoi(minuteText)
+	if err != nil || minute < 0 || minute > 59 {
+		return 0, false
+	}
+	return hour*60 + minute, true
+}
+
+// parseGTFSRTWeekMask reads "W:1111100" into a Sunday-first week. The mask is
+// written Monday-first (gtfsWeekMaskSQL) and read Sunday-first here because
+// time.Weekday and EXTRACT(DOW) both start at Sunday.
+func parseGTFSRTWeekMask(serviceID string) ([7]bool, bool) {
+	var week [7]bool
+	mask, found := strings.CutPrefix(serviceID, "W:")
+	if !found || len(mask) != 7 {
+		return week, false
+	}
+	for index := range mask {
+		switch mask[index] {
+		case '1':
+			// index 0 is Monday in the mask, weekday 1 in the array.
+			week[(index+1)%7] = true
+		case '0':
+		default:
+			return [7]bool{}, false
+		}
+	}
+	return week, true
+}
+
+// buildGTFSRTCancellations is the diff: for every subroute direction running
+// today, the scheduled departures TDX's daily timetable does not list.
+//
+// Two rules carry the whole design. A daily departure that matches no scheduled
+// departure proves the two sources do not agree on how to name a departure for
+// this subroute, so the subroute emits nothing at all rather than a mixture of
+// real reductions and correspondence failures. And one daily departure satisfies
+// every scheduled trip sharing it: bus_dailytimetable carries no ServiceDay, so
+// two weekday masks that both cover today put two trip_ids behind one
+// observation, and consuming it against only one of them would cancel the rest.
+func buildGTFSRTCancellations(
+	ctx context.Context,
+	index *gtfsRTIndex,
+	now time.Time,
+	read gtfsRTDailyReader,
+) ([]*gtfs.FeedEntity, gtfsRTStats) {
+	var stats gtfsRTStats
+	weekday := int(now.Weekday())
+	serviceDate := now.Format("20060102")
+
+	active := make(map[gtfsRTRouteKey][]gtfsRTTrip, len(index.trips))
+	uidSet := make(map[string]struct{}, len(index.trips))
+	for key, trips := range index.trips {
+		running := make([]gtfsRTTrip, 0, len(trips))
+		for _, trip := range trips {
+			if trip.week[weekday] {
+				running = append(running, trip)
+			}
+		}
+		if len(running) == 0 {
+			continue
+		}
+		active[key] = running
+		uidSet[key.subRouteUID] = struct{}{}
+		stats.routesConsidered++
+		stats.tripsActive += len(running)
+	}
+	uids := make([]string, 0, len(uidSet))
+	for uid := range uidSet {
+		uids = append(uids, uid)
+	}
+	sort.Strings(uids)
+
+	daily, err := read(ctx, uids)
+	if err != nil {
+		log.Errorf("[GTFS_RT] action=daily event=read_failed error=%v", err)
+		return nil, stats
+	}
+
+	keys := make([]gtfsRTRouteKey, 0, len(active))
+	for key := range active {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].subRouteUID != keys[j].subRouteUID {
+			return keys[i].subRouteUID < keys[j].subRouteUID
+		}
+		return keys[i].direction < keys[j].direction
+	})
+
+	entities := make([]*gtfs.FeedEntity, 0, 512)
+	for _, key := range keys {
+		observed, ok := observedDepartures(daily[key.subRouteUID], key.direction)
+		if !ok {
+			// No daily timetable for this subroute direction. In Taipei, New
+			// Taipei, Tainan, Kinmen and Lienchiang TDX serves none at all, so
+			// absence carries no information anywhere and can never mean
+			// withdrawn.
+			stats.routesNoDaily++
+			continue
+		}
+		scheduled := make(map[int][]string, len(active[key]))
+		for _, trip := range active[key] {
+			scheduled[trip.departure] = append(scheduled[trip.departure], trip.tripID)
+		}
+		if !gtfsRTGatePasses(observed, scheduled) {
+			stats.routesGateFailed++
+			continue
+		}
+		departures := make([]int, 0, len(scheduled))
+		for departure := range scheduled {
+			departures = append(departures, departure)
+		}
+		sort.Ints(departures)
+		for _, departure := range departures {
+			if _, ran := observed[departure]; ran {
+				continue
+			}
+			for _, tripID := range scheduled[departure] {
+				entities = append(entities, cancelledTripEntity(tripID, serviceDate))
+				stats.cancellations++
+			}
+		}
+	}
+	return entities, stats
+}
+
+// gtfsRTGatePasses reports whether every observed departure is one the schedule
+// also states. One unexplained observation disqualifies the subroute.
+func gtfsRTGatePasses(observed map[int]struct{}, scheduled map[int][]string) bool {
+	for departure := range observed {
+		if _, known := scheduled[departure]; !known {
+			return false
+		}
+	}
+	return true
+}
+
+// observedDepartures reduces one direction's daily timetable to the set of
+// origin departures it lists. The second return distinguishes "TDX published no
+// timetable for this direction" from "it published one with no usable trip";
+// only the former is silence, the latter is an empty set that the gate will
+// judge on its own.
+func observedDepartures(timetable *models.Bus_DailyTimetables, direction int32) (map[int]struct{}, bool) {
+	if timetable == nil {
+		return nil, false
+	}
+	directions := timetable.GetDirection()
+	entry, ok := directions[direction]
+	if !ok || entry == nil {
+		return nil, false
+	}
+	observed := make(map[int]struct{}, len(entry.GetDailyTimetables()))
+	for _, trip := range entry.GetDailyTimetables() {
+		origin := originStopTime(trip)
+		if origin == nil {
+			continue
+		}
+		clock := origin.GetDepartureTime()
+		if strings.TrimSpace(clock) == "" {
+			clock = origin.GetArrivalTime()
+		}
+		minutes, parsed := parseGTFSRTClockTime(clock)
+		if !parsed {
+			// An unreadable departure cannot be matched, so it will fail the gate
+			// and silence the subroute. That is the intended outcome: we cannot
+			// tell which scheduled trip it accounts for.
+			observed[-1] = struct{}{}
+			continue
+		}
+		observed[minutes] = struct{}{}
+	}
+	return observed, true
+}
+
+// originStopTime returns the call with the lowest stop sequence, which is the
+// departure the trip_id was built from. The stored order is not relied on.
+func originStopTime(trip *models.Bus_DailyTimetable) *models.Bus_StopTime {
+	var origin *models.Bus_StopTime
+	for _, stop := range trip.GetStopTimes() {
+		if origin == nil || stop.GetStopSequence() < origin.GetStopSequence() {
+			origin = stop
+		}
+	}
+	return origin
+}
+
+// cancelledTripEntity states that one trip does not run today. No stop time
+// updates: the trip is gone, not rescheduled.
+func cancelledTripEntity(tripID, serviceDate string) *gtfs.FeedEntity {
+	return &gtfs.FeedEntity{
+		Id: proto.String(tripID),
+		TripUpdate: &gtfs.TripUpdate{
+			Trip: &gtfs.TripDescriptor{
+				TripId:               proto.String(tripID),
+				StartDate:            proto.String(serviceDate),
+				ScheduleRelationship: gtfs.TripDescriptor_CANCELED.Enum(),
+			},
+		},
+	}
+}
+
+// marshalGTFSRTFeed wraps the entities in a full-dataset header. Every rebuild
+// replaces the whole feed; there is no incremental mode to get wrong.
+func marshalGTFSRTFeed(entities []*gtfs.FeedEntity, now time.Time) ([]byte, error) {
+	feed := &gtfs.FeedMessage{
+		Header: &gtfs.FeedHeader{
+			GtfsRealtimeVersion: proto.String("2.0"),
+			Incrementality:      gtfs.FeedHeader_FULL_DATASET.Enum(),
+			Timestamp:           proto.Uint64(uint64(now.Unix())),
+		},
+		Entity: entities,
+	}
+	payload, err := proto.Marshal(feed)
+	if err != nil {
+		return nil, fmt.Errorf("gtfs-rt: marshal feed: %w", err)
+	}
+	return payload, nil
+}
+
+// readDailyTimetables fetches the daily timetables for the subroutes running
+// today. A missing key is not an error — it is the ordinary state for the five
+// cities TDX publishes no daily timetable for — so it is simply absent from the
+// returned map.
+func (b *gtfsRTBuilder) readDailyTimetables(ctx context.Context, subRouteUIDs []string) (map[string]*models.Bus_DailyTimetables, error) {
+	client := b.rc
+	out := make(map[string]*models.Bus_DailyTimetables, len(subRouteUIDs))
+	for start := 0; start < len(subRouteUIDs); start += gtfsRTMGetBatch {
+		end := min(start+gtfsRTMGetBatch, len(subRouteUIDs))
+		batch := subRouteUIDs[start:end]
+		keys := make([]string, len(batch))
+		for index, uid := range batch {
+			keys[index] = shared.BusDailyTimetableKey(uid)
+		}
+		values, err := client.MGet(ctx, keys...).Result()
+		if err != nil {
+			return nil, fmt.Errorf("gtfs-rt: read daily timetables: %w", err)
+		}
+		for index, value := range values {
+			text, ok := value.(string)
+			if !ok || text == "" {
+				continue
+			}
+			timetable := &models.Bus_DailyTimetables{}
+			if err := proto.Unmarshal([]byte(text), timetable); err != nil {
+				// A corrupt payload is dropped rather than failing the tick: it
+				// silences one subroute, which is the same outcome as a missing
+				// key and is already the designed degradation.
+				log.Warnf("[GTFS_RT] action=daily event=decode_failed subroute=%s error=%v", batch[index], err)
+				continue
+			}
+			out[batch[index]] = timetable
+		}
+	}
+	return out, nil
+}

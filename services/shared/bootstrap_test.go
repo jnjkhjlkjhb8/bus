@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/redis/go-redis/v9"
 )
 
 // TestConnectRedis_WithPassword dials a real Redis started with --requirepass
@@ -29,7 +29,7 @@ func TestConnectRedis_WithPassword(t *testing.T) {
 	var pong string
 	var err error
 	for {
-		pong, err = client.Ping().Result()
+		pong, err = client.Ping(t.Context()).Result()
 		if err == nil || time.Now().After(deadline) {
 			break
 		}
@@ -47,7 +47,7 @@ func TestConnectRedis_WithPassword(t *testing.T) {
 	// unauthenticated Redis by accident.
 	wrong := redis.NewClient(&redis.Options{Addr: addr, Password: "definitely-not-the-password"})
 	t.Cleanup(func() { _ = wrong.Close() })
-	if _, err := wrong.Ping().Result(); err == nil {
+	if _, err := wrong.Ping(t.Context()).Result(); err == nil {
 		t.Fatal("PING with wrong password unexpectedly succeeded")
 	}
 }

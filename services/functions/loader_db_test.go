@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -65,7 +65,7 @@ func TestRawTDXSourceStripsBookkeeping(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`[{"RouteUID":"ZZR1","RouteName":{"Zh_tw":"測"},"VersionID":7}]`)
-	if err := dumpRawTDX(ctx, "bus_route", "city", city, "TEST-ROUTE", "test-cycle-route", body); err != nil {
+	if err := dumpRawTDX(ctx, rawTarget{table: "bus_route", partCol: "city", partVal: city}, "TEST-ROUTE", "test-cycle-route", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestRawTDXSourceTHSRTraindateNormalized(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`[{"TrainDate":"2026-07-04","DailyTrainInfo":{"TrainNo":"0101"},"StopTimes":[],"VersionID":1}]`)
-	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-THSR", "test-cycle-thsr", body); err != nil {
+	if err := dumpRawTDX(ctx, rawTarget{table: "thsr_dailytimetable", partCol: "traindate", partVal: date}, "TEST-THSR", "test-cycle-thsr", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 
@@ -196,7 +196,7 @@ func TestRunLoadThroughRawTDXSource(t *testing.T) {
 	defer sinkCleanup()
 
 	body := []byte(`[{"StationID":"ZZ_LOAD_STATION","StationName":{"Zh_tw":"測站"},"LocationCityCode":"TPE","StationPosition":{"PositionLon":121.5,"PositionLat":25.0},"StationCode":"Z1"}]`)
-	if err := dumpRawTDX(ctx, "tra_station", "", "", "TEST-TRA", "test-cycle-tra", body); err != nil {
+	if err := dumpRawTDX(ctx, rawTarget{table: "tra_station", partCol: "", partVal: ""}, "TEST-TRA", "test-cycle-tra", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 	defer func() {
@@ -323,7 +323,7 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 	// datasets loadBus reads but this fixture does not exercise.
 	const landingCycle = "test-cycle-bus-city"
 	land := func(table, body string) {
-		if err := dumpRawTDX(ctx, table, "city", city, "TEST-BUS", landingCycle, []byte(body)); err != nil {
+		if err := dumpRawTDX(ctx, rawTarget{table: table, partCol: "city", partVal: city}, "TEST-BUS", landingCycle, []byte(body)); err != nil {
 			t.Fatalf("land %s: %v", table, err)
 		}
 	}
@@ -409,7 +409,7 @@ func TestVerifyAndTouchRawLandingRefreshesState(t *testing.T) {
 	defer cleanup()
 
 	body := []byte(`[{"TrainDate":"2020-01-02","DailyTrainInfo":{"TrainNo":"0101"},"StopTimes":[],"VersionID":1}]`)
-	if err := dumpRawTDX(ctx, "thsr_dailytimetable", "traindate", date, "TEST-304", "test-cycle-304-full", body); err != nil {
+	if err := dumpRawTDX(ctx, rawTarget{table: "thsr_dailytimetable", partCol: "traindate", partVal: date}, "TEST-304", "test-cycle-304-full", body); err != nil {
 		t.Fatalf("land: %v", err)
 	}
 	// Backdate the landing past the 27h freshness window, as if every ingest run
@@ -427,7 +427,7 @@ func TestVerifyAndTouchRawLandingRefreshesState(t *testing.T) {
 		t.Fatalf("backdated partition not stale (fetched_at=%s); test premise broken", fetchedAt)
 	}
 
-	if err := verifyAndTouchRawLanding(ctx, "thsr_dailytimetable", "traindate", date, "TEST-304", "test-cycle-304-touch"); err != nil {
+	if err := verifyAndTouchRawLanding(ctx, rawTarget{table: "thsr_dailytimetable", partCol: "traindate", partVal: date}, "TEST-304", "test-cycle-304-touch"); err != nil {
 		t.Fatalf("verifyAndTouchRawLanding: %v", err)
 	}
 

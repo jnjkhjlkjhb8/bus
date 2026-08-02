@@ -92,7 +92,7 @@ func TestGetIntoHonorsCanceledContext(t *testing.T) {
 
 func newMemTDXStore() *memTDXStore { return &memTDXStore{data: map[string]string{}} }
 
-func (m *memTDXStore) Get(key string) (string, error) {
+func (m *memTDXStore) Get(_ context.Context, key string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.getErr[key]; err != nil {
@@ -101,7 +101,7 @@ func (m *memTDXStore) Get(key string) (string, error) {
 	return m.data[key], nil
 }
 
-func (m *memTDXStore) Set(key, value string, _ time.Duration) error {
+func (m *memTDXStore) Set(_ context.Context, key, value string, _ time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.setErr != nil {
@@ -111,7 +111,7 @@ func (m *memTDXStore) Set(key, value string, _ time.Duration) error {
 	return nil
 }
 
-func (m *memTDXStore) Del(keys ...string) error {
+func (m *memTDXStore) Del(_ context.Context, keys ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dels = append(m.dels, keys)

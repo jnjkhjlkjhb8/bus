@@ -4,28 +4,29 @@ import (
 	"context"
 	"errors"
 
-	"github.com/go-redis/redis"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"github.com/redis/go-redis/v9"
 )
 
-// liveSource is the seam between live-stream handlers and Redis. Two adapters
+// LiveSource is the seam between live-stream handlers and Redis. Two adapters
 // satisfy it: redisLiveSource in production and fakeLiveSource in tests.
-type liveSource interface {
+type LiveSource interface {
 	// get returns the current payload for key; ok=false when the key is
 	// missing or the read failed.
-	get(key string) ([]byte, bool)
+	get(ctx context.Context, key string) ([]byte, bool)
 	// scanKeys returns every key matching pattern; best-effort, a failed
 	// scan returns what was collected so far.
-	scanKeys(pattern string) []string
+	scanKeys(ctx context.Context, pattern string) []string
 	// subscribe returns a channel of live payloads for channel and a close
 	// func the caller must invoke. A closed payload channel means the
-	// subscription died.
-	subscribe(channel string) (<-chan []byte, func(), error)
+	// subscription died. ctx covers establishing the subscription only: the
+	// returned channel outlives it and is torn down through the close func.
+	subscribe(ctx context.Context, channel string) (<-chan []byte, func(), error)
 }
 
-// liveStreamSpec describes one gRPC live stream: which channel to follow,
+// LiveStreamSpec describes one gRPC live stream: which channel to follow,
 // which keys seed a new subscriber, and which payloads are worth sending.
-type liveStreamSpec struct {
+type LiveStreamSpec struct {
 	channel  string
 	seedKeys []string
 	seedScan string            // optional SCAN pattern; matches seed in key order returned
@@ -42,17 +43,17 @@ type liveSourceCloseCause interface {
 	subscriptionCloseCause(ch <-chan []byte) error
 }
 
-// streamLive runs a live stream to completion: subscribe first (so nothing
+// StreamLive runs a live stream to completion: subscribe first (so nothing
 // published during seeding is lost), seed from current values, then forward
 // updates until ctx is done, send fails, or the subscription closes.
 // Payloads failing usable are skipped everywhere, seed and live alike.
-func streamLive(ctx context.Context, src liveSource, spec liveStreamSpec, send func([]byte) error) error {
+func StreamLive(ctx context.Context, src LiveSource, spec LiveStreamSpec, send func([]byte) error) error {
 	usable := spec.usable
 	if usable == nil {
 		usable = func(b []byte) bool { return len(b) > 0 }
 	}
 
-	ch, closeSub, err := src.subscribe(spec.channel)
+	ch, closeSub, err := src.subscribe(ctx, spec.channel)
 	if err != nil {
 		return err
 	}
@@ -64,10 +65,10 @@ func streamLive(ctx context.Context, src liveSource, spec liveStreamSpec, send f
 
 	keys := spec.seedKeys
 	if spec.seedScan != "" {
-		keys = append(keys, src.scanKeys(spec.seedScan)...)
+		keys = append(keys, src.scanKeys(ctx, spec.seedScan)...)
 	}
 	for _, k := range keys {
-		val, ok := src.get(k)
+		val, ok := src.get(ctx, k)
 		if !ok || !usable(val) {
 			continue
 		}
@@ -100,13 +101,13 @@ func streamLive(ctx context.Context, src liveSource, spec liveStreamSpec, send f
 	}
 }
 
-// redisLiveSource adapts *redis.Client to the liveSource seam.
-type redisLiveSource struct {
+// RedisLiveSource adapts *redis.Client to the liveSource seam.
+type RedisLiveSource struct {
 	rc *redis.Client
 }
 
-func (r redisLiveSource) get(key string) ([]byte, bool) {
-	val, err := r.rc.Get(key).Bytes()
+func (r RedisLiveSource) get(ctx context.Context, key string) ([]byte, bool) {
+	val, err := r.rc.Get(ctx, key).Bytes()
 	if err != nil {
 		// redis.Nil means the key is simply absent -- expected traffic, not a
 		// Redis health signal -- so only a real failure counts here.
@@ -118,11 +119,11 @@ func (r redisLiveSource) get(key string) ([]byte, bool) {
 	return val, true
 }
 
-func (r redisLiveSource) scanKeys(pattern string) []string {
+func (r RedisLiveSource) scanKeys(ctx context.Context, pattern string) []string {
 	var out []string
 	var cursor uint64
 	for {
-		keys, next, err := r.rc.Scan(cursor, pattern, 20).Result()
+		keys, next, err := r.rc.Scan(ctx, cursor, pattern, 20).Result()
 		if err != nil {
 			obs.IncRedisError()
 			return out
@@ -135,8 +136,8 @@ func (r redisLiveSource) scanKeys(pattern string) []string {
 	}
 }
 
-func (r redisLiveSource) subscribe(channel string) (<-chan []byte, func(), error) {
-	sub := r.rc.Subscribe(channel)
+func (r RedisLiveSource) subscribe(ctx context.Context, channel string) (<-chan []byte, func(), error) {
+	sub := r.rc.Subscribe(ctx, channel)
 	out := make(chan []byte)
 	done := make(chan struct{})
 	go func() {

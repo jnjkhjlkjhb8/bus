@@ -410,31 +410,75 @@ class _CongestionCar extends StatelessWidget {
   }
 }
 
-/// The 下車提醒 bell for this train. The bell itself is [AlightTrackBell],
-/// shared with bus and rail; this only wires it to the metro session.
-class _MetroAlightBell extends StatelessWidget {
+/// The 下車提醒 bell for this train (ADR-0015).
+///
+/// Idle opens pick-mode and puts the rider on the line map, because that is
+/// where a 下車站 is chosen — on the map screen the sheet simply steps aside,
+/// and from search or the home card this navigates there first, so there is
+/// only ever one way to pick a metro station.
+///
+/// Armed opens the manage card in place rather than cancelling on the tap: a
+/// session takes several taps to build and then rides in a pocket.
+class _MetroAlightBell extends StatefulWidget {
   const _MetroAlightBell({required this.arrival});
 
   final MetroArrival arrival;
 
   @override
+  State<_MetroAlightBell> createState() => _MetroAlightBellState();
+}
+
+class _MetroAlightBellState extends State<_MetroAlightBell> {
+  bool _managing = false;
+
+  void _startPick() {
+    final track = context.read<MrtTrackBloc>();
+    track.add(MrtAlightPickStarted(widget.arrival));
+    // Already on the map: the pick state alone is enough, and navigating would
+    // throw away the rider's current pan and zoom.
+    if (context.findAncestorWidgetOfExactType<MetroScreen>() != null) return;
+    context.go(AppRoutes.metro, extra: widget.arrival.stationId);
+  }
+
+  @override
   Widget build(BuildContext context) {
     return BlocBuilder<MrtTrackBloc, MrtTrackBlocState>(
-      buildWhen: (p, n) => p.tracks(arrival) != n.tracks(arrival),
+      buildWhen: (p, n) =>
+          p.tracks(widget.arrival) != n.tracks(widget.arrival) ||
+          p.session != n.session,
       builder: (context, state) {
-        final active = state.tracks(arrival);
-        return AlightTrackBell(
-          active: active,
-          semanticLabel: active
-              ? AppI18n.of(context).metroAlightReminderCancel
-              : AppI18n.of(context).metroAlightReminderSet,
-          onTap: () {
-            if (active) {
-              context.read<MrtTrackBloc>().add(const MrtTrackCancelled());
-            } else {
-              unawaited(MrtAlightSetupSheet.show(context, arrival));
-            }
-          },
+        final active = state.tracks(widget.arrival);
+        final session = state.session;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AlightTrackBell(
+              active: active,
+              semanticLabel: active
+                  ? AppI18n.of(context).alightReminderArmed
+                  : AppI18n.of(context).alightReminderSet,
+              onTap: () {
+                if (active) {
+                  setState(() => _managing = !_managing);
+                } else {
+                  _startPick();
+                }
+              },
+            ),
+            if (active && _managing && session != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: AlightManageBar(
+                  targetName: session.targetStationName,
+                  lead: session.leadStops,
+                  onClose: () => setState(() => _managing = false),
+                  onCancel: () {
+                    context.read<MrtTrackBloc>().add(const MrtTrackCancelled());
+                    setState(() => _managing = false);
+                  },
+                ),
+              ),
+          ],
         );
       },
     );
@@ -778,10 +822,7 @@ class _ScheduleTime extends StatelessWidget {
       child: Text(
         time,
         textAlign: TextAlign.right,
-        style: AppTextStyles.memo.copyWith(
-          color: color,
-          fontFeatures: AppTextStyles.tabularFigures,
-        ),
+        style: AppTextStyles.timeValue(color: color),
       ),
     );
   }

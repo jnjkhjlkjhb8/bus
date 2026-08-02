@@ -16,6 +16,10 @@ const (
 	defaultNearbyRadius = 670
 	maxNearbyRadius     = 5000
 	defaultNearbyLimit  = 80
+	// Radii are snapped up to this many metres so viewport-derived values share
+	// cache entries; maxNearbyRadius is a multiple of it, so snapping can never
+	// push a valid radius past the maximum.
+	nearbyRadiusBucket = 100
 )
 
 const (
@@ -33,35 +37,35 @@ var (
 	ErrNearbyUnavailable  = errors.New("nearby discovery unavailable")
 )
 
-type geoPoint struct {
+type GeoPoint struct {
 	Lon float64
 	Lat float64
 }
 
-type nearbyMode int32
+type NearbyMode int32
 
 const (
-	nearbyBus nearbyMode = iota + 1
+	NearbyBus NearbyMode = iota + 1
 	nearbyBike
 	nearbyMRT
 	nearbyTRA
 	nearbyTHSR
 )
 
-var allNearbyModes = [...]nearbyMode{nearbyBus, nearbyBike, nearbyMRT, nearbyTRA, nearbyTHSR}
+var AllNearbyModes = [...]NearbyMode{NearbyBus, nearbyBike, nearbyMRT, nearbyTRA, nearbyTHSR}
 
-type nearbyQuery struct {
-	Origin       geoPoint
+type NearbyQuery struct {
+	Origin       GeoPoint
 	RadiusMeters int
 	Limit        int
 }
 
-type nearbyCandidate struct {
-	Mode           nearbyMode
+type NearbyCandidate struct {
+	Mode           NearbyMode
 	ID             string
 	Name           string
 	City           string
-	Point          geoPoint
+	Point          GeoPoint
 	GeodesicMeters float64
 }
 
@@ -71,40 +75,40 @@ type walkingMetric struct {
 }
 
 type nearbyStore interface {
-	Find(context.Context, nearbyMode, nearbyQuery) ([]nearbyCandidate, error)
+	Find(context.Context, NearbyMode, NearbyQuery) ([]NearbyCandidate, error)
 }
 
 type walkingRouter interface {
-	RouteMany(context.Context, geoPoint, []geoPoint) ([]walkingMetric, error)
+	RouteMany(context.Context, GeoPoint, []GeoPoint) ([]walkingMetric, error)
 }
 
-type nearbyDiscovery struct {
+type NearbyDiscovery struct {
 	store  nearbyStore
 	router walkingRouter
 
 	cacheMu    sync.Mutex
-	cache      *ttlCache
+	cache      *TTLCache
 	cacheCount int
 }
 
-func newNearbyDiscovery(store nearbyStore, router walkingRouter) *nearbyDiscovery {
-	return &nearbyDiscovery{store: store, router: router, cache: newTTLCache()}
+func NewNearbyDiscovery(store nearbyStore, router walkingRouter) *NearbyDiscovery {
+	return &NearbyDiscovery{store: store, router: router, cache: NewTTLCache()}
 }
 
 type nearbyModeResult struct {
-	mode       nearbyMode
-	candidates []nearbyCandidate
+	mode       NearbyMode
+	candidates []NearbyCandidate
 	queryError error
 }
 
 // nearbyCacheKey rounds the origin to ~11 m, well inside GPS accuracy, so a
 // re-query from the same spot reuses the previous walking-time computation.
-func nearbyCacheKey(query nearbyQuery) string {
+func nearbyCacheKey(query NearbyQuery) string {
 	return fmt.Sprintf("near:%.4f:%.4f:%d:%d",
 		query.Origin.Lat, query.Origin.Lon, query.RadiusMeters, query.Limit)
 }
 
-func (d *nearbyDiscovery) cachedResponse(key string) (*pb.RespNear, bool) {
+func (d *NearbyDiscovery) cachedResponse(key string) (*pb.RespNear, bool) {
 	d.cacheMu.Lock()
 	cache := d.cache
 	d.cacheMu.Unlock()
@@ -124,7 +128,7 @@ func (d *nearbyDiscovery) cachedResponse(key string) (*pb.RespNear, bool) {
 
 // on overflow the whole map is dropped rather than evicted per key. Swap
 // in an LRU only if the hit rate after a drop turns out to matter.
-func (d *nearbyDiscovery) cacheResponse(key string, response *pb.RespNear) {
+func (d *NearbyDiscovery) cacheResponse(key string, response *pb.RespNear) {
 	data, err := proto.Marshal(response)
 	if err != nil {
 		return
@@ -135,7 +139,7 @@ func (d *nearbyDiscovery) cacheResponse(key string, response *pb.RespNear) {
 		return
 	}
 	if d.cacheCount >= nearbyCacheMaxEntries {
-		d.cache, d.cacheCount = newTTLCache(), 0
+		d.cache, d.cacheCount = NewTTLCache(), 0
 	}
 	d.cacheCount++
 	d.cache.set(key, data, nearbyCacheTTL)
@@ -153,28 +157,35 @@ func receiveNearbyModeResult(ctx context.Context, results <-chan nearbyModeResul
 	}
 }
 
-func validateNearbyQuery(query nearbyQuery) (nearbyQuery, error) {
+func validateNearbyQuery(query NearbyQuery) (NearbyQuery, error) {
 	if math.IsNaN(query.Origin.Lon) || math.IsInf(query.Origin.Lon, 0) ||
 		query.Origin.Lon < -180 || query.Origin.Lon > 180 {
-		return nearbyQuery{}, fmt.Errorf("%w: longitude must be finite and between -180 and 180", ErrInvalidNearbyQuery)
+		return NearbyQuery{}, fmt.Errorf("%w: longitude must be finite and between -180 and 180", ErrInvalidNearbyQuery)
 	}
 	if math.IsNaN(query.Origin.Lat) || math.IsInf(query.Origin.Lat, 0) ||
 		query.Origin.Lat < -90 || query.Origin.Lat > 90 {
-		return nearbyQuery{}, fmt.Errorf("%w: latitude must be finite and between -90 and 90", ErrInvalidNearbyQuery)
+		return NearbyQuery{}, fmt.Errorf("%w: latitude must be finite and between -90 and 90", ErrInvalidNearbyQuery)
 	}
 	if query.RadiusMeters == 0 {
 		query.RadiusMeters = defaultNearbyRadius
 	}
 	if query.RadiusMeters < 0 || query.RadiusMeters > maxNearbyRadius {
-		return nearbyQuery{}, fmt.Errorf("%w: radius must be zero or between 1 and %d metres", ErrInvalidNearbyQuery, maxNearbyRadius)
+		return NearbyQuery{}, fmt.Errorf("%w: radius must be zero or between 1 and %d metres", ErrInvalidNearbyQuery, maxNearbyRadius)
 	}
 	if query.Limit <= 0 {
 		query.Limit = defaultNearbyLimit
 	}
+	// The cache key carries the radius, and the client derives its radius from
+	// the exact viewport (screen size × zoom), so an unrounded value mints a
+	// fresh key on nearly every cold start. Snapping up to the next 100 m
+	// collapses those into one entry and only ever widens the search, so the
+	// answer stays a superset of what was asked for.
+	query.RadiusMeters = (query.RadiusMeters + nearbyRadiusBucket - 1) /
+		nearbyRadiusBucket * nearbyRadiusBucket
 	return query, nil
 }
 
-func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.RespNear, error) {
+func (d *NearbyDiscovery) Discover(ctx context.Context, query NearbyQuery) (*pb.RespNear, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -207,12 +218,12 @@ func (d *nearbyDiscovery) Discover(ctx context.Context, query nearbyQuery) (*pb.
 
 // findAll queries every mode concurrently and fails the whole request as soon
 // as any single mode errors, so a partial nearby list never reaches the client.
-func (d *nearbyDiscovery) findAll(ctx context.Context, query nearbyQuery) (map[nearbyMode][]nearbyCandidate, error) {
+func (d *NearbyDiscovery) findAll(ctx context.Context, query NearbyQuery) (map[NearbyMode][]NearbyCandidate, error) {
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	results := make(chan nearbyModeResult, len(allNearbyModes))
-	for _, mode := range allNearbyModes {
+	results := make(chan nearbyModeResult, len(AllNearbyModes))
+	for _, mode := range AllNearbyModes {
 		go func() {
 			candidates, err := d.store.Find(workerCtx, mode, query)
 			select {
@@ -222,8 +233,8 @@ func (d *nearbyDiscovery) findAll(ctx context.Context, query nearbyQuery) (map[n
 		}()
 	}
 
-	byMode := make(map[nearbyMode][]nearbyCandidate, len(allNearbyModes))
-	for range allNearbyModes {
+	byMode := make(map[NearbyMode][]NearbyCandidate, len(AllNearbyModes))
+	for range AllNearbyModes {
 		result, err := receiveNearbyModeResult(ctx, results)
 		if err != nil {
 			return nil, err
@@ -245,9 +256,9 @@ func (d *nearbyDiscovery) findAll(ctx context.Context, query nearbyQuery) (map[n
 // mode's candidates. One request per nearby query instead of one per mode: the
 // table service reuses the shared origin search, and the single-core osrm
 // container no longer has five of them contending for it.
-func (d *nearbyDiscovery) enrich(ctx context.Context, origin geoPoint, byMode map[nearbyMode][]nearbyCandidate) (*pb.RespNear, error) {
-	points := make([]geoPoint, 0, len(byMode)*defaultNearbyLimit)
-	for _, mode := range allNearbyModes {
+func (d *NearbyDiscovery) enrich(ctx context.Context, origin GeoPoint, byMode map[NearbyMode][]NearbyCandidate) (*pb.RespNear, error) {
+	points := make([]GeoPoint, 0, len(byMode)*defaultNearbyLimit)
+	for _, mode := range AllNearbyModes {
 		for _, item := range byMode[mode] {
 			points = append(points, item.Point)
 		}
@@ -268,7 +279,7 @@ func (d *nearbyDiscovery) enrich(ctx context.Context, origin geoPoint, byMode ma
 
 	response := &pb.RespNear{NearBusStations: make(map[string]*pb.ArrayNear)}
 	offset := 0
-	for _, mode := range allNearbyModes {
+	for _, mode := range AllNearbyModes {
 		candidates := byMode[mode]
 		if len(candidates) == 0 {
 			continue
@@ -281,7 +292,7 @@ func (d *nearbyDiscovery) enrich(ctx context.Context, origin geoPoint, byMode ma
 
 // nearbyStations pairs candidates with the leading window of metrics; a short
 // or absent window falls back to the geodesic estimate at 80 m per minute.
-func nearbyStations(candidates []nearbyCandidate, metrics []walkingMetric) []*pb.NearStation {
+func nearbyStations(candidates []NearbyCandidate, metrics []walkingMetric) []*pb.NearStation {
 	stations := make([]*pb.NearStation, 0, len(candidates))
 	for i, item := range candidates {
 		walk := int32(item.GeodesicMeters / 80)
@@ -303,9 +314,9 @@ func nearbyStations(candidates []nearbyCandidate, metrics []walkingMetric) []*pb
 	return stations
 }
 
-func appendNearbyResult(response *pb.RespNear, mode nearbyMode, stations []*pb.NearStation) {
+func appendNearbyResult(response *pb.RespNear, mode NearbyMode, stations []*pb.NearStation) {
 	switch mode {
-	case nearbyBus:
+	case NearbyBus:
 		for _, station := range stations {
 			response.NearBusStations[station.StationID] = &pb.ArrayNear{NearStations: []*pb.NearStation{station}}
 		}

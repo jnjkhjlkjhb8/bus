@@ -108,7 +108,7 @@ made by claude
 
 ## 8. Pipeline freshness（loader / changetovector / marker lag）
 
-- **定義**：nightly ingest → load → changetovector → computeTravelAvg 這條
+- **定義**：nightly ingest → load → changetovector → computeSegmentTimes 這條
   管線多久內對下游可用。
 - **測量來源**：
   - Pipeline marker lag：`services/functions/pipeline_marker.go` 的

@@ -245,12 +245,11 @@ class _NavHeader extends StatelessWidget {
           ),
         ],
       ),
-      style: AppTextStyles.memo.copyWith(
-        fontSize: 26,
-        fontWeight: FontWeight.w700,
+      style: AppTextStyles.timeValue(
+        size: 26,
+        weight: FontWeight.w700,
         height: 1.15,
         color: cs.onSurface,
-        fontFeatures: AppTextStyles.tabularFigures,
       ),
     );
   }
@@ -349,12 +348,11 @@ class _NavHeader extends StatelessWidget {
           children: [
             Text(
               value,
-              style: AppTextStyles.memo.copyWith(
-                fontSize: big ? 28 : 24,
-                fontWeight: FontWeight.w700,
+              style: AppTextStyles.timeValue(
+                size: big ? 28 : 24,
+                weight: FontWeight.w700,
                 height: 1.1,
                 color: cs.onSurface,
-                fontFeatures: AppTextStyles.tabularFigures,
               ),
             ),
             Text(
@@ -691,9 +689,7 @@ class _DueCue extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: cs.brightness == Brightness.light
-            ? AppTheme.surfaceHighlightLight
-            : AppTheme.surfaceHighlightDark,
+        color: AppTheme.surfaceHighlight(cs.brightness),
         borderRadius: BorderRadius.circular(AppTheme.radiusButton),
       ),
       child: Row(
@@ -819,11 +815,10 @@ class _NavSheetHeader extends StatelessWidget {
                     ),
                     Text(
                       arrival,
-                      style: AppTextStyles.memo.copyWith(
-                        fontSize: AppTextStyles.bodyVerySmall.fontSize,
+                      style: AppTextStyles.timeValue(
+                        size: AppTextStyles.bodyVerySmall.fontSize,
                         color: cs.onSurface,
-                        fontWeight: FontWeight.w600,
-                        fontFeatures: AppTextStyles.tabularFigures,
+                        weight: FontWeight.w600,
                       ),
                     ),
                   ],

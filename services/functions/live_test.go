@@ -12,10 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
-	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -115,8 +114,7 @@ type captureLiveSink struct {
 	contexts   []context.Context
 }
 
-func (s *captureLiveSink) pipelineContext(ctx context.Context) livePipe {
-	s.contexts = append(s.contexts, ctx)
+func (s *captureLiveSink) pipeline() livePipe {
 	return &capturePipe{sink: s}
 }
 
@@ -198,7 +196,10 @@ func (p *capturePipe) ReplaceOwnedKeys(key string, members []string, _ time.Dura
 	p.pendingOwnedMembers = append([]string(nil), members...)
 }
 
-func (p *capturePipe) Exec() error {
+func (p *capturePipe) Exec(ctx context.Context) error {
+	// Recorded here rather than at pipeline construction: Exec is the call that
+	// carries the context to Redis, so this is what the job must be propagating.
+	p.sink.contexts = append(p.sink.contexts, ctx)
 	if p.sink.execHook != nil {
 		if err := p.sink.execHook(); err != nil {
 			return err
@@ -1150,28 +1151,28 @@ func TestRedisOwnedTTLIntegration(t *testing.T) {
 	}
 	rc := redis.NewClient(&redis.Options{Addr: addr})
 	defer rc.Close()
-	if err := rc.FlushDB().Err(); err != nil {
+	if err := rc.FlushDB(context.Background()).Err(); err != nil {
 		t.Fatalf("flush Redis: %v", err)
 	}
-	t.Cleanup(func() { _ = rc.FlushDB().Err() })
+	t.Cleanup(func() { _ = rc.FlushDB(context.Background()).Err() })
 	owner := shared.LiveOwnedKeysKey("bike", "Taipei")
 	owned := shared.BikeAvailabilityKey("TPE-OWNED")
 	unowned := shared.BikeAvailabilityKey("NWT-UNOWNED")
-	pipe := redisLiveSink{rc: rc}.pipelineContext(context.Background())
+	pipe := redisLiveSink{rc: rc}.pipeline()
 	pipe.Set(owned, "owned", 5*time.Second)
 	pipe.Set(unowned, "unowned", 5*time.Second)
 	pipe.ReplaceOwnedKeys(owner, []string{owned}, ownedKeysTTL)
-	if err := pipe.Exec(); err != nil {
+	if err := pipe.Exec(context.Background()); err != nil {
 		t.Fatalf("seed ownership: %v", err)
 	}
 	if err := (redisLiveSink{rc: rc}).refreshOwnedTTL(context.Background(), owner, bikeLiveTTL); err != nil {
 		t.Fatalf("refresh owned TTL: %v", err)
 	}
-	ownedTTL, err := rc.PTTL(owned).Result()
+	ownedTTL, err := rc.PTTL(context.Background(), owned).Result()
 	if err != nil || ownedTTL < time.Minute {
 		t.Fatalf("owned TTL = %v, err=%v, want refreshed", ownedTTL, err)
 	}
-	unownedTTL, err := rc.PTTL(unowned).Result()
+	unownedTTL, err := rc.PTTL(context.Background(), unowned).Result()
 	if err != nil || unownedTTL <= 0 || unownedTTL >= 30*time.Second {
 		t.Fatalf("unowned TTL = %v, err=%v, want original short TTL", unownedTTL, err)
 	}
@@ -1217,16 +1218,16 @@ func TestRedisMissingOwnedMemberRetriesInvalidationThenReplacesOwner(t *testing.
 	}
 	rc := redis.NewClient(&redis.Options{Addr: addr})
 	defer rc.Close()
-	if err := rc.FlushDB().Err(); err != nil {
+	if err := rc.FlushDB(context.Background()).Err(); err != nil {
 		t.Fatalf("flush Redis: %v", err)
 	}
-	t.Cleanup(func() { _ = rc.FlushDB().Err() })
+	t.Cleanup(func() { _ = rc.FlushDB(context.Background()).Err() })
 	owner := shared.LiveOwnedKeysKey("bike", "Taipei")
 	missing := shared.BikeAvailabilityKey("EXPIRED")
-	if err := rc.SAdd(owner, missing).Err(); err != nil {
+	if err := rc.SAdd(context.Background(), owner, missing).Err(); err != nil {
 		t.Fatalf("seed stale owner: %v", err)
 	}
-	if err := rc.Expire(owner, 5*time.Minute).Err(); err != nil {
+	if err := rc.Expire(context.Background(), owner, 5*time.Minute).Err(); err != nil {
 		t.Fatalf("expire owner: %v", err)
 	}
 	invalidateErr := errors.New("invalidate marker failed")
@@ -1246,14 +1247,14 @@ func TestRedisMissingOwnedMemberRetriesInvalidationThenReplacesOwner(t *testing.
 		if !src.markerPresent {
 			t.Fatalf("attempt %d cleared marker despite failed invalidation", attempt)
 		}
-		if exists, err := rc.Exists(owner).Result(); err != nil || exists != 1 {
+		if exists, err := rc.Exists(context.Background(), owner).Result(); err != nil || exists != 1 {
 			t.Fatalf("attempt %d stale owner exists=%d err=%v, want retained for retry", attempt, exists, err)
 		}
 	}
 	if src.invalidationAttempts != 2 {
 		t.Fatalf("invalidation attempts = %d, want 2", src.invalidationAttempts)
 	}
-	ownerTTL, err := rc.PTTL(owner).Result()
+	ownerTTL, err := rc.PTTL(context.Background(), owner).Result()
 	if err != nil || ownerTTL <= 0 || ownerTTL >= 10*time.Minute {
 		t.Fatalf("stale owner TTL = %v err=%v, want retained without 24h renewal", ownerTTL, err)
 	}
@@ -1265,7 +1266,7 @@ func TestRedisMissingOwnedMemberRetriesInvalidationThenReplacesOwner(t *testing.
 	if src.markerPresent {
 		t.Fatal("successful invalidation left marker present")
 	}
-	if exists, err := rc.Exists(owner).Result(); err != nil || exists != 1 {
+	if exists, err := rc.Exists(context.Background(), owner).Result(); err != nil || exists != 1 {
 		t.Fatalf("stale owner after successful invalidation exists=%d err=%v, want retained until full write", exists, err)
 	}
 
@@ -1276,7 +1277,7 @@ func TestRedisMissingOwnedMemberRetriesInvalidationThenReplacesOwner(t *testing.
 		shared.BikeAvailabilityKey("TPE500101001"): true,
 		shared.BikeAvailabilityKey("TPE500101002"): true,
 	}
-	members, err := rc.SMembers(owner).Result()
+	members, err := rc.SMembers(context.Background(), owner).Result()
 	if err != nil {
 		t.Fatalf("read replacement owner: %v", err)
 	}
@@ -1297,10 +1298,10 @@ func TestRedisCanceledTHSRExecDoesNotAcknowledge(t *testing.T) {
 	}
 	rc := redis.NewClient(&redis.Options{Addr: addr})
 	defer rc.Close()
-	if err := rc.FlushDB().Err(); err != nil {
+	if err := rc.FlushDB(context.Background()).Err(); err != nil {
 		t.Fatalf("flush Redis: %v", err)
 	}
-	if err := rc.Do("CLIENT", "PAUSE", 250, "WRITE").Err(); err != nil {
+	if err := rc.Do(context.Background(), "CLIENT", "PAUSE", 250, "WRITE").Err(); err != nil {
 		t.Fatalf("pause Redis writes: %v", err)
 	}
 	src := &fakeLiveSource{fixtures: map[string][]byte{
@@ -1326,11 +1327,11 @@ func TestRedisCanceledTHSRExecDoesNotAcknowledge(t *testing.T) {
 	}
 	key := shared.ThsrSeatsKey(time.Now().In(taipei).Format(time.DateOnly), "0801")
 	const newer = "newer same-runner snapshot"
-	if err := rc.Set(key, newer, time.Minute).Err(); err != nil {
+	if err := rc.Set(context.Background(), key, newer, time.Minute).Err(); err != nil {
 		t.Fatalf("write newer snapshot after canceled call returned: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	got, err := rc.Get(key).Result()
+	got, err := rc.Get(context.Background(), key).Result()
 	if err != nil {
 		t.Fatalf("read final snapshot: %v", err)
 	}
@@ -1345,47 +1346,10 @@ func TestRedisLivePipelineRejectsUnboundedSocketWait(t *testing.T) {
 		ReadTimeout: -1,
 	})
 	defer rc.Close()
-	pipe := redisLiveSink{rc: rc}.pipelineContext(context.Background())
+	pipe := redisLiveSink{rc: rc}.pipeline()
 	pipe.Set("unreachable", "value", time.Minute)
-	if err := pipe.Exec(); err == nil || !strings.Contains(err.Error(), "finite Redis read timeout") {
+	if err := pipe.Exec(context.Background()); err == nil || !strings.Contains(err.Error(), "finite Redis read timeout") {
 		t.Fatalf("Exec error = %v, want finite-timeout guard", err)
-	}
-}
-
-func TestBusSpec304RefreshesCityTTL(t *testing.T) {
-	// The bus spec keeps its own precise per-city 304 refresh inside
-	// busLiveJob.runCity: an ETA 304 re-arms exactly that city's station and route
-	// key patterns with the 180s window. Driven directly (no db needed on the
-	// skip path) with an all-304 source, using a static-map cache seeded for one
-	// city so the fetch is reached.
-	src := &fakeLiveSource{fixtures: map[string][]byte{}}
-	sink := &captureLiveSink{}
-	// Seed the per-prefix static map so busLiveJob.runCity does not hit the store.
-	storeBusStaticMap(citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
-	t.Cleanup(func() { storeBusStaticMap(citymap["Taipei"], nil) })
-
-	fetch := bindFetch(src, sink, specByKey(t, "bus"))
-	job := busLiveJob{
-		fetch:    fetch,
-		sink:     sink,
-		store:    pgBusEtaStore{},
-		notifier: (*notify.Dispatcher)(nil),
-		now:      time.Now,
-	}
-	job.runCity(context.Background(), "Taipei")
-
-	if len(sink.refresh) != 1 {
-		t.Fatalf("refreshTTL calls = %d, want 1", len(sink.refresh))
-	}
-	got := sink.refresh[0]
-	want := busEtaTTLPatterns("Taipei")
-	if len(got) != len(want) {
-		t.Fatalf("refresh patterns = %+v, want %+v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("refresh pattern[%d] = %+v, want %+v", i, got[i], want[i])
-		}
 	}
 }
 

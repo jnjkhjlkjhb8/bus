@@ -119,10 +119,9 @@ class _StationMeta extends StatelessWidget {
             Text(
               '${at.hour.toString().padLeft(2, '0')}:'
               '${at.minute.toString().padLeft(2, '0')}',
-              style: AppTextStyles.memo.copyWith(
-                fontSize: 12,
+              style: AppTextStyles.timeValue(
+                size: 12,
                 color: cs.onSurfaceVariant,
-                fontFeatures: AppTextStyles.tabularFigures,
               ),
             ),
             Text(AppI18n.of(context).bikeUpdatedSuffix, style: label),

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:grpc/grpc.dart';
+import 'package:wheres_the_bus/core/grpc/grpc_compression_interceptor.dart';
 import 'package:wheres_the_bus/core/grpc/grpc_deadline_interceptor.dart';
 import 'package:wheres_the_bus/core/grpc/grpc_error_interceptor.dart';
 import 'package:wheres_the_bus/data/generated/alert.pbgrpc.dart';
@@ -65,9 +66,9 @@ class GrpcClient {
   ///
   /// A failure here (bad config, or the CA asset failing to load) must
   /// surface to the caller rather than be swallowed (F58): swallowing it
-  /// used to leave `_caBytes` null, so `ChannelCredentials.secure` silently
-  /// fell back to the system trust store instead of the pinned CA. The
-  /// `_channel` getter below now fails closed instead.
+  /// leaves `_caBytes` null, and `ChannelCredentials.secure` would then
+  /// silently fall back to the system trust store instead of the pinned CA.
+  /// The `_channel` getter below fails closed.
   static Future<void> init() async {
     validateConfig(appEnv: _appEnv, host: _host, tls: _tls);
     if (!_tls) {
@@ -131,11 +132,19 @@ class GrpcClient {
                 onBadCertificate: _pinnedCertOnly,
               )
             : const ChannelCredentials.insecure(),
+        // Advertises `grpc-accept-encoding: gzip,identity` and decodes gzipped
+        // responses. Identity stays listed so a router without the compressor
+        // registered still answers. [GrpcCompressionInterceptor] is the other
+        // half — see there for why advertising alone would do nothing.
+        codecRegistry: CodecRegistry(
+          codecs: const [GzipCodec(), IdentityCodec()],
+        ),
       ),
     );
   }();
 
   static final List<ClientInterceptor> _interceptors = [
+    GrpcCompressionInterceptor(),
     GrpcDeadlineInterceptor(),
     GrpcErrorInterceptor(),
   ];

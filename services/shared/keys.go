@@ -64,6 +64,16 @@ func BusDailyTimetableKey(subRouteUID string) string {
 	return "bus_daily_timetable:" + subRouteUID
 }
 
+// GTFSRealtimeKey returns the key holding the serialized GTFS-RT FeedMessage.
+// services/functions rebuilds it on a cron; services/router reads it and returns
+// the bytes verbatim. It carries a TTL longer than the rebuild period on
+// purpose: if the builder stops, the key expires and the endpoint serves 503,
+// so a planner falls back to the static timetable instead of a snapshot that is
+// silently hours old (ADR-0019).
+func GTFSRealtimeKey() string {
+	return "gtfs_rt:feed"
+}
+
 // MrtLiveKey returns the key holding one metro arrival. Destination is part of
 // the identity because a station can have simultaneous arrivals on the same
 // line in opposite directions.

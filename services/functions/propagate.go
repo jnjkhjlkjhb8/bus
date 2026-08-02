@@ -10,7 +10,7 @@ import "time"
 // a constant geometric rate regardless of route, hour, or traffic — enough to
 // beat the bare-schedule fallback, not a traffic model. Upgrade path: learn a
 // per-route (or per-route/hour) decay from bus_eta_prediction_error residuals,
-// or weight the decay by travel time once bus_travel_avg is dense.
+// or weight the decay by running time once bus_segment_time is dense.
 const delayDecayBase = 0.9
 
 // propagationStaleAfter bounds how old an upstream observation may be to still

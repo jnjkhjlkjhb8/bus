@@ -352,8 +352,8 @@ func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
 
 	const uid = "KHH_DTT_SUB1"
 	key := "bus_daily_timetable:" + uid
-	_ = rc.Del(key).Err()
-	defer func() { _ = rc.Del(key).Err() }()
+	_ = rc.Del(context.Background(), key).Err()
+	defer func() { _ = rc.Del(context.Background(), key).Err() }()
 
 	body := []byte(`[{"SubRouteUID":"` + uid + `","Direction":0,"Timetables":[{"TripID":"T1","IsLowFloor":true,"StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]}]`)
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -361,7 +361,7 @@ func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
 		t.Fatalf("loadBusDailyTimetable: %v", err)
 	}
 
-	pb, err := rc.Get(key).Bytes()
+	pb, err := rc.Get(context.Background(), key).Bytes()
 	if err != nil {
 		t.Fatalf("read %s: %v", key, err)
 	}
@@ -379,7 +379,7 @@ func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
 	if dir0.DailyTimetables[0].TripID != "T1" || len(dir0.DailyTimetables[0].StopTimes) != 1 {
 		t.Fatalf("assembled trip = %+v, want TripID T1 with one stop", dir0.DailyTimetables[0])
 	}
-	ttl := rc.TTL(key).Val()
+	ttl := rc.TTL(context.Background(), key).Val()
 	if ttl <= 25*time.Hour+59*time.Minute || ttl > 26*time.Hour {
 		t.Fatalf("TTL = %s, want 26h", ttl)
 	}
@@ -486,7 +486,7 @@ func TestMarkerEarned(t *testing.T) {
 		want  bool
 	}{
 		// The regression this whole change exists for: one city rejecting a
-		// bad row must not strand changetovector and computeTravelAvg.
+		// bad row must not strand changetovector and the segment-time passes.
 		{"partial load publishes", loadStats{ok: 19, failed: 1}, errors.New("bus Taoyuan: Shape[107] references unknown"), true},
 		{"clean load publishes", loadStats{ok: 20}, nil, true},
 		{"rail horizon skips do not block", loadStats{ok: 20, skipped: 20}, nil, true},

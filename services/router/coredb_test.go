@@ -24,7 +24,7 @@ func TestBusStaticPayloadReturnsBytes(t *testing.T) {
 		WithArgs("SR-1").
 		WillReturnRows(pgxmock.NewRows([]string{"pb"}).AddRow(want))
 
-	got, err := busStaticPayload(context.Background(), db, "SR-1")
+	got, err := BusStaticPayload(context.Background(), db, "SR-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestBusStaticPayloadMissingRow(t *testing.T) {
 		WithArgs("missing").
 		WillReturnRows(pgxmock.NewRows([]string{"pb"}))
 
-	_, err = busStaticPayload(context.Background(), db, "missing")
+	_, err = BusStaticPayload(context.Background(), db, "missing")
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("err = %v, want pgx.ErrNoRows", err)
 	}
@@ -71,7 +71,7 @@ func TestBusStationGroupCityResolves(t *testing.T) {
 		WithArgs("G-1").
 		WillReturnRows(pgxmock.NewRows([]string{"city"}).AddRow("Taipei"))
 
-	city, err := busStationGroupCity(context.Background(), db, "G-1")
+	city, err := BusStationGroupCity(context.Background(), db, "G-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestBusStationGroupHeaderReturnsFields(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"group_name", "city", "st_x", "st_y"}).
 			AddRow("Taipei Main", "Taipei", 121.5, 25.05))
 
-	h, err := busStationGroupHeader(context.Background(), db, "G-1")
+	h, err := BusStationGroupHeader(context.Background(), db, "G-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestBusStationGroupHeaderMissing(t *testing.T) {
 		WithArgs("missing").
 		WillReturnRows(pgxmock.NewRows([]string{"group_name", "city", "st_x", "st_y"}))
 
-	if _, err := busStationGroupHeader(context.Background(), db, "missing"); err == nil {
+	if _, err := BusStationGroupHeader(context.Background(), db, "missing"); err == nil {
 		t.Fatal("want error for missing group, got nil")
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
@@ -145,7 +145,7 @@ func TestBusStationGroupMembersMapsRows(t *testing.T) {
 			AddRow("U-1", "S-1", "Stop A", 121.1, 25.1).
 			AddRow("U-2", "S-2", "Stop B", 121.2, 25.2))
 
-	members, err := busStationGroupMembers(context.Background(), db, "G-1")
+	members, err := BusStationGroupMembers(context.Background(), db, "G-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestBikeStaticDataReturnsFields(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"name", "capacity", "service_type", "address", "lat", "lon"}).
 			AddRow("YouBike Stop", int32(30), int32(2), "1 Main St", &lat, &lon))
 
-	row, err := bikeStaticData(context.Background(), db, "B-1")
+	row, err := BikeStaticData(context.Background(), db, "B-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +208,7 @@ func TestBikeStaticDataMissing(t *testing.T) {
 			pgxmock.NewRows([]string{"name", "capacity", "service_type", "address", "lat", "lon"}),
 		)
 
-	if _, err := bikeStaticData(context.Background(), db, "missing"); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := BikeStaticData(context.Background(), db, "missing"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("err = %v, want pgx.ErrNoRows", err)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
@@ -233,7 +233,7 @@ func TestBikeStaticDataNullGeom(t *testing.T) {
 				AddRow("No Geom", int32(10), int32(2), "", nil, nil),
 		)
 
-	row, err := bikeStaticData(context.Background(), db, "B-2")
+	row, err := BikeStaticData(context.Background(), db, "B-2")
 	if err != nil {
 		t.Fatal(err)
 	}

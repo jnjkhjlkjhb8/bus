@@ -793,7 +793,7 @@ func TestInvalidateBusStaticAfterCommitReturnsRedisFailureAndDropsOnlyCity(t *te
 	storeBusStaticMapIn(&busStaticMapCache, "TPE", []busStationmap{{StopUID: "old-tpe"}}, "1", time.Now())
 	storeBusStaticMapIn(&busStaticMapCache, "NWT", []busStationmap{{StopUID: "old-nwt"}}, "1", time.Now())
 	t.Cleanup(invalidateBusStaticMap)
-	if err := invalidateBusStaticAfterCommit(nil, "Taipei"); err == nil {
+	if err := invalidateBusStaticAfterCommit(context.Background(), nil, "Taipei"); err == nil {
 		t.Fatal("nil Redis returned nil post-commit invalidation error")
 	}
 	if _, ok := busStaticMapCache.Load("TPE"); ok {

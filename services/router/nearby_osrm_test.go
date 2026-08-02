@@ -29,8 +29,8 @@ func TestOSRMWalkingRouterPreservesOrderAndNullableCells(t *testing.T) {
 	}))
 	defer server.Close()
 
-	router := newOSRMWalkingRouter(resty.New(), server.URL)
-	got, err := router.RouteMany(context.Background(), geoPoint{Lon: 121.5, Lat: 25}, []geoPoint{
+	router := NewOSRMWalkingRouter(resty.New(), server.URL)
+	got, err := router.RouteMany(context.Background(), GeoPoint{Lon: 121.5, Lat: 25}, []GeoPoint{
 		{Lon: 121.51, Lat: 25.01},
 		{Lon: 121.52, Lat: 25.02},
 	})
@@ -50,7 +50,7 @@ func TestOSRMWalkingRouterPropagatesContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := newOSRMWalkingRouter(resty.New(), server.URL).RouteMany(ctx, geoPoint{}, []geoPoint{{Lon: 1, Lat: 1}})
+	_, err := NewOSRMWalkingRouter(resty.New(), server.URL).RouteMany(ctx, GeoPoint{}, []GeoPoint{{Lon: 1, Lat: 1}})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}

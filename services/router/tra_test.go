@@ -24,7 +24,7 @@ func TestTraFarePayloadReturnsRows(t *testing.T) {
 		WithArgs("1000", "1040", traTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}).AddRow("成自", int32(41)))
 
-	payload, err := traFarePayload(context.Background(), db, "1000", "1040")
+	payload, err := TRAFarePayload(context.Background(), db, "1000", "1040")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestTraFarePayloadKeepsFarePerTrainClass(t *testing.T) {
 			AddRow("敬自", int32(50)).
 			AddRow("敬復", int32(32)))
 
-	payload, err := traFarePayload(context.Background(), db, "1080", "1000")
+	payload, err := TRAFarePayload(context.Background(), db, "1080", "1000")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestTraFarePayloadEmptyOnNoRows(t *testing.T) {
 		WithArgs("1000", "1040", traTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}))
 
-	payload, err := traFarePayload(context.Background(), db, "1000", "1040")
+	payload, err := TRAFarePayload(context.Background(), db, "1000", "1040")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestTraStoptimesPayloadSetsSuspendedFromMask(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"stopsequence", "stationid", "stationname", "arrivaltime", "departuretime", "mask"}).
 			AddRow(1, "1000", "台北", "08:00", "08:02", int32(1<<7)))
 
-	payload, n, err := traStoptimesPayload(context.Background(), db, "1234", "2026-07-04")
+	payload, n, err := TRAStoptimesPayload(context.Background(), db, "1234", "2026-07-04")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestTraStoptimesPayloadEmptyOnNoRows(t *testing.T) {
 		WithArgs("1234", "2026-07-04").
 		WillReturnRows(pgxmock.NewRows([]string{"stopsequence", "stationid", "stationname", "arrivaltime", "departuretime", "mask"}))
 
-	_, n, err := traStoptimesPayload(context.Background(), db, "1234", "2026-07-04")
+	_, n, err := TRAStoptimesPayload(context.Background(), db, "1234", "2026-07-04")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestTraTimetablePayloadPairsOriginDestination(t *testing.T) {
 			AddRow(date, "1234", "1000", "台北", "1040", "台中", 1, "1", "1", "自強", int32(0), "1000", originArr, "台北", int32(0), "", originArr).
 			AddRow(date, "1234", "1000", "台北", "1040", "台中", 5, "1", "1", "自強", int32(0), "1040", destArr, "台中", int32(0), "", destArr))
 
-	payload, n, err := traTimetablePayload(context.Background(), db, "1000", "1040", date)
+	payload, n, err := TRATimetablePayload(context.Background(), db, "1000", "1040", date)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestTraTimetablePayloadPairsCrossMidnightRows(t *testing.T) {
 			AddRow(date, "1234", "1000", "台北", "1040", "台中", 1, "1", "1", "自強", int32(0), "1000", originDeparture, "台北", int32(0), "", originDeparture).
 			AddRow(date, "1234", "1000", "台北", "1040", "台中", 5, "1", "1", "自強", int32(0), "1040", destinationArrival, "台中", int32(0), "", destinationArrival))
 
-	payload, n, err := traTimetablePayload(context.Background(), db, "1000", "1040", date)
+	payload, n, err := TRATimetablePayload(context.Background(), db, "1000", "1040", date)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestTraTimetablePayloadQueryFiltersTimeAtOriginOnly(t *testing.T) {
 		WithArgs([]string{"1000", "1040"}, "2026-07-04", "1000", "23:00:00").
 		WillReturnRows(pgxmock.NewRows([]string{"station_id"}))
 
-	_, n, err := traTimetablePayload(context.Background(), db, "1000", "1040", date)
+	_, n, err := TRATimetablePayload(context.Background(), db, "1000", "1040", date)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestTraTimetablePayloadQueryHasDeterministicOrder(t *testing.T) {
 		WithArgs([]string{"1000", "1040"}, "2026-07-04", "1000", "00:00:00").
 		WillReturnRows(pgxmock.NewRows([]string{"station_id"}))
 
-	_, n, err := traTimetablePayload(context.Background(), db, "1000", "1040", date)
+	_, n, err := TRATimetablePayload(context.Background(), db, "1000", "1040", date)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestTraTimetablePayloadResolvesStationNames(t *testing.T) {
 		WithArgs([]string{"1000", "7000"}, "2026-07-04", "1000", date.Format(time.TimeOnly)).
 		WillReturnRows(pgxmock.NewRows([]string{"station_id"}))
 
-	_, n, err := traTimetablePayload(context.Background(), db, "台北", "花蓮", date)
+	_, n, err := TRATimetablePayload(context.Background(), db, "台北", "花蓮", date)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestTraTimetablePayloadPropagatesOriginResolverErrorImmediately(t *testing.
 		WillReturnError(wantErr)
 
 	date := time.Date(2026, 7, 4, 0, 0, 0, 0, time.UTC)
-	payload, n, err := traTimetablePayload(context.Background(), db, "台北", "花蓮", date)
+	payload, n, err := TRATimetablePayload(context.Background(), db, "台北", "花蓮", date)
 	if err != wantErr {
 		t.Fatalf("error = %v, want same sentinel %v", err, wantErr)
 	}

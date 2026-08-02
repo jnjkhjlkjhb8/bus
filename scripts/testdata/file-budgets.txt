@@ -4,10 +4,9 @@
 # the 1000-line default cap. Shrink a file, lower (or delete) its entry.
 services/functions/live_test.go|1438
 app/lib/features/go/view/go_screen.dart|1190
-services/router/maas_test.go|1205
+services/router/maas_test.go|1133
 app/lib/features/go/widgets/go_planner_widgets.dart|1142
 app/lib/features/go/widgets/go_navigation_widgets.dart|1135
 app/test/features/go/navigation_coordinator_test.dart|1113
-app/lib/features/go/view/place_search_screen.dart|1044
 app/lib/features/rail/view/rail_train_screen.dart|1397
 app/lib/features/bus/widgets/bus_route_detail_widgets.dart|1116

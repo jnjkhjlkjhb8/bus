@@ -131,6 +131,21 @@ up-staging: render-env-staging
 up-prod: render-env-prod
 	$(COMPOSE_PROD) up -d --build --wait
 
+# Re-fetch the OSM extract, rebuild the routing graph if Geofabrik has rotated
+# -latest, and restart osrm so it maps the new set. osrm-init swaps the .osrm
+# files by rename, which a running osrm-routed does not observe -- it keeps the
+# inodes it mmapped at start -- so the restart is what actually publishes the
+# rebuild. Both steps are no-ops when the extract has not changed.
+#
+# Geofabrik rotates weekly; osrm-data is shared with staging. Run monthly:
+#   0 4 1 * * cd /srv/bus && make refresh-osrm-prod >> /var/log/osrm-refresh.log 2>&1
+#
+# Walk routing degrades to geodesic distance while osrm is down (enrichWalkSections
+# and nearby both treat it as optional), so the restart needs no announcement.
+refresh-osrm-prod: render-env-prod
+	$(COMPOSE_PROD) up osrm-fetch osrm-init
+	$(COMPOSE_PROD) restart osrm
+
 # logs- follows (Ctrl-C to stop) and starts from the last 200 lines, enough to
 # catch the failure that prompted the call without replaying the whole history.
 logs-test:

@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
 )
 
@@ -68,54 +68,69 @@ const loadTimeout = 60 * time.Minute
 func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Client, boot *sync.WaitGroup) {
 	src := rawTDXSource{pool: rawPool}
 	runner := newStaticPipelineRunner(rawPool, loadTimeout)
-	// The marker write sits outside the load's retry wrapper on purpose: a
-	// failed one-row upsert must not re-drive a load that already succeeded,
-	// and it gets its own quick retry + distinct log instead
-	// (recordPipelineMarkerWithRetry). markerEarned decides whether the run
-	// earned it.
+	// Both entry points share one runner, so the 03:30 tick and a LOAD_ON_BOOT
+	// run contend for the same advisory lock instead of overlapping.
 	_, _ = addStaticCron(r, "0 30 3 * * *", func() {
-		started := time.Now()
-		runDate := started.In(taipei)
-		var stats loadStats
-		err := runDailyWithRetry(context.Background(), loadTimeout, time.Minute, func(ctx context.Context) error {
-			return runner.Run(ctx, func(ctx context.Context) error {
-				var runErr error
-				stats, runErr = runLoad(ctx, src, db, rc, nil)
-				return runErr
+		runLoadStage("[crontab] action=load", src, rawPool, db, rc, func(job func(context.Context) error) error {
+			return runDailyWithRetry(context.Background(), loadTimeout, time.Minute, func(ctx context.Context) error {
+				return runner.Run(ctx, job)
 			})
 		})
-		if err != nil {
-			log.Errorf("[crontab] action=load event=failed ok=%d failed=%d skipped=%d error=%v", stats.ok, stats.failed, stats.skipped, err)
-		}
-		if !markerEarned(stats, err) {
-			return
-		}
-		_ = recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
-		runVectorRefresh(rawPool, db, rc, runDate)
 	})
 	if os.Getenv("LOAD_ON_BOOT") == "true" {
 		log.Infoln("[LOAD] action=boot event=enabled")
 		trackBoot(boot, func() {
-			runDate := time.Now().In(taipei)
-			var stats loadStats
-			err := runner.Run(context.Background(), func(ctx context.Context) error {
-				var runErr error
-				stats, runErr = runLoad(ctx, src, db, rc, nil)
-				return runErr
+			// Boot deliberately does not retry: a fresh deploy that cannot load
+			// should surface once and leave the 03:30 tick to redo it, rather than
+			// hold the advisory lock through three attempts while the service comes up.
+			runLoadStage("[LOAD] action=boot", src, rawPool, db, rc, func(job func(context.Context) error) error {
+				return runner.Run(context.Background(), job)
 			})
-			if err != nil {
-				log.Errorf("[LOAD] action=boot event=failed ok=%d failed=%d skipped=%d error=%v", stats.ok, stats.failed, stats.skipped, err)
-			}
-			if !markerEarned(stats, err) {
-				return
-			}
-			_ = recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
-			runVectorRefresh(rawPool, db, rc, runDate)
 		})
 	} else {
 		log.Warn("[LOAD] action=boot event=skipped")
 	}
 	registerBusDailyTimetableCron(r, rawPool, db, rc)
+}
+
+// runLoadStage runs one load and, when the run earns it, the whole downstream
+// chain that waits on the load marker. The 03:30 tick and the LOAD_ON_BOOT path
+// are the same pipeline with different attempt policies, so attempt is the only
+// thing they supply separately: it receives the load job and decides whether to
+// wrap it in retries. Everything after the run — the failure log, the
+// markerEarned gate, the marker write, then vector refresh and GTFS export — is
+// owned here, so neither caller can publish a marker its run did not earn or
+// start a downstream stage without one.
+//
+// runDate is stamped before the run, not after: the stages downstream key off
+// the service day the load was for, and a load that starts at 03:30 and finishes
+// after midnight would otherwise mark the wrong day.
+func runLoadStage(
+	label string,
+	src rawTDXSource,
+	rawPool, db *pgxpool.Pool,
+	rc *redis.Client,
+	attempt func(job func(context.Context) error) error,
+) {
+	runDate := time.Now().In(taipei)
+	var stats loadStats
+	err := attempt(func(ctx context.Context) error {
+		var runErr error
+		stats, runErr = runLoad(ctx, src, db, rc, nil)
+		return runErr
+	})
+	if err != nil {
+		log.Errorf("%s event=failed ok=%d failed=%d skipped=%d error=%v", label, stats.ok, stats.failed, stats.skipped, err)
+	}
+	if !markerEarned(stats, err) {
+		return
+	}
+	// The marker write sits outside attempt on purpose: a failed one-row upsert
+	// must not re-drive a load that already succeeded, so it gets its own quick
+	// retry and a distinct log (recordPipelineMarkerWithRetry).
+	recordPipelineMarkerWithRetry(context.Background(), db, "load", runDate)
+	runVectorRefresh(rawPool, db, rc, runDate)
+	runGTFSExport(rawPool, runDate)
 }
 
 // vectorRefreshTimeout bounds one changetovector attempt in the loader. It
@@ -132,7 +147,7 @@ const vectorRefreshTimeout = 10 * time.Minute
 // its own runner, after the load's runner has released it, so the two stages
 // stay serialized exactly as they were across processes. A run with no EMBED_URL
 // skips embedding but still records the marker (changeToVector returns nil for a
-// nil embedder), so the downstream computeTravelAvg stage is never stranded --
+// nil embedder), so the downstream segment-time stage is never stranded --
 // unchanged from the previous functions-hosted flow.
 func runVectorRefresh(rawPool, db *pgxpool.Pool, rc *redis.Client, runDate time.Time) {
 	job := vectorRefreshJob(rc, db, configuredEmbeddingClient())
@@ -146,17 +161,17 @@ func runVectorRefresh(rawPool, db *pgxpool.Pool, rc *redis.Client, runDate time.
 	}
 	// Marker write is outside the job retry: a failed one-row upsert must not
 	// re-drive an already successful vector refresh.
-	_ = recordPipelineMarkerWithRetry(context.Background(), db, "changetovector", runDate)
+	recordPipelineMarkerWithRetry(context.Background(), db, "changetovector", runDate)
 }
 
 // markerEarned reports whether a load run may publish its pipeline marker, the
-// signal changetovector and computeTravelAvg poll before starting.
+// signal changetovector and the segment-time passes poll before starting.
 //
 // A partition that fails validation writes nothing, so its schema keeps
 // yesterday's rows. Running the downstream stages over one stale city plus
 // nineteen fresh ones beats withholding the marker and stranding vector search
-// and ETA prediction nationwide over a single bad row, which is what a
-// per-partition failure used to do.
+// and ETA prediction nationwide over a single bad row, which is what withholding
+// the marker on any per-partition failure would do.
 //
 // Two cases still withhold it. A run that loaded no partition at all published
 // nothing to act on. A truncated run (deadline, cancellation) is not a partial

@@ -363,7 +363,7 @@ func TestTrackedHTTPHandlerWaitsForActiveHandler(t *testing.T) {
 
 func TestHandleMetricsWritesLiveHubCounters(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	hub := newLiveHub(newHubSource(), 2)
+	hub := NewLiveHub(newHubSource(), 2)
 	r := gin.New()
 	r.GET("/metrics", handleMetrics(hub))
 
@@ -388,7 +388,7 @@ func TestHandleMetricsWritesLiveHubCounters(t *testing.T) {
 
 func TestHTTPRoutesUseIndependentRateBuckets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: strings.Repeat("m", 32)})
+	router := newHTTPRouter(nil, NewLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: strings.Repeat("m", 32)})
 
 	for requestNumber := 1; requestNumber <= httpTokenRateLimit+1; requestNumber++ {
 		response := httptest.NewRecorder()
@@ -428,7 +428,7 @@ func TestMetricsRequiresConfiguredCredential(t *testing.T) {
 	}
 
 	gin.SetMode(gin.TestMode)
-	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: loaded})
+	router := newHTTPRouter(nil, NewLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: loaded})
 	for _, test := range []struct {
 		name          string
 		authorization string
@@ -505,7 +505,7 @@ func TestHTTPServerConfigFromEnvValidatesBeforeStartup(t *testing.T) {
 
 func TestDirectHTTPClientCannotRotateRateBucketWithForwardedFor(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{
+	router := newHTTPRouter(nil, NewLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{
 		MetricsCredential: strings.Repeat("m", 32),
 		TokenRateLimit:    1,
 	})
@@ -540,7 +540,7 @@ func TestHTTPRateLimitUsesSocketPeerUnlessProxyIsTrusted(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{
+			router := newHTTPRouter(nil, NewLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{
 				MetricsCredential: credential,
 				TrustedProxies:    tc.trustedProxies,
 				TokenRateLimit:    1,
@@ -566,7 +566,7 @@ func TestHTTPRateLimitUsesSocketPeerUnlessProxyIsTrusted(t *testing.T) {
 func TestMetricsAuthenticationPrecedesPrincipalRateLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	credential := strings.Repeat("m", 32)
-	router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{
+	router := newHTTPRouter(nil, NewLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{
 		MetricsCredential: credential,
 		MetricsRateLimit:  1,
 	})
@@ -612,7 +612,7 @@ func TestMetricsBearerParsingAndSecurityHeaders(t *testing.T) {
 		{name: "query credential rejected", header: "", want: http.StatusUnauthorized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			router := newHTTPRouter(nil, newLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: credential})
+			router := newHTTPRouter(nil, NewLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: credential})
 			response := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodGet, "/metrics?token="+credential, nil)
 			if tc.header != "" {

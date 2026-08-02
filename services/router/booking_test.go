@@ -14,7 +14,7 @@ import (
 // stubBooking builds a bookingProxy whose upstream clients point at a fake TDX
 // that echoes the given handler, so the exchange path is exercised without real
 // credentials or network.
-func stubBooking(t *testing.T, handler http.HandlerFunc) (*bookingProxy, *httptest.Server) {
+func stubBooking(t *testing.T, handler http.HandlerFunc) (*BookingProxy, *httptest.Server) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -22,13 +22,13 @@ func stubBooking(t *testing.T, handler http.HandlerFunc) (*bookingProxy, *httpte
 	}))
 	t.Cleanup(srv.Close)
 	client := resty.New().SetBaseURL(srv.URL)
-	return &bookingProxy{tra: client, thsr: client}, srv
+	return &BookingProxy{tra: client, thsr: client}, srv
 }
 
-func bookingRouter(booking *bookingProxy) *gin.Engine {
+func bookingRouter(booking *BookingProxy) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.GET("/api/booking/deeplink", handleBookingDeeplink(booking))
+	r.GET("/api/booking/deeplink", HandleBookingDeeplink(booking))
 	return r
 }
 
@@ -40,7 +40,7 @@ func getBooking(r *gin.Engine, query string) *httptest.ResponseRecorder {
 }
 
 func TestBookingRoute(t *testing.T) {
-	b := &bookingProxy{tra: resty.New(), thsr: resty.New()}
+	b := &BookingProxy{tra: resty.New(), thsr: resty.New()}
 	cases := []struct {
 		agency, kind string
 		wantOK       bool

@@ -82,8 +82,8 @@ void main() {
         MetroArrivalsEmpty(schedule: schedule, now: DateTime(2026, 7, 12, 12)),
       );
 
-      expect(find.text('收不到即時到站資訊'), findsOneWidget);
-      expect(find.text('列車仍在行駛，但目前無法取得到站時間'), findsOneWidget);
+      expect(find.text('收不到即時到站資料'), findsOneWidget);
+      expect(find.text('目前無法取得資料，請聯絡開發者'), findsOneWidget);
       expect(find.text('今日已收班'), findsNothing);
       // Not the old dead-end string.
       expect(find.text('此站目前沒有班次資訊'), findsNothing);
@@ -94,7 +94,7 @@ void main() {
     tester,
   ) async {
     await pump(tester, const MetroArrivalsEmpty(schedule: []));
-    expect(find.text('收不到即時到站資訊'), findsOneWidget);
+    expect(find.text('收不到即時到站資料'), findsOneWidget);
   });
 
   testWidgets('retry action fires onRetry when tapped in the running branch', (

@@ -14,7 +14,7 @@ type osrmWalkingRouter struct {
 	baseURL string
 }
 
-func newOSRMWalkingRouter(client *resty.Client, baseURL string) *osrmWalkingRouter {
+func NewOSRMWalkingRouter(client *resty.Client, baseURL string) *osrmWalkingRouter {
 	return &osrmWalkingRouter{client: client, baseURL: strings.TrimRight(baseURL, "/")}
 }
 
@@ -24,7 +24,7 @@ type osrmTableResponse struct {
 	Distances [][]*float64 `json:"distances"`
 }
 
-func (r *osrmWalkingRouter) RouteMany(ctx context.Context, origin geoPoint, destinations []geoPoint) ([]walkingMetric, error) {
+func (r *osrmWalkingRouter) RouteMany(ctx context.Context, origin GeoPoint, destinations []GeoPoint) ([]walkingMetric, error) {
 	if len(destinations) == 0 {
 		return nil, nil
 	}
@@ -67,6 +67,6 @@ func (r *osrmWalkingRouter) RouteMany(ctx context.Context, origin geoPoint, dest
 	return metrics, nil
 }
 
-func formatCoordinate(point geoPoint) string {
+func formatCoordinate(point GeoPoint) string {
 	return fmt.Sprintf("%f,%f", point.Lon, point.Lat)
 }

@@ -313,12 +313,11 @@ class _EndCount extends StatelessWidget {
             children: [
               TextSpan(
                 text: value,
-                style: AppTextStyles.memo.copyWith(
-                  fontSize: 28,
+                style: AppTextStyles.timeValue(
+                  size: 28,
                   height: 1.15,
-                  fontWeight: FontWeight.w600,
+                  weight: FontWeight.w600,
                   color: color,
-                  fontFeatures: AppTextStyles.tabularFigures,
                 ),
               ),
               TextSpan(

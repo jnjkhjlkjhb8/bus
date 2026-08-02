@@ -44,6 +44,10 @@ class _StopListTab extends StatelessWidget {
     required this.flashStopUid,
     required this.trackedStopUid,
     required this.onTrackToggled,
+    this.picking = false,
+    this.firstPickableIndex = 0,
+    this.targetStopUid,
+    this.onPickStop,
   });
 
   final List<TimelineStop> stops;
@@ -51,6 +55,14 @@ class _StopListTab extends StatelessWidget {
   final String? flashStopUid;
   final String? trackedStopUid;
   final void Function(TimelineStop) onTrackToggled;
+
+  /// Whether a 下車站 is being chosen. The same rule as the timeline above —
+  /// only stops the pinned bus has not reached yet — so the two views can
+  /// never offer different answers.
+  final bool picking;
+  final int firstPickableIndex;
+  final String? targetStopUid;
+  final ValueChanged<String>? onPickStop;
 
   @override
   Widget build(BuildContext context) {
@@ -97,7 +109,15 @@ class _StopListTab extends StatelessWidget {
               i < stops.length - 1 && stop.isLiveEta && stops[i + 1].isLiveEta,
           isFlashed: stop.uid == flashStopUid,
           isTracking: trackedStopUid == stop.uid,
-          onTrackToggled: () => onTrackToggled(stop),
+          isAlightTarget: picking && targetStopUid == stop.uid,
+          dimmedForPick: picking && i < firstPickableIndex,
+          onTrackToggled: () {
+            if (!picking) {
+              onTrackToggled(stop);
+              return;
+            }
+            if (i >= firstPickableIndex) onPickStop?.call(stop.uid);
+          },
           suppressEtaLabel: allStopsEnded,
         ),
       );
@@ -162,7 +182,18 @@ class _StopListItem extends StatelessWidget {
     required this.isTracking,
     required this.onTrackToggled,
     this.suppressEtaLabel = false,
+    this.isAlightTarget = false,
+    this.dimmedForPick = false,
   });
+
+  /// The stop currently chosen as the 下車站, carried on the row the same way
+  /// the rail timetable carries it: the static highlight the design system
+  /// reserves for "find this row", no new symbol.
+  final bool isAlightTarget;
+
+  /// A stop the pinned bus has already passed while picking — visible, but not
+  /// a candidate.
+  final bool dimmedForPick;
 
   final TimelineStop stop;
   final bool isFirst;
@@ -186,7 +217,7 @@ class _StopListItem extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     // A marker-tap flash reuses the live/approaching row treatment (bold +
     // tint) so a tapped stop reads the same as the active one.
-    final isHighlighted = stop.active || isFlashed;
+    final isHighlighted = stop.active || isFlashed || isAlightTarget;
     final highlightFill = cs.brightness == Brightness.light
         ? cs.onSurface.withValues(alpha: 0.06)
         : cs.surfaceContainerHigh;
@@ -224,7 +255,7 @@ class _StopListItem extends StatelessWidget {
       );
     }
 
-    return Pressable(
+    final row = Pressable(
       // Setting an arrival reminder is a once-per-trip act, so the whole row
       // carries it. It used to need a 28px button on every row: forty identical
       // grey chips down the list, louder than the arrival times they sat beside
@@ -291,6 +322,13 @@ class _StopListItem extends StatelessWidget {
         ),
       ),
     );
+
+    // A stop the bus has already passed stays readable but takes no taps:
+    // dimming without removing is what tells the rider the list continues.
+    if (dimmedForPick) {
+      return IgnorePointer(child: Opacity(opacity: 0.35, child: row));
+    }
+    return row;
   }
 
   String _semanticLabel(AppI18n i18n) {
@@ -348,11 +386,10 @@ class _StopListItem extends StatelessWidget {
     final arriving = stop.state == TimelineStopState.arriving;
     return Text(
       label,
-      style: AppTextStyles.memo.copyWith(
-        fontSize: 15,
-        fontWeight: arriving ? FontWeight.w700 : FontWeight.w600,
+      style: AppTextStyles.timeValue(
+        size: 15,
+        weight: arriving ? FontWeight.w700 : FontWeight.w600,
         color: arriving ? AppTheme.statusArrivingText : cs.onSurface,
-        fontFeatures: AppTextStyles.tabularFigures,
       ),
     );
   }

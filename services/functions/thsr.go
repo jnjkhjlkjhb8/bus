@@ -11,11 +11,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// raw_thsr_availableseatstatus decodes a TDX Rail/THSR/AvailableSeatStatus/Train
+// rawThsrAvailableSeatStatus decodes a TDX Rail/THSR/AvailableSeatStatus/Train
 // element: one train's origin/destination seat-status segments for a date. Each
 // top-level element carries an Items array of OD segments, aggregated per train
 // into one ThsrAvailableSeats.
-type raw_thsr_availableseatstatus struct {
+type rawThsrAvailableSeatStatus struct {
 	TrainDate string `json:"TrainDate"`
 	Items     []struct {
 		TrainNo              string `json:"TrainNo"`
@@ -41,8 +41,7 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 	log.Infof("[THSR_SEATS] action=thsr_seats event=start date=%s", date)
 	result, err := fetch(ctx, fmt.Sprintf("/v2/Rail/THSR/AvailableSeatStatus/Train/OD/TrainDate/%s", date), "thsr_availableseats")
 	if err != nil {
-		log.Warnf("[THSR_SEATS] action=thsr_seats event=skip reason=api_error error=%v", err)
-		return err
+		return fmt.Errorf("fetch THSR available seats for %s: %w", date, err)
 	}
 	if !result.Modified {
 		// A 304 has already re-armed the cached snapshots' TTL via boundFetch.
@@ -51,7 +50,7 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 	}
 	err = commitTDXFetch(result, func(dec *json.Decoder) error {
 		row := make(map[string]*models.ThsrAvailableSeats)
-		if decErr := decodeLiveItems(dec, func(temp raw_thsr_availableseatstatus) error {
+		if decErr := decodeLiveItems(dec, func(temp rawThsrAvailableSeatStatus) error {
 			for _, stop := range temp.Items {
 				if row[stop.TrainNo] == nil {
 					row[stop.TrainNo] = &models.ThsrAvailableSeats{}
@@ -72,7 +71,7 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 		// reaches it — no pattern semantics. It seeds new clients by SCANning the
 		// per-train keys, so the SET keys carry the actual snapshots.
 		channel := shared.ThsrSeatsPattern(date)
-		pipe := sink.pipelineContext(ctx)
+		pipe := sink.pipeline()
 		count := 0
 		for trainNo, seats := range row {
 			pb, err := proto.Marshal(seats)
@@ -83,15 +82,14 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 			pipe.Publish(channel, string(pb))
 			count++
 		}
-		if err := pipe.Exec(); err != nil {
+		if err := pipe.Exec(ctx); err != nil {
 			return err
 		}
 		log.Infof("[THSR_SEATS] action=thsr_seats event=complete train_count=%d", count)
 		return nil
 	})
 	if err != nil {
-		log.Errorf("[THSR_SEATS] action=thsr_seats event=process_error error=%v", err)
-		return err
+		return fmt.Errorf("process THSR available seats for %s: %w", date, err)
 	}
 	return nil
 }

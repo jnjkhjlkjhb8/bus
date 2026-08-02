@@ -76,12 +76,12 @@ func TestFirebaseStoreSQL(t *testing.T) {
 	}
 
 	expires := time.Unix(1_800_003_600, 0)
-	reminder := firebaseArrivalReminder{
+	reminder := FirebaseArrivalReminder{
 		ReminderID: "reminder-1", InstallID: "install-1", RouteType: "bus", RouteKey: "route-1",
-		StopKey: "stop-1", Direction: "0", LeadMinutes: 5, ExpiresAt: expires, Status: reminderPending, Plate: "AAA-1234",
+		StopKey: "stop-1", Direction: "0", LeadMinutes: 5, ExpiresAt: expires, Status: ReminderPending, Plate: "AAA-1234",
 	}
 	mock.ExpectExec("INSERT INTO firebase_arrival_reminder").
-		WithArgs("reminder-1", "install-1", "bus", "route-1", "stop-1", "0", int32(5), (*time.Time)(nil), expires, reminderPending, "AAA-1234").
+		WithArgs("reminder-1", "install-1", "bus", "route-1", "stop-1", "0", int32(5), (*time.Time)(nil), expires, ReminderPending, "AAA-1234").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	if err := store.CreateArrivalReminder(ctx, reminder); err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestFirebaseStoreSQL(t *testing.T) {
 		WithArgs("bus", "route-1", "stop-1", "0", now).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"reminder_id", "install_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes", "fire_at", "expires_at", "status",
-		}).AddRow("reminder-1", "install-1", "token-1", "bus", "route-1", "stop-1", "0", int32(5), nil, expires, reminderPending))
+		}).AddRow("reminder-1", "install-1", "token-1", "bus", "route-1", "stop-1", "0", int32(5), nil, expires, ReminderPending))
 	active, err := store.ListActiveArrivalReminders(ctx, "bus", "route-1", "stop-1", "0", now)
 	if err != nil || len(active) != 1 || active[0].Token != "token-1" || active[0].LeadMinutes != 5 {
 		t.Fatalf("ListActiveArrivalReminders() = (%#v, %v)", active, err)
@@ -116,7 +116,7 @@ func TestFirebaseStoreSQL(t *testing.T) {
 		WithArgs("bus", "route-1", "stop-1", "0", now).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"reminder_id", "install_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes", "fire_at", "expires_at", "status",
-		}).AddRow("reminder-1", "install-1", "token-1", "bus", "route-1", "stop-1", "0", "invalid", nil, expires, reminderPending))
+		}).AddRow("reminder-1", "install-1", "token-1", "bus", "route-1", "stop-1", "0", "invalid", nil, expires, ReminderPending))
 	if _, err := store.ListActiveArrivalReminders(ctx, "bus", "route-1", "stop-1", "0", now); err == nil {
 		t.Fatal("ListActiveArrivalReminders() scan error = nil")
 	}

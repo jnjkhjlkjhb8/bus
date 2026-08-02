@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 )
 
 // loadBus replaces one city only after all eight correlated landing partitions
@@ -21,7 +21,7 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 		return fmt.Errorf("load bus city %s: snapshot: %w", city, err)
 	}
 	if err := persistBusCitySnapshot(ctx, pgBusTxBeginner{db: db}, snapshot, func() error {
-		return invalidateBusStaticAfterCommit(rc, city)
+		return invalidateBusStaticAfterCommit(ctx, rc, city)
 	}); err != nil {
 		if !errors.Is(err, errBusPostCommitCache) {
 			return fmt.Errorf("load bus city %s: target: %w", city, err)
@@ -54,13 +54,13 @@ func persistBusCitySnapshot(
 	return nil
 }
 
-func invalidateBusStaticAfterCommit(rc *redis.Client, city string) error {
+func invalidateBusStaticAfterCommit(ctx context.Context, rc *redis.Client, city string) error {
 	prefix := citymap[city]
 	invalidateBusStaticMapCity(prefix)
 	if rc == nil {
 		return errors.New("redis client is nil")
 	}
-	generation, incrementErr := rc.Incr(shared.BusStaticGenerationKey(city)).Result()
-	publishErr := rc.Publish(shared.BusStaticGenerationChannel(city), generation).Err()
+	generation, incrementErr := rc.Incr(ctx, shared.BusStaticGenerationKey(city)).Result()
+	publishErr := rc.Publish(ctx, shared.BusStaticGenerationChannel(city), generation).Err()
 	return errors.Join(incrementErr, publishErr)
 }

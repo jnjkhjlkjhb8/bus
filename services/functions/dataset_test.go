@@ -117,14 +117,14 @@ func TestFetchURLsRoundTripToTargets(t *testing.T) {
 		}
 		for _, part := range d.partitions() {
 			url := d.url(part)
-			table, partCol, partVal, ok := rawDumpTarget(url)
+			got, ok := rawDumpTarget(url)
 			if !ok {
 				t.Errorf("%s: rawDumpTarget did not resolve fetched URL", url)
 				continue
 			}
-			if table != d.rawTable || partCol != d.partCol || partVal != part {
-				t.Errorf("%s: got (%q,%q,%q), want (%q,%q,%q)",
-					url, table, partCol, partVal, d.rawTable, d.partCol, part)
+			want := rawTarget{table: d.rawTable, partCol: d.partCol, partVal: part}
+			if got != want {
+				t.Errorf("%s: got %+v, want %+v", url, got, want)
 			}
 		}
 	}

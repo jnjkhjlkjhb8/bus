@@ -354,6 +354,7 @@ class _SearchViewState extends State<_SearchView> {
                   duration: reduceMotion ? Duration.zero : AppMotion.short,
                   switchInCurve: AppMotion.easeOut,
                   switchOutCurve: AppMotion.easeOut,
+                  transitionBuilder: AppMotion.switchFade,
                   child: KeyedSubtree(
                     key: ValueKey(_bodyKey(state)),
                     child: body,

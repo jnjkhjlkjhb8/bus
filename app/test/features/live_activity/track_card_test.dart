@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
-import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
-import 'package:wheres_the_bus/features/live_activity/model/track_card.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
+import 'package:wheres_the_bus/data/tracking/track_card.dart';
 
 JourneyLeg _buildLeg({
   required List<PlanPoint> stopLocations,

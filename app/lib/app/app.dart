@@ -20,9 +20,9 @@ import 'package:wheres_the_bus/features/alerts/bloc/alert_event.dart';
 import 'package:wheres_the_bus/features/alerts/view/notification_toast.dart';
 import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
 import 'package:wheres_the_bus/features/metro/bloc/mrt_track_bloc.dart';
 import 'package:wheres_the_bus/features/metro/bloc/mrt_track_event.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
@@ -251,9 +251,19 @@ class _AppShell extends StatelessWidget {
           // The metro alight-reminder session shares the single Live Activity
           // channel; restoring on startup re-lights the bell and re-watches a
           // session that survived a restart (ADR-0015).
-          create: (context) {
+          create: (_) {
             final bloc = MrtTrackBloc(
-              i18n: AppI18n.of(context),
+              // `create` runs against this provider's own context, which sits
+              // above the MaterialApp that installs Localizations, so
+              // `AppI18n.of` has nothing to read. Resolve the locale the same
+              // way MaterialApp does instead.
+              i18n: lookupAppI18n(
+                SettingsRepository.instance.locale ??
+                    basicLocaleListResolution(
+                      WidgetsBinding.instance.platformDispatcher.locales,
+                      AppI18n.supportedLocales,
+                    ),
+              ),
               channel: liveActivityChannel,
             )..add(const MrtTrackRestored());
             // Tracking card 取消追蹤 action → CancelTrack, but only while this
@@ -352,5 +362,3 @@ class _AppShellViewState extends State<_AppShellView> {
     );
   }
 }
-
-

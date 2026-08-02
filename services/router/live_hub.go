@@ -1,15 +1,16 @@
 package main
 
 import (
+	"context"
 	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// defaultSubscriberQueueSize bounds how many undelivered frames a single
+// DefaultSubscriberQueueSize bounds how many undelivered frames a single
 // subscriber's downstream channel may hold before it is evicted as too slow.
-const defaultSubscriberQueueSize = 32
+const DefaultSubscriberQueueSize = 32
 
 // errLiveSubscriberOverflow is returned to a subscriber whose downstream
 // queue filled up. The subscriber is evicted rather than having a distinct
@@ -28,8 +29,8 @@ type liveHubEntry struct {
 	subscribers   map[uint64]chan []byte
 }
 
-type liveHub struct {
-	source              liveSource
+type LiveHub struct {
+	source              LiveSource
 	maxStreams          int64
 	subscriberQueueSize int
 
@@ -44,17 +45,17 @@ type liveHub struct {
 	closeReasons map[<-chan []byte]error
 }
 
-func newLiveHub(source liveSource, maxStreams int) *liveHub {
-	return newLiveHubWithQueueSize(source, maxStreams, defaultSubscriberQueueSize)
+func NewLiveHub(source LiveSource, maxStreams int) *LiveHub {
+	return NewLiveHubWithQueueSize(source, maxStreams, DefaultSubscriberQueueSize)
 }
 
-// newLiveHubWithQueueSize is newLiveHub with an explicit per-subscriber
+// NewLiveHubWithQueueSize is newLiveHub with an explicit per-subscriber
 // queue bound; queueSize <= 0 falls back to defaultSubscriberQueueSize.
-func newLiveHubWithQueueSize(source liveSource, maxStreams, queueSize int) *liveHub {
+func NewLiveHubWithQueueSize(source LiveSource, maxStreams, queueSize int) *LiveHub {
 	if queueSize <= 0 {
-		queueSize = defaultSubscriberQueueSize
+		queueSize = DefaultSubscriberQueueSize
 	}
-	return &liveHub{
+	return &LiveHub{
 		source:              source,
 		maxStreams:          int64(maxStreams),
 		subscriberQueueSize: queueSize,
@@ -63,15 +64,15 @@ func newLiveHubWithQueueSize(source liveSource, maxStreams, queueSize int) *live
 	}
 }
 
-func (h *liveHub) get(key string) ([]byte, bool) {
-	return h.source.get(key)
+func (h *LiveHub) get(ctx context.Context, key string) ([]byte, bool) {
+	return h.source.get(ctx, key)
 }
 
-func (h *liveHub) scanKeys(pattern string) []string {
-	return h.source.scanKeys(pattern)
+func (h *LiveHub) scanKeys(ctx context.Context, pattern string) []string {
+	return h.source.scanKeys(ctx, pattern)
 }
 
-func (h *liveHub) subscribe(channel string) (<-chan []byte, func(), error) {
+func (h *LiveHub) subscribe(ctx context.Context, channel string) (<-chan []byte, func(), error) {
 	h.mu.Lock()
 	if h.maxStreams > 0 && h.activeStreams >= h.maxStreams {
 		h.mu.Unlock()
@@ -80,7 +81,11 @@ func (h *liveHub) subscribe(channel string) (<-chan []byte, func(), error) {
 
 	entry := h.entries[channel]
 	if entry == nil {
-		upstream, upstreamClose, err := h.source.subscribe(channel)
+		// One upstream subscription is shared by every subscriber on this
+		// channel, so it must not inherit the cancellation of whichever caller
+		// happened to open it first — that caller disconnecting would kill the
+		// feed for everyone else. Values (tracing) are kept; cancellation is not.
+		upstream, upstreamClose, err := h.source.subscribe(context.WithoutCancel(ctx), channel)
 		if err != nil {
 			h.mu.Unlock()
 			return nil, nil, err
@@ -113,7 +118,7 @@ func (h *liveHub) subscribe(channel string) (<-chan []byte, func(), error) {
 // back by subscribe, passed in directly (rather than re-read from
 // entry.subscribers) so cleanup still finds it after eviction has already
 // removed the subscribers[id] entry.
-func (h *liveHub) unsubscribe(channel string, entry *liveHubEntry, id uint64, downstream chan []byte) {
+func (h *LiveHub) unsubscribe(channel string, entry *liveHubEntry, id uint64, downstream chan []byte) {
 	h.mu.Lock()
 	if h.entries[channel] != entry {
 		// The entry is already gone — e.g. forward's eviction path removed
@@ -152,7 +157,7 @@ func (h *liveHub) unsubscribe(channel string, entry *liveHubEntry, id uint64, do
 // and closes its channel with errLiveSubscriberOverflow, so the client sees
 // a reconnectable error instead of having a distinct delta frame silently
 // dropped or replaced. Callers must hold h.mu.
-func (h *liveHub) evictSlowSubscriber(entry *liveHubEntry, id uint64, downstream chan []byte) {
+func (h *LiveHub) evictSlowSubscriber(entry *liveHubEntry, id uint64, downstream chan []byte) {
 	delete(entry.subscribers, id)
 	h.activeStreams--
 	h.evictedSubscribers++
@@ -163,7 +168,7 @@ func (h *liveHub) evictSlowSubscriber(entry *liveHubEntry, id uint64, downstream
 // closeEntryIfEmptyLocked removes channel's entry once its subscriber set is
 // empty and returns the upstream close func to invoke after unlocking (nil
 // if the entry is still in use or already gone). Callers must hold h.mu.
-func (h *liveHub) closeEntryIfEmptyLocked(channel string, entry *liveHubEntry) func() {
+func (h *LiveHub) closeEntryIfEmptyLocked(channel string, entry *liveHubEntry) func() {
 	if h.entries[channel] != entry || len(entry.subscribers) != 0 {
 		return nil
 	}
@@ -171,7 +176,7 @@ func (h *liveHub) closeEntryIfEmptyLocked(channel string, entry *liveHubEntry) f
 	return entry.upstreamClose
 }
 
-func (h *liveHub) forward(channel string, entry *liveHubEntry, upstream <-chan []byte) {
+func (h *LiveHub) forward(channel string, entry *liveHubEntry, upstream <-chan []byte) {
 	for payload := range upstream {
 		h.mu.Lock()
 		if h.entries[channel] != entry {
@@ -217,7 +222,7 @@ func (h *liveHub) forward(channel string, entry *liveHubEntry, upstream <-chan [
 // subscriptionCloseCause reports why ch was closed when the cause is a
 // specific, reconnectable per-subscriber event (overflow eviction) rather
 // than a generic upstream disconnect. It satisfies liveSourceCloseCause.
-func (h *liveHub) subscriptionCloseCause(ch <-chan []byte) error {
+func (h *LiveHub) subscriptionCloseCause(ch <-chan []byte) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	err := h.closeReasons[ch]
@@ -225,7 +230,7 @@ func (h *liveHub) subscriptionCloseCause(ch <-chan []byte) error {
 	return err
 }
 
-func (h *liveHub) stats() liveHubStats {
+func (h *LiveHub) stats() liveHubStats {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return liveHubStats{

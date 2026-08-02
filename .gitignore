@@ -66,6 +66,7 @@ docs/requirements.md
 /router
 secrets/
 osrm-data/
+motis-data/
 /model/
 app/lib/generated/
 app/lib/data/generated/

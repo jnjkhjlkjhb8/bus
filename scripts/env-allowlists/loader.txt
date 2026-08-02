@@ -22,3 +22,8 @@ HEALTH_FILE
 SENTRY_DSN
 SENTRY_ENVIRONMENT
 SENTRY_TRACES_SAMPLE_RATE
+# Where the nightly GTFS static feed is written (services/functions/gtfs.go).
+# Empty uses /data/gtfs, which is the named volume docker-compose.yaml mounts;
+# override only to relocate the feed, never to point it inside the container's
+# read-only root.
+GTFS_OUT_DIR

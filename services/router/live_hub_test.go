@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -25,15 +26,15 @@ func newHubSource() *hubSource {
 	}
 }
 
-func (s *hubSource) get(string) ([]byte, bool) {
+func (s *hubSource) get(context.Context, string) ([]byte, bool) {
 	return nil, false
 }
 
-func (s *hubSource) scanKeys(string) []string {
+func (s *hubSource) scanKeys(context.Context, string) []string {
 	return nil
 }
 
-func (s *hubSource) subscribe(channel string) (<-chan []byte, func(), error) {
+func (s *hubSource) subscribe(_ context.Context, channel string) (<-chan []byte, func(), error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.subscriptions[channel]++
@@ -77,13 +78,13 @@ func (s *hubSource) cancellationCount(channel string) int {
 
 func TestLiveHubSharesOneUpstreamSubscription(t *testing.T) {
 	src := newHubSource()
-	hub := newLiveHub(src, 10)
+	hub := NewLiveHub(src, 10)
 
-	first, closeFirst, err := hub.subscribe("route:1")
+	first, closeFirst, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, closeSecond, err := hub.subscribe("route:1")
+	second, closeSecond, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,9 +110,9 @@ func TestLiveHubSharesOneUpstreamSubscription(t *testing.T) {
 // the newest of these frames.
 func TestLiveHubOrderedDeliveryForHealthySubscriber(t *testing.T) {
 	src := newHubSource()
-	hub := newLiveHub(src, 10)
+	hub := NewLiveHub(src, 10)
 
-	stream, closeStream, err := hub.subscribe("route:1")
+	stream, closeStream, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,9 +140,9 @@ func TestLiveHubOrderedDeliveryForHealthySubscriber(t *testing.T) {
 // of silently replacing the oldest unread frame.
 func TestLiveHubEvictsSlowSubscriberOnOverflow(t *testing.T) {
 	src := newHubSource()
-	hub := newLiveHubWithQueueSize(src, 10, 4)
+	hub := NewLiveHubWithQueueSize(src, 10, 4)
 
-	stream, closeStream, err := hub.subscribe("route:1")
+	stream, closeStream, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,14 +181,14 @@ func TestLiveHubEvictsSlowSubscriberOnOverflow(t *testing.T) {
 // same channel: ordered delivery keeps working for it.
 func TestLiveHubOverflowEvictsOnlyTheSlowSubscriber(t *testing.T) {
 	src := newHubSource()
-	hub := newLiveHubWithQueueSize(src, 10, 4)
+	hub := NewLiveHubWithQueueSize(src, 10, 4)
 
-	slow, closeSlow, err := hub.subscribe("route:1")
+	slow, closeSlow, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeSlow()
-	healthy, closeHealthy, err := hub.subscribe("route:1")
+	healthy, closeHealthy, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,9 +241,9 @@ func TestLiveHubOverflowEvictsOnlyTheSlowSubscriber(t *testing.T) {
 
 func TestLiveHubClosesUpstreamAfterLastSubscriber(t *testing.T) {
 	src := newHubSource()
-	hub := newLiveHub(src, 10)
+	hub := NewLiveHub(src, 10)
 
-	_, closeStream, err := hub.subscribe("route:1")
+	_, closeStream, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,9 +255,9 @@ func TestLiveHubClosesUpstreamAfterLastSubscriber(t *testing.T) {
 
 func TestLiveHubClosesUpstreamAfterSourceDisconnect(t *testing.T) {
 	src := newHubSource()
-	hub := newLiveHub(src, 10)
+	hub := NewLiveHub(src, 10)
 
-	stream, closeStream, err := hub.subscribe("route:1")
+	stream, closeStream, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,9 +286,9 @@ func TestLiveHubClosesUpstreamAfterSourceDisconnect(t *testing.T) {
 // closeReasons entry behind.
 func TestLiveHubUnsubscribeClearsCloseReasonAfterEviction(t *testing.T) {
 	src := newHubSource()
-	hub := newLiveHubWithQueueSize(src, 10, 1)
+	hub := NewLiveHubWithQueueSize(src, 10, 1)
 
-	stream, closeStream, err := hub.subscribe("route:1")
+	stream, closeStream, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,15 +328,15 @@ func TestLiveHubUnsubscribeClearsCloseReasonAfterEviction(t *testing.T) {
 
 func TestLiveHubRejectsStreamAboveLimit(t *testing.T) {
 	src := newHubSource()
-	hub := newLiveHub(src, 1)
+	hub := NewLiveHub(src, 1)
 
-	_, closeStream, err := hub.subscribe("route:1")
+	_, closeStream, err := hub.subscribe(context.Background(), "route:1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closeStream()
 
-	_, _, err = hub.subscribe("route:2")
+	_, _, err = hub.subscribe(context.Background(), "route:2")
 	if got := status.Code(err); got != codes.ResourceExhausted {
 		t.Fatalf("status code = %s, want %s", got, codes.ResourceExhausted)
 	}

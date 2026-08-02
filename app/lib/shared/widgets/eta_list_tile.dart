@@ -202,9 +202,7 @@ class EtaListTile extends StatelessWidget {
             : EdgeInsets.zero,
         decoration: highlighted
             ? BoxDecoration(
-                color: cs.brightness == Brightness.light
-                    ? AppTheme.surfaceHighlightLight
-                    : AppTheme.surfaceHighlightDark,
+                color: AppTheme.surfaceHighlight(cs.brightness),
                 borderRadius: BorderRadius.circular(AppTheme.radiusCard),
               )
             : null,
@@ -286,15 +284,12 @@ class EtaValue extends StatelessWidget {
       ),
       EtaLabel(:final text) when _isClock(text) => Text(
         text,
-        style: AppTextStyles.memo.copyWith(
-          fontSize: muted
+        style: AppTextStyles.timeValue(
+          size: muted
               ? AppTextStyles.bodyRegular.fontSize
               : AppTextStyles.heading1.fontSize,
-          fontWeight: muted
-              ? FontWeight.w400
-              : AppTextStyles.heading1.fontWeight,
+          weight: muted ? FontWeight.w400 : AppTextStyles.heading1.fontWeight,
           color: muted ? cs.outline : cs.onSurface,
-          fontFeatures: const [FontFeature.tabularFigures()],
         ),
       ),
       EtaLabel(:final text) => Text(
@@ -319,9 +314,8 @@ bool _isClock(String text) => _clockPattern.hasMatch(text);
 
 /// The prominent mono time-value style (heading1 size/weight, tabular figures)
 /// shared by the minute and minute+second countdowns.
-TextStyle _bigTime(ColorScheme cs) => AppTextStyles.memo.copyWith(
-  fontSize: AppTextStyles.heading1.fontSize,
-  fontWeight: AppTextStyles.heading1.fontWeight,
+TextStyle _bigTime(ColorScheme cs) => AppTextStyles.timeValue(
+  size: AppTextStyles.heading1.fontSize,
+  weight: AppTextStyles.heading1.fontWeight,
   color: cs.onSurface,
-  fontFeatures: const [FontFeature.tabularFigures()],
 );

@@ -49,7 +49,7 @@ func (s *bikeHistorySampler) shouldSample(stationUID string, now time.Time) bool
 // bike_availability_history, the training data behind future rentable/returnable
 // prediction. An empty batch is a no-op; a copy error is logged, not returned,
 // so a failed history write never disrupts the realtime Redis path.
-func saveBikeAvailabilityHistory(ctx context.Context, db *pgxpool.Pool, rows [][]interface{}) {
+func saveBikeAvailabilityHistory(ctx context.Context, db *pgxpool.Pool, rows [][]any) {
 	if len(rows) == 0 {
 		return
 	}
@@ -68,7 +68,6 @@ func saveBikeAvailabilityHistory(ctx context.Context, db *pgxpool.Pool, rows [][
 func cleanupBikeHistory(ctx context.Context, db *pgxpool.Pool) error {
 	tag, err := db.Exec(ctx, `DELETE FROM bike_availability_history WHERE recorded_at < NOW() - INTERVAL '30 days'`)
 	if err != nil {
-		log.Errorf("[BIKE_HISTORY] cleanup error: %v", err)
 		return obs.Transient(fmt.Errorf("cleanup bike history: %w", err))
 	}
 	log.Infof("[BIKE_HISTORY] cleanup deleted %d rows", tag.RowsAffected())

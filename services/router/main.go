@@ -20,16 +20,20 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/peer"
+	// Registers the gzip compressor. grpc-go answers a request in whatever
+	// encoding the request arrived in (server.go: RecvCompress), so this import
+	// is what lets the app's gzipped requests come back gzipped — bus route
+	// static payloads carry verbatim TDX fare JSON, which compresses ~25x.
+	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/status"
 )
 
@@ -65,8 +69,8 @@ type BusRouteserver struct {
 	pb.UnimplementedBus_Route_ServiceServer
 	db    *pgxpool.Pool
 	rc    *redis.Client
-	cache *ttlCache
-	live  liveSource
+	cache *TTLCache
+	live  LiveSource
 }
 
 // BusStationserver serves station-group bus queries: group membership from
@@ -75,7 +79,7 @@ type BusStationserver struct {
 	pb.UnimplementedBus_Station_ServiceServer
 	db   *pgxpool.Pool
 	rc   *redis.Client
-	live liveSource
+	live LiveSource
 }
 
 // BikeServer serves bike-share station static data from PostgreSQL (memoized in
@@ -84,8 +88,8 @@ type BikeServer struct {
 	pb.UnimplementedBike_ServiceServer
 	db    *pgxpool.Pool
 	rc    *redis.Client
-	cache *ttlCache
-	live  liveSource
+	cache *TTLCache
+	live  LiveSource
 }
 
 // MrtServer streams metro arrival boards from Redis and hosts the metro
@@ -97,7 +101,7 @@ type MrtServer struct {
 	pb.UnimplementedMrt_ServiceServer
 	rc    *redis.Client
 	db    *pgxpool.Pool
-	live  liveSource
+	live  LiveSource
 	store mrtTrackStore
 	trtc  mrtTrainInfo
 	now   func() time.Time
@@ -112,130 +116,51 @@ type ThsrServer struct {
 	pb.UnimplementedThsrTimetableServiceServer
 	db   *pgxpool.Pool
 	rc   *redis.Client
-	live liveSource
+	live LiveSource
 }
 
-// Tra_TimetableServer serves TRA fares and timetables and streams system-wide
+// TraTimetableServer serves TRA fares and timetables and streams system-wide
 // delays. Fare/timetable lookups are Redis-cached and, on a miss, read from the
 // loaded env schema; empty results return NotFound (no TDX fetch, ADR-0005).
-type Tra_TimetableServer struct {
+type TraTimetableServer struct {
 	pb.UnimplementedTRATimetableServiceServer
 	db   *pgxpool.Pool
 	rc   *redis.Client
-	live liveSource
+	live LiveSource
 }
 
-// Tra_DetainServer serves per-train TRA stop times and streams per-train delay
+// TraDetainServer serves per-train TRA stop times and streams per-train delay
 // updates. Stop times are Redis-cached and, on a miss, read from the loaded env
 // schema; empty results return NotFound (no TDX fetch, ADR-0005).
-type Tra_DetainServer struct {
+type TraDetainServer struct {
 	pb.UnimplementedTRA_DetainServiceServer
 	db   *pgxpool.Pool
 	rc   *redis.Client
-	live liveSource
+	live LiveSource
 }
 
-// Thsr_DetainServer serves per-train THSR stop times. Stop times are Redis-cached
+// ThsrDetainServer serves per-train THSR stop times. Stop times are Redis-cached
 // and, on a miss, read from the loaded env schema; empty results return NotFound
 // (no TDX fetch, ADR-0005).
-type Thsr_DetainServer struct {
+type ThsrDetainServer struct {
 	pb.UnimplementedThsr_DetainServiceServer
 	db   *pgxpool.Pool
 	rc   *redis.Client
-	live liveSource
+	live LiveSource
 }
 
-// Near_Server streams results from the nearby discovery module.
-type Near_Server struct {
+// NearServer streams results from the nearby discovery module.
+type NearServer struct {
 	pb.UnimplementedNear_Station_ServiceServer
-	discovery *nearbyDiscovery
+	discovery *NearbyDiscovery
 }
 
-type rateLimiter struct {
-	mu          sync.Mutex
-	buckets     map[string]rateBucket
-	nextCleanup time.Time
-	now         func() time.Time
-}
-
-type rateBucket struct {
-	count     int
-	expiresAt time.Time
-}
-
-func newRateLimiter() *rateLimiter {
-	return &rateLimiter{
-		buckets: make(map[string]rateBucket, 128),
-		now:     time.Now,
-	}
-}
-
-func (r *rateLimiter) allow(scope, caller string, limit int, window time.Duration) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := r.now()
-	if r.nextCleanup.IsZero() || !now.Before(r.nextCleanup) {
-		r.nextCleanup = time.Time{}
-		for key, bucket := range r.buckets {
-			if !now.Before(bucket.expiresAt) {
-				delete(r.buckets, key)
-				continue
-			}
-			if r.nextCleanup.IsZero() || bucket.expiresAt.Before(r.nextCleanup) {
-				r.nextCleanup = bucket.expiresAt
-			}
-		}
-	}
-	key := scope + "\x00" + caller
-	bucket, ok := r.buckets[key]
-	if !ok || !now.Before(bucket.expiresAt) {
-		bucket = rateBucket{expiresAt: now.Add(window)}
-	}
-	if r.nextCleanup.IsZero() || bucket.expiresAt.Before(r.nextCleanup) {
-		r.nextCleanup = bucket.expiresAt
-	}
-	if bucket.count >= limit {
-		return false
-	}
-	bucket.count++
-	r.buckets[key] = bucket
-	return true
-}
-func rateLimitInterceptor(rl *rateLimiter, limit int, window time.Duration) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if !allowRequest(ctx, rl, info.FullMethod, limit, window) {
-			return nil, status.Error(codes.ResourceExhausted, "rate limit exceeded")
-		}
-		return handler(ctx, req)
-	}
-}
-func rateLimitStreamInterceptor(rl *rateLimiter, limit int, window time.Duration) grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if !allowRequest(ss.Context(), rl, info.FullMethod, limit, window) {
-			return status.Error(codes.ResourceExhausted, "rate limit exceeded")
-		}
-		return handler(srv, ss)
-	}
-}
-func allowRequest(ctx context.Context, rl *rateLimiter, scope string, limit int, window time.Duration) bool {
-	peerInfo, ok := peer.FromContext(ctx)
-	if !ok || peerInfo.Addr == nil {
-		return true
-	}
-	addr := peerInfo.Addr.String()
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		host = addr
-	}
-	return rl.allow(scope, host, limit, window)
-}
-
-func installationRateLimitInterceptor(rl *rateLimiter, limit int, window time.Duration) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+func installationRateLimitInterceptor(rl *RateLimiter, limit int, window time.Duration) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if !strings.HasPrefix(info.FullMethod, "/Firebase_Service/") {
 			return handler(ctx, req)
 		}
-		installID, ok := installationCallerID(ctx)
+		installID, ok := InstallationCallerID(ctx)
 		if ok && !rl.allow(info.FullMethod, "install:"+installID, limit, window) {
 			return nil, status.Error(codes.ResourceExhausted, "installation rate limit exceeded")
 		}
@@ -244,78 +169,16 @@ func installationRateLimitInterceptor(rl *rateLimiter, limit int, window time.Du
 }
 
 func productionUnaryInterceptors(
-	appCheckVerifier appCheckVerifier,
+	appCheckVerifier AppCheckVerifier,
 	enforceAppCheck bool,
-	maasRL *rateLimiter,
+	maasRL *RateLimiter,
 ) []grpc.UnaryServerInterceptor {
 	return []grpc.UnaryServerInterceptor{
 		obs.UnaryInterceptor(),
-		rateLimitInterceptor(newRateLimiter(), 30, time.Second),
-		maasResourceInterceptor(maasRL, defaultMaasResourceConfig),
-		appCheckUnaryInterceptor(appCheckVerifier, enforceAppCheck),
-		installationRateLimitInterceptor(newRateLimiter(), 30, time.Second),
-	}
-}
-
-type maasResourceConfig struct {
-	RateLimit  int
-	RateWindow time.Duration
-}
-
-var defaultMaasResourceConfig = maasResourceConfig{
-	RateLimit:  5,
-	RateWindow: time.Minute,
-}
-
-// maasQuotaScope is the rate-limiter bucket both plan methods spend from. They
-// share one name deliberately: plan and planStream cost the same TDX call, so
-// billing them separately would hand every caller a second allowance for
-// switching method.
-const maasQuotaScope = "maas:plan"
-
-// maasPlanQuota charges one plan against the per-caller TDX quota, returning the
-// error to fail the RPC with, or nil to proceed. Cancellation is checked on both
-// sides of the accounting so a caller that left neither spends quota
-// unnecessarily nor gets work started on its behalf.
-func maasPlanQuota(ctx context.Context, rl *rateLimiter, config maasResourceConfig) error {
-	if err := ctx.Err(); err != nil {
-		return status.FromContextError(err).Err()
-	}
-	if !allowRequest(ctx, rl, maasQuotaScope, config.RateLimit, config.RateWindow) {
-		return status.Error(codes.ResourceExhausted, "MaaS rate limit exceeded")
-	}
-	if err := ctx.Err(); err != nil {
-		return status.FromContextError(err).Err()
-	}
-	return nil
-}
-
-// maasResourceInterceptor contains the per-caller TDX quota independently from
-// unrelated gRPC methods. Shared-work concurrency and deadlines belong to
-// MaasServer so singleflight work retains them after an individual caller exits.
-func maasResourceInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		if info.FullMethod != pb.MaasService_Plan_FullMethodName {
-			return handler(ctx, req)
-		}
-		if err := maasPlanQuota(ctx, rl, config); err != nil {
-			return nil, err
-		}
-		return handler(ctx, req)
-	}
-}
-
-// maasResourceStreamInterceptor is the streaming half of the same quota. Without
-// it planStream would reach TDX with no per-caller ceiling at all.
-func maasResourceStreamInterceptor(rl *rateLimiter, config maasResourceConfig) grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if info.FullMethod != pb.MaasService_PlanStream_FullMethodName {
-			return handler(srv, ss)
-		}
-		if err := maasPlanQuota(ss.Context(), rl, config); err != nil {
-			return err
-		}
-		return handler(srv, ss)
+		RateLimitInterceptor(NewRateLimiter(), 30, time.Second),
+		MaasResourceInterceptor(maasRL, DefaultMaasResourceConfig),
+		AppCheckUnaryInterceptor(appCheckVerifier, enforceAppCheck),
+		installationRateLimitInterceptor(NewRateLimiter(), 30, time.Second),
 	}
 }
 
@@ -457,25 +320,27 @@ func run() error {
 				log.Errorf("[REDIS] action=close event=failed error=%v", err)
 			}
 		})
-		live := newLiveHubWithQueueSize(
-			redisLiveSource{rc: rc},
+		live := NewLiveHubWithQueueSize(
+			RedisLiveSource{rc: rc},
 			int(shared.EnvInt32("ROUTER_MAX_LIVE_STREAMS", 2000)),
-			int(shared.EnvInt32("ROUTER_LIVE_SUBSCRIBER_QUEUE", defaultSubscriberQueueSize)),
+			int(shared.EnvInt32("ROUTER_LIVE_SUBSCRIBER_QUEUE", DefaultSubscriberQueueSize)),
 		)
 		db := shared.ConnectDB("ROUTER_DB_MAX_CONNS", 20)
 		runtime.addCleanup(db.Close)
 		go logPoolStats(db)
 		// MaaS route planning is the router's sole, deliberate TDX carve-out: it is a
 		// request/response proxy, not cacheable live data, so it stays on the read
-		// path (ADR-0005 amendment). Every other formerly-live TDX fetch, including the
-		// THSR seat refresh, now runs in services/functions. This client exists only
-		// for MaaS.
+		// path (ADR-0005 amendment). Every other live TDX fetch, including the THSR
+		// seat refresh, runs in services/functions. This client exists only for MaaS.
 		tdx := shared.NewTDXClient(shared.TDXConfig{
 			Store:  shared.RedisTDXStore{RC: rc},
 			IMSKey: shared.TDXLegacyIMSKey,
 		})
-		httpConfig.booking = newBookingProxy(tdx)
-		maasCache := newRedisMaasCache(rc.Options())
+		httpConfig.booking = NewBookingProxy(tdx)
+		// Same client the live streams use: the GBFS station_status feed reads the
+		// bike availability keys bikeEta writes, so it needs no cache of its own.
+		httpConfig.redis = rc
+		maasCache := NewRedisMaasCache(rc.Options())
 		runtime.addCleanup(func() {
 			if err := maasCache.Close(); err != nil {
 				log.Errorf("[MAAS] action=cache_close event=failed error=%v", err)
@@ -491,18 +356,18 @@ func run() error {
 			return err
 		}
 		runtime.addCleanup(func() { _ = httpRuntime.listener.Close() })
-		rl := newRateLimiter()
-		tlsCredentials, err := grpcTLSCredentialsFromEnv()
+		rl := NewRateLimiter()
+		tlsCredentials, err := GRPCTLSCredentialsFromEnv()
 		if err != nil {
 			return fmt.Errorf("gRPC TLS initialization failed: %w", err)
 		}
-		appCheckVerifier, enforceAppCheck, err := firebaseAppCheckFromEnv(context.Background())
+		appCheckVerifier, enforceAppCheck, err := FirebaseAppCheckFromEnv(context.Background())
 		if err != nil {
 			return fmt.Errorf("initialize Firebase Admin: %w", err)
 		}
 		// One limiter across both chains so the TDX quota is spent per caller,
 		// not per method (see maasQuotaScope).
-		maasRL := newRateLimiter()
+		maasRL := NewRateLimiter()
 		serverOptions := []grpc.ServerOption{
 			// Stop is the bounded GracefulStop fallback. Waiting for handlers here
 			// keeps backend ownership valid until canceled RPC handlers return.
@@ -510,42 +375,42 @@ func run() error {
 			grpc.ChainUnaryInterceptor(productionUnaryInterceptors(appCheckVerifier, enforceAppCheck, maasRL)...),
 			grpc.ChainStreamInterceptor(
 				obs.StreamInterceptor(),
-				rateLimitStreamInterceptor(rl, 30, time.Second),
-				maasResourceStreamInterceptor(maasRL, defaultMaasResourceConfig),
-				appCheckStreamInterceptor(appCheckVerifier, enforceAppCheck),
+				RateLimitStreamInterceptor(rl, 30, time.Second),
+				MaasResourceStreamInterceptor(maasRL, DefaultMaasResourceConfig),
+				AppCheckStreamInterceptor(appCheckVerifier, enforceAppCheck),
 			),
 		}
 		if tlsCredentials != nil {
 			serverOptions = append(serverOptions, grpc.Creds(tlsCredentials))
 		}
 		grpcServer := grpc.NewServer(serverOptions...)
-		pb.RegisterBus_Route_ServiceServer(grpcServer, &BusRouteserver{db: db, rc: rc, cache: newTTLCache(), live: live})
+		pb.RegisterBus_Route_ServiceServer(grpcServer, &BusRouteserver{db: db, rc: rc, cache: NewTTLCache(), live: live})
 		pb.RegisterBus_Station_ServiceServer(grpcServer, &BusStationserver{db: db, rc: rc, live: live})
-		pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: newTTLCache(), live: live})
+		pb.RegisterBike_ServiceServer(grpcServer, &BikeServer{db: db, rc: rc, cache: NewTTLCache(), live: live})
 		pb.RegisterMrt_ServiceServer(grpcServer, &MrtServer{
 			db: db, rc: rc, live: live,
-			store: newFirebaseStore(db),
+			store: NewFirebaseStore(db),
 			trtc:  shared.NewTRTCTrainInfoClient(os.Getenv("TRTC_USERNAME"), os.Getenv("TRTC_PASSWORD")),
 			now:   time.Now,
 		})
 		pb.RegisterThsrTimetableServiceServer(grpcServer, &ThsrServer{db: db, rc: rc, live: live})
-		pb.RegisterTRATimetableServiceServer(grpcServer, &Tra_TimetableServer{db: db, rc: rc, live: live})
-		pb.RegisterTRA_DetainServiceServer(grpcServer, &Tra_DetainServer{db: db, rc: rc, live: live})
-		pb.RegisterThsr_DetainServiceServer(grpcServer, &Thsr_DetainServer{db: db, rc: rc, live: live})
-		nearbyRouter := newOSRMWalkingRouter(resty.New().SetTimeout(5*time.Second), "http://osrm:5000")
-		pb.RegisterNear_Station_ServiceServer(grpcServer, &Near_Server{discovery: newNearbyDiscovery(newPostgresNearbyStore(db), nearbyRouter)})
+		pb.RegisterTRATimetableServiceServer(grpcServer, &TraTimetableServer{db: db, rc: rc, live: live})
+		pb.RegisterTRA_DetainServiceServer(grpcServer, &TraDetainServer{db: db, rc: rc, live: live})
+		pb.RegisterThsr_DetainServiceServer(grpcServer, &ThsrDetainServer{db: db, rc: rc, live: live})
+		nearbyRouter := NewOSRMWalkingRouter(resty.New().SetTimeout(5*time.Second), "http://osrm:5000")
+		pb.RegisterNear_Station_ServiceServer(grpcServer, &NearServer{discovery: NewNearbyDiscovery(NewPostgresNearbyStore(db), nearbyRouter)})
 		pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
-		maasServer := newMaasServerWithCache(maasCache, db, tdx, defaultMaasSharedWorkConfig)
+		maasServer := NewMaasServerWithCache(maasCache, db, tdx, DefaultMaasSharedWorkConfig)
 		// Registered after rc/db/maasCache's cleanups above, so in cleanup's
 		// LIFO order MaasServer.Close runs first: every shared singleflight
 		// flight is canceled and joined before those backends close under it.
 		runtime.addCleanup(maasServer.Close)
 		pb.RegisterMaasServiceServer(grpcServer, maasServer)
-		pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: newFirebaseStore(db), now: time.Now})
+		pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: NewFirebaseStore(db), now: time.Now})
 		pb.RegisterFeedback_ServiceServer(grpcServer, &FeedbackServer{
-			store:    newFeedbackStore(db),
-			devices:  newFirebaseStore(db),
-			notifier: newFeedbackNotifier(),
+			store:    NewFeedbackStore(db),
+			devices:  NewFirebaseStore(db),
+			notifier: NewFeedbackNotifier(),
 		})
 		log.Infof("gRPC server is running on port %d", 50051)
 		log.Infof("[HTTP] server running on 0.0.0.0:8080")

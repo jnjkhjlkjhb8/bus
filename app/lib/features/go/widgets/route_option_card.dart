@@ -95,11 +95,10 @@ class RouteOptionCard extends StatelessWidget {
       children: [
         Text(
           '$minutes',
-          style: AppTextStyles.memo.copyWith(
-            fontSize: AppTextStyles.heading1.fontSize,
-            fontWeight: AppTextStyles.heading1.fontWeight,
+          style: AppTextStyles.timeValue(
+            size: AppTextStyles.heading1.fontSize,
+            weight: AppTextStyles.heading1.fontWeight,
             color: cs.onSurface,
-            fontFeatures: AppTextStyles.tabularFigures,
           ),
         ),
         const SizedBox(width: 2),
@@ -129,10 +128,9 @@ class RouteOptionCard extends StatelessWidget {
               ),
               Text(
                 arrival,
-                style: AppTextStyles.memo.copyWith(
-                  fontSize: AppTextStyles.bodySmall.fontSize,
+                style: AppTextStyles.timeValue(
+                  size: AppTextStyles.bodySmall.fontSize,
                   color: cs.onSurfaceVariant,
-                  fontFeatures: AppTextStyles.tabularFigures,
                 ),
               ),
             ],
@@ -220,10 +218,9 @@ class RouteOptionCard extends StatelessWidget {
               ),
               Text(
                 '${route.totalFare}',
-                style: AppTextStyles.memo.copyWith(
-                  fontSize: AppTextStyles.bodySmall.fontSize,
+                style: AppTextStyles.timeValue(
+                  size: AppTextStyles.bodySmall.fontSize,
                   color: cs.onSurface,
-                  fontFeatures: AppTextStyles.tabularFigures,
                 ),
               ),
             ],

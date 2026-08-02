@@ -258,6 +258,17 @@ services:
       PG_STATEMENT_TIMEOUT: 600s
     networks:
       - backend
+    volumes:
+      # The GTFS static feed the loader publishes at the end of its nightly
+      # chain (GTFS_OUT_DIR, services/functions/gtfs.go). It has to outlive the
+      # container — the root filesystem is read-only and anything written to a
+      # container layer would vanish on the next deploy — and it has to be
+      # readable by the planner that consumes it, which is a different
+      # container. A named volume is both. Mount the same volume :ro on MOTIS
+      # when it lands, and point it at gtfs.zip: the publish is a rename of a
+      # symlink, so a reader never sees a half-written archive and rolling back
+      # to the previous night is a one-line change.
+      - gtfs_feed:/data/gtfs
     tmpfs:
       - /tmp:size=256m
     mem_limit: ${LOADER_MEM_LIMIT:-384m}
@@ -396,22 +407,45 @@ services:
     # filename, or a profile change) no longer looks identical, so
     # preprocessing reruns instead of silently serving routes over
     # yesterday's map.
+    #
+    # Preprocessing runs in .build/ and the result is renamed into place,
+    # because osrm-routed mmaps /data/*.osrm read-only and this job can run
+    # while it is serving: `up` re-checks Geofabrik's -latest on every deploy,
+    # and staging and prod bind-mount this same directory. Writing the .osrm
+    # set in place would swap the pages under a live reader. rename(2) only
+    # unlinks the old inode, so a running osrm keeps serving the map it started
+    # with until it is restarted (see the refresh-osrm-prod make target).
+    #
+    # osrm-extract names its output after the path it is given, so the PBF is
+    # copied in rather than pointed at from outside. The marker is cleared
+    # before the swap: a crash partway through must not leave a marker claiming
+    # a build that only half landed.
+    #
+    # The trailing `|| exit 1` is what reports a failed build. `set -e` does not
+    # fire for an && list inside an if branch, so without it a failed
+    # osrm-extract still exits 0 and osrm's service_completed_successfully
+    # dependency is satisfied over a map that was never written.
     command:
       - >
         set -e; cd /data;
         pbf="${OSRM_PBF_FILE:-taiwan.osm.pbf}";
         profile="foot";
-        osrm_base="$${pbf%.osm.pbf}.osrm";
-        marker_file="$${pbf%.osm.pbf}.osrm.marker";
+        base="$${pbf%.osm.pbf}";
+        marker_file="$${base}.osrm.marker";
         pbf_sha256="$$(sha256sum "$$pbf" | cut -d' ' -f1)";
         want_marker="$${pbf_sha256}:$${profile}";
         if [ -f "$$marker_file" ] && [ "$$(cat "$$marker_file")" = "$$want_marker" ]; then
           echo "osrm-init: preprocessing already up to date for $$pbf ($$profile)";
         else
-          osrm-extract -p /opt/foot.lua "$$pbf" &&
-          osrm-partition "$$osrm_base" &&
-          osrm-customize "$$osrm_base" &&
-          echo "$$want_marker" > "$$marker_file";
+          rm -rf .build && mkdir .build && cp "$$pbf" .build/ &&
+          ( cd .build &&
+            osrm-extract -p /opt/foot.lua "$$pbf" &&
+            osrm-partition "$${base}.osrm" &&
+            osrm-customize "$${base}.osrm" ) &&
+          rm -f "$$marker_file" &&
+          mv .build/"$${base}".osrm* . &&
+          rm -rf .build &&
+          echo "$$want_marker" > "$$marker_file" || exit 1;
         fi;
         chmod -R a+rX .
     restart: "no"
@@ -472,6 +506,7 @@ volumes:
   ollama_data:
   router_keys:
   ingestor_spool:
+  gtfs_feed:
 
 # O7 / review_results.md P2-03 network segmentation: frontend carries only
 # router (gRPC/HTTP ingress) and powersync (edge-proxied sync); backend

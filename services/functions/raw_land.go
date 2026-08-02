@@ -110,10 +110,11 @@ func sinceFallback(name string) string {
 // ok=false. The date-partitioned timetable endpoints carry their partition value
 // (traindate) in the URL's last segment so a mid-run partition swap replaces one
 // date rather than TRUNCATE'ing the table.
-func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
+func rawDumpTarget(url string) (rawTarget, bool) {
+	var partVal string
 	seg := strings.Split(strings.Trim(url, "/"), "/")
 	if len(seg) < 3 || seg[0] != "v2" {
-		return "", "", "", false
+		return rawTarget{}, false
 	}
 	cityOf := func() string {
 		for i, s := range seg {
@@ -148,13 +149,23 @@ func rawDumpTarget(url string) (table, partCol, partVal string, ok bool) {
 			key = famSeg{familyRailSingle, pair}
 		}
 	default:
-		return "", "", "", false
+		return rawTarget{}, false
 	}
 	d, found := rawTargetIndex[key]
 	if !found {
-		return "", "", "", false
+		return rawTarget{}, false
 	}
-	return d.rawTable, d.partCol, partVal, true
+	return rawTarget{table: d.rawTable, partCol: d.partCol, partVal: partVal}, true
+}
+
+// rawTarget names one raw_tdx landing partition. The three fields are all
+// strings and always travel together, so they are grouped: a transposed
+// argument is a compile error here rather than a silent mislanding into the
+// wrong table or partition.
+type rawTarget struct {
+	table   string
+	partCol string
+	partVal string
 }
 
 // errRawDump marks a raw_tdx landing failure so callers can log it distinctly
@@ -207,14 +218,16 @@ func buildWhitelist() map[string]bool {
 // "system" / "traindate". Table and partition names are interpolated into SQL,
 // so this is the injection barrier — never relax it to accept caller-supplied
 // identifiers.
-func validateRawTarget(table, partCol string) error {
-	if !rawTDXTables[table] {
-		return fmt.Errorf("%w: table %q not whitelisted", errRawDump, table)
+func validateRawTarget(t rawTarget) error {
+	if !rawTDXTables[t.table] {
+		return fmt.Errorf("%w: table %q not whitelisted", errRawDump, t.table)
 	}
-	if partCol != "" && partCol != "city" && partCol != "system" && partCol != "traindate" {
-		return fmt.Errorf("%w: partition column %q not allowed", errRawDump, partCol)
+	switch t.partCol {
+	case "", "city", "system", "traindate":
+		return nil
+	default:
+		return fmt.Errorf("%w: partition column %q not allowed", errRawDump, t.partCol)
 	}
-	return nil
 }
 
 // rawPartitionWhere builds the partition WHERE clause for a raw_tdx landing
@@ -224,11 +237,11 @@ func validateRawTarget(table, partCol string) error {
 // comparing it to a YYYY-MM-DD string under the services' UTC session matches
 // nothing; select by Taipei calendar date instead so the right partition is
 // found regardless of the session TimeZone.
-func rawPartitionWhere(table, partCol string) string {
-	if table == "thsr_dailytimetable" {
+func rawPartitionWhere(t rawTarget) string {
+	if t.table == "thsr_dailytimetable" {
 		return "WHERE (traindate AT TIME ZONE 'Asia/Taipei')::date = $1::date"
 	}
-	return fmt.Sprintf("WHERE %s = $1", partCol)
+	return fmt.Sprintf("WHERE %s = $1", t.partCol)
 }
 
 // verifyAndTouchRawLanding validates a 304 against the durable state committed
@@ -240,19 +253,21 @@ func rawPartitionWhere(table, partCol string) string {
 // remains recorded for audit, while the bounded 304 check detects
 // missing/emptied partitions without counting millions of rows; partial-row
 // loss requires a full integrity audit.
-func verifyAndTouchRawLanding(ctx context.Context, table, partCol, partVal, marker, landingCycle string) error {
+func verifyAndTouchRawLanding(ctx context.Context, t rawTarget, marker, landingCycle string) error {
 	if ingestDB == nil {
 		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
 	}
-	return verifyAndTouchRawLandingWithDB(ctx, ingestDB, table, partCol, partVal, marker, landingCycle)
+	return verifyAndTouchRawLandingWithDB(ctx, ingestDB, t, marker, landingCycle)
 }
 
 func verifyAndTouchRawLandingWithDB(
 	ctx context.Context,
 	db rawLandingBeginner,
-	table, partCol, partVal, marker, landingCycle string,
+	t rawTarget,
+	marker, landingCycle string,
 ) error {
-	if err := validateRawTarget(table, partCol); err != nil {
+	table, partCol, partVal := t.table, t.partCol, t.partVal
+	if err := validateRawTarget(t); err != nil {
 		return err
 	}
 	if marker == "" {
@@ -303,7 +318,7 @@ func verifyAndTouchRawLandingWithDB(
 	existsSQL := fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM raw_tdx.%s", table)
 	args := []any{}
 	if partCol != "" {
-		existsSQL += " " + rawPartitionWhere(table, partCol)
+		existsSQL += " " + rawPartitionWhere(t)
 		args = append(args, partVal)
 	}
 	existsSQL += " LIMIT 1)"
@@ -336,11 +351,11 @@ func verifyAndTouchRawLandingWithDB(
 	return nil
 }
 
-// rawDeleteSQL builds the per-partition DELETE for a raw_tdx landing. table and
-// partCol are interpolated, so callers must pass values already cleared by
-// validateRawTarget.
-func rawDeleteSQL(table, partCol string) string {
-	return fmt.Sprintf("DELETE FROM raw_tdx.%s %s", table, rawPartitionWhere(table, partCol))
+// rawDeleteSQL builds the per-partition DELETE for a raw_tdx landing. The
+// table and partition column are interpolated, so callers must pass a target
+// already cleared by validateRawTarget.
+func rawDeleteSQL(t rawTarget) string {
+	return fmt.Sprintf("DELETE FROM raw_tdx.%s %s", t.table, rawPartitionWhere(t))
 }
 
 // rawInsertSQL lowercases each object's top-level keys (PascalCase TDX → lowercase
@@ -363,22 +378,22 @@ SELECT r.* FROM jsonb_array_elements($2::jsonb) elem,
 // TRUNCATE'd. A dump failure is an ingestion failure and is returned as an error:
 // the caller must NOT advance the Last-Modified / If-Modified-Since cache unless
 // the dump succeeds, otherwise a later 304 would leave raw_tdx permanently stale.
-func dumpRawTDX(ctx context.Context, table, partCol, partVal, marker, landingCycle string, body []byte) error {
+func dumpRawTDX(ctx context.Context, t rawTarget, marker, landingCycle string, body []byte) error {
 	if len(body) == 0 {
 		body = []byte("[]")
 	}
-	return dumpRawTDXReader(ctx, table, partCol, partVal, marker, landingCycle, bytes.NewReader(body))
+	return dumpRawTDXReader(ctx, t, marker, landingCycle, bytes.NewReader(body))
 }
 
 // dumpRawTDXReader is the streaming landing entrypoint used by the ingestor.
 // body must be seekable because each transient transaction retry consumes it;
 // the reader is rewound before every attempt instead of retaining a second full
 // copy of the payload in memory.
-func dumpRawTDXReader(ctx context.Context, table, partCol, partVal, marker, landingCycle string, body io.ReadSeeker) error {
+func dumpRawTDXReader(ctx context.Context, t rawTarget, marker, landingCycle string, body io.ReadSeeker) error {
 	if ingestDB == nil {
 		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
 	}
-	if err := validateRawTarget(table, partCol); err != nil {
+	if err := validateRawTarget(t); err != nil {
 		return err
 	}
 	if body == nil {
@@ -394,7 +409,7 @@ func dumpRawTDXReader(ctx context.Context, table, partCol, partVal, marker, land
 		if _, err := body.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("%w: rewind response: %w", errRawDump, err)
 		}
-		return obs.Transient(landRawTDX(ctx, table, partCol, partVal, marker, landingCycle, body))
+		return obs.Transient(landRawTDX(ctx, t, marker, landingCycle, body))
 	})
 }
 
@@ -403,20 +418,22 @@ func dumpRawTDXReader(ctx context.Context, table, partCol, partVal, marker, land
 // server statement_timeout, and TCP keepalive is too slow to notice). On timeout
 // pgx cancels the query; dumpRawTDX retries, and if all attempts fail the caller
 // leaves the IMS cache un-advanced so this partition refetches next run.
-func landRawTDX(ctx context.Context, table, partCol, partVal, marker, landingCycle string, body io.Reader) error {
+func landRawTDX(ctx context.Context, t rawTarget, marker, landingCycle string, body io.Reader) error {
 	if ingestDB == nil {
 		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
 	}
-	return landRawTDXWithDB(ctx, ingestDB, table, partCol, partVal, marker, landingCycle, body)
+	return landRawTDXWithDB(ctx, ingestDB, t, marker, landingCycle, body)
 }
 
 func landRawTDXWithDB(
 	ctx context.Context,
 	db rawLandingBeginner,
-	table, partCol, partVal, marker, landingCycle string,
+	t rawTarget,
+	marker, landingCycle string,
 	body io.Reader,
 ) error {
-	if err := validateRawTarget(table, partCol); err != nil {
+	table, partCol, partVal := t.table, t.partCol, t.partVal
+	if err := validateRawTarget(t); err != nil {
 		return err
 	}
 	if strings.TrimSpace(marker) == "" {
@@ -449,7 +466,7 @@ func landRawTDXWithDB(
 
 	inject := "{}"
 	if partCol != "" {
-		if _, err := tx.Exec(ctx, rawDeleteSQL(table, partCol), partVal); err != nil {
+		if _, err := tx.Exec(ctx, rawDeleteSQL(t), partVal); err != nil {
 			return fmt.Errorf("%w: delete partition: %w", errRawDump, err)
 		}
 		b, _ := json.Marshal(map[string]string{partCol: partVal})

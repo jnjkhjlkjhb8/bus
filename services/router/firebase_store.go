@@ -14,9 +14,9 @@ import (
 
 var errFirebaseNotFound = errors.New("firebase record not found")
 
-const reminderPending = "pending"
+const ReminderPending = "pending"
 
-type firebaseArrivalReminder struct {
+type FirebaseArrivalReminder struct {
 	ReminderID  string
 	InstallID   string
 	RouteType   string
@@ -44,7 +44,7 @@ type firebaseDB interface {
 
 type firebaseStore struct{ db firebaseDB }
 
-func newFirebaseStore(db *pgxpool.Pool) *firebaseStore { return &firebaseStore{db: db} }
+func NewFirebaseStore(db *pgxpool.Pool) *firebaseStore { return &firebaseStore{db: db} }
 
 // UpsertDevice inserts or updates a device row. The ON CONFLICT update is gated
 // on the stored install_secret_hash matching secretHash, so an existing row is
@@ -121,7 +121,7 @@ func (s *firebaseStore) ReplaceRouteSubscriptions(ctx context.Context, installID
 
 // CreateArrivalReminder inserts a reminder row. Token is not persisted here; it
 // is joined from the device row when reminders are later listed for dispatch.
-func (s *firebaseStore) CreateArrivalReminder(ctx context.Context, reminder firebaseArrivalReminder) error {
+func (s *firebaseStore) CreateArrivalReminder(ctx context.Context, reminder FirebaseArrivalReminder) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO firebase_arrival_reminder
 			(reminder_id, install_id, route_type, route_key, stop_key, direction, lead_minutes, fire_at, expires_at, status, plate)
@@ -186,7 +186,7 @@ func (s *firebaseStore) ListSubscribedDevices(ctx context.Context, routeType, ro
 // route/stop/direction, joined to each device's FCM token. Only devices with
 // push enabled and a non-empty token are included. It is the dispatcher's query
 // for candidates to fire.
-func (s *firebaseStore) ListActiveArrivalReminders(ctx context.Context, routeType, routeKey, stopKey, direction string, now time.Time) ([]firebaseArrivalReminder, error) {
+func (s *firebaseStore) ListActiveArrivalReminders(ctx context.Context, routeType, routeKey, stopKey, direction string, now time.Time) ([]FirebaseArrivalReminder, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT r.reminder_id, r.install_id, d.fcm_token, r.route_type, r.route_key, r.stop_key,
 			r.direction, r.lead_minutes, r.fire_at, r.expires_at, r.status
@@ -199,9 +199,9 @@ func (s *firebaseStore) ListActiveArrivalReminders(ctx context.Context, routeTyp
 		return nil, err
 	}
 	defer rows.Close()
-	var reminders []firebaseArrivalReminder
+	var reminders []FirebaseArrivalReminder
 	for rows.Next() {
-		var reminder firebaseArrivalReminder
+		var reminder FirebaseArrivalReminder
 		if err := rows.Scan(&reminder.ReminderID, &reminder.InstallID, &reminder.Token, &reminder.RouteType,
 			&reminder.RouteKey, &reminder.StopKey, &reminder.Direction, &reminder.LeadMinutes,
 			&reminder.FireAt, &reminder.ExpiresAt, &reminder.Status); err != nil {

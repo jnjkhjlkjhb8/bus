@@ -32,9 +32,36 @@ def load_data(conn):
           AND EXTRACT(EPOCH FROM recorded_at - prev_at) < 300
     """, conn)
 
-    avgs = pd.read_sql("""
-        SELECT sub_route_uid, direction, stop_uid, hour, day_of_week, avg_seconds
-        FROM bus_travel_avg WHERE sample_count > 0
+    # Each stop's running seconds from its subroute's origin, accumulated from
+    # the observed segment times. Mirrors batchStopOffsets in
+    # services/functions/predict.go — the model predicts a residual on this
+    # figure, so training and prediction must accumulate the same way.
+    # Incomplete directions are excluded for the same reason they are at
+    # prediction time: one unobserved hop compresses every stop after it.
+    offsets = pd.read_sql("""
+        WITH linked AS (
+            SELECT m.sub_route_uid, m.direction, m.stop_uid, m.stop_sequence,
+                   LAG(m.stop_uid) OVER w AS prev_stop_uid,
+                   count(*) OVER (PARTITION BY m.sub_route_uid, m.direction) AS stop_count
+            FROM bus_station_stop_map m
+            WINDOW w AS (PARTITION BY m.sub_route_uid, m.direction ORDER BY m.stop_sequence)
+        ), accumulated AS (
+            SELECT l.sub_route_uid, l.direction, l.stop_uid,
+                   SUM(COALESCE(g.secs, 0)) OVER (PARTITION BY l.sub_route_uid, l.direction
+                                                  ORDER BY l.stop_sequence
+                                                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS offset_seconds,
+                   (l.stop_count > 1
+                    AND BOOL_AND(l.prev_stop_uid IS NULL OR g.secs IS NOT NULL)
+                        OVER (PARTITION BY l.sub_route_uid, l.direction)) AS complete
+            FROM linked l
+            LEFT JOIN bus_segment_time g
+              ON g.sub_route_uid = l.sub_route_uid
+             AND g.direction     = l.direction
+             AND g.from_stop_uid = l.prev_stop_uid
+             AND g.to_stop_uid   = l.stop_uid
+        )
+        SELECT sub_route_uid, direction, stop_uid, offset_seconds
+        FROM accumulated WHERE complete
     """, conn)
 
     # Origin-stop departure per trip. Timetable rows are type=false with the
@@ -50,7 +77,7 @@ def load_data(conn):
         ORDER BY sub_route_uid, direction, tripid, stopsequence
     """, conn)
 
-    return crossings, avgs, schedules
+    return crossings, offsets, schedules
 
 def compute_travel_seconds(crossings, schedules):
     schedules = schedules.assign(
@@ -89,18 +116,18 @@ def compute_travel_seconds(crossings, schedules):
 
 def main():
     conn = psycopg2.connect(DB_URL)
-    crossings, avgs, schedules = load_data(conn)
+    crossings, offsets, schedules = load_data(conn)
     conn.close()
 
     df = compute_travel_seconds(crossings, schedules)
     if df.empty:
         raise SystemExit(
             f"no matched arrivals: {len(crossings)} crossings, "
-            f"{len(schedules)} schedule trips, {len(avgs)} travel averages"
+            f"{len(schedules)} schedule trips, {len(offsets)} stop offsets"
         )
-    df = df.merge(avgs, on=["sub_route_uid", "direction", "stop_uid", "hour", "day_of_week"], how="left")
-    df = df.dropna(subset=["avg_seconds"])
-    df["delay_seconds"] = df["actual_travel"] - df["avg_seconds"]
+    df = df.merge(offsets, on=["sub_route_uid", "direction", "stop_uid"], how="left")
+    df = df.dropna(subset=["offset_seconds"])
+    df["delay_seconds"] = df["actual_travel"] - df["offset_seconds"]
     df = df[df["delay_seconds"].abs() <= 3600]
 
     city_enc = LabelEncoder()

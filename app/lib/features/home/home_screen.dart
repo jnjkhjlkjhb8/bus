@@ -65,6 +65,12 @@ const _kDefaultPosition = LatLng(25.0330, 121.5654);
 /// logo flush on the sheet edge, larger values lift it further up the map.
 const _kMapLogoGap = 2.0;
 
+/// How far a settled camera may sit from where the app aimed it and still
+/// count as that move arriving — see [_HomeScreenState._selfDrivenTarget]. A
+/// bounds fit lands on the centre of the padded viewport rather than the exact
+/// midpoint of the poles, so the match has to be approximate.
+const _kSelfDrivenSlackMeters = 100.0;
+
 /// One frame's worth of scan-ring geometry — see [_HomeScreenState._scanRing].
 typedef _ScanRing = ({Offset center, double radiusPx, bool still});
 
@@ -196,6 +202,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   /// the full sweep rather than the quiet ring, and cleared as soon as that
   /// search is decided. A deliberate tap is a question; a pan is not.
   bool _scanFromLocate = false;
+
+  /// Where a camera move the app made for the rider is heading — the pan onto
+  /// a tapped station, the fit around its poles. Drilling into a station is
+  /// not a request to search somewhere else, so the idle those moves end on
+  /// must not re-query: the list the rider tapped from stays exactly as they
+  /// left it, and no ring claims a search nobody asked for.
+  ///
+  /// Held as the destination rather than a bare flag so a move that never
+  /// happened (target already on screen, animation coalesced away) cannot
+  /// swallow the rider's next real pan — only an idle that actually landed on
+  /// this spot is skipped.
+  LatLng? _selfDrivenTarget;
 
   Future<void> _rebuildMarkers(List<NearStationViewModel> stations) async {
     final revision = ++_markerRevision;
@@ -417,6 +435,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     // newLatLngBounds answers by zooming all the way in. The pan
     // [_focusStationOnMap] already ran is the right answer for that group.
     if (north - south < 1e-6 && east - west < 1e-6) return;
+    _selfDrivenTarget = LatLng((south + north) / 2, (west + east) / 2);
     await controller.animateCamera(
       CameraUpdate.newLatLngBounds(
         LatLngBounds(
@@ -463,12 +482,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       // chose; only a camera too far out for the icon band gets raised, and
       // only as far as that floor.
       if (tooFarOut) {
+        _selfDrivenTarget = target;
         unawaited(
           controller.animateCamera(
             CameraUpdate.newLatLngZoom(target, _kIconZoomThreshold),
           ),
         );
       } else if (needsPan) {
+        _selfDrivenTarget = target;
         unawaited(controller.animateCamera(CameraUpdate.newLatLng(target)));
       }
     }
@@ -629,6 +650,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final style = _markerStyle(_zoom);
     if (style != _markerStyleCache) {
       unawaited(_rebuildMarkers(_nearbyBloc.state.stations));
+    }
+    final selfDriven = _selfDrivenTarget;
+    _selfDrivenTarget = null;
+    // Landed where the app sent it: this idle belongs to a tap on a station,
+    // not to the rider looking somewhere new — see [_selfDrivenTarget].
+    if (selfDriven != null &&
+        haversineMeters(_camCenter, selfDriven) < _kSelfDrivenSlackMeters) {
+      return;
     }
     _scheduleNearbyForViewport();
   }

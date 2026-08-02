@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 // loadSource is the seam between the loader and the raw landing store. The
@@ -244,7 +244,6 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 		for _, part := range parts {
 			body, fetchedAt, err := src.datasetJSON(ctx, spec.table, spec.partCol, part)
 			if err != nil {
-				log.Errorf("[LOAD] action=read event=error dataset=%s partition=%s error=%v", spec.key, part, err)
 				failures = append(failures, fmt.Errorf("load dataset %s partition %s: read: %w", spec.key, part, err))
 				stats.failed++
 				continue
@@ -259,14 +258,13 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 				continue
 			}
 			if !spec.staleOK && isStale(fetchedAt) {
-				log.Warnf("[LOAD] action=skip event=stale dataset=%s partition=%s fetched_at=%s reason=%v", spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale)
-				failures = append(failures, fmt.Errorf("load dataset %s partition %s: %w", spec.key, part, errLoadStale))
+				failures = append(failures, fmt.Errorf("load dataset %s partition %s fetched_at %s: %w",
+					spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale))
 				stats.failed++
 				continue
 			}
 			dec := json.NewDecoder(bytes.NewReader(body))
 			if err := spec.load(ctx, dec, sink, part); err != nil {
-				log.Errorf("[LOAD] action=transform event=error dataset=%s partition=%s error=%v", spec.key, part, err)
 				failures = append(failures, fmt.Errorf("load dataset %s partition %s: transform: %w", spec.key, part, err))
 				stats.failed++
 				continue
@@ -365,7 +363,8 @@ func (r rawTDXSource) datasetJSONWithLandingCycle(ctx context.Context, table, pa
 }
 
 func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partVal string, includeCycle bool) ([]byte, time.Time, string, error) {
-	if err := validateRawTarget(table, partCol); err != nil {
+	target := rawTarget{table: table, partCol: partCol, partVal: partVal}
+	if err := validateRawTarget(target); err != nil {
 		return nil, time.Time{}, "", err
 	}
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{
@@ -424,7 +423,7 @@ func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partV
 	where := ""
 	args := []any{}
 	if partCol != "" {
-		where = rawPartitionWhere(table, partCol)
+		where = rawPartitionWhere(target)
 		args = append(args, partVal)
 	}
 	q := fmt.Sprintf(

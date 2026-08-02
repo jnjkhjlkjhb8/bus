@@ -13,7 +13,7 @@ import (
 // state before live updates begin.
 type AlertServer struct {
 	pb.UnimplementedAlert_ServiceServer
-	live liveSource
+	live LiveSource
 }
 
 // BusNews streams bus service-news alerts for the requested city. The city is
@@ -58,8 +58,8 @@ func (s *AlertServer) ThsrAlert(_ *pb.Alert_Ask, stream grpc.ServerStreamingServ
 // the router only re-types them. A snapshot that fails to decode is skipped
 // rather than surfaced, since tearing down a live stream over one bad message
 // would cost the rider every later alert too.
-func streamAlert(live liveSource, key string, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	return streamLive(stream.Context(), live, liveStreamSpec{
+func streamAlert(live LiveSource, key string, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
+	return StreamLive(stream.Context(), live, LiveStreamSpec{
 		channel:  key,
 		seedKeys: []string{key},
 	}, func(data []byte) error {

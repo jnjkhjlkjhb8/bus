@@ -8,10 +8,10 @@ import (
 )
 
 type postgresNearbyStore struct {
-	db coreDB
+	db CoreDB
 }
 
-func newPostgresNearbyStore(db coreDB) *postgresNearbyStore {
+func NewPostgresNearbyStore(db CoreDB) *postgresNearbyStore {
 	return &postgresNearbyStore{db: db}
 }
 
@@ -24,7 +24,7 @@ type nearbyDBRow struct {
 	Lat            float64 `db:"lat"`
 }
 
-func (s *postgresNearbyStore) Find(ctx context.Context, mode nearbyMode, query nearbyQuery) ([]nearbyCandidate, error) {
+func (s *postgresNearbyStore) Find(ctx context.Context, mode NearbyMode, query NearbyQuery) ([]NearbyCandidate, error) {
 	statement, err := nearbySQL(mode)
 	if err != nil {
 		return nil, err
@@ -38,19 +38,19 @@ func (s *postgresNearbyStore) Find(ctx context.Context, mode nearbyMode, query n
 	if err != nil {
 		return nil, err
 	}
-	candidates := make([]nearbyCandidate, 0, len(dbRows))
+	candidates := make([]NearbyCandidate, 0, len(dbRows))
 	for _, row := range dbRows {
-		candidates = append(candidates, nearbyCandidate{
+		candidates = append(candidates, NearbyCandidate{
 			Mode: mode, ID: row.ID, Name: row.Name, City: row.City,
-			Point: geoPoint{Lon: row.Lon, Lat: row.Lat}, GeodesicMeters: row.GeodesicMeters,
+			Point: GeoPoint{Lon: row.Lon, Lat: row.Lat}, GeodesicMeters: row.GeodesicMeters,
 		})
 	}
 	return candidates, nil
 }
 
-func nearbySQL(mode nearbyMode) (string, error) {
+func nearbySQL(mode NearbyMode) (string, error) {
 	switch mode {
-	case nearbyBus:
+	case NearbyBus:
 		return `SELECT group_uid AS id, group_name AS name, city,
 			ST_Distance(position::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography) AS geodesic_meters,
 			ST_X(position) AS lon, ST_Y(position) AS lat

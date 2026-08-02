@@ -170,7 +170,7 @@ func TestTraStationBoardPayloadMapsRows(t *testing.T) {
 			"ending_station_name", "departuretime", "direction", "mask", "note",
 		}).AddRow(day, "271", "1", "自強(3000)", "潮州", depart, int32(0), int32(128), "每日行駛"))
 
-	items, err := traStationBoardPayload(context.Background(), db, "1000", day, 0)
+	items, err := TRAStationBoardPayload(context.Background(), db, "1000", day, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestThsrStationBoardPayloadMapsRows(t *testing.T) {
 			"train_date", "trainno", "ending_station_name", "departuretime", "direction", "note",
 		}).AddRow(day, "0663", "南港", "14:36:00", int32(1), ""))
 
-	items, err := thsrStationBoardPayload(context.Background(), db, "1000", day, 1)
+	items, err := THSRStationBoardPayload(context.Background(), db, "1000", day, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

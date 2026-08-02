@@ -1,22 +1,23 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
-import 'package:wheres_the_bus/data/repositories/place_recent_repository.dart';
 import 'package:wheres_the_bus/data/repositories/places_repository.dart';
-import 'package:wheres_the_bus/data/repositories/saved_place_repository.dart';
+import 'package:wheres_the_bus/features/go/bloc/place_search_bloc.dart';
+import 'package:wheres_the_bus/features/go/bloc/place_search_event.dart';
+import 'package:wheres_the_bus/features/go/bloc/place_search_state.dart';
 import 'package:wheres_the_bus/features/go/model/planned_place.dart';
 import 'package:wheres_the_bus/features/go/model/saved_place_icons.dart';
+import 'package:wheres_the_bus/features/go/widgets/save_place_dialog.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/motion/app_motion.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
-import 'package:wheres_the_bus/shared/widgets/app_button.dart';
-import 'package:wheres_the_bus/shared/widgets/app_dialog.dart';
 import 'package:wheres_the_bus/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_bus/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_bus/shared/widgets/state_cards.dart';
@@ -152,22 +153,14 @@ class PlaceSearchView extends StatefulWidget {
 class _PlaceSearchViewState extends State<PlaceSearchView> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
-  Timer? _debounce;
-  List<PlaceSuggestion> _results = const [];
-  List<PlannedPlace> _recents = const [];
-  List<PlannedPlace> _saved = const [];
-  bool _loading = false;
-  bool _resolvingLocation = false;
-  // The placeId currently resolving a Places `details()` fetch (from either
-  // a tap-to-pick or a swipe-to-save), so only that row shows a busy state
-  // instead of the whole list.
-  String? _pickingId;
+
+  // Held directly rather than provided: the state is per-appearance, and the
+  // rows below take callbacks, so nothing looks it up from the tree.
+  final _bloc = PlaceSearchBloc()..add(const PlaceSearchStarted());
 
   @override
   void initState() {
     super.initState();
-    _recents = PlaceRecentRepository.instance.all();
-    _saved = SavedPlaceRepository.instance.all();
     // A hosted field is the reason the screen exists, so it always takes focus.
     // Deferred a frame: requesting focus during the route transition drops
     // frames of the push the rider is watching.
@@ -181,83 +174,72 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
 
   @override
   void dispose() {
-    _debounce?.cancel();
+    unawaited(_bloc.close());
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
-  bool get _empty => _controller.text.trim().isEmpty;
+  void _onQueryChanged(String value) => _bloc.add(PlaceQueryChanged(value));
 
-  void _onQueryChanged(String value) {
-    _debounce?.cancel();
-    final query = value.trim();
-    if (query.isEmpty) {
-      setState(() {
-        _results = const [];
-        _loading = false;
-      });
-      return;
+  /// Acts on the bloc's one-shot outcomes: the pieces that need a
+  /// [BuildContext] — snackbars, dialogs, and handing the place to the host.
+  void _onEffect(BuildContext context, PlaceSearchState state) {
+    final effect = state.effect;
+    if (effect == null) return;
+    final i18n = AppI18n.of(context);
+    switch (effect.error) {
+      case PlaceSearchErrorKind.location:
+        AppSnackbar.show(
+          context,
+          i18n.goLocationUnavailable,
+          type: SnackType.error,
+        );
+        return;
+      case PlaceSearchErrorKind.place:
+        AppSnackbar.show(
+          context,
+          i18n.goPlaceUnavailable,
+          type: SnackType.error,
+        );
+        return;
+      case null:
+        break;
     }
-    setState(() => _loading = true);
-    _debounce = Timer(const Duration(milliseconds: 300), () => _search(query));
-  }
-
-  Future<void> _search(String query) async {
-    try {
-      final results = await PlacesRepository.instance.autocomplete(query);
-      if (!mounted) return;
-      setState(() {
-        _results = results;
-        _loading = false;
-      });
-    } on Object catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _results = const [];
-        _loading = false;
-      });
+    final place = effect.resolved;
+    if (place == null) return;
+    switch (effect.intent!) {
+      case ResolveIntent.pick:
+        widget.onPicked(place);
+      case ResolveIntent.save:
+        unawaited(_promptSave(place));
     }
   }
 
   Future<void> _useCurrentLocation() async {
     unawaited(HapticService.instance.lightTap());
-    setState(() => _resolvingLocation = true);
+    final i18n = AppI18n.of(context);
+    _bloc.add(const LocationResolving(active: true));
     try {
-      final place = await resolveCurrentPlace(AppI18n.of(context));
+      final place = await resolveCurrentPlace(i18n);
+      // Disposing closes the bloc, so nothing may be posted to it after the
+      // view is gone.
       if (!mounted) return;
+      _bloc.add(const LocationResolving(active: false));
       widget.onPicked(place);
-      if (mounted) setState(() => _resolvingLocation = false);
     } on Object catch (_) {
       if (!mounted) return;
-      setState(() => _resolvingLocation = false);
-      AppSnackbar.show(
-        context,
-        AppI18n.of(context).goLocationUnavailable,
-        type: SnackType.error,
-      );
+      // The bloc turns the failure into an effect, so the snackbar is raised
+      // from the one place that handles them.
+      _bloc.add(const LocationResolving(active: false, failed: true));
     }
   }
 
-  Future<void> _pickResult(PlaceSuggestion suggestion) async {
-    if (_pickingId != null) return;
-    unawaited(HapticService.instance.lightTap());
-    setState(() => _pickingId = suggestion.placeId);
-    try {
-      final place = await PlacesRepository.instance.details(suggestion.placeId);
-      await PlaceRecentRepository.instance.add(place);
-      if (!mounted) return;
-      widget.onPicked(place);
-      if (mounted) setState(() => _pickingId = null);
-    } on Object catch (_) {
-      if (!mounted) return;
-      setState(() => _pickingId = null);
-      AppSnackbar.show(
-        context,
-        AppI18n.of(context).goPlaceUnavailable,
-        type: SnackType.error,
-      );
+  void _resolve(PlaceSuggestion suggestion, ResolveIntent intent) {
+    if (intent == ResolveIntent.pick) {
+      unawaited(HapticService.instance.lightTap());
     }
+    _bloc.add(PlaceResolveRequested(suggestion.placeId, intent));
   }
 
   // A recent/saved place already carries coordinates, so it returns straight
@@ -267,33 +249,12 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     widget.onPicked(place);
   }
 
-  Future<void> _removeRecent(PlannedPlace place) async {
-    unawaited(HapticService.instance.lightTap());
-    await PlaceRecentRepository.instance.remove(place);
-    if (!mounted) return;
-    setState(() => _recents = PlaceRecentRepository.instance.all());
-    AppSnackbar.show(
-      context,
-      AppI18n.of(context).goRecentRemoved,
-      action: AppI18n.of(context).commonUndo,
-      onAction: () async {
-        await PlaceRecentRepository.instance.add(place);
-        if (!mounted) return;
-        setState(() => _recents = PlaceRecentRepository.instance.all());
-      },
-    );
-  }
-
   // Right-swipe on a result or recent opens the save dialog prefilled with the
   // place's own name; on confirm it is pinned to saved places.
-  Future<void> _saveFrom(PlannedPlace place) async {
+  Future<void> _promptSave(PlannedPlace place) async {
     final result = await showSavePlaceDialog(context, initialName: place.name);
     if (result == null || !mounted) return;
-    await SavedPlaceRepository.instance.add(
-      place.copyWith(name: result.name, iconKey: result.iconKey),
-    );
-    if (!mounted) return;
-    setState(() => _saved = SavedPlaceRepository.instance.all());
+    _bloc.add(PlaceSaved(place, name: result.name, iconKey: result.iconKey));
     AppSnackbar.show(
       context,
       AppI18n.of(context).goPlaceSaved,
@@ -301,77 +262,64 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     );
   }
 
-  // A search result carries no coordinates, so resolve its details before
-  // opening the save dialog — otherwise the pin would be stored at (0, 0).
-  Future<void> _saveFromResult(PlaceSuggestion suggestion) async {
-    if (_pickingId != null) return;
-    setState(() => _pickingId = suggestion.placeId);
-    PlannedPlace place;
-    try {
-      place = await PlacesRepository.instance.details(suggestion.placeId);
-    } on Object catch (_) {
-      if (!mounted) return;
-      setState(() => _pickingId = null);
-      AppSnackbar.show(
-        context,
-        AppI18n.of(context).goPlaceUnavailable,
-        type: SnackType.error,
-      );
-      return;
-    }
-    if (!mounted) return;
-    setState(() => _pickingId = null);
-    await _saveFrom(place);
-  }
-
-  Future<void> _editSaved(PlannedPlace place) async {
+  Future<void> _promptEdit(PlannedPlace place) async {
     final result = await showSavePlaceDialog(
       context,
       initialName: place.name,
       initialIcon: place.iconKey,
     );
     if (result == null || !mounted) return;
-    await SavedPlaceRepository.instance.add(
-      place.copyWith(name: result.name, iconKey: result.iconKey),
-    );
-    if (!mounted) return;
-    setState(() => _saved = SavedPlaceRepository.instance.all());
+    _bloc.add(PlaceSaved(place, name: result.name, iconKey: result.iconKey));
   }
 
-  Future<void> _removeSaved(PlannedPlace place) async {
+  void _removeRecent(PlannedPlace place) {
     unawaited(HapticService.instance.lightTap());
-    await SavedPlaceRepository.instance.remove(place);
-    if (!mounted) return;
-    setState(() => _saved = SavedPlaceRepository.instance.all());
+    _bloc.add(RecentRemoved(place));
+    AppSnackbar.show(
+      context,
+      AppI18n.of(context).goRecentRemoved,
+      action: AppI18n.of(context).commonUndo,
+      onAction: () => _bloc.add(RecentRestored(place)),
+    );
+  }
+
+  void _removeSaved(PlannedPlace place) {
+    unawaited(HapticService.instance.lightTap());
+    _bloc.add(SavedRemoved(place));
     AppSnackbar.show(
       context,
       AppI18n.of(context).goSavedPlaceRemoved,
       action: AppI18n.of(context).commonUndo,
-      onAction: () async {
-        await SavedPlaceRepository.instance.add(place);
-        if (!mounted) return;
-        setState(() => _saved = SavedPlaceRepository.instance.all());
-      },
+      onAction: () => _bloc.add(SavedRestored(place)),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final headerBuilder = widget.headerBuilder;
-    return Column(
-      children: [
-        if (headerBuilder != null)
-          headerBuilder(context, _buildInput(context))
-        else if (widget.showInput)
-          _buildInputRow(context),
-        Expanded(child: _buildList(context)),
-      ],
+    return BlocConsumer<PlaceSearchBloc, PlaceSearchState>(
+      bloc: _bloc,
+      // The effect is deliberately left in the state after it is consumed, so
+      // only a change of effect may fire this — never an unrelated rebuild.
+      listenWhen: (previous, current) => previous.effect != current.effect,
+      listener: _onEffect,
+      builder: (context, state) {
+        final headerBuilder = widget.headerBuilder;
+        return Column(
+          children: [
+            if (headerBuilder != null)
+              headerBuilder(context, _buildInput(context, state))
+            else if (widget.showInput)
+              _buildInputRow(context, state),
+            Expanded(child: _buildList(context, state)),
+          ],
+        );
+      },
     );
   }
 
   /// The text field itself plus its clear button — everything the host needs to
   /// drop the search into a row of its own design.
-  Widget _buildInput(BuildContext context) {
+  Widget _buildInput(BuildContext context, PlaceSearchState state) {
     final cs = Theme.of(context).colorScheme;
     return Row(
       children: [
@@ -395,7 +343,7 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
             onChanged: _onQueryChanged,
           ),
         ),
-        if (!_empty)
+        if (!state.isEmptyQuery)
           Pressable(
             onTap: () {
               _controller.clear();
@@ -413,7 +361,7 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     );
   }
 
-  Widget _buildInputRow(BuildContext context) {
+  Widget _buildInputRow(BuildContext context, PlaceSearchState state) {
     final cs = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 16, 12),
@@ -449,7 +397,7 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
                     color: cs.onSurfaceVariant,
                   ),
                   const SizedBox(width: 8),
-                  Expanded(child: _buildInput(context)),
+                  Expanded(child: _buildInput(context, state)),
                 ],
               ),
             ),
@@ -459,7 +407,7 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     );
   }
 
-  Widget _buildList(BuildContext context) {
+  Widget _buildList(BuildContext context, PlaceSearchState state) {
     // Shortcuts and autocomplete are two readings of the same column, so they
     // cross-fade rather than hard-swapping. Keyed by which list is showing, not
     // by its contents: re-fading on every keystroke would strobe.
@@ -478,31 +426,31 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
           child: child,
         ),
       ),
-      child: _empty
-          ? _buildShortcuts(context)
+      child: state.isEmptyQuery
+          ? _buildShortcuts(context, state)
           : KeyedSubtree(
               key: const ValueKey('results'),
-              child: _buildResults(context),
+              child: _buildResults(context, state),
             ),
     );
   }
 
-  Widget _buildResults(BuildContext context) {
-    if (_loading && _results.isEmpty) return const _PlaceSkeleton();
-    if (_results.isEmpty) return const _PlaceEmpty();
+  Widget _buildResults(BuildContext context, PlaceSearchState state) {
+    if (state.loading && state.results.isEmpty) return const _PlaceSkeleton();
+    if (state.results.isEmpty) return const _PlaceEmpty();
     return ListView.builder(
       padding: const EdgeInsets.only(bottom: 24),
-      itemCount: _results.length,
+      itemCount: state.results.length,
       itemBuilder: (context, i) => _ResultRow(
-        result: _results[i],
-        loading: _pickingId == _results[i].placeId,
-        onTap: () => _pickResult(_results[i]),
-        onSave: () => _saveFromResult(_results[i]),
+        result: state.results[i],
+        loading: state.pickingId == state.results[i].placeId,
+        onTap: () => _resolve(state.results[i], ResolveIntent.pick),
+        onSave: () => _resolve(state.results[i], ResolveIntent.save),
       ),
     );
   }
 
-  Widget _buildShortcuts(BuildContext context) {
+  Widget _buildShortcuts(BuildContext context, PlaceSearchState state) {
     return ListView(
       key: const ValueKey('shortcuts'),
       padding: const EdgeInsets.only(bottom: 24),
@@ -510,30 +458,32 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
         if (widget.header != null) widget.header!,
         if (widget.allowCurrentLocation)
           _CurrentLocationRow(
-            loading: _resolvingLocation,
+            loading: state.resolvingLocation,
             onTap: _useCurrentLocation,
           ),
-        if (_saved.isEmpty && _recents.isEmpty && widget.emptyHint != null)
+        if (state.saved.isEmpty &&
+            state.recents.isEmpty &&
+            widget.emptyHint != null)
           _EmptyHint(widget.emptyHint!),
-        if (_saved.isNotEmpty) ...[
+        if (state.saved.isNotEmpty) ...[
           _SectionLabel(AppI18n.of(context).goSavedPlaces),
-          for (final place in _saved)
+          for (final place in state.saved)
             _SavedPlaceRow(
               key: ValueKey('saved-${_placeKey(place)}'),
               place: place,
               onTap: () => _pickPlace(place),
-              onEdit: () => _editSaved(place),
+              onEdit: () => unawaited(_promptEdit(place)),
               onRemove: () => _removeSaved(place),
             ),
         ],
-        if (_recents.isNotEmpty) ...[
+        if (state.recents.isNotEmpty) ...[
           _SectionLabel(AppI18n.of(context).searchRecent),
-          for (final place in _recents)
+          for (final place in state.recents)
             _RecentPlaceRow(
               key: ValueKey('recent-${_placeKey(place)}'),
               place: place,
               onTap: () => _pickPlace(place),
-              onSave: () => _saveFrom(place),
+              onSave: () => unawaited(_promptSave(place)),
               onRemove: () => _removeRecent(place),
             ),
         ],
@@ -624,7 +574,7 @@ class _CurrentLocationRow extends StatelessWidget {
   }
 }
 
-// A row whose right-swipe reveals a neutral AppI18n.of(context).commonSave affordance and whose
+// A row whose right-swipe reveals a neutral save affordance and whose
 // left-swipe reveals a destructive action; a colored background is data here,
 // not decoration, so it stays within the achromatic UI (error red is the one
 // permitted semantic exception, used only for delete).
@@ -930,182 +880,6 @@ class _PlaceEmpty extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// Centered modal to name a saved place and pick its icon. Returns the chosen
-/// `(name, iconKey)` on 儲存, or null on cancel/dismiss.
-Future<({String name, String iconKey})?> showSavePlaceDialog(
-  BuildContext context, {
-  required String initialName,
-  String? initialIcon,
-}) {
-  return showDialog<({String name, String iconKey})>(
-    context: context,
-    builder: (_) =>
-        _SavePlaceDialog(initialName: initialName, initialIcon: initialIcon),
-  );
-}
-
-class _SavePlaceDialog extends StatefulWidget {
-  const _SavePlaceDialog({required this.initialName, this.initialIcon});
-
-  final String initialName;
-  final String? initialIcon;
-
-  @override
-  State<_SavePlaceDialog> createState() => _SavePlaceDialogState();
-}
-
-class _SavePlaceDialogState extends State<_SavePlaceDialog> {
-  late final TextEditingController _name = TextEditingController(
-    text: widget.initialName,
-  );
-  late String _icon = widget.initialIcon ?? SavedPlaceIcons.keys.first;
-
-  @override
-  void initState() {
-    super.initState();
-    _name.addListener(_onNameChanged);
-  }
-
-  @override
-  void dispose() {
-    _name
-      ..removeListener(_onNameChanged)
-      ..dispose();
-    super.dispose();
-  }
-
-  // Rebuilds only to toggle the 儲存 button's enabled state as the name
-  // field crosses the empty/non-empty boundary.
-  void _onNameChanged() => setState(() {});
-
-  void _submit() {
-    final name = _name.text.trim();
-    if (name.isEmpty) return;
-    unawaited(HapticService.instance.lightTap());
-    Navigator.of(context).pop((name: name, iconKey: _icon));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return AppDialog(
-      title: AppI18n.of(context).goSavedPlaces,
-      body: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            AppI18n.of(context).commonName,
-            style: AppTextStyles.bodySmall.copyWith(
-              color: cs.onSurfaceVariant,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _name,
-            autofocus: true,
-            textInputAction: TextInputAction.done,
-            onSubmitted: (_) => _submit(),
-            style: AppTextStyles.bodyLarge.copyWith(
-              color: cs.onSurface,
-              fontWeight: FontWeight.w600,
-            ),
-            decoration: InputDecoration(
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 12,
-              ),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-                borderSide: BorderSide(color: cs.outlineVariant),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AppTheme.radiusButton),
-                borderSide: BorderSide(color: cs.onSurface, width: 2),
-              ),
-            ),
-          ),
-          const SizedBox(height: 18),
-          Text(
-            AppI18n.of(context).commonIcon,
-            style: AppTextStyles.bodySmall.copyWith(
-              color: cs.onSurfaceVariant,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 10),
-          _IconGrid(
-            selected: _icon,
-            onSelect: (key) => setState(() => _icon = key),
-          ),
-          const SizedBox(height: 20),
-          Row(
-            children: [
-              Expanded(
-                child: AppButton.outlined(
-                  label: AppI18n.of(context).commonCancel,
-                  onPressed: () => Navigator.of(context).pop(),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: AppButton(
-                  label: AppI18n.of(context).commonSave,
-                  onPressed: _name.text.trim().isEmpty ? null : _submit,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _IconGrid extends StatelessWidget {
-  const _IconGrid({required this.selected, required this.onSelect});
-
-  final String selected;
-  final ValueChanged<String> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: [
-        for (final key in SavedPlaceIcons.keys)
-          Pressable(
-            onTap: () => onSelect(key),
-            semanticLabel: key,
-            child: Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: key == selected
-                    ? cs.surface
-                    : cs.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(AppTheme.radiusCard),
-                border: Border.all(
-                  color: key == selected ? cs.onSurface : Colors.transparent,
-                  width: 1.5,
-                ),
-              ),
-              child: Icon(
-                SavedPlaceIcons.resolve(key),
-                size: 22,
-                color: key == selected ? cs.onSurface : cs.onSurfaceVariant,
-              ),
-            ),
-          ),
-      ],
     );
   }
 }

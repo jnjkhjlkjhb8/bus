@@ -28,9 +28,9 @@ type railStation struct {
 	StationCode string `json:"StationCode"`
 }
 
-// tra_fare decodes a TDX TRA/ODFare element: fares between a station pair by
+// traFare decodes a TDX TRA/ODFare element: fares between a station pair by
 // ticket type.
-type tra_fare struct {
+type traFare struct {
 	OriginStationID      string `json:"OriginStationID"`
 	DestinationStationID string `json:"DestinationStationID"`
 	Fares                []struct {
@@ -39,9 +39,9 @@ type tra_fare struct {
 	} `json:"Fares"`
 }
 
-// thsr_fare decodes a TDX THSR/ODFare element: fares between a station pair,
+// thsrFare decodes a TDX THSR/ODFare element: fares between a station pair,
 // further split by fare class and cabin class.
-type thsr_fare struct {
+type thsrFare struct {
 	OriginStationID      string `json:"OriginStationID"`
 	DestinationStationID string `json:"DestinationStationID"`
 	Fares                []struct {
@@ -64,9 +64,9 @@ type traDelay struct {
 	SrcUpdateTime string `json:"SrcUpdateTime"`
 }
 
-// raw_tra_timetable decodes a TDX TRA/DailyTimetable element: one train's info
+// rawTraTimetable decodes a TDX TRA/DailyTimetable element: one train's info
 // and its ordered stop times for a given service date.
-type raw_tra_timetable struct {
+type rawTraTimetable struct {
 	TrainDate      string `json:"TrainDate"`
 	DailyTrainInfo struct {
 		TrainNo             string `json:"TrainNo"`
@@ -109,10 +109,10 @@ type raw_tra_timetable struct {
 	} `json:"StopTimes"`
 }
 
-// raw_thsr_timetable decodes a TDX THSR/DailyTimetable element: one high-speed
+// rawThsrTimetable decodes a TDX THSR/DailyTimetable element: one high-speed
 // train's info and stop times for a service date. Overnight marks a train that
 // crosses midnight.
-type raw_thsr_timetable struct {
+type rawThsrTimetable struct {
 	TrainDate      string `json:"TrainDate"`
 	DailyTrainInfo struct {
 		TrainNo             string `json:"TrainNo"`
@@ -184,7 +184,7 @@ func requiredBinaryFlag(field string, value *uint8) (uint8, error) {
 	return *value, nil
 }
 
-func validateTraTimetable(timetable raw_tra_timetable, partitionDate string) error {
+func validateTraTimetable(timetable rawTraTimetable, partitionDate string) error {
 	trainDate := timetable.TrainDate
 	if trainDate == "" {
 		trainDate = partitionDate
@@ -251,7 +251,7 @@ func validateTraTimetable(timetable raw_tra_timetable, partitionDate string) err
 	return nil
 }
 
-func validateThsrTimetable(timetable raw_thsr_timetable, partitionDate string) error {
+func validateThsrTimetable(timetable rawThsrTimetable, partitionDate string) error {
 	if _, err := time.Parse(time.DateOnly, timetable.TrainDate); err != nil {
 		return fmt.Errorf("TrainDate %q: %w", timetable.TrainDate, err)
 	}
@@ -306,7 +306,7 @@ func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, dat
 	if _, err := time.Parse(time.DateOnly, date); err != nil {
 		return fmt.Errorf("TRA timetable partition date %q: %w", date, err)
 	}
-	timetables, err := decodeLoadArray[raw_tra_timetable](dec, "TRA timetable "+date, func(_ int, timetable raw_tra_timetable) error {
+	timetables, err := decodeLoadArray[rawTraTimetable](dec, "TRA timetable "+date, func(_ int, timetable rawTraTimetable) error {
 		return validateTraTimetable(timetable, date)
 	})
 	if err != nil {
@@ -421,7 +421,7 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, da
 	if _, err := time.Parse(time.DateOnly, date); err != nil {
 		return fmt.Errorf("THSR timetable partition date %q: %w", date, err)
 	}
-	timetables, err := decodeLoadArray[raw_thsr_timetable](dec, "THSR timetable "+date, func(_ int, timetable raw_thsr_timetable) error {
+	timetables, err := decodeLoadArray[rawThsrTimetable](dec, "THSR timetable "+date, func(_ int, timetable rawThsrTimetable) error {
 		return validateThsrTimetable(timetable, date)
 	})
 	if err != nil {
@@ -633,7 +633,7 @@ func validateRailStation(station railStation, requireStationCode bool) error {
 // (origin_station_id, destination_station_id, ticket_type) upsert are
 // byte-identical to the legacy transform.
 func loadTraFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ string) error {
-	fares, err := decodeLoadArray[tra_fare](dec, "TRA fares", func(_ int, fare tra_fare) error {
+	fares, err := decodeLoadArray[traFare](dec, "TRA fares", func(_ int, fare traFare) error {
 		if strings.TrimSpace(fare.OriginStationID) == "" {
 			return errors.New("OriginStationID is required")
 		}
@@ -699,7 +699,7 @@ func loadTraFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ string
 // (origin,destination,ticket_type,fare_class,cabin_class) upsert are
 // byte-identical to the legacy transform.
 func loadThsrFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ string) error {
-	fares, err := decodeLoadArray[thsr_fare](dec, "THSR fares", func(_ int, fare thsr_fare) error {
+	fares, err := decodeLoadArray[thsrFare](dec, "THSR fares", func(_ int, fare thsrFare) error {
 		if strings.TrimSpace(fare.OriginStationID) == "" {
 			return errors.New("OriginStationID is required")
 		}
@@ -773,8 +773,7 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 	log.Infof("[TRA_ETA] action=tra_eta event=start")
 	result, err := fetch(ctx, "/v2/Rail/TRA/LiveTrainDelay", "tra_delay")
 	if err != nil {
-		log.Warnf("[TRA_ETA] action=tra_eta event=skip_delay reason=api_error error=%v", err)
-		return err
+		return fmt.Errorf("fetch TRA live train delay: %w", err)
 	}
 	if !result.Modified {
 		// On a 304, boundFetch has already re-armed the delay keys' TTL.
@@ -786,7 +785,7 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 			Delay: make(map[string]int32),
 		}
 		count := 0
-		pipe := sink.pipelineContext(ctx)
+		pipe := sink.pipeline()
 		if decErr := decodeLiveItems(dec, func(temp traDelay) error {
 			count++
 			delay := int32(temp.DelayTime)
@@ -810,15 +809,14 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 		pipe.Set(shared.TraDelayAllKey, bytes, traLiveTTL)
 		pipe.Publish(shared.TraDelayAllKey, string(bytes))
 		pipe.Expire(shared.TraDelayHashKey, traLiveTTL)
-		if err := pipe.Exec(); err != nil {
+		if err := pipe.Exec(ctx); err != nil {
 			return fmt.Errorf("publish TRA delay snapshot: %w", err)
 		}
 		log.Infof("[TRA_ETA] action=tra_eta event=delay_redis_success count=%d", count)
 		return nil
 	})
 	if err != nil {
-		log.Errorf("[TRA_ETA] action=tra_eta event=process_error error=%v", err)
-		return err
+		return fmt.Errorf("process TRA live train delay: %w", err)
 	}
 	log.Infof("[TRA_ETA] action=tra_eta event=complete")
 	return nil

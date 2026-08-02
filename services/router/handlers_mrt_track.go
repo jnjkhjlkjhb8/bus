@@ -22,7 +22,7 @@ import (
 // bus and rail reminders use, reused for metro sessions (route_type='mrt').
 type mrtTrackStore interface {
 	AuthorizeInstall(context.Context, string, []byte) (bool, error)
-	CreateArrivalReminder(context.Context, firebaseArrivalReminder) error
+	CreateArrivalReminder(context.Context, FirebaseArrivalReminder) error
 	CancelArrivalReminder(context.Context, string, string) (bool, error)
 }
 
@@ -47,9 +47,9 @@ const mrtTrackEndedStateTTL = 60 * time.Second
 // persists the session in firebase_arrival_reminder, seeds its Redis state, and
 // returns the initial state.
 func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackRequest) (*pb.MrtTrackState, error) {
-	if !validText(request.GetInstallId(), 128) || !validText(request.GetCarId(), 32) ||
-		!validText(request.GetBoardStationId(), 32) || !validText(request.GetDestStationId(), 32) ||
-		!validText(request.GetTargetStationId(), 32) {
+	if !ValidText(request.GetInstallId(), 128) || !ValidText(request.GetCarId(), 32) ||
+		!ValidText(request.GetBoardStationId(), 32) || !ValidText(request.GetDestStationId(), 32) ||
+		!ValidText(request.GetTargetStationId(), 32) {
 		return nil, status.Error(codes.InvalidArgument, "install_id, car_id, and station IDs are required")
 	}
 	if request.System != "TRTC" {
@@ -90,7 +90,7 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 		return nil, status.Error(codes.Internal, "failed to load station names")
 	}
 
-	trackID, err := newUUIDv4()
+	trackID, err := NewUUIDv4()
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to create session ID")
 	}
@@ -99,10 +99,10 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 	// Reminders-table mapping for a metro session (ADR-0015): plate=carID,
 	// route_key=TripId, stop_key=target, direction=terminal, lead_minutes reused
 	// as the stops-based lead, fire_at NULL (fired off live position, like bus).
-	stored := firebaseArrivalReminder{
+	stored := FirebaseArrivalReminder{
 		ReminderID: trackID, InstallID: request.InstallId, RouteType: "mrt", RouteKey: info.TripID,
 		StopKey: request.TargetStationId, Direction: request.DestStationId, LeadMinutes: request.LeadStops,
-		ExpiresAt: expiresAt, Status: reminderPending, Plate: request.CarId,
+		ExpiresAt: expiresAt, Status: ReminderPending, Plate: request.CarId,
 	}
 	if err := s.store.CreateArrivalReminder(ctx, stored); err != nil {
 		return nil, status.Error(codes.Internal, "failed to save metro session")
@@ -137,17 +137,17 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 // then forwards each published update until the client disconnects — the same
 // seed-then-subscribe pattern as the metro arrival stream.
 func (s *MrtServer) WatchTrack(request *pb.WatchMrtTrackRequest, stream pb.Mrt_Service_WatchTrackServer) error {
-	if !validText(request.GetTrackId(), 64) {
+	if !ValidText(request.GetTrackId(), 64) {
 		return status.Error(codes.InvalidArgument, "track_id is required")
 	}
 	send := func(data []byte) error {
-		state, err := decodePayload(data, &pb.MrtTrackState{})
+		state, err := DecodePayload(data, &pb.MrtTrackState{})
 		if err != nil {
 			return err
 		}
 		return stream.Send(state)
 	}
-	return streamLive(stream.Context(), s.live, liveStreamSpec{
+	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
 		channel:  shared.MrtTrackChannel(request.TrackId),
 		seedKeys: []string{shared.MrtTrackKey(request.TrackId)},
 	}, send)
@@ -158,7 +158,7 @@ func (s *MrtServer) WatchTrack(request *pb.WatchMrtTrackRequest, stream pb.Mrt_S
 // state, and short-TTLs the state key so watchers see the ending and then the
 // key expires.
 func (s *MrtServer) CancelTrack(ctx context.Context, request *pb.CancelMrtTrackRequest) (*pb.MrtTrackAck, error) {
-	if !validText(request.GetInstallId(), 128) || !validText(request.GetTrackId(), 64) {
+	if !ValidText(request.GetInstallId(), 128) || !ValidText(request.GetTrackId(), 64) {
 		return nil, status.Error(codes.InvalidArgument, "install_id and track_id are required")
 	}
 	if err := s.authorizeInstall(ctx, request.InstallId); err != nil {
@@ -181,8 +181,8 @@ func (s *MrtServer) CancelTrack(ctx context.Context, request *pb.CancelMrtTrackR
 // cancelled, so the tracker will not advance the session regardless.
 func (s *MrtServer) publishCancelledState(ctx context.Context, trackID string) {
 	state := &pb.MrtTrackState{TrackId: trackID, System: "TRTC"}
-	if raw, err := s.rc.WithContext(ctx).Get(shared.MrtTrackKey(trackID)).Bytes(); err == nil {
-		if decoded, decodeErr := decodePayload(raw, &pb.MrtTrackState{}); decodeErr == nil {
+	if raw, err := s.rc.Get(ctx, shared.MrtTrackKey(trackID)).Bytes(); err == nil {
+		if decoded, decodeErr := DecodePayload(raw, &pb.MrtTrackState{}); decodeErr == nil {
 			state = decoded
 		}
 	}
@@ -200,11 +200,11 @@ func (s *MrtServer) writeTrackState(ctx context.Context, state *pb.MrtTrackState
 	if err != nil {
 		return err
 	}
-	rc := s.rc.WithContext(ctx)
-	if err := rc.Set(shared.MrtTrackKey(state.TrackId), payload, ttl).Err(); err != nil {
+	rc := s.rc
+	if err := rc.Set(ctx, shared.MrtTrackKey(state.TrackId), payload, ttl).Err(); err != nil {
 		return err
 	}
-	return rc.Publish(shared.MrtTrackChannel(state.TrackId), payload).Err()
+	return rc.Publish(ctx, shared.MrtTrackChannel(state.TrackId), payload).Err()
 }
 
 // clock returns the server's now function, defaulting to time.Now when unset so
@@ -219,7 +219,7 @@ func (s *MrtServer) clock() time.Time {
 // authorizeInstall verifies the caller owns the installation, reusing the
 // install-secret machinery the Firebase reminder RPCs use.
 func (s *MrtServer) authorizeInstall(ctx context.Context, installID string) error {
-	secretHash, err := installationSecretHash(ctx, installID)
+	secretHash, err := InstallationSecretHash(ctx, installID)
 	if err != nil {
 		return err
 	}

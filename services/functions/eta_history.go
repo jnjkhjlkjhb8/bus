@@ -30,12 +30,12 @@ var busEtaHistoryCols = []string{
 }
 
 // saveBusEtaHistory appends collected ETA observations to bus_eta_history on the
-// MySQL history host, the training data behind travel averages and the ETA
+// MySQL history host, the training data behind segment times and the ETA
 // model. An empty batch is a no-op; an insert error is logged, not returned, so
 // a history write can never disrupt the realtime Redis path. Those rows are then
 // lost rather than retried — Postgres holds no copy to re-read, which is the
 // accepted cost of keeping ~200k rows a day off the 2 GB Azure server.
-func saveBusEtaHistory(ctx context.Context, db archiveExecer, rows [][]interface{}) {
+func saveBusEtaHistory(ctx context.Context, db archiveExecer, rows [][]any) {
 	if len(rows) == 0 {
 		return
 	}

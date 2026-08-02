@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 )
 
 const cwaBase = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
@@ -56,15 +56,15 @@ func weatherSync(ctx context.Context, rc *redis.Client) error {
 }
 
 func writeWeatherSnapshot(ctx context.Context, rc *redis.Client, snapshot map[string]weatherData) error {
-	pipe := rc.WithContext(ctx).TxPipeline()
+	pipe := rc.TxPipeline()
 	for city, data := range snapshot {
 		encoded, err := json.Marshal(data)
 		if err != nil {
 			return fmt.Errorf("marshal weather for %s: %w", city, err)
 		}
-		pipe.Set(shared.WeatherKey(city), encoded, time.Hour)
+		pipe.Set(ctx, shared.WeatherKey(city), encoded, time.Hour)
 	}
-	if _, err := pipe.Exec(); err != nil {
+	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("write weather snapshot to Redis: %w", err)
 	}
 	log.Infof("[WEATHER] synced %d cities", len(snapshot))
@@ -259,14 +259,14 @@ func parseCWAValue(raw, field string) (float64, error) {
 func decodeWeatherJSON(body []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(target); err != nil {
-		return err
+		return fmt.Errorf("decode JSON body: %w", err)
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return errors.New("JSON body contains trailing data")
 		}
-		return err
+		return fmt.Errorf("decode JSON body trailer: %w", err)
 	}
 	return nil
 }

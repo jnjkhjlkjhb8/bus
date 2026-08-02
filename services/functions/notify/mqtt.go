@@ -11,9 +11,9 @@ import (
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/go-redis/redis"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -120,15 +120,18 @@ func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatche
 		log.Errorf("[MQTT] action=normalize event=marshal_failed topic=%s error=%v", msg.Topic(), err)
 		return
 	}
-	if err := rc.Set(key, payload, ttl).Err(); err != nil {
+	// A broker push is a top-level entry point: paho calls this on its own
+	// goroutine with no parent context to inherit, so the handler owns one.
+	ctx := context.Background()
+	if err := rc.Set(ctx, key, payload, ttl).Err(); err != nil {
 		log.Errorf("[MQTT] redis set failed key=%s err=%v", key, err)
 		return
 	}
-	if err := rc.Publish(key, payload).Err(); err != nil {
+	if err := rc.Publish(ctx, key, payload).Err(); err != nil {
 		log.Errorf("[MQTT] redis publish failed key=%s err=%v", key, err)
 	}
-	dispatchRouteAlerts(context.Background(), items, func(key string, ttl time.Duration) bool {
-		ok, err := rc.SetNX("fcm:alert:"+key, "1", ttl).Result()
+	dispatchRouteAlerts(ctx, items, func(key string, ttl time.Duration) bool {
+		ok, err := rc.SetNX(ctx, "fcm:alert:"+key, "1", ttl).Result()
 		return err == nil && ok
 	}, dispatcher)
 }

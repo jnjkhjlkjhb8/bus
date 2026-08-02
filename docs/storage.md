@@ -62,11 +62,13 @@ made by claude
   - 欄位：sub_route_uid, stop_uid, direction, stop_sequence, total_stops, estimate, next_bus_time, src_update_time, city, hour, day_of_week, is_holiday, temperature, precipitation, wind_speed, humidity, plate_numb, bus_speed, bus_distance_m
   - 索引：`(sub_route_uid, stop_uid, direction, recorded_at DESC)`
   - 保留 30 天，每日 04:30 清理
-- `bus_travel_avg`
-  - 主鍵：`(sub_route_uid, direction, stop_uid, hour, day_of_week)`
-  - `avg_seconds`：各路線、方向、站點、時段的旅行時間中位數
-  - `sample_count = 0`：GTFS 冷啟動種子（`scripts/gtfs_seed.py`），會被觀測資料覆蓋
-  - `sample_count > 0`：每日 04:00 `computeTravelAvg` 從 `bus_eta_history` 計算後 upsert
+- `bus_segment_time`
+  - 主鍵：`(sub_route_uid, direction, from_stop_uid, to_stop_uid)`
+  - `secs`：相鄰兩站之間運行時間的中位數（不是平均：一台車卡在紅燈會拉走平均、動不了中位數）
+  - `sample_count`：中位數的樣本數，一併存下讓讀取端自訂信心門檻；`0` = 站距推估而非觀測
+  - 每日 04:00 由三個階段依序寫入（車牌配對 → 同快照 estimate 差 → 站距推估），見 `docs/ingestion.md`
+  - ETA 預測與 GTFS 匯出都以 `busPatternSQL` 沿站序累加成各站的起點偏移量；缺任一站間的路線方向整條不採用
+  - 取代 `bus_travel_avg`（2026-07-31 DROP）：後者記的是從發車到各站的累計時間，每筆觀測都要對上 `bus_schedule` 的班次才算數，對不上就丟掉
 
 ### vector
 - `search_vector`

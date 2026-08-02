@@ -362,9 +362,7 @@ class _ArrivalRow extends StatelessWidget {
       // Static highlight: background only, never a pulse.
       decoration: highlighted
           ? BoxDecoration(
-              color: cs.brightness == Brightness.light
-                  ? AppTheme.surfaceHighlightLight
-                  : AppTheme.surfaceHighlightDark,
+              color: AppTheme.surfaceHighlight(cs.brightness),
               borderRadius: BorderRadius.circular(AppTheme.radiusCard),
             )
           : null,

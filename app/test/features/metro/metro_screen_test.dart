@@ -6,6 +6,7 @@ import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/data/models/favorite.dart';
 import 'package:wheres_the_bus/data/repositories/favorites_repository.dart';
 import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
+import 'package:wheres_the_bus/features/metro/bloc/mrt_track_bloc.dart';
 import 'package:wheres_the_bus/features/metro/view/metro_screen.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
@@ -19,6 +20,11 @@ void main() {
     );
     addTearDown(favorites.close);
 
+    // The map hosts the 下車提醒 pick now, so it reads the session bloc the
+    // same way the app shell provides it. Never fed an event here, so it does
+    // no I/O.
+    late final MrtTrackBloc track;
+
     await tester.pumpWidget(
       MaterialApp(
         locale: const Locale('zh'),
@@ -26,9 +32,18 @@ void main() {
         supportedLocales: AppI18n.supportedLocales,
 
         theme: AppTheme.light,
-        home: BlocProvider<FavoritesBloc>.value(
-          value: favorites,
-          child: const MetroScreen(),
+        home: Builder(
+          builder: (context) {
+            track = MrtTrackBloc(i18n: AppI18n.of(context));
+            addTearDown(track.close);
+            return MultiBlocProvider(
+              providers: [
+                BlocProvider<FavoritesBloc>.value(value: favorites),
+                BlocProvider<MrtTrackBloc>.value(value: track),
+              ],
+              child: const MetroScreen(),
+            );
+          },
         ),
       ),
     );

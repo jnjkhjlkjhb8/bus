@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -269,7 +269,13 @@ type rawBusPosition struct {
 		PositionLon float64 `json:"PositionLon"`
 		PositionLat float64 `json:"PositionLat"`
 	} `json:"BusPosition"`
-	Azimuth    int     `json:"Azimuth"`
+	// Azimuth is float64 for the same reason Speed is: TDX sends a fractional
+	// bearing on some vehicles — 10% of Tainan's, e.g. 40.993683 — and decoding
+	// that into an int fails the element, which aborts the whole city's tick
+	// before any ETA is matched or any history row is written. Tainan recorded
+	// nothing between 2026-07-13 and 07-31 for exactly this reason, surviving only
+	// in the small hours when no vehicle was reporting a fractional bearing.
+	Azimuth    float64 `json:"Azimuth"`
 	Speed      float64 `json:"Speed"`
 	DutyStatus uint8   `json:"DutyStatus"`
 	BusStatus  uint8   `json:"BusStatus"`
@@ -313,7 +319,7 @@ type rawBusOperator struct {
 		Zhtw string `json:"Zh_tw"`
 	} `json:"OperatorName"`
 	OperatorPhone string `json:"OperatorPhone"`
-	OperatorUrl   string `json:"OperatorUrl"`
+	OperatorURL   string `json:"OperatorUrl"`
 	AuthorityCode string `json:"AuthorityCode"`
 }
 
@@ -577,16 +583,16 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSourc
 	if rc == nil {
 		return fmt.Errorf("bus daily timetable %s Redis transaction: nil client", city)
 	}
-	pipe := rc.WithContext(ctx).TxPipeline()
-	defer func() { _ = pipe.Close() }()
+	pipe := rc.TxPipeline()
+	defer pipe.Discard()
 	for _, write := range writes {
-		pipe.Set(write.key, write.value, 26*time.Hour)
+		pipe.Set(ctx, write.key, write.value, 26*time.Hour)
 	}
 	if err := ctx.Err(); err != nil {
-		_ = pipe.Discard()
+		pipe.Discard()
 		return fmt.Errorf("bus daily timetable %s context before Redis transaction: %w", city, err)
 	}
-	_, execErr := pipe.Exec()
+	_, execErr := pipe.Exec(ctx)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("bus daily timetable %s context during Redis transaction: %w", city, errors.Join(ctxErr, execErr))
 	}

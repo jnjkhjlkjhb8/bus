@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
@@ -10,6 +11,13 @@ import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/data/models/favorite.dart';
 import 'package:wheres_the_bus/data/models/journey_info.dart';
 import 'package:wheres_the_bus/data/models/metro_map_models.dart';
+import 'package:wheres_the_bus/data/models/metro_topology.dart';
+import 'package:wheres_the_bus/features/metro/bloc/mrt_track_bloc.dart';
+import 'package:wheres_the_bus/features/metro/bloc/mrt_track_event.dart';
+import 'package:wheres_the_bus/features/metro/bloc/mrt_track_state.dart';
+import 'package:wheres_the_bus/features/metro/data/mrt_car_binding.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_confirm_bar.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_pick_capsule.dart';
 import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_bus/features/metro/data/metro_line_names.dart';
 import 'package:wheres_the_bus/features/metro/bloc/metro_bloc.dart';
@@ -29,7 +37,6 @@ import 'package:wheres_the_bus/shared/widgets/transport_icon.dart';
 
 part '../widgets/metro_placeholder_widgets.dart';
 part '../widgets/metro_system_widgets.dart';
-
 
 final RegExp _digits = RegExp(r'\d+');
 
@@ -142,6 +149,30 @@ class _MetroScreenState extends State<MetroScreen> {
     unawaited(_metroBloc.close());
     _sheetController.dispose();
     super.dispose();
+  }
+
+  /// The stations the boarded train still calls at, or null when no pick is
+  /// open. Null is what puts the map back in its normal mode.
+  Set<String>? _pickAheadIds(BuildContext context) {
+    final arrival = context.watch<MrtTrackBloc>().state.pickArrival;
+    if (arrival == null) return null;
+    return MetroTopology.aheadStations(
+      line: arrival.line,
+      boardCode: arrival.stationId,
+      terminalCode: arrival.destinationStationId,
+    ).map((stop) => stop.id).toSet();
+  }
+
+  /// A tap on the map means "select this station" normally, and "this is where
+  /// I get off" while a pick is open.
+  void _onMapStationTap(MetroMapStation station) {
+    final track = context.read<MrtTrackBloc>();
+    if (track.state.picking) {
+      unawaited(HapticService.instance.selectionClick());
+      track.add(MrtAlightTargetPicked(station.id));
+      return;
+    }
+    _selectStation(station);
   }
 
   void _dismiss() {
@@ -312,7 +343,17 @@ class _MetroScreenState extends State<MetroScreen> {
                   previous.journeyMatrix != current.journeyMatrix,
               builder: (context, state) => MetroSvgMap(
                 selectedStationId: _selected?.id,
-                onStationTap: _selectStation,
+                onStationTap: _onMapStationTap,
+                pickAheadIds: _pickAheadIds(context),
+                pickBoardId: context
+                    .watch<MrtTrackBloc>()
+                    .state
+                    .pickArrival
+                    ?.stationId,
+                pickedStationId: context
+                    .watch<MrtTrackBloc>()
+                    .state
+                    .pickTargetStationId,
                 stationLabels: _buildLabels(
                   metroMapStations,
                   state.journeyMatrix,
@@ -363,8 +404,160 @@ class _MetroScreenState extends State<MetroScreen> {
                 ),
               ),
             ),
-            _buildBottomSheetWidget(context, cs),
+            if (!context.watch<MrtTrackBloc>().state.picking)
+              _buildBottomSheetWidget(context, cs),
+            if (context.watch<MrtTrackBloc>().state.picking)
+              Positioned(
+                top: MediaQuery.paddingOf(context).top + 60,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: AlightPickCapsule(
+                    onCancel: () => context.read<MrtTrackBloc>().add(
+                      const MrtAlightPickCancelled(),
+                    ),
+                  ),
+                ),
+              ),
+            const Align(
+              alignment: Alignment.bottomCenter,
+              child: _MetroAlightDock(),
+            ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The bottom half of the metro 下車提醒 flow: the confirm bar once a station
+/// has been picked, and the manage card while a session is running.
+///
+/// It reads the flow straight from [MrtTrackBloc] rather than taking it down
+/// through the map, because the bell that opens the flow lives on a different
+/// screen (the station sheet, or a station opened from search).
+class _MetroAlightDock extends StatefulWidget {
+  const _MetroAlightDock();
+
+  @override
+  State<_MetroAlightDock> createState() => _MetroAlightDockState();
+}
+
+class _MetroAlightDockState extends State<_MetroAlightDock> {
+  final _carController = TextEditingController();
+
+  @override
+  void dispose() {
+    _carController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return BlocBuilder<MrtTrackBloc, MrtTrackBlocState>(
+      builder: (context, state) {
+        final arrival = state.pickArrival;
+        final targetId = state.pickTargetStationId;
+        if (arrival == null || targetId == null) {
+          return const SizedBox.shrink();
+        }
+        final ahead = MetroTopology.aheadStations(
+          line: arrival.line,
+          boardCode: arrival.stationId,
+          terminalCode: arrival.destinationStationId,
+        );
+        final target = ahead.where((s) => s.id == targetId).firstOrNull;
+        if (target == null) return const SizedBox.shrink();
+
+        // Derived from the congestion feed's paired carriage when there is one
+        // (ADR-0015); otherwise the rider reads it off the car and types it,
+        // and that field is the only thing standing between them and 開始.
+        final autoCarId = deriveCarIdFromCn1(arrival.cn1);
+        final carId = arrival.cn1.isNotEmpty
+            ? autoCarId
+            : _carController.text.trim();
+
+        return AlightConfirmBar(
+          targetName: target.name,
+          lead: state.pickLead,
+          onLeadChanged: (v) =>
+              context.read<MrtTrackBloc>().add(MrtAlightLeadChanged(v)),
+          onRepick: () => context.read<MrtTrackBloc>().add(
+            const MrtAlightTargetCleared(),
+          ),
+          onCancel: () => context.read<MrtTrackBloc>().add(
+            const MrtAlightPickCancelled(),
+          ),
+          canStart: carId.isNotEmpty,
+          busy: state.creating,
+          errorText: state.createError == MrtTrackCreateError.none
+              ? null
+              : _errorText(AppI18n.of(context), state.createError),
+          binding: arrival.cn1.isNotEmpty
+              ? AlightBindingChip(
+                  label: AppI18n.of(context).metroCarChip(autoCarId),
+                )
+              : _CarNumberField(
+                  controller: _carController,
+                  // The CTA is gated on a car number being present, so the
+                  // field has to force a rebuild as it is typed.
+                  onChanged: (_) => setState(() {}),
+                ),
+          onStart: () => context.read<MrtTrackBloc>().add(
+            MrtTrackRequested(
+              carId: carId,
+              boardStationId: arrival.stationId,
+              destStationId: arrival.destinationStationId,
+              targetStationId: target.id,
+              leadStops: state.pickLead,
+              // The reminder can be armed from the platform while the train is
+              // still several stations out; these let the session watch the
+              // arrival board until it pulls in.
+              system: arrival.system,
+              trainNumber: arrival.trainNumber,
+              boardEtaSeconds: arrival.estimateSeconds,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  static String _errorText(AppI18n i18n, MrtTrackCreateError error) =>
+      switch (error) {
+        MrtTrackCreateError.notReachable => i18n.mrtAlightNotReachable,
+        MrtTrackCreateError.notFound => i18n.mrtAlightNotFound,
+        MrtTrackCreateError.generic => i18n.mrtAlightGenericError,
+        MrtTrackCreateError.none => '',
+      };
+}
+
+/// Manual carriage entry, for a train whose congestion feed came unpaired.
+class _CarNumberField extends StatelessWidget {
+  const _CarNumberField({required this.controller, required this.onChanged});
+
+  final TextEditingController controller;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return TextField(
+      controller: controller,
+      onChanged: onChanged,
+      keyboardType: TextInputType.number,
+      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+      style: AppTextStyles.memo.copyWith(fontSize: 16),
+      decoration: InputDecoration(
+        isDense: true,
+        labelText: AppI18n.of(context).mrtAlightCarNumberLabel,
+        hintText: AppI18n.of(context).mrtAlightCarNumberHint,
+        hintStyle: AppTextStyles.memo.copyWith(
+          fontSize: 16,
+          color: cs.onSurfaceVariant,
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
         ),
       ),
     );

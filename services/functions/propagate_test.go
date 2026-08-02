@@ -147,7 +147,11 @@ func TestPropagateDelay(t *testing.T) {
 		if !ok {
 			t.Fatal("want ok")
 		}
-		wantOffset := time.Duration(90*math.Pow(0.9, 3)) * time.Second
+		// decay is a variable, not a constant: the conversion below has to
+		// truncate 65.61 the way the production code does, and a constant
+		// expression would refuse to convert at all.
+		decay := 0.9
+		wantOffset := time.Duration(90*decay*decay*decay) * time.Second
 		want := baseline.Add(wantOffset)
 		if got.Unix() != want.Unix() {
 			t.Fatalf("got %v, want %v", got, want)

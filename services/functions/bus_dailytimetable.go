@@ -7,9 +7,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
 )
 

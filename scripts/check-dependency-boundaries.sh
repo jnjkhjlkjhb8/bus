@@ -9,8 +9,9 @@
 #       those are the approved seams. Pre-existing cross-feature couplings
 #       are ratcheted in scripts/testdata/dependency-boundary-allowlist.txt
 #       as "<file>|<imported-feature>" pairs: existing pairs pass, any NEW
-#       pair fails. Removing a coupling should also remove its allowlist
-#       line so the ratchet only ever tightens.
+#       pair fails. The ratchet is enforced in both directions: an allowlist
+#       line whose import no longer exists also fails, so removing a coupling
+#       forces its line out and the ratchet only ever tightens.
 #
 #   (b) Generated protobuf confinement — Dart files outside app/lib/data/
 #       must not import data/generated/ (protoc output). Existing offenders
@@ -192,6 +193,20 @@ case "${1:-}" in
 esac
 
 run_checks "$repo_root"
+
+# (d) Allowlist staleness — repo mode only; the synthetic self-test tree shares
+# none of the real pairs, so running this against it would flag every line.
+note "(d) allowlist staleness"
+observed="$(scan_feature_isolation "$repo_root" "app/lib/features" | sort -u)"
+stale=""
+while IFS= read -r entry; do
+  case "$entry" in '#'* | '') continue ;; esac
+  if ! printf '%s\n' "$observed" | grep -Fxq "$entry"; then
+    stale=1
+    bad "stale allowlist entry: ${entry%%|*} no longer imports features/${entry##*|} (delete the line so the ratchet tightens)"
+  fi
+done <"$feature_allowlist"
+[ -z "$stale" ] && ok "every allowlisted pair still exists in the tree"
 
 printf '\n'
 if [ "$fail" -eq 0 ]; then

@@ -182,11 +182,10 @@ class _PreviewSummaryHeader extends StatelessWidget {
                         children: [
                           Text(
                             '$minutes',
-                            style: AppTextStyles.memo.copyWith(
-                              fontSize: AppTextStyles.heading1.fontSize,
-                              fontWeight: AppTextStyles.heading1.fontWeight,
+                            style: AppTextStyles.timeValue(
+                              size: AppTextStyles.heading1.fontSize,
+                              weight: AppTextStyles.heading1.fontWeight,
                               color: cs.onSurface,
-                              fontFeatures: AppTextStyles.tabularFigures,
                             ),
                           ),
                           const SizedBox(width: 2),
@@ -265,10 +264,9 @@ class _PreviewMeta extends StatelessWidget {
           ),
           Text(
             '${route.totalFare}',
-            style: AppTextStyles.memo.copyWith(
-              fontSize: AppTextStyles.bodySmall.fontSize,
+            style: AppTextStyles.timeValue(
+              size: AppTextStyles.bodySmall.fontSize,
               color: cs.onSurface,
-              fontFeatures: AppTextStyles.tabularFigures,
             ),
           ),
         ],
@@ -300,11 +298,10 @@ class _PreviewClock extends StatelessWidget {
         const SizedBox(width: 6),
         Text(
           value,
-          style: AppTextStyles.memo.copyWith(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
+          style: AppTextStyles.timeValue(
+            size: 15,
+            weight: FontWeight.w600,
             color: cs.onSurface,
-            fontFeatures: AppTextStyles.tabularFigures,
           ),
         ),
       ],
@@ -600,11 +597,10 @@ class _PreviewRow extends StatelessWidget {
             const SizedBox(width: 12),
             Text(
               AppI18n.of(context).minutesValue(minutes!),
-              style: AppTextStyles.memo.copyWith(
-                fontSize: AppTextStyles.bodyRegular.fontSize,
-                fontWeight: FontWeight.w700,
+              style: AppTextStyles.timeValue(
+                size: AppTextStyles.bodyRegular.fontSize,
+                weight: FontWeight.w700,
                 color: cs.onSurface,
-                fontFeatures: AppTextStyles.tabularFigures,
               ),
             ),
           ],

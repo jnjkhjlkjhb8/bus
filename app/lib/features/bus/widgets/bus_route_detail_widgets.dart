@@ -1099,9 +1099,7 @@ class _TimetableState extends State<_Timetable> {
     if (info == null) return const SizedBox.shrink();
     // The next not-yet-departed trip is highlighted in place (static, per the
     // no-pulse rule): highlight fill + heavier tabular time.
-    final highlight = cs.brightness == Brightness.light
-        ? AppTheme.surfaceHighlightLight
-        : AppTheme.surfaceHighlightDark;
+    final highlight = AppTheme.surfaceHighlight(cs.brightness);
     return Container(
       color: info.isNext ? highlight : null,
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),

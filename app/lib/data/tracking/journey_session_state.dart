@@ -1,5 +1,5 @@
 import 'package:equatable/equatable.dart';
-import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 
 enum JourneyPhase { idle, waiting, riding, done }
 

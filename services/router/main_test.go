@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/getsentry/sentry-go"
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -63,15 +63,15 @@ func TestGrpcStatusFor(t *testing.T) {
 // parseCounterTotal is defined in livestream_test.go.
 func TestGrpcStatusForRecordsDBErrorOnlyForGenuineFailures(t *testing.T) {
 	before := parseCounterTotal(t, "router_db_errors_total")
-	grpcStatusFor(pgx.ErrNoRows, "not found")
-	grpcStatusFor(redis.Nil, "not found")
-	grpcStatusFor(obs.NotFound(errors.New("missing")), "not found")
+	_ = grpcStatusFor(pgx.ErrNoRows, "not found")
+	_ = grpcStatusFor(redis.Nil, "not found")
+	_ = grpcStatusFor(obs.NotFound(errors.New("missing")), "not found")
 	if got := parseCounterTotal(t, "router_db_errors_total"); got != before {
 		t.Fatalf("not-found mappings must not move router_db_errors_total: before=%d after=%d", before, got)
 	}
 
-	grpcStatusFor(errors.New("boom"), "not found")
-	grpcStatusFor(errors.New("boom again"), "not found")
+	_ = grpcStatusFor(errors.New("boom"), "not found")
+	_ = grpcStatusFor(errors.New("boom again"), "not found")
 	after := parseCounterTotal(t, "router_db_errors_total")
 	if after != before+2 {
 		t.Fatalf("router_db_errors_total = %d, want %d (before %d + 2 genuine failures)", after, before+2, before)
@@ -432,9 +432,9 @@ func TestServerCoordinatorSignalAndServeErrorShutDownExactlyOnce(t *testing.T) {
 }
 
 func TestRateLimitInterceptorScopesQuotaByMethodAndCaller(t *testing.T) {
-	rl := newRateLimiter()
-	interceptor := rateLimitInterceptor(rl, 1, time.Minute)
-	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+	rl := NewRateLimiter()
+	interceptor := RateLimitInterceptor(rl, 1, time.Minute)
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
 	ctx := limiterContext(net.JoinHostPort("203.0.113.10", "1234"))
 
 	methodA := &grpc.UnaryServerInfo{FullMethod: "/Service/A"}
@@ -451,11 +451,11 @@ func TestRateLimitInterceptorScopesQuotaByMethodAndCaller(t *testing.T) {
 }
 
 func TestRateLimiterExpiresBucketsIndependently(t *testing.T) {
-	rl := newRateLimiter()
+	rl := NewRateLimiter()
 	now := time.Unix(1_800_000_000, 0)
 	rl.now = func() time.Time { return now }
-	interceptor := rateLimitInterceptor(rl, 1, 80*time.Millisecond)
-	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+	interceptor := RateLimitInterceptor(rl, 1, 80*time.Millisecond)
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
 	info := &grpc.UnaryServerInfo{FullMethod: "/Service/A"}
 	callerA := limiterContext(net.JoinHostPort("203.0.113.11", "1234"))
 	callerB := limiterContext(net.JoinHostPort("203.0.113.12", "1234"))
@@ -480,7 +480,7 @@ func TestRateLimiterExpiresBucketsIndependently(t *testing.T) {
 }
 
 func TestRateLimiterCleanupHonorsShortestBucketWindow(t *testing.T) {
-	rl := newRateLimiter()
+	rl := NewRateLimiter()
 	now := time.Unix(1_800_000_000, 0)
 	rl.now = func() time.Time { return now }
 	if !rl.allow("long", "caller", 1, time.Minute) || !rl.allow("short", "caller", 1, time.Second) {
@@ -494,13 +494,13 @@ func TestRateLimiterCleanupHonorsShortestBucketWindow(t *testing.T) {
 }
 
 func TestRateLimitInterceptorAlwaysUsesPeerIPForFirebasePreAuth(t *testing.T) {
-	rl := newRateLimiter()
-	interceptor := rateLimitInterceptor(rl, 1, time.Minute)
-	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+	rl := NewRateLimiter()
+	interceptor := RateLimitInterceptor(rl, 1, time.Minute)
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
 	info := &grpc.UnaryServerInfo{FullMethod: "/Firebase_Service/upsertDevice"}
 	sharedPeer := &peer.Peer{Addr: limiterTestAddr(net.JoinHostPort("203.0.113.20", "1234"))}
 	installContext := func(installID string) context.Context {
-		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(installIDMetadataKey, installID))
+		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(InstallIDMetadataKey, installID))
 		return peer.NewContext(ctx, sharedPeer)
 	}
 
@@ -513,11 +513,11 @@ func TestRateLimitInterceptorAlwaysUsesPeerIPForFirebasePreAuth(t *testing.T) {
 }
 
 func TestInstallationRateLimitSeparatesVerifiedInstallations(t *testing.T) {
-	interceptor := installationRateLimitInterceptor(newRateLimiter(), 1, time.Minute)
-	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+	interceptor := installationRateLimitInterceptor(NewRateLimiter(), 1, time.Minute)
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
 	info := &grpc.UnaryServerInfo{FullMethod: pb.Firebase_Service_UpsertDevice_FullMethodName}
 	requestContext := func(installID string) context.Context {
-		return metadata.NewIncomingContext(context.Background(), metadata.Pairs(installIDMetadataKey, installID))
+		return metadata.NewIncomingContext(context.Background(), metadata.Pairs(InstallIDMetadataKey, installID))
 	}
 	if _, err := interceptor(requestContext("install-a"), nil, info, handler); err != nil {
 		t.Fatal(err)
@@ -530,12 +530,12 @@ func TestInstallationRateLimitSeparatesVerifiedInstallations(t *testing.T) {
 	}
 }
 
-func invokeUnaryChain(interceptors []grpc.UnaryServerInterceptor, ctx context.Context, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+func invokeUnaryChain(interceptors []grpc.UnaryServerInterceptor, ctx context.Context, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	chained := handler
 	for index := len(interceptors) - 1; index >= 0; index-- {
 		current := interceptors[index]
 		next := chained
-		chained = func(ctx context.Context, req interface{}) (interface{}, error) {
+		chained = func(ctx context.Context, req any) (any, error) {
 			return current(ctx, req, info, next)
 		}
 	}
@@ -543,17 +543,17 @@ func invokeUnaryChain(interceptors []grpc.UnaryServerInterceptor, ctx context.Co
 }
 
 func TestProductionFirebaseUnaryChainBoundsRotatingInstallIDsByPeer(t *testing.T) {
-	interceptors := productionUnaryInterceptors(fakeAppCheckVerifier{}, true, newRateLimiter())
+	interceptors := productionUnaryInterceptors(fakeAppCheckVerifier{}, true, NewRateLimiter())
 	info := &grpc.UnaryServerInfo{FullMethod: pb.Firebase_Service_UpsertDevice_FullMethodName}
 	handlerCalls := 0
-	handler := func(context.Context, interface{}) (interface{}, error) {
+	handler := func(context.Context, any) (any, error) {
 		handlerCalls++
 		return "ok", nil
 	}
 	for requestNumber := 1; requestNumber <= 31; requestNumber++ {
 		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
-			appCheckMetadataKey, "valid",
-			installIDMetadataKey, fmt.Sprintf("rotated-%d", requestNumber),
+			AppCheckMetadataKey, "valid",
+			InstallIDMetadataKey, fmt.Sprintf("rotated-%d", requestNumber),
 		))
 		ctx = peer.NewContext(ctx, &peer.Peer{Addr: limiterTestAddr(net.JoinHostPort("203.0.113.25", "1234"))})
 		_, err := invokeUnaryChain(interceptors, ctx, info, handler)
@@ -570,13 +570,13 @@ func TestProductionFirebaseUnaryChainBoundsRotatingInstallIDsByPeer(t *testing.T
 }
 
 func TestRateLimitInterceptorIgnoresInstallationMetadataOutsideFirebase(t *testing.T) {
-	rl := newRateLimiter()
-	interceptor := rateLimitInterceptor(rl, 1, time.Minute)
-	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+	rl := NewRateLimiter()
+	interceptor := RateLimitInterceptor(rl, 1, time.Minute)
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
 	info := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}
 	sharedPeer := &peer.Peer{Addr: limiterTestAddr(net.JoinHostPort("203.0.113.21", "1234"))}
 	requestContext := func(spoofedInstallID string) context.Context {
-		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(installIDMetadataKey, spoofedInstallID))
+		ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(InstallIDMetadataKey, spoofedInstallID))
 		return peer.NewContext(ctx, sharedPeer)
 	}
 
@@ -589,10 +589,10 @@ func TestRateLimitInterceptorIgnoresInstallationMetadataOutsideFirebase(t *testi
 }
 
 func TestMaasResourceInterceptorHasDedicatedRateLimit(t *testing.T) {
-	interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
+	interceptor := MaasResourceInterceptor(NewRateLimiter(), MaasResourceConfig{
 		RateLimit: 1, RateWindow: time.Minute,
 	})
-	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
 	ctx := limiterContext(net.JoinHostPort("203.0.113.30", "1234"))
 	other := &grpc.UnaryServerInfo{FullMethod: "/OtherService/read"}
 	maas := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}

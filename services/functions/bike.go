@@ -14,6 +14,20 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// bikeAvailabilitySkip lists the cities TDX serves no Bike/Availability feed
+// for; bikeEta skips them rather than spending a request per tick on a 404.
+var bikeAvailabilitySkip = map[string]struct{}{
+	"Keelung":          {},
+	"HsinchuCounty":    {},
+	"NantouCounty":     {},
+	"YilanCounty":      {},
+	"PenghuCounty":     {},
+	"KinmenCounty":     {},
+	"LienchiangCounty": {},
+	"InterCity":        {},
+	"HualienCounty":    {},
+}
+
 // bikeStation is the subset of a TDX Bike/Station record used for the static
 // station table (identity, name, coordinates, capacity).
 type bikeStation struct {
@@ -145,16 +159,15 @@ var bikeHistorySampleGate bikeHistorySampler
 func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) error {
 	log.Infof("[BIKE_ETA] action=bike_eta event=start")
 	now := time.Now()
-	var historyRows [][]interface{}
+	var historyRows [][]any
 	var jobErr error
 	for _, city := range cities {
-		if city == "Keelung" || city == "HsinchuCounty" || city == "NantouCounty" || city == "YilanCounty" || city == "PenghuCounty" || city == "KinmenCounty" || city == "LienchiangCounty" || city == "InterCity" || city == "HualienCounty" {
+		if _, skip := bikeAvailabilitySkip[city]; skip {
 			continue
 		}
 		log.Infof("[BIKE_ETA] action=bike_eta city=%s event=city_start", city)
 		result, err := fetch(ctx, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
 		if err != nil {
-			log.Warnf("[BIKE_ETA] action=bike_eta city=%s event=skip reason=api_error,error=%s", city, err)
 			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s fetch: %w", city, err))
 			continue
 		}
@@ -163,7 +176,7 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			continue
 		}
 		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
-			pipe := sink.pipelineContext(ctx)
+			pipe := sink.pipeline()
 			ownedKeys := make([]string, 0)
 			// Availability Set and the interleaved history sampling keep bikeEta on
 			// the streaming strict decoder rather than the per-item-proto
@@ -197,13 +210,12 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 				return err
 			}
 			pipe.ReplaceOwnedKeys(shared.LiveOwnedKeysKey("bike", city), ownedKeys, ownedKeysTTL)
-			if err := pipe.Exec(); err != nil {
+			if err := pipe.Exec(ctx); err != nil {
 				return fmt.Errorf("publish bike availability for %s: %w", city, err)
 			}
 			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)
 			return nil
 		}); err != nil {
-			log.Errorf("[BIKE_ETA] action=bike_eta city=%s event=process_error error=%v", city, err)
 			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s process: %w", city, err))
 		}
 	}

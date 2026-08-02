@@ -5,7 +5,7 @@
 # findings P0-09/F05 (release must never silently sign with the debug
 # keystore), F06 (the Google Maps key must come from the Flutter
 # dart-defines bridge, not a hardcoded/blank value), and F49 (product
-# identity: app_name = 我車呢, manifest label references it).
+# identity: app_name = 我公車呢, manifest label references it).
 #
 # Every Gradle invocation here runs against `:app:assembleRelease` (or a
 # resValue-generation task) purely at Gradle's configuration/task-graph
@@ -181,10 +181,10 @@ fi
 note "F49: product identity — app_name resource and manifest label"
 strings_xml="app/src/main/res/values/strings.xml"
 manifest="app/src/main/AndroidManifest.xml"
-if grep -q '<string name="app_name">我車呢</string>' "$strings_xml"; then
-  ok "strings.xml app_name == 我車呢"
+if grep -q '<string name="app_name">我公車呢</string>' "$strings_xml"; then
+  ok "strings.xml app_name == 我公車呢"
 else
-  bad "strings.xml app_name is missing or not 我車呢"
+  bad "strings.xml app_name is missing or not 我公車呢"
 fi
 if grep -q 'android:label="@string/app_name"' "$manifest"; then
   ok "AndroidManifest.xml android:label references @string/app_name"

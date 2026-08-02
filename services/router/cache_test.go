@@ -6,7 +6,7 @@ import (
 )
 
 func TestTTLCacheStoreAndGet(t *testing.T) {
-	c := newTTLCache()
+	c := NewTTLCache()
 	c.set("k", []byte("v"), time.Minute)
 	got, ok := c.get("k")
 	if !ok || string(got) != "v" {
@@ -15,14 +15,14 @@ func TestTTLCacheStoreAndGet(t *testing.T) {
 }
 
 func TestTTLCacheMiss(t *testing.T) {
-	c := newTTLCache()
+	c := NewTTLCache()
 	if _, ok := c.get("absent"); ok {
 		t.Fatalf("get(absent) ok = true, want false")
 	}
 }
 
 func TestTTLCacheExpiry(t *testing.T) {
-	c := newTTLCache()
+	c := NewTTLCache()
 	c.set("k", []byte("v"), -time.Second)
 	if _, ok := c.get("k"); ok {
 		t.Fatalf("expired entry returned ok = true, want false")
@@ -33,7 +33,7 @@ func TestTTLCacheExpiry(t *testing.T) {
 // something asks for them again, so a cache keyed by user input would hold
 // every one-off query forever without this.
 func TestBoundedTTLCacheDropsEntriesPastTheCap(t *testing.T) {
-	c := newBoundedTTLCache(2)
+	c := NewBoundedTTLCache(2)
 	c.set("a", []byte("1"), time.Minute)
 	c.set("b", []byte("2"), time.Minute)
 	if _, ok := c.get("a"); !ok {
@@ -56,7 +56,7 @@ func TestBoundedTTLCacheDropsEntriesPastTheCap(t *testing.T) {
 // TestBoundedTTLCacheCountsDistinctKeys: overwriting a key must not push
 // the cache toward a flush, or a hot key alone would keep clearing it.
 func TestBoundedTTLCacheCountsDistinctKeys(t *testing.T) {
-	c := newBoundedTTLCache(2)
+	c := NewBoundedTTLCache(2)
 	for range 5 {
 		c.set("same", []byte("v"), time.Minute)
 	}

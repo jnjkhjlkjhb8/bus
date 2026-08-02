@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -79,32 +81,99 @@ func stationBoardWindow[T interface{ GetDepartureTime() string }](
 	return items, topUpErr
 }
 
+const (
+	// Boards, timetables and stop times all describe one service day, which only
+	// changes when the nightly load lands, so an hour is a compromise between
+	// staleness and DB load rather than a per-dataset judgement.
+	railDayTTL = 1 * time.Hour
+	// Fares change only on a load and are the same for every rider all day, so
+	// they are held far longer. Bump the key's :v prefix, not this TTL, when the
+	// payload shape changes: the old entries would otherwise outlive the deploy.
+	railFareTTL = 8 * time.Hour
+)
+
+// railCacheStation normalises a station identifier for cache-key use. Callers
+// pass whatever the app sent — a numeric id or a name in either spelling — and
+// resolveRailStationID already treats 臺 and 台 as one station in SQL, so
+// without this the same station mints one cache entry per spelling.
+//
+// A name and its numeric id still key separately. Collapsing those would mean
+// resolving before the cache read, i.e. paying two DB round trips on every hit
+// to save an entry; the extra entry is cheaper.
+func railCacheStation(s string) string {
+	return strings.ReplaceAll(strings.TrimSpace(s), "臺", "台")
+}
+
+// railCacheDate normalises a service date for cache-key use. The wire accepts
+// both 'yyyy-MM-dd' and RFC3339 (see parseRailDate), so keying on the raw string
+// minted one entry per spelling of the same day.
+func railCacheDate(s string) string {
+	return parseRailDate(s).Format(time.DateOnly)
+}
+
+// railRead serves one cached rail payload, falling back to the loaded env schema
+// on a miss. It owns the shape every rail read repeats: probe Redis, load on a
+// miss, refuse to cache an empty result, write with the dataset's TTL, and treat
+// a failed cache write as a log line rather than a failed request.
+//
+// An empty result is reported as nil bytes with a nil error, not as an error,
+// because the two callers disagree about what it means: the fare, timetable and
+// stop-time handlers turn it into NotFound (ADR-0005), while the station board
+// tolerates it, since an empty next service day is a normal answer for its
+// top-up. Empty results are never cached — a negative entry would keep serving
+// nothing for a whole TTL after the loader lands the date.
+//
+// The cached value is opaque bytes. A corrupt entry therefore surfaces as a
+// decode error at the caller rather than being silently reloaded; Redis holds
+// only what this process marshalled, so the reload was defending against a case
+// that cannot arise, and one policy across all eight reads is worth more.
+func railRead(
+	ctx context.Context,
+	rc *redis.Client,
+	action, key string,
+	ttl time.Duration,
+	load func(context.Context) ([]byte, int, error),
+) ([]byte, error) {
+	if b, err := rc.Get(ctx, key).Bytes(); err == nil && len(b) > 0 {
+		return b, nil
+	}
+	b, n, err := load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 || len(b) == 0 {
+		return nil, nil
+	}
+	if err := rc.Set(ctx, key, b, ttl).Err(); err != nil {
+		log.Errorf("[gRPC] action=%s event=cache_error error=%v", action, err)
+	}
+	return b, nil
+}
+
 // traStationBoardDay serves one station/date/direction board from Redis,
 // falling back to the loaded env schema on a miss. The cache holds the whole
 // service day, so riders arriving at the station a minute apart share one
 // entry and the window is cut per request. An empty day is not cached: it
 // usually means the date has not landed yet, and a 1h negative entry would
 // keep serving nothing for an hour after the loader fixes that.
-func (s *Tra_TimetableServer) traStationBoardDay(ctx context.Context, station string, day time.Time, direction int32) ([]*pb.TraStationDeparture, error) {
-	key := fmt.Sprintf("TRA_StationBoard:%s:%s:%d", day.Format(time.DateOnly), station, direction)
-	if b, err := s.rc.Get(key).Bytes(); err == nil {
-		board := &pb.TraStationBoard{}
-		if err := proto.Unmarshal(b, board); err == nil {
-			return board.Items, nil
+func (s *TraTimetableServer) traStationBoardDay(ctx context.Context, station string, day time.Time, direction int32) ([]*pb.TraStationDeparture, error) {
+	key := fmt.Sprintf("TRA_StationBoard:%s:%s:%d", day.Format(time.DateOnly), railCacheStation(station), direction)
+	b, err := railRead(ctx, s.rc, "tra_station_board", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+		items, err := TRAStationBoardPayload(ctx, s.db, station, day, direction)
+		if err != nil || len(items) == 0 {
+			return nil, 0, err
 		}
-	}
-	items, err := traStationBoardPayload(ctx, s.db, station, day, direction)
-	if err != nil || len(items) == 0 {
+		payload, err := proto.Marshal(&pb.TraStationBoard{Items: items})
+		return payload, len(items), err
+	})
+	if err != nil || b == nil {
 		return nil, err
 	}
-	b, err := proto.Marshal(&pb.TraStationBoard{Items: items})
-	if err != nil {
+	board := &pb.TraStationBoard{}
+	if err := proto.Unmarshal(b, board); err != nil {
 		return nil, err
 	}
-	if err := s.rc.Set(key, b, 1*time.Hour).Err(); err != nil {
-		log.Errorf("[gRPC] action=tra_station_board event=cache_error error=%v", err)
-	}
-	return items, nil
+	return board.Items, nil
 }
 
 // StationBoard returns the next departures from one TRA station in one
@@ -112,7 +181,7 @@ func (s *Tra_TimetableServer) traStationBoardDay(ctx context.Context, station st
 // from the next service date: at 23:50 the two departures left are not an
 // answer. Every row carries its own TrainDate, so the app can tell the days
 // apart. An empty result is NotFound (ADR-0005); it never fetches from TDX.
-func (s *Tra_TimetableServer) StationBoard(ctx context.Context, in *pb.AskStationBoard) (*pb.TraStationBoard, error) {
+func (s *TraTimetableServer) StationBoard(ctx context.Context, in *pb.AskStationBoard) (*pb.TraStationBoard, error) {
 	log.Infof("[gRPC] action=tra_station_board event=call station=%s direction=%d", in.StationId, in.Direction)
 	if in.StationId == "" {
 		return nil, status.Error(codes.InvalidArgument, "station is required")
@@ -145,25 +214,23 @@ func (s *Tra_TimetableServer) StationBoard(ctx context.Context, in *pb.AskStatio
 // thsrStationBoardDay is traStationBoardDay's THSR half; see it for why the
 // whole day is cached and why an empty day is not.
 func (s *ThsrServer) thsrStationBoardDay(ctx context.Context, station string, day time.Time, direction int32) ([]*pb.ThsrStationDeparture, error) {
-	key := fmt.Sprintf("THSR_StationBoard:%s:%s:%d", day.Format(time.DateOnly), station, direction)
-	if b, err := s.rc.Get(key).Bytes(); err == nil {
-		board := &pb.ThsrStationBoard{}
-		if err := proto.Unmarshal(b, board); err == nil {
-			return board.Items, nil
+	key := fmt.Sprintf("THSR_StationBoard:%s:%s:%d", day.Format(time.DateOnly), railCacheStation(station), direction)
+	b, err := railRead(ctx, s.rc, "thsr_station_board", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+		items, err := THSRStationBoardPayload(ctx, s.db, station, day, direction)
+		if err != nil || len(items) == 0 {
+			return nil, 0, err
 		}
-	}
-	items, err := thsrStationBoardPayload(ctx, s.db, station, day, direction)
-	if err != nil || len(items) == 0 {
+		payload, err := proto.Marshal(&pb.ThsrStationBoard{Items: items})
+		return payload, len(items), err
+	})
+	if err != nil || b == nil {
 		return nil, err
 	}
-	b, err := proto.Marshal(&pb.ThsrStationBoard{Items: items})
-	if err != nil {
+	board := &pb.ThsrStationBoard{}
+	if err := proto.Unmarshal(b, board); err != nil {
 		return nil, err
 	}
-	if err := s.rc.Set(key, b, 1*time.Hour).Err(); err != nil {
-		log.Errorf("[gRPC] action=thsr_station_board event=cache_error error=%v", err)
-	}
-	return items, nil
+	return board.Items, nil
 }
 
 // StationBoard returns the next departures from one THSR station in one
@@ -201,24 +268,21 @@ func (s *ThsrServer) StationBoard(ctx context.Context, in *pb.ThsrAskStationBoar
 // a cache miss. Per ADR-0005 the router no longer fetches from TDX: if the loaded
 // tables have no rows for the request (e.g. a date beyond the landed window), it
 // returns codes.NotFound rather than triggering a fetch.
-func (s *Tra_TimetableServer) traFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
+func (s *TraTimetableServer) traFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
 	log.Infof("[gRPC] action=tra_fare event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
 	// Key version (:v2) bumped when the payload widened from adult-only to every
 	// 票種; without it the deploy would serve adult-only sets for a further 8h.
-	key := fmt.Sprintf("TRA_Fare:v2:%s:%s", in.OriginStationId, in.DestinationStationId)
-	if b, err := s.rc.Get(key).Bytes(); err == nil {
-		return &pb.Resp_Data{Data: b}, nil
-	}
-	b, err := traFarePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId)
+	key := fmt.Sprintf("TRA_Fare:v2:%s:%s", railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
+	b, err := railRead(ctx, s.rc, "tra_fare", key, railFareTTL, func(ctx context.Context) ([]byte, int, error) {
+		payload, err := TRAFarePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId)
+		return payload, len(payload), err
+	})
 	if err != nil {
 		log.Errorf("[gRPC] action=tra_fare event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "fare not found")
 	}
-	if len(b) == 0 {
+	if b == nil {
 		return nil, status.Error(codes.NotFound, "fare not found")
-	}
-	if err := s.rc.Set(key, b, 8*time.Hour).Err(); err != nil {
-		log.Errorf("[gRPC] action=tra_fare event=cache_error error=%v", err)
 	}
 	return &pb.Resp_Data{Data: b}, nil
 }
@@ -230,25 +294,21 @@ func (s *ThsrServer) thsrFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Da
 	log.Infof("[gRPC] action=thsr_fare event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
 	// Key version (:v2) bumped for the same reason as TRA_Fare: the payload now
 	// carries every fare class and cabin class, not just the standard adult seat.
-	key := fmt.Sprintf("THSR_Fare:v2:%s:%s", in.OriginStationId, in.DestinationStationId)
-	if b, err := s.rc.Get(key).Bytes(); err == nil {
-		return &pb.Resp_Data{Data: b}, nil
-	}
-	items, err := queryThsrFares(ctx, s.db, in.OriginStationId, in.DestinationStationId)
+	key := fmt.Sprintf("THSR_Fare:v2:%s:%s", railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
+	b, err := railRead(ctx, s.rc, "thsr_fare", key, railFareTTL, func(ctx context.Context) ([]byte, int, error) {
+		items, err := QueryTHSRFares(ctx, s.db, in.OriginStationId, in.DestinationStationId)
+		if err != nil || len(items) == 0 {
+			return nil, 0, err
+		}
+		payload, err := proto.Marshal(&pb.ThsaFares{Items: items})
+		return payload, len(items), err
+	})
 	if err != nil {
 		log.Errorf("[gRPC] action=thsr_fare event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "fare not found")
 	}
-	if len(items) == 0 {
+	if b == nil {
 		return nil, status.Error(codes.NotFound, "fare not found")
-	}
-	b, err := proto.Marshal(&pb.ThsaFares{Items: items})
-	if err != nil {
-		log.Errorf("[gRPC] action=thsr_fare event=marshal_error error=%v", err)
-		return nil, grpcStatusFor(err, "fare not found")
-	}
-	if err := s.rc.Set(key, b, 1*time.Hour).Err(); err != nil {
-		log.Errorf("[gRPC] action=thsr_fare event=cache_error error=%v", err)
 	}
 	return &pb.Resp_Data{Data: b}, nil
 }
@@ -256,23 +316,19 @@ func (s *ThsrServer) thsrFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Da
 // traTimetable serves a TRA origin/destination timetable from Redis, falling back
 // to the loaded env schema on a cache miss. Per ADR-0005 the router no longer
 // fetches from TDX: an empty result returns codes.NotFound.
-func (s *Tra_TimetableServer) traTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
+func (s *TraTimetableServer) traTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
 	log.Infof("[gRPC] action=tra_timetable event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
 	da := parseRailDate(in.Date)
-	key := fmt.Sprintf("TRA_timetable:%s:%s:%s", da.Format(time.DateOnly), in.OriginStationId, in.DestinationStationId)
-	if b, err := s.rc.Get(key).Bytes(); err == nil {
-		return &pb.Resp_Data{Data: b}, nil
-	}
-	b, n, err := traTimetablePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId, da)
+	key := fmt.Sprintf("TRA_timetable:%s:%s:%s", railCacheDate(in.Date), railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
+	b, err := railRead(ctx, s.rc, "tra_timetable", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+		return TRATimetablePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId, da)
+	})
 	if err != nil {
 		log.Errorf("[gRPC] action=tra_timetable event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "timetable not found")
 	}
-	if n == 0 {
+	if b == nil {
 		return nil, status.Error(codes.NotFound, "timetable not found")
-	}
-	if err := s.rc.Set(key, b, 1*time.Hour).Err(); err != nil {
-		log.Errorf("[gRPC] action=tra_timetable event=cache_error error=%v", err)
 	}
 	return &pb.Resp_Data{Data: b}, nil
 }
@@ -283,20 +339,16 @@ func (s *Tra_TimetableServer) traTimetable(ctx context.Context, in *pb.AskRoute)
 func (s *ThsrServer) thsrTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
 	log.Infof("[gRPC] action=thsr_timetable event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
 	da := parseRailDate(in.Date)
-	key := fmt.Sprintf("THSR_timetable:%s:%s:%s", in.Date, in.OriginStationId, in.DestinationStationId)
-	if b, err := s.rc.Get(key).Bytes(); err == nil {
-		return &pb.Resp_Data{Data: b}, nil
-	}
-	b, n, err := thsrTimetablePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId, da)
+	key := fmt.Sprintf("THSR_timetable:%s:%s:%s", railCacheDate(in.Date), railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
+	b, err := railRead(ctx, s.rc, "thsr_timetable", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+		return THSRTimetablePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId, da)
+	})
 	if err != nil {
 		log.Errorf("[gRPC] action=thsr_timetable event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "timetable not found")
 	}
-	if n == 0 {
+	if b == nil {
 		return nil, status.Error(codes.NotFound, "timetable not found")
-	}
-	if err := s.rc.Set(key, b, 1*time.Hour).Err(); err != nil {
-		log.Errorf("[gRPC] action=thsr_timetable event=cache_error error=%v", err)
 	}
 	return &pb.Resp_Data{Data: b}, nil
 }
@@ -304,23 +356,19 @@ func (s *ThsrServer) thsrTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Re
 // traStops serves a TRA train's stop times from Redis, falling back to the loaded
 // env schema on a cache miss. Per ADR-0005 the router no longer fetches from TDX:
 // an empty result returns codes.NotFound.
-func (s *Tra_DetainServer) traStops(ctx context.Context, in *pb.AskDetain) (*pb.Resp_Data, error) {
+func (s *TraDetainServer) traStops(ctx context.Context, in *pb.AskDetain) (*pb.Resp_Data, error) {
 	log.Infof("[gRPC] action=tra_stops event=call train=%s", in.Trainno)
-	key := fmt.Sprintf("TRA_Stoptimes:%s:%s", in.Date, in.Trainno)
-	if b, err := s.rc.Get(key).Bytes(); err == nil {
-		return &pb.Resp_Data{Data: b}, nil
-	}
-	da := parseRailDate(in.Date)
-	b, n, err := traStoptimesPayload(ctx, s.db, in.Trainno, da.Format(time.DateOnly))
+	date := railCacheDate(in.Date)
+	key := fmt.Sprintf("TRA_Stoptimes:%s:%s", date, in.Trainno)
+	b, err := railRead(ctx, s.rc, "tra_stops", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+		return TRAStoptimesPayload(ctx, s.db, in.Trainno, date)
+	})
 	if err != nil {
 		log.Errorf("[gRPC] action=tra_stops event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "stops not found")
 	}
-	if n == 0 {
+	if b == nil {
 		return nil, status.Error(codes.NotFound, "stops not found")
-	}
-	if err := s.rc.Set(key, b, 1*time.Hour).Err(); err != nil {
-		log.Errorf("[gRPC] action=tra_stops event=cache_error error=%v", err)
 	}
 	return &pb.Resp_Data{Data: b}, nil
 }
@@ -328,23 +376,19 @@ func (s *Tra_DetainServer) traStops(ctx context.Context, in *pb.AskDetain) (*pb.
 // thsrStops serves a THSR train's stop times from Redis, falling back to the
 // loaded env schema on a cache miss. Per ADR-0005 the router no longer fetches
 // from TDX: an empty result returns codes.NotFound.
-func (s *Thsr_DetainServer) thsrStops(ctx context.Context, in *pb.ThsrAskDetain) (*pb.Resp_Data, error) {
+func (s *ThsrDetainServer) thsrStops(ctx context.Context, in *pb.ThsrAskDetain) (*pb.Resp_Data, error) {
 	log.Infof("[gRPC] action=thsr_stops event=call train=%s", in.Trainno)
-	key := fmt.Sprintf("THSR_Stoptimes:%s:%s", in.Date, in.Trainno)
-	if b, err := s.rc.Get(key).Bytes(); err == nil {
-		return &pb.Resp_Data{Data: b}, nil
-	}
-	da := parseRailDate(in.Date)
-	b, n, err := thsrStoptimesPayload(ctx, s.db, in.Trainno, da.Format(time.DateOnly))
+	date := railCacheDate(in.Date)
+	key := fmt.Sprintf("THSR_Stoptimes:%s:%s", date, in.Trainno)
+	b, err := railRead(ctx, s.rc, "thsr_stops", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+		return THSRStoptimesPayload(ctx, s.db, in.Trainno, date)
+	})
 	if err != nil {
 		log.Errorf("[gRPC] action=thsr_stops event=query_failed error=%v", err)
 		return nil, grpcStatusFor(err, "stops not found")
 	}
-	if n == 0 {
+	if b == nil {
 		return nil, status.Error(codes.NotFound, "stops not found")
-	}
-	if err := s.rc.Set(key, b, 1*time.Hour).Err(); err != nil {
-		log.Errorf("[gRPC] action=thsr_stops event=cache_error error=%v", err)
 	}
 	return &pb.Resp_Data{Data: b}, nil
 }

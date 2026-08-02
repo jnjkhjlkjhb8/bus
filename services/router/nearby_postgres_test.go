@@ -19,13 +19,13 @@ func TestPostgresNearbyStoreBusReturnsGroupUID(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"id", "name", "city", "geodesic_meters", "lon", "lat"}).
 			AddRow("G-1", "Taipei Main", "Taipei", 42.0, 121.51, 25.01))
 
-	rows, err := newPostgresNearbyStore(db).Find(context.Background(), nearbyBus, nearbyQuery{
-		Origin: geoPoint{Lon: 121.5, Lat: 25}, RadiusMeters: 500, Limit: 80,
+	rows, err := NewPostgresNearbyStore(db).Find(context.Background(), NearbyBus, NearbyQuery{
+		Origin: GeoPoint{Lon: 121.5, Lat: 25}, RadiusMeters: 500, Limit: 80,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0].ID != "G-1" || rows[0].Mode != nearbyBus {
+	if len(rows) != 1 || rows[0].ID != "G-1" || rows[0].Mode != NearbyBus {
 		t.Fatalf("rows = %+v, want bus group G-1", rows)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {

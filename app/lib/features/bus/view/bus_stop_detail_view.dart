@@ -27,7 +27,7 @@ part '../widgets/bus_stop_sheet_widgets.dart';
 part '../widgets/bus_stop_skeleton_widgets.dart';
 part '../widgets/bus_stop_eta_tile_widgets.dart';
 
-class BusStopDetailView extends StatelessWidget {
+class BusStopDetailView extends StatefulWidget {
   const BusStopDetailView({
     required this.stopName,
     this.stopId,
@@ -48,11 +48,51 @@ class BusStopDetailView extends StatelessWidget {
   /// 省略時由本 widget 自建並 provide 唯一一份。
   final BusStopBloc? bloc;
 
+  @override
+  State<BusStopDetailView> createState() => _BusStopDetailViewState();
+}
+
+class _BusStopDetailViewState extends State<BusStopDetailView> {
+  /// The bloc currently handed to the provider.
+  BusStopBloc? _provided;
+
+  /// Set only when [_provided] is one this view built, and so the only bloc it
+  /// may close. Null for as long as the caller keeps supplying one.
+  BusStopBloc? _owned;
+
+  @override
+  void dispose() {
+    unawaited(_owned?.close());
+    super.dispose();
+  }
+
+  /// The caller's bloc when it has one, ours otherwise — but always handed to
+  /// `BlocProvider.value`. The home map drops its bloc the moment the station
+  /// group closes, while the sheet showing it is still animating away and so
+  /// still rebuilding; picking the provider constructor per build would swap
+  /// `.value` for `create:` at the same tree position on that frame, which
+  /// provider rejects outright ("Rebuilt ... using a different constructor").
+  ///
+  /// A dropped bloc keeps the one already on screen rather than building a
+  /// replacement: the only caller that drops one is on its way out, and the
+  /// substitute would load a stop nobody is going to look at.
+  BusStopBloc _bloc() {
+    final supplied = widget.bloc;
+    if (supplied != null) return _provided = supplied;
+    return _provided ??= _owned = BusStopBloc(
+      i18n: AppI18n.of(context),
+      stopId: widget.stopId,
+      city: widget.city,
+    );
+  }
+
   Favorite _favorite() => Favorite(
     type: FavoriteType.busStop,
-    refId: (stopId?.isNotEmpty ?? false) ? stopId! : stopName,
-    title: stopName,
-    subtitle: city ?? '',
+    refId: (widget.stopId?.isNotEmpty ?? false)
+        ? widget.stopId!
+        : widget.stopName,
+    title: widget.stopName,
+    subtitle: widget.city ?? '',
   );
 
   @override
@@ -61,15 +101,15 @@ class BusStopDetailView extends StatelessWidget {
       listenWhen: (p, n) => p.selectedStationUid != n.selectedStationUid,
       listener: (context, state) {
         final uid = state.selectedStationUid;
-        if (uid == null || onFocusStation == null) return;
+        if (uid == null || widget.onFocusStation == null) return;
         final m = state.members.where((m) => m.stationUid == uid).firstOrNull;
-        if (m != null) onFocusStation!(LatLng(m.lat, m.lon));
+        if (m != null) widget.onFocusStation!(LatLng(m.lat, m.lon));
       },
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
           SheetDetailHeader(
-            title: stopName,
+            title: widget.stopName,
             subtitle: const _StopMeta(),
             favorite: _favorite(),
           ),
@@ -78,14 +118,6 @@ class BusStopDetailView extends StatelessWidget {
       ),
     );
 
-    final existing = bloc;
-    if (existing != null) {
-      return BlocProvider<BusStopBloc>.value(value: existing, child: content);
-    }
-    return BlocProvider(
-      create: (context) =>
-          BusStopBloc(i18n: AppI18n.of(context), stopId: stopId, city: city),
-      child: content,
-    );
+    return BlocProvider<BusStopBloc>.value(value: _bloc(), child: content);
   }
 }

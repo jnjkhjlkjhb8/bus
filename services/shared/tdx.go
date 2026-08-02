@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -42,9 +42,9 @@ const (
 // through RedisTDXStore. Get returns ("", nil) — not an error — for a missing
 // key, matching how the client treats a cold cache.
 type TDXStore interface {
-	Get(key string) (string, error)
-	Set(key, value string, ttl time.Duration) error
-	Del(keys ...string) error
+	Get(ctx context.Context, key string) (string, error)
+	Set(ctx context.Context, key, value string, ttl time.Duration) error
+	Del(ctx context.Context, keys ...string) error
 }
 
 // RedisTDXStore adapts *redis.Client to TDXStore, translating a missing key
@@ -55,8 +55,8 @@ type RedisTDXStore struct {
 }
 
 // Get returns the cached value, or "" when the key is absent.
-func (s RedisTDXStore) Get(key string) (string, error) {
-	v, err := s.RC.Get(key).Result()
+func (s RedisTDXStore) Get(ctx context.Context, key string) (string, error) {
+	v, err := s.RC.Get(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
 		return "", nil
 	}
@@ -64,13 +64,13 @@ func (s RedisTDXStore) Get(key string) (string, error) {
 }
 
 // Set writes value under key with the given TTL (0 = no expiry).
-func (s RedisTDXStore) Set(key, value string, ttl time.Duration) error {
-	return s.RC.Set(key, value, ttl).Err()
+func (s RedisTDXStore) Set(ctx context.Context, key, value string, ttl time.Duration) error {
+	return s.RC.Set(ctx, key, value, ttl).Err()
 }
 
 // Del removes the given keys.
-func (s RedisTDXStore) Del(keys ...string) error {
-	return s.RC.Del(keys...).Err()
+func (s RedisTDXStore) Del(ctx context.Context, keys ...string) error {
+	return s.RC.Del(ctx, keys...).Err()
 }
 
 // TDXConfig configures a TDXClient. Store is required. IMSKey maps a fetch name
@@ -187,15 +187,18 @@ func (c *TDXClient) Token(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	if token, err := c.cachedToken(); err != nil || token != "" {
+	if token, err := c.cachedToken(ctx); err != nil || token != "" {
 		return token, err
 	}
 	result := c.tokenRefresh.DoChan("refresh", func() (any, error) {
-		if token, err := c.cachedToken(); err != nil || token != "" {
-			return token, err
-		}
+		// The refresh is shared by every waiter, so it runs on its own context:
+		// one caller giving up must not cancel the exchange the others are
+		// waiting on. This covers the cache re-check as well as the exchange.
 		refreshCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		if token, err := c.cachedToken(refreshCtx); err != nil || token != "" {
+			return token, err
+		}
 		return c.exchangeToken(refreshCtx)
 	})
 	select {
@@ -213,15 +216,15 @@ func (c *TDXClient) Token(ctx context.Context) (string, error) {
 	}
 }
 
-func (c *TDXClient) cachedToken() (string, error) {
-	token, err := c.store.Get(TDXTokenKey)
+func (c *TDXClient) cachedToken(ctx context.Context) (string, error) {
+	token, err := c.store.Get(ctx, TDXTokenKey)
 	if err != nil {
 		return "", fmt.Errorf("read cached TDX token: %w", err)
 	}
 	if token != "" {
 		return token, nil
 	}
-	token, err = c.store.Get(TDXTokenKeyLegacy)
+	token, err = c.store.Get(ctx, TDXTokenKeyLegacy)
 	if err != nil {
 		return "", fmt.Errorf("read legacy cached TDX token: %w", err)
 	}
@@ -260,7 +263,7 @@ func (c *TDXClient) exchangeToken(ctx context.Context) (string, error) {
 	if payload.AccessToken == "" {
 		return "", errors.New("TDX token response is missing access_token")
 	}
-	if err := c.store.Set(TDXTokenKey, payload.AccessToken, tdxTokenTTL); err != nil {
+	if err := c.store.Set(ctx, TDXTokenKey, payload.AccessToken, tdxTokenTTL); err != nil {
 		return "", fmt.Errorf("cache TDX token: %w", err)
 	}
 	return payload.AccessToken, nil
@@ -269,8 +272,8 @@ func (c *TDXClient) exchangeToken(ctx context.Context) (string, error) {
 // since resolves the If-Modified-Since value for name: the cached marker, or the
 // SinceFallback (a DB-derived timestamp) when the cache is cold. A nil fallback
 // or an empty cache with no fallback yields "" (fetch everything).
-func (c *TDXClient) since(name string) (string, error) {
-	v, err := c.store.Get(c.imsKey(name))
+func (c *TDXClient) since(ctx context.Context, name string) (string, error) {
+	v, err := c.store.Get(ctx, c.imsKey(name))
 	if err != nil {
 		return "", fmt.Errorf("read TDX marker %s: %w", name, err)
 	}
@@ -300,7 +303,7 @@ func (c *TDXClient) retryDecision(resp *resty.Response, requestErr error) (bool,
 	}
 	switch resp.StatusCode() {
 	case http.StatusUnauthorized:
-		if err := c.store.Del(TDXTokenKey, TDXTokenKeyLegacy); err != nil {
+		if err := c.store.Del(resp.Request.Context(), TDXTokenKey, TDXTokenKeyLegacy); err != nil {
 			return false, fmt.Errorf("invalidate rejected TDX token: %w", err)
 		}
 		return true, nil
@@ -432,7 +435,7 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	marker, err := c.since(name)
+	marker, err := c.since(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +449,7 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 		}
 		obs.Logf("[TDX] action=fetch event=not_modified name=%s", name)
 		return noopTDXFetch(func() error {
-			if err := c.store.Del(c.imsKey(name)); err != nil {
+			if err := c.store.Del(ctx, c.imsKey(name)); err != nil {
 				return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
 			}
 			return nil
@@ -471,14 +474,14 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 		Decoder:  json.NewDecoder(body),
 		Modified: true,
 		Ack: func() error {
-			if err := c.store.Set(c.imsKey(name), responseMarker, 0); err != nil {
+			if err := c.store.Set(ctx, c.imsKey(name), responseMarker, 0); err != nil {
 				return fmt.Errorf("ack TDX marker %s: %w", name, err)
 			}
 			return nil
 		},
 		Close: body.Close,
 		Invalidate: func() error {
-			if err := c.store.Del(c.imsKey(name)); err != nil {
+			if err := c.store.Del(ctx, c.imsKey(name)); err != nil {
 				return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
 			}
 			return nil
@@ -516,12 +519,12 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(T
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	marker, err := c.since(name)
+	marker, err := c.since(ctx, name)
 	if err != nil {
 		return result, err
 	}
 	invalidate := func() error {
-		if err := c.store.Del(c.imsKey(name)); err != nil {
+		if err := c.store.Del(ctx, c.imsKey(name)); err != nil {
 			return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
 		}
 		return nil
@@ -588,13 +591,13 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(T
 		return result, fmt.Errorf("remove TDX response spool: %w", removeErr)
 	}
 	spoolPresent = false
-	return result, c.cacheIMS(name, responseMarker)
+	return result, c.cacheIMS(ctx, name, responseMarker)
 }
 
 // cacheIMS stores the response's Last-Modified header under name's IMS key so the
 // next request can send it as If-Modified-Since.
-func (c *TDXClient) cacheIMS(name, marker string) error {
-	if err := c.store.Set(c.imsKey(name), marker, 0); err != nil {
+func (c *TDXClient) cacheIMS(ctx context.Context, name, marker string) error {
+	if err := c.store.Set(ctx, c.imsKey(name), marker, 0); err != nil {
 		return fmt.Errorf("cache TDX marker %s: %w", name, err)
 	}
 	return nil

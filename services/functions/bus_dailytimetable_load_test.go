@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -42,8 +42,8 @@ func dialTestRedis(t *testing.T) *redis.Client {
 		DialTimeout: 200 * time.Millisecond,
 		MaxRetries:  0,
 	})
-	if err := rc.Ping().Err(); err != nil {
-		rc.Close()
+	if err := rc.Ping(t.Context()).Err(); err != nil {
+		_ = rc.Close()
 		if os.Getenv("REDIS_TEST_ADDR") != "" {
 			t.Fatalf("REDIS_TEST_ADDR is set but Redis is not reachable at %s: %v", testRedisAddr(), err)
 		}
@@ -112,7 +112,7 @@ func TestLoadBusDailyTimetableRejectsInvalidIdentityTimeOrDirection(t *testing.T
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rc := unavailableRedisClient()
-			defer rc.Close()
+			defer func() { _ = rc.Close() }()
 			err := loadBusDailyTimetable(context.Background(), decodeInto(tt.body), nil, nil, rc, "Kaohsiung")
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("loadBusDailyTimetable error = %v, want %q", err, tt.want)
@@ -144,7 +144,7 @@ func TestLoadBusDailyTimetableRejectsInvalidCanonicalIdentityBeforeRedis(t *test
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rc := unavailableRedisClient()
-			defer rc.Close()
+			defer func() { _ = rc.Close() }()
 			err := loadBusDailyTimetable(context.Background(), decodeInto(tt.body), nil, nil, rc, tt.city)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("loadBusDailyTimetable error = %v, want pre-Redis %q validation", err, tt.want)
@@ -158,8 +158,8 @@ func TestLoadBusDailyTimetableMalformedSuffixWritesNoKeys(t *testing.T) {
 	defer rc.Close()
 	const uid = "ZZ_TASK5_NO_PARTIAL"
 	key := shared.BusDailyTimetableKey(uid)
-	_ = rc.Del(key).Err()
-	defer func() { _ = rc.Del(key).Err() }()
+	_ = rc.Del(context.Background(), key).Err()
+	defer func() { _ = rc.Del(context.Background(), key).Err() }()
 
 	body := `[
 		{"SubRouteUID":"` + uid + `","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]},
@@ -169,7 +169,7 @@ func TestLoadBusDailyTimetableMalformedSuffixWritesNoKeys(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "element 1") {
 		t.Fatalf("loadBusDailyTimetable error = %v, want wrapped element 1 decode error", err)
 	}
-	if exists := rc.Exists(key).Val(); exists != 0 {
+	if exists := rc.Exists(context.Background(), key).Val(); exists != 0 {
 		t.Fatalf("Redis key %s exists after malformed suffix", key)
 	}
 }
@@ -188,14 +188,14 @@ func TestLoadBusDailyTimetableDuplicateTripPolicy(t *testing.T) {
 	rc := dialTestRedis(t)
 	defer rc.Close()
 	key := shared.BusDailyTimetableKey("KHH1")
-	_ = rc.Del(key).Err()
-	defer func() { _ = rc.Del(key).Err() }()
+	_ = rc.Del(context.Background(), key).Err()
+	defer func() { _ = rc.Del(context.Background(), key).Err() }()
 	trip := `{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}`
 	identical := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[` + trip + `,` + trip + `]}]`
 	if err := loadBusDailyTimetable(context.Background(), decodeInto(identical), nil, nil, rc, "Kaohsiung"); err != nil {
 		t.Fatalf("identical duplicate: %v", err)
 	}
-	bytes, err := rc.Get(key).Bytes()
+	bytes, err := rc.Get(context.Background(), key).Bytes()
 	if err != nil {
 		t.Fatalf("read deduped timetable: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestLoadBusDailyTimetableDuplicateTripPolicy(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "quarantine ratio exceeded") {
 		t.Fatalf("divergent duplicate error = %v, want quarantine ratio exceeded error", err)
 	}
-	after, err := rc.Get(key).Bytes()
+	after, err := rc.Get(context.Background(), key).Bytes()
 	if err != nil {
 		t.Fatalf("read timetable after rejected duplicate: %v", err)
 	}
@@ -228,14 +228,14 @@ func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
 	rc := dialTestRedis(t)
 	defer rc.Close()
 	key := shared.BusDailyTimetableKey("KHH1")
-	_ = rc.Del(key).Err()
-	defer func() { _ = rc.Del(key).Err() }()
+	_ = rc.Del(context.Background(), key).Err()
+	defer func() { _ = rc.Del(context.Background(), key).Err() }()
 	stop := `{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}`
 	identical := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[` + stop + `,` + stop + `]}]}]`
 	if err := loadBusDailyTimetable(context.Background(), decodeInto(identical), nil, nil, rc, "Kaohsiung"); err != nil {
 		t.Fatalf("identical duplicate stop: %v", err)
 	}
-	before, err := rc.Get(key).Bytes()
+	before, err := rc.Get(context.Background(), key).Bytes()
 	if err != nil {
 		t.Fatalf("read deduped timetable: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "quarantine ratio exceeded") {
 		t.Fatalf("divergent duplicate stop error = %v, want quarantine ratio exceeded", err)
 	}
-	after, err := rc.Get(key).Bytes()
+	after, err := rc.Get(context.Background(), key).Bytes()
 	if err != nil {
 		t.Fatalf("read timetable after rejected duplicate: %v", err)
 	}
@@ -272,8 +272,8 @@ func TestLoadBusDailyTimetableFiltersMisfiledDirectionTrips(t *testing.T) {
 	rc := dialTestRedis(t)
 	defer rc.Close()
 	key := shared.BusDailyTimetableKey("KHH1")
-	_ = rc.Del(key).Err()
-	defer func() { _ = rc.Del(key).Err() }()
+	_ = rc.Del(context.Background(), key).Err()
+	defer func() { _ = rc.Del(context.Background(), key).Err() }()
 
 	src := &fakeLoadSource{
 		json: map[string][]byte{
@@ -296,7 +296,7 @@ func TestLoadBusDailyTimetableFiltersMisfiledDirectionTrips(t *testing.T) {
 	if err := loadBusDailyTimetable(context.Background(), decodeInto(body), src, nil, rc, "Kaohsiung"); err != nil {
 		t.Fatalf("loadBusDailyTimetable with origin filter: %v", err)
 	}
-	bytes, err := rc.Get(key).Bytes()
+	bytes, err := rc.Get(context.Background(), key).Bytes()
 	if err != nil {
 		t.Fatalf("read filtered timetable: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestLoadBusDailyTimetableFiltersMisfiledDirectionTrips(t *testing.T) {
 	if err := loadBusDailyTimetable(context.Background(), decodeInto(body), nil, nil, rc, "Kaohsiung"); err != nil {
 		t.Fatalf("loadBusDailyTimetable without src: %v", err)
 	}
-	bytes, err = rc.Get(key).Bytes()
+	bytes, err = rc.Get(context.Background(), key).Bytes()
 	if err != nil {
 		t.Fatalf("read unfiltered timetable: %v", err)
 	}
@@ -327,18 +327,32 @@ func TestLoadBusDailyTimetableFiltersMisfiledDirectionTrips(t *testing.T) {
 	}
 }
 
+// blockingPipelineHook parks EXEC until release is closed, so a test can cancel
+// the context while the pipeline is mid-flight. Only the pipeline hook is
+// interesting; dial and single-command processing pass straight through.
+type blockingPipelineHook struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (blockingPipelineHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (blockingPipelineHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook { return next }
+
+func (h blockingPipelineHook) ProcessPipelineHook(_ redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(_ context.Context, _ []redis.Cmder) error {
+		close(h.entered)
+		<-h.release
+		return nil
+	}
+}
+
 func TestLoadBusDailyTimetableObservesCancellationDuringRedisExec(t *testing.T) {
 	rc := unavailableRedisClient()
 	defer rc.Close()
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	rc.WrapProcessPipeline(func(_ func([]redis.Cmder) error) func([]redis.Cmder) error {
-		return func(_ []redis.Cmder) error {
-			close(entered)
-			<-release
-			return nil
-		}
-	})
+	rc.AddHook(blockingPipelineHook{entered: entered, release: release})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	body := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]}]`

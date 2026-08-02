@@ -23,8 +23,13 @@ class _RouteSheet extends StatelessWidget {
     required this.onLeadChanged,
     required this.onConfirmPick,
     required this.onSkipPick,
+    required this.onBellTapped,
     this.onCancelPick,
   });
+
+  /// Opens the 下車提醒 flow from the sheet header — the entry that does not
+  /// require spotting a moving pin on the map first.
+  final VoidCallback onBellTapped;
 
   final TabController tabController;
   final SheetController sheetController;
@@ -65,17 +70,8 @@ class _RouteSheet extends StatelessWidget {
   /// The stop this route is live-tracking (追蹤), or null. Only a trackOnly
   /// waiting session on this very subroute counts — navigation sessions and
   /// other routes' sessions leave the toggles idle.
-  String? _trackedStopUidFor(JourneySessionState s) {
-    final leg = s.currentLeg;
-    if (!s.trackOnly ||
-        s.phase != JourneyPhase.waiting ||
-        leg == null ||
-        leg.kind != JourneyLegKind.bus ||
-        leg.identity.routeKey != routeState.route?.subRouteUid) {
-      return null;
-    }
-    return leg.identity.departureStopKey;
-  }
+  String? _trackedStopUidFor(JourneySessionState s) =>
+      trackedBusStopUid(s, routeState.route?.subRouteUid);
 
   void _toggleStopTracking(BuildContext context, TimelineStop stop) {
     final session = context.read<JourneySessionBloc>();
@@ -89,35 +85,15 @@ class _RouteSheet extends StatelessWidget {
     final stops = direction == 0 ? route.stopsGo : route.stopsReturn;
     final idx = stops.indexWhere((s) => s.stopUid == stop.uid);
     if (idx < 0) return;
-    final headsign = direction == 0 ? route.headsignGo : route.headsignReturn;
     session.add(
       JourneyStarted(
         trackOnly: true,
         legs: [
-          JourneyLeg(
-            kind: JourneyLegKind.bus,
-            routeLabel: headsign.isEmpty ? routeName : '$routeName 往$headsign',
-            boardStop: stops[idx].stopName,
-            alightStop: stops.last.stopName,
-            // trackOnly never rides, so the riding-progress stop lists stay
-            // empty on purpose.
-            stopNames: const [],
-            identity: PlanIdentity(
-              routeType: 'bus',
-              routeKey: route.subRouteUid,
-              direction: '$direction',
-              departureStopKey: stop.uid,
-              arrivalStopKey: '',
-              supported: false,
-            ),
-            leadingWalkMinutes: 0,
-            scheduledDeparture: null,
-            scheduledArrival: null,
-            boardLocation: PlanPoint(
-              lat: stops[idx].lat,
-              lng: stops[idx].lon,
-            ),
-            stopLocations: const [],
+          busTrackingLeg(
+            route: route,
+            stops: stops,
+            boardIndex: idx,
+            direction: direction,
           ),
         ],
       ),
@@ -188,6 +164,15 @@ class _RouteSheet extends StatelessWidget {
                           scrollController: scrollController,
                           flashStopUid: flashStopUid,
                           trackedStopUid: trackedStopUid,
+                          // While a 下車站 is being chosen the rows pick
+                          // instead of arming an arrival reminder: one list,
+                          // one meaning at a time.
+                          picking: pickingStop,
+                          firstPickableIndex: firstAlightIndex(
+                            pinnedNextStopIndex,
+                          ),
+                          targetStopUid: targetStopUid,
+                          onPickStop: onPickStop,
                           onTrackToggled: (stop) =>
                               _toggleStopTracking(context, stop),
                         ),
@@ -267,6 +252,13 @@ class _RouteSheet extends StatelessWidget {
                                 ),
                               ),
                             ],
+                            AlightTrackBell(
+                              active: false,
+                              semanticLabel: AppI18n.of(
+                                context,
+                              ).alightReminderSet,
+                              onTap: onBellTapped,
+                            ),
                           ],
                         ),
                       ),
@@ -305,18 +297,6 @@ class _RouteSheet extends StatelessWidget {
                   ),
           ),
           const SizedBox(height: 12),
-          if (pickingStop)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: _PickBar(
-                hasTarget: targetStopUid != null,
-                leadStops: leadStops,
-                onLeadChanged: onLeadChanged,
-                onConfirm: onConfirmPick,
-                onSkip: onSkipPick,
-                onCancelPick: onCancelPick,
-              ),
-            ),
           Expanded(
             child: AnimatedBuilder(
               animation: sheetAnimation,
@@ -369,225 +349,99 @@ class _RouteSheet extends StatelessWidget {
   }
 }
 
-/// Transient bar shown above the timeline while a bus is pinned. Prompts for an
-/// alight stop and, once one is picked, reveals the 提前站數 stepper and 完成.
-/// The 略過 control is always present to track the bus with no reminder.
-class _PickBar extends StatelessWidget {
-  const _PickBar({
-    required this.hasTarget,
-    required this.leadStops,
-    required this.onLeadChanged,
-    required this.onConfirm,
-    required this.onSkip,
-    this.onCancelPick,
+/// The candidate buses a reminder can bind to, as one row of plate chips.
+///
+/// A route can have several buses out at once and the reminder follows one
+/// plate, so this is the rider's choice to make. Each chip carries where that
+/// bus is right now, because a plate on its own is not something anyone can
+/// recognise from inside the vehicle.
+class _PlateChooser extends StatelessWidget {
+  const _PlateChooser({
+    required this.candidates,
+    required this.selected,
+    required this.onChoose,
   });
 
-  final bool hasTarget;
-  final int leadStops;
-  final ValueChanged<int> onLeadChanged;
-  final VoidCallback onConfirm;
-  final VoidCallback onSkip;
-
-  /// Fully aborts pick-mode with no tracking started at all — distinct from
-  /// [onSkip], which still arms a no-reminder tracking session. Optional: the
-  /// caller (_RouteSheet) only renders the control when this is wired, since
-  /// today the only cancel path is re-tapping the pinned bus marker on the
-  /// map (see finding 6, docs/audit-2026-07-18.md).
-  final VoidCallback? onCancelPick;
+  final List<({String plate, String afterStopName, int index})> candidates;
+  final String? selected;
+  final void Function(String plate, int nextStopIndex) onChoose;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final isLight = cs.brightness == Brightness.light;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: isLight ? cs.surface : cs.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: AppShadows.floating,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
+    final i18n = AppI18n.of(context);
+    if (candidates.isEmpty) {
+      // The reminder binds to a plate, so with nothing running there is
+      // nothing to bind — said here, where the choice would have been, rather
+      // than left as a CTA that refuses without explaining itself.
+      return Text(
+        i18n.alightNoVehicles,
+        style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          i18n.alightPickVehicle,
+          style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
+        ),
+        const SizedBox(height: 8),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
             children: [
-              Icon(
-                Icons.touch_app_rounded,
-                size: 16,
-                color: cs.onSurfaceVariant,
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  hasTarget
-                      ? AppI18n.of(context).busSetLeadReminder
-                      : AppI18n.of(context).busPickAlightStop,
-                  style: AppTextStyles.bodyRegular.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: cs.onSurface,
-                  ),
-                ),
-              ),
-              // Fully aborts pick-mode with no session started — ✕ reads
-              // correctly here because this control actually cancels, unlike
-              // 略過 below. Only rendered once the caller wires a real cancel
-              // path (today: re-tapping the pinned marker on the map).
-              if (onCancelPick != null) ...[
+              for (final c in candidates) ...[
                 Pressable(
-                  onTap: onCancelPick,
-                  semanticLabel: AppI18n.of(context).busCancelStopPick,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 2,
-                    ),
-                    child: Icon(
-                      Icons.close_rounded,
-                      size: 16,
-                      color: cs.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 4),
-              ],
-              Pressable(
-                onTap: onSkip,
-                semanticLabel: AppI18n.of(context).commonSkip,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 2,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // 略過 is affirmative (start tracking with no reminder),
-                      // not a dismissal — ✕ would misread as cancel.
-                      Icon(
-                        Icons.skip_next_rounded,
-                        size: 15,
-                        color: cs.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 3),
-                      Text(
-                        AppI18n.of(context).commonSkip,
-                        style: AppTextStyles.bodySmall.copyWith(
-                          fontWeight: FontWeight.w500,
-                          color: cs.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-          if (hasTarget) ...[
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Text(
-                  AppI18n.of(context).busLeadLabel,
-                  style: AppTextStyles.bodySmall.copyWith(
-                    color: cs.onSurfaceVariant,
-                  ),
-                ),
-                const SizedBox(width: 6),
-                _StepButton(
-                  icon: Icons.remove_rounded,
-                  enabled: leadStops > 1,
-                  onTap: () => onLeadChanged(leadStops - 1),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Text(
-                    AppI18n.of(context).stopsCount(leadStops),
-                    style: AppTextStyles.memo.copyWith(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: cs.onSurface,
-                      fontFeatures: _tnum,
-                    ),
-                  ),
-                ),
-                _StepButton(
-                  icon: Icons.add_rounded,
-                  enabled: true,
-                  onTap: () => onLeadChanged(leadStops + 1),
-                ),
-                const Spacer(),
-                Pressable(
-                  onTap: onConfirm,
-                  semanticLabel: AppI18n.of(context).commonDone,
+                  onTap: () => onChoose(c.plate, c.index),
+                  semanticLabel: c.plate,
                   child: Container(
+                    margin: const EdgeInsets.only(right: 8),
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 18,
-                      vertical: 8,
+                      horizontal: 10,
+                      vertical: 7,
                     ),
                     decoration: BoxDecoration(
-                      color: cs.onSurface,
-                      borderRadius: BorderRadius.circular(9),
-                    ),
-                    child: Text(
-                      AppI18n.of(context).commonDone,
-                      style: AppTextStyles.bodyRegular.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: cs.surface,
+                      color: selected == c.plate
+                          ? cs.surfaceContainerHighest
+                          : null,
+                      border: Border.all(
+                        color: selected == c.plate
+                            ? cs.onSurface
+                            : cs.outlineVariant,
                       ),
+                      borderRadius: BorderRadius.circular(
+                        AppTheme.radiusButton,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          c.plate,
+                          style: AppTextStyles.memo.copyWith(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 1),
+                        Text(
+                          i18n.alightVehiclePassed(c.afterStopName),
+                          style: AppTextStyles.bodyVerySmall.copyWith(
+                            color: cs.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
               ],
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-/// A square − / + control for the 提前站數 stepper; dims when disabled.
-class _StepButton extends StatelessWidget {
-  const _StepButton({
-    required this.icon,
-    required this.enabled,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final bool enabled;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Pressable(
-      enabled: enabled,
-      onTap: () {
-        unawaited(HapticService.instance.lightTap());
-        onTap();
-      },
-      semanticLabel: icon == Icons.add_rounded
-          ? AppI18n.of(context).commonIncrease
-          : AppI18n.of(context).commonDecrease,
-      // Visual box stays 30px; minTapSize lifts the actual hit area to the
-      // 44px floor without changing how the control reads.
-      minTapSize: 44,
-      child: Container(
-        width: 30,
-        height: 30,
-        decoration: BoxDecoration(
-          color: cs.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(8),
+            ],
+          ),
         ),
-        child: Icon(
-          icon,
-          size: 17,
-          color: enabled
-              ? cs.onSurface
-              : cs.onSurfaceVariant.withValues(alpha: 0.4),
-        ),
-      ),
+      ],
     );
   }
 }

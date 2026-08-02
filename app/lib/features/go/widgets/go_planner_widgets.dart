@@ -647,10 +647,9 @@ class _StraightLineReadout extends StatelessWidget {
         ),
         Text(
           value,
-          style: AppTextStyles.memo.copyWith(
-            fontSize: AppTextStyles.bodySmall.fontSize,
+          style: AppTextStyles.timeValue(
+            size: AppTextStyles.bodySmall.fontSize,
             color: cs.onSurfaceVariant,
-            fontFeatures: AppTextStyles.tabularFigures,
           ),
         ),
         Text(
@@ -1400,11 +1399,10 @@ class _TimeChip extends StatelessWidget {
             else ...[
               Text(
                 stamp,
-                style: AppTextStyles.memo.copyWith(
-                  fontSize: sansStyle.fontSize,
-                  fontWeight: sansStyle.fontWeight,
+                style: AppTextStyles.timeValue(
+                  size: sansStyle.fontSize,
+                  weight: sansStyle.fontWeight,
                   color: sansStyle.color,
-                  fontFeatures: AppTextStyles.tabularFigures,
                 ),
               ),
               Text(suffix, style: sansStyle),

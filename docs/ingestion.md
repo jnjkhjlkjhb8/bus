@@ -12,7 +12,7 @@ made by claude
 | 每小時 :00 | ingestor | `ingestRaw(…, "bus_dailytimetable")`：只重抓公車每日時刻表（條件式 GET，未變更的城市回 304、不動 `raw_tdx`）|
 | 每小時 :10 | loader（每個環境）| `bus_dailytimetable` 增量 load：只轉換 `landing_state.last_modified` 有變的城市 → Redis |
 | 每日 03:45 | functions | `changetovector`：向量更新（在 load 之後執行） |
-| 每日 04:00 | functions | `computeTravelAvg`：公車旅行時間統計 |
+| 每日 04:00 | functions | `computeSegmentTimes` 等三個階段：公車站間運行時間統計 |
 | 每日 04:30 | functions | `cleanupBusHistory`：刪除 30 天前的 ETA 歷史 |
 | 每 10 分鐘 | functions | `weatherSync`：CWA 天氣資料同步 |
 | 每 2 分鐘 | functions | `traEta` |
@@ -174,8 +174,8 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
    - 包含天氣快照（從 Redis `weather:{city}` 讀取）、最近公車距離（haversine）、假日旗標
 
 2. **填補 NextBusTime 預測**（`stop_status == 1` 且 `NextBusTime == ""`）
-   - 每城市執行前批次查詢：`batchNextDepartures`（`bus_schedule`）和 `batchTravelAvg`（`bus_travel_avg`），不做 per-stop DB 呼叫
-   - 旅行時間無資料時以 `stop_sequence_ratio × max` 估算
+   - 每城市執行前批次查詢：`batchNextDepartures`（`bus_schedule`）和 `batchStopOffsets`（`bus_segment_time`），不做 per-stop DB 呼叫
+   - 站間運行時間沿站序累加成各站的起點偏移量；缺任一站間的路線方向整條不採用，退回純班表發車時間
    - 若模型已載入，加上 XGBoost delay 修正值
    - 結果以 RFC3339 格式填入 proto，由 router 直接傳出
 
@@ -190,21 +190,21 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
 
 合併後寫入 Redis `weather:{city}`（15 分鐘 TTL）。
 
-## computeTravelAvg（每日 04:00）
+## 站間運行時間（每日 04:00）
 
-從 `bus_eta_history` 近 7 天的資料偵測 estimate 由正轉負的「抵達事件」，結合 `bus_schedule` 的出發時間，計算各站旅行時間中位數，寫入 `bus_travel_avg`。僅採計 ≥ 10 筆樣本的資料；GTFS 冷啟動種子（`sample_count = 0`）會被觀測資料覆蓋。
+從 `bus_eta_history` 近 7 天的資料計算相鄰兩站之間的運行時間中位數，寫入 `bus_segment_time`。三個階段依序執行，後者只補前者留下的空缺：
+
+| 階段 | 來源 | 說明 |
+|---|---|---|
+| `computeSegmentTimes` | 同一車牌先後抵達兩站 | 主要來源；台北／新北不發布車牌，因此涵蓋不到 |
+| `computeSegmentTimesFromEstimates` | 同一次快照中相鄰兩站的 estimate 差 | 補上無車牌的城市 |
+| `fillSegmentTimesFromDistance` | 站距推估 | 標記 `sample_count = 0`，永不覆蓋觀測值 |
+
+`sample_count` 一併存下，由讀取端自行決定信心門檻。ETA 預測與 GTFS 匯出都以 `busPatternSQL` 沿站序累加這些站間時間。
 
 ## cleanupBusHistory（每日 04:30）
 
 刪除 `bus_eta_history` 中 30 天前的資料（`recorded_at < NOW() - INTERVAL '30 days'`）。
-
-## GTFS 冷啟動（手動執行）
-
-```bash
-DATABASE_URL=... python3 scripts/gtfs_seed.py
-```
-
-從 `temp/gtfs/` 讀取 GTFS 靜態資料，計算各站旅行時間中位數，寫入 `bus_travel_avg`（`sample_count = 0`）。在觀測資料累積前提供 fallback 預測。
 
 ## TDX MQTT 訂閱
 

@@ -3,10 +3,10 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
 import 'package:wheres_the_bus/features/go/view/go_screen.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 const JourneyLeg _leg = JourneyLeg(

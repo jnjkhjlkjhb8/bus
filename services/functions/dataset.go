@@ -222,13 +222,12 @@ func datasetRegistry() []datasetSpec {
 		{rawTable: "metro_odfare", partCol: "system", partitions: func() []string { return ingestMetroODFare },
 			family: familyMetroSystem, apiSeg: "ODFare",
 			name: func(p string) string { return "metro_od_" + p }, loadKey: "mrt_odfare"},
-		// Landed wider than it is loaded here: mrt_traveltime needs a LineTransfer
-		// row set alongside each S2STravelTime one, so it loads only the systems
-		// both endpoints serve, while the appended mrt_adjacency loadSpec reads
-		// this table alone and consumes all six.
+		// Drives both metro travel-graph loaders. metro_linetransfer is landed for
+		// fewer systems, which is not a constraint here: readDatasetJSON returns an
+		// empty array for an unlanded partition, and no interchange is the correct
+		// graph for a single-line system.
 		{rawTable: "metro_s2straveltime", partCol: "system", partitions: func() []string { return ingestMetroS2STravelTime },
-			loadParts: func() []string { return ingestMetroLineTransfer },
-			family:    familyMetroSystem, apiSeg: "S2STravelTime",
+			family: familyMetroSystem, apiSeg: "S2STravelTime",
 			name: func(p string) string { return "metro_s2s_" + p }, loadKey: "mrt_traveltime"},
 		{rawTable: "metro_linetransfer", partCol: "system", partitions: func() []string { return ingestMetroLineTransfer },
 			family: familyMetroSystem, apiSeg: "LineTransfer",

@@ -31,7 +31,7 @@ type fakeFirebasePersistence struct {
 	device        *pb.DeviceState
 	subscriptions []*pb.RouteSubscription
 	subscribedBy  string
-	reminder      firebaseArrivalReminder
+	reminder      FirebaseArrivalReminder
 	cancelledID   string
 	cancelledBy   string
 	secretHash    []byte
@@ -56,7 +56,7 @@ func (f *fakeFirebasePersistence) ReplaceRouteSubscriptions(_ context.Context, i
 	return nil
 }
 
-func (f *fakeFirebasePersistence) CreateArrivalReminder(_ context.Context, reminder firebaseArrivalReminder) error {
+func (f *fakeFirebasePersistence) CreateArrivalReminder(_ context.Context, reminder FirebaseArrivalReminder) error {
 	f.reminder = reminder
 	return nil
 }
@@ -124,7 +124,7 @@ func TestFirebaseServiceDeviceSubscriptionAndReminder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateArrivalReminder() error = %v", err)
 	}
-	if reminder.GetReminderId() == "" || store.reminder.Status != reminderPending || store.reminder.FireAt != nil || !store.reminder.ExpiresAt.Equal(expires) {
+	if reminder.GetReminderId() == "" || store.reminder.Status != ReminderPending || store.reminder.FireAt != nil || !store.reminder.ExpiresAt.Equal(expires) {
 		t.Fatalf("stored reminder = %#v, response = %v", store.reminder, reminder)
 	}
 
@@ -299,7 +299,7 @@ func TestFirebaseServiceUpsertDeviceLowercasesPlatform(t *testing.T) {
 
 func installationContext(installID, secret string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs(
-		installIDMetadataKey, installID,
+		InstallIDMetadataKey, installID,
 		installSecretMetadataKey, secret,
 	))
 }
@@ -361,11 +361,11 @@ func (f fakeAppCheckVerifier) VerifyToken(_ context.Context, token string) error
 }
 
 func TestAppCheckUnaryInterceptor(t *testing.T) {
-	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
 	info := &grpc.UnaryServerInfo{FullMethod: pb.Firebase_Service_UpsertDevice_FullMethodName}
 
 	t.Run("disabled bypass", func(t *testing.T) {
-		got, err := appCheckUnaryInterceptor(nil, false)(context.Background(), nil, info, handler)
+		got, err := AppCheckUnaryInterceptor(nil, false)(context.Background(), nil, info, handler)
 		if err != nil || got != "ok" {
 			t.Fatalf("result = %v, error = %v", got, err)
 		}
@@ -383,9 +383,9 @@ func TestAppCheckUnaryInterceptor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			if tc.token != "" {
-				ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(appCheckMetadataKey, tc.token))
+				ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(AppCheckMetadataKey, tc.token))
 			}
-			_, err := appCheckUnaryInterceptor(fakeAppCheckVerifier{}, true)(ctx, nil, info, handler)
+			_, err := AppCheckUnaryInterceptor(fakeAppCheckVerifier{}, true)(ctx, nil, info, handler)
 			if code := status.Code(err); code != tc.want {
 				t.Fatalf("code = %v, want %v", code, tc.want)
 			}
@@ -419,7 +419,7 @@ func TestGRPCTLSCredentialsFromEnv(t *testing.T) {
 		t.Setenv("APP_ENV", "prod")
 		t.Setenv("GRPC_TLS_CERT_FILE", "")
 		t.Setenv("GRPC_TLS_KEY_FILE", "")
-		credentials, err := grpcTLSCredentialsFromEnv()
+		credentials, err := GRPCTLSCredentialsFromEnv()
 		if err != nil || credentials != nil {
 			t.Fatalf("credentials = %v, error = %v", credentials, err)
 		}
@@ -431,7 +431,7 @@ func TestGRPCTLSCredentialsFromEnv(t *testing.T) {
 		t.Setenv("APP_ENV", "staging")
 		t.Setenv("GRPC_TLS_CERT_FILE", "")
 		t.Setenv("GRPC_TLS_KEY_FILE", "")
-		if _, err := grpcTLSCredentialsFromEnv(); err == nil {
+		if _, err := GRPCTLSCredentialsFromEnv(); err == nil {
 			t.Fatal("grpcTLSCredentialsFromEnv() error = nil, want fail-closed error")
 		}
 	})
@@ -443,7 +443,7 @@ func TestGRPCTLSCredentialsFromEnv(t *testing.T) {
 		t.Setenv("APP_ENV", "staging")
 		t.Setenv("GRPC_TLS_CERT_FILE", certFile)
 		t.Setenv("GRPC_TLS_KEY_FILE", keyFile)
-		credentials, err := grpcTLSCredentialsFromEnv()
+		credentials, err := GRPCTLSCredentialsFromEnv()
 		if err != nil {
 			t.Fatalf("grpcTLSCredentialsFromEnv() error = %v", err)
 		}
@@ -458,7 +458,7 @@ func TestGRPCTLSCredentialsFromEnv(t *testing.T) {
 		t.Setenv("APP_ENV", "staging")
 		t.Setenv("GRPC_TLS_CERT_FILE", "/nonexistent/grpc.crt")
 		t.Setenv("GRPC_TLS_KEY_FILE", "/nonexistent/grpc.key")
-		if _, err := grpcTLSCredentialsFromEnv(); err == nil {
+		if _, err := GRPCTLSCredentialsFromEnv(); err == nil {
 			t.Fatal("grpcTLSCredentialsFromEnv() error = nil, want load failure")
 		}
 	})
@@ -490,7 +490,7 @@ func writeSelfSignedCertPair(t *testing.T) (certFile, keyFile string) {
 	if err != nil {
 		t.Fatalf("create cert file: %v", err)
 	}
-	defer certOut.Close()
+	defer func() { _ = certOut.Close() }()
 	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
 		t.Fatalf("encode certificate: %v", err)
 	}
@@ -498,7 +498,7 @@ func writeSelfSignedCertPair(t *testing.T) (certFile, keyFile string) {
 	if err != nil {
 		t.Fatalf("create key file: %v", err)
 	}
-	defer keyOut.Close()
+	defer func() { _ = keyOut.Close() }()
 	if err := pem.Encode(keyOut, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}); err != nil {
 		t.Fatalf("encode key: %v", err)
 	}
@@ -514,13 +514,13 @@ func (s testServerStream) Context() context.Context { return s.ctx }
 
 func TestAppCheckStreamInterceptor(t *testing.T) {
 	info := &grpc.StreamServerInfo{FullMethod: "/Firebase_Service/futureStream"}
-	handler := func(interface{}, grpc.ServerStream) error { return nil }
+	handler := func(any, grpc.ServerStream) error { return nil }
 
 	missing := testServerStream{ctx: context.Background()}
-	if code := status.Code(appCheckStreamInterceptor(fakeAppCheckVerifier{}, true)(nil, missing, info, handler)); code != codes.Unauthenticated {
+	if code := status.Code(AppCheckStreamInterceptor(fakeAppCheckVerifier{}, true)(nil, missing, info, handler)); code != codes.Unauthenticated {
 		t.Fatalf("missing token code = %v, want %v", code, codes.Unauthenticated)
 	}
-	if err := appCheckStreamInterceptor(nil, false)(nil, missing, info, handler); err != nil {
+	if err := AppCheckStreamInterceptor(nil, false)(nil, missing, info, handler); err != nil {
 		t.Fatalf("disabled interceptor error = %v", err)
 	}
 }

@@ -305,7 +305,7 @@ func TestWebhookNotifierReportsFailureStatus(t *testing.T) {
 
 func TestNewFeedbackNotifierWithoutURLIsSilent(t *testing.T) {
 	t.Setenv("FEEDBACK_WEBHOOK_URL", "")
-	if _, ok := newFeedbackNotifier().(silentNotifier); !ok {
+	if _, ok := NewFeedbackNotifier().(silentNotifier); !ok {
 		t.Fatal("an unset webhook URL must degrade to database-only, not configure a client")
 	}
 }

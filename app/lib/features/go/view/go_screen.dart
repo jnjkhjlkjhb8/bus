@@ -26,9 +26,9 @@ import 'package:wheres_the_bus/features/go/navigation/navigation_coordinator.dar
 import 'package:wheres_the_bus/features/go/view/place_search_screen.dart';
 import 'package:wheres_the_bus/features/go/widgets/route_option_card.dart';
 import 'package:wheres_the_bus/features/go/widgets/transit_visuals.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_bus/shared/map/marker_factory.dart';

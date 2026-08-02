@@ -39,6 +39,9 @@ class MetroSvgMap extends StatefulWidget {
     this.selectedStationId,
     this.stationLabels = const {},
     this.animate = true,
+    this.pickAheadIds,
+    this.pickBoardId,
+    this.pickedStationId,
     super.key,
   });
 
@@ -46,6 +49,23 @@ class MetroSvgMap extends StatefulWidget {
   final String? selectedStationId;
   final Map<String, String> stationLabels;
   final bool animate;
+
+  /// Stations the boarded train still calls at, when a 下車站 is being chosen.
+  /// Null means no pick is open and the map behaves normally.
+  ///
+  /// The base map is a rasterized SVG, so its own station dots cannot be
+  /// restyled one by one. Pick-mode therefore lays a light wash over the whole
+  /// bitmap and redraws just these stations as rings above it — the station
+  /// names printed into the map stay readable, which is the only thing the
+  /// rider has to identify a station by.
+  final Set<String>? pickAheadIds;
+
+  /// The station the rider boarded at, marked with a single ring.
+  final String? pickBoardId;
+
+  /// The 下車站 chosen so far, marked with a double ring. Hollow, always: a
+  /// filled marker would sit on top of the station's printed name.
+  final String? pickedStationId;
 
   static const double _mapW = 1080;
   static const double _mapH = 1920;
@@ -134,6 +154,7 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
           ..scaleByDouble(k, k, k, 1);
       }
       final isDark = Theme.of(context).brightness == Brightness.dark;
+      final cs = Theme.of(context).colorScheme;
       final selectedStationId = widget.selectedStationId;
 
       final selectedStation = selectedStationId != null
@@ -180,6 +201,32 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
                     ),
                   ),
                 ),
+                if (widget.pickAheadIds != null)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: ColoredBox(
+                        // Light enough that the map's own labels stay legible:
+                        // the wash only has to put the stations this train
+                        // never reaches behind the ones it does.
+                        color: cs.surface.withValues(alpha: 0.4),
+                      ),
+                    ),
+                  ),
+                if (widget.pickAheadIds case final ahead?)
+                  for (final station in metroMapStations)
+                    if (ahead.contains(station.id) ||
+                        station.id == widget.pickBoardId)
+                      _PickRing(
+                        x: station.x * s,
+                        y: station.y * s,
+                        color:
+                            station.id == widget.pickedStationId ||
+                                station.id == widget.pickBoardId
+                            ? cs.onSurface
+                            : metroLineColor(station.id),
+                        doubleRing: station.id == widget.pickedStationId,
+                        haloColor: cs.surface,
+                      ),
                 for (final station in metroMapStations)
                   if (station.id == selectedStationId)
                     _SelectedMarker(
@@ -191,7 +238,14 @@ class _MetroSvgMapState extends State<MetroSvgMap> {
                       animate: widget.animate,
                     ),
                 _StationHitLayer(
-                  stations: metroMapStations,
+                  // In pick-mode only the stations this train still calls at
+                  // answer a tap; everything else is scenery until the pick
+                  // ends.
+                  stations: widget.pickAheadIds == null
+                      ? metroMapStations
+                      : metroMapStations
+                            .where((st) => widget.pickAheadIds!.contains(st.id))
+                            .toList(),
                   scale: s,
                   onStationTap: widget.onStationTap,
                   semanticsReady: _semanticsReady,
@@ -747,4 +801,51 @@ class _RingPainter extends CustomPainter {
       old.opacity != opacity ||
       old.color != color ||
       old.strokeWidth != strokeWidth;
+}
+
+/// A station marked on the map while a 下車站 is being chosen.
+///
+/// Hollow by construction: the base map prints the station's name right next
+/// to its dot, and a filled marker would cover it. The 下車站 earns a second
+/// ring rather than a fill.
+class _PickRing extends StatelessWidget {
+  const _PickRing({
+    required this.x,
+    required this.y,
+    required this.color,
+    required this.doubleRing,
+    required this.haloColor,
+  });
+
+  final double x;
+  final double y;
+  final Color color;
+  final bool doubleRing;
+  final Color haloColor;
+
+  static const double _size = 16;
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: x - _size / 2,
+      top: y - _size / 2,
+      width: _size,
+      height: _size,
+      child: IgnorePointer(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: color, width: doubleRing ? 3 : 2),
+            boxShadow: doubleRing
+                ? [
+                    BoxShadow(color: haloColor, spreadRadius: 2),
+                    BoxShadow(color: color, spreadRadius: 4),
+                  ]
+                : null,
+          ),
+        ),
+      ),
+    );
+  }
 }

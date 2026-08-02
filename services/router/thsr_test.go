@@ -12,9 +12,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// TestThsrFarePayloadReadsFare covers the read path (ADR-0005): the helper reads
-// the loaded env schema and marshals the fare it finds, never fetching from TDX.
-func TestThsrFarePayloadReadsFare(t *testing.T) {
+// TestQueryThsrFaresReadsFare covers the read path (ADR-0005): the query reads
+// the loaded env schema and returns the fare it finds, never fetching from TDX.
+func TestQueryThsrFaresReadsFare(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -25,16 +25,12 @@ func TestThsrFarePayloadReadsFare(t *testing.T) {
 		WithArgs("0990", "1000").
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "fare_class", "cabin_class", "price"}).AddRow(uint8(1), uint8(2), uint8(3), int32(120)))
 
-	payload, err := thsrFarePayload(context.Background(), "0990", "1000", db)
+	fares, err := QueryTHSRFares(context.Background(), db, "0990", "1000")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fares models.ThsaFares
-	if err := proto.Unmarshal(payload, &fares); err != nil {
-		t.Fatal(err)
-	}
-	if len(fares.Items) != 1 || fares.Items[0].Price != 120 {
-		t.Fatalf("fares = %+v, want one fare priced 120", fares.Items)
+	if len(fares) != 1 || fares[0].Price != 120 {
+		t.Fatalf("fares = %+v, want one fare priced 120", fares)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -62,7 +58,7 @@ func TestQueryThsrFaresKeepsEveryClass(t *testing.T) {
 			AddRow(uint8(1), uint8(1), uint8(2), int32(2000)).
 			AddRow(uint8(1), uint8(1), uint8(3), int32(1480)))
 
-	fares, err := queryThsrFares(context.Background(), db, "0990", "1070")
+	fares, err := QueryTHSRFares(context.Background(), db, "0990", "1070")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,10 +79,10 @@ func TestQueryThsrFaresKeepsEveryClass(t *testing.T) {
 	}
 }
 
-// TestThsrFarePayloadEmptyOnEmptyDB covers the read path (ADR-0005): the helper
-// returns an empty payload on an empty DB instead of fetching from TDX, so the
-// handler can map it to NotFound.
-func TestThsrFarePayloadEmptyOnEmptyDB(t *testing.T) {
+// TestQueryThsrFaresEmptyOnEmptyDB covers the read path (ADR-0005): the query
+// returns no rows on an empty DB instead of fetching from TDX, so thsrFare can
+// map it to NotFound.
+func TestQueryThsrFaresEmptyOnEmptyDB(t *testing.T) {
 	db, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -97,16 +93,12 @@ func TestThsrFarePayloadEmptyOnEmptyDB(t *testing.T) {
 		WithArgs("0990", "1000").
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "fare_class", "cabin_class", "price"}))
 
-	payload, err := thsrFarePayload(context.Background(), "0990", "1000", db)
+	fares, err := QueryTHSRFares(context.Background(), db, "0990", "1000")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fares models.ThsaFares
-	if err := proto.Unmarshal(payload, &fares); err != nil {
-		t.Fatal(err)
-	}
-	if len(fares.Items) != 0 {
-		t.Fatalf("want empty, got %+v", fares.Items)
+	if len(fares) != 0 {
+		t.Fatalf("want empty, got %+v", fares)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -144,7 +136,7 @@ func TestThsrTimetablePayloadUsesOriginDeparture(t *testing.T) {
 			AddRow("0802", "1070", "左營", "0990", "南港", "10:30:00", "10:32:00", "", false, "0990", 12))
 
 	date := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
-	payload, n, err := thsrTimetablePayload(context.Background(), db, "0990", "1070", date)
+	payload, n, err := THSRTimetablePayload(context.Background(), db, "0990", "1070", date)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +198,7 @@ func TestThsrTimetablePayloadDurationDependsOnClockOrderNotOvernightFlag(t *test
 					AddRow("0801", "0990", "南港", "1070", "左營", tt.arrival, tt.arrival, "", tt.overnight, "1070", 12))
 
 			date := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
-			payload, n, err := thsrTimetablePayload(context.Background(), db, "0990", "1070", date)
+			payload, n, err := THSRTimetablePayload(context.Background(), db, "0990", "1070", date)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -244,7 +236,7 @@ func TestThsrTimetablePayloadQueryHasDeterministicOrder(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"station_id"}))
 
 	date := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
-	_, n, err := thsrTimetablePayload(context.Background(), db, "0990", "1070", date)
+	_, n, err := THSRTimetablePayload(context.Background(), db, "0990", "1070", date)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +263,7 @@ func TestThsrTimetablePayloadPropagatesOriginResolverErrorImmediately(t *testing
 		WillReturnError(wantErr)
 
 	date := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
-	payload, n, err := thsrTimetablePayload(context.Background(), db, "南港", "左營", date)
+	payload, n, err := THSRTimetablePayload(context.Background(), db, "南港", "左營", date)
 	if err != wantErr {
 		t.Fatalf("error = %v, want same sentinel %v", err, wantErr)
 	}
@@ -297,7 +289,7 @@ func TestThsrStoptimesPayload(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"stopsequence", "stationid", "stationname", "arrivaltime", "departuretime"}).
 			AddRow(1, "0990", "南港", "08:00", "08:02"))
 
-	payload, n, err := thsrStoptimesPayload(context.Background(), db, "0801", "2026-07-04")
+	payload, n, err := THSRStoptimesPayload(context.Background(), db, "0801", "2026-07-04")
 	if err != nil {
 		t.Fatal(err)
 	}

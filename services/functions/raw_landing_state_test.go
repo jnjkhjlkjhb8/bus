@@ -64,7 +64,7 @@ func TestVerifyAndTouchRawLandingAcceptsMatchingEmptyAndNonEmpty(t *testing.T) {
 			db.ExpectCommit()
 
 			if err := verifyAndTouchRawLandingWithDB(
-				context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test",
+				context.Background(), db, rawTarget{table: "bus_route", partCol: "city", partVal: "Taipei"}, "MARKER", "cycle-test",
 			); err != nil {
 				t.Fatalf("verifyAndTouchRawLandingWithDB: %v", err)
 			}
@@ -84,7 +84,7 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 		db.ExpectRollback()
 
 		err := verifyAndTouchRawLandingWithDB(
-			context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test",
+			context.Background(), db, rawTarget{table: "bus_route", partCol: "city", partVal: "Taipei"}, "MARKER", "cycle-test",
 		)
 		assertLandingMismatch(t, err, "missing_state")
 	})
@@ -98,7 +98,7 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 		db.ExpectRollback()
 
 		err := verifyAndTouchRawLandingWithDB(
-			context.Background(), db, "bus_route", "city", "Taipei", "HTTP-MARKER", "cycle-test",
+			context.Background(), db, rawTarget{table: "bus_route", partCol: "city", partVal: "Taipei"}, "HTTP-MARKER", "cycle-test",
 		)
 		assertLandingMismatch(t, err, "marker")
 	})
@@ -123,7 +123,7 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 			db.ExpectRollback()
 
 			err := verifyAndTouchRawLandingWithDB(
-				context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test",
+				context.Background(), db, rawTarget{table: "bus_route", partCol: "city", partVal: "Taipei"}, "MARKER", "cycle-test",
 			)
 			assertLandingMismatch(t, err, "row_presence")
 		})
@@ -144,7 +144,7 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 		db.ExpectRollback()
 
 		err := verifyAndTouchRawLandingWithDB(
-			context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test",
+			context.Background(), db, rawTarget{table: "bus_route", partCol: "city", partVal: "Taipei"}, "MARKER", "cycle-test",
 		)
 		assertLandingMismatch(t, err, "state_update")
 	})
@@ -169,7 +169,7 @@ func TestLandRawTDXCommitsRowsAndStateAtomically(t *testing.T) {
 	db.ExpectBegin()
 	db.ExpectExec(regexp.QuoteMeta("SET LOCAL lock_timeout = '20s'")).
 		WillReturnResult(pgxmock.NewResult("SET", 0))
-	db.ExpectExec(regexp.QuoteMeta(rawDeleteSQL("bus_route", "city"))).
+	db.ExpectExec(regexp.QuoteMeta(rawDeleteSQL(rawTarget{table: "bus_route", partCol: "city"}))).
 		WithArgs("Taipei").
 		WillReturnResult(pgxmock.NewResult("DELETE", 3))
 	db.ExpectExec(regexp.QuoteMeta(rawInsertSQL("bus_route"))).
@@ -181,7 +181,7 @@ func TestLandRawTDXCommitsRowsAndStateAtomically(t *testing.T) {
 	db.ExpectCommit()
 
 	err := landRawTDXWithDB(
-		context.Background(), db, "bus_route", "city", "Taipei", "MARKER-EMPTY", "cycle-test", bytes.NewBufferString("[]"),
+		context.Background(), db, rawTarget{table: "bus_route", partCol: "city", partVal: "Taipei"}, "MARKER-EMPTY", "cycle-test", bytes.NewBufferString("[]"),
 	)
 	if err != nil {
 		t.Fatalf("landRawTDXWithDB: %v", err)
@@ -194,7 +194,7 @@ func TestLandRawTDXRollsBackWhenStateUpsertFails(t *testing.T) {
 	db.ExpectBegin()
 	db.ExpectExec(regexp.QuoteMeta("SET LOCAL lock_timeout = '20s'")).
 		WillReturnResult(pgxmock.NewResult("SET", 0))
-	db.ExpectExec(regexp.QuoteMeta(rawDeleteSQL("bus_route", "city"))).
+	db.ExpectExec(regexp.QuoteMeta(rawDeleteSQL(rawTarget{table: "bus_route", partCol: "city"}))).
 		WithArgs("Taipei").
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 	db.ExpectExec(regexp.QuoteMeta(rawInsertSQL("bus_route"))).
@@ -206,7 +206,7 @@ func TestLandRawTDXRollsBackWhenStateUpsertFails(t *testing.T) {
 	db.ExpectRollback()
 
 	err := landRawTDXWithDB(
-		context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-test", bytes.NewBufferString("[]"),
+		context.Background(), db, rawTarget{table: "bus_route", partCol: "city", partVal: "Taipei"}, "MARKER", "cycle-test", bytes.NewBufferString("[]"),
 	)
 	if !errors.Is(err, stateErr) {
 		t.Fatalf("land error = %v, want %v", err, stateErr)
@@ -219,7 +219,7 @@ func TestRawLandingPersistsSharedCycleForFullAndVerified304(t *testing.T) {
 		db.ExpectBegin()
 		db.ExpectExec(regexp.QuoteMeta("SET LOCAL lock_timeout = '20s'")).
 			WillReturnResult(pgxmock.NewResult("SET", 0))
-		db.ExpectExec(regexp.QuoteMeta(rawDeleteSQL("bus_route", "city"))).
+		db.ExpectExec(regexp.QuoteMeta(rawDeleteSQL(rawTarget{table: "bus_route", partCol: "city"}))).
 			WithArgs("Taipei").
 			WillReturnResult(pgxmock.NewResult("DELETE", 3))
 		db.ExpectExec(regexp.QuoteMeta(rawInsertSQL("bus_route"))).
@@ -231,7 +231,7 @@ func TestRawLandingPersistsSharedCycleForFullAndVerified304(t *testing.T) {
 		db.ExpectCommit()
 
 		err := landRawTDXWithDB(
-			context.Background(), db, "bus_route", "city", "Taipei", "MARKER-EMPTY", "cycle-shared", bytes.NewBufferString("[]"),
+			context.Background(), db, rawTarget{table: "bus_route", partCol: "city", partVal: "Taipei"}, "MARKER-EMPTY", "cycle-shared", bytes.NewBufferString("[]"),
 		)
 		if err != nil {
 			t.Fatalf("landRawTDXWithDB: %v", err)
@@ -253,7 +253,7 @@ func TestRawLandingPersistsSharedCycleForFullAndVerified304(t *testing.T) {
 		db.ExpectCommit()
 
 		if err := verifyAndTouchRawLandingWithDB(
-			context.Background(), db, "bus_route", "city", "Taipei", "MARKER", "cycle-shared",
+			context.Background(), db, rawTarget{table: "bus_route", partCol: "city", partVal: "Taipei"}, "MARKER", "cycle-shared",
 		); err != nil {
 			t.Fatalf("verifyAndTouchRawLandingWithDB: %v", err)
 		}

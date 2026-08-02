@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
+	"github.com/redis/go-redis/v9"
 )
 
 const validObservationJSON = `{"records":{"Station":[{"GeoInfo":{"CountyName":"臺北市"},"ObsTime":{"DateTime":"2026-07-15T03:00:00+08:00"},"WeatherElement":{"AirTemperature":"30","WindSpeed":"2","RelativeHumidity":"70"}}]}}`

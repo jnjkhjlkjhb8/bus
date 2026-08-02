@@ -49,10 +49,7 @@ class ComingSoonStopBanner extends StatelessWidget {
           if (time != null)
             Text(
               time!,
-              style: AppTextStyles.memo.copyWith(
-                color: cs.onPrimaryContainer,
-                fontFeatures: const [FontFeature.tabularFigures()],
-              ),
+              style: AppTextStyles.timeValue(color: cs.onPrimaryContainer),
             ),
         ],
       ),

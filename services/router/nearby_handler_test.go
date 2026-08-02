@@ -21,7 +21,7 @@ type fakeNearStream struct {
 
 type panicNearbyStore struct{}
 
-func (panicNearbyStore) Find(context.Context, nearbyMode, nearbyQuery) ([]nearbyCandidate, error) {
+func (panicNearbyStore) Find(context.Context, NearbyMode, NearbyQuery) ([]NearbyCandidate, error) {
 	panic("nearby store must not be called for an invalid query")
 }
 
@@ -41,12 +41,12 @@ func (s *fakeNearStream) SendMsg(any) error            { return nil }
 func (s *fakeNearStream) RecvMsg(any) error            { return nil }
 
 func TestFindNearMapsTotalDiscoveryFailureToUnavailable(t *testing.T) {
-	failures := map[nearbyMode]error{}
-	for _, mode := range allNearbyModes {
+	failures := map[NearbyMode]error{}
+	for _, mode := range AllNearbyModes {
 		failures[mode] = errors.New("query failed")
 	}
-	server := &Near_Server{discovery: newNearbyDiscovery(
-		fakeNearbyStore{rows: map[nearbyMode][]nearbyCandidate{}, err: failures},
+	server := &NearServer{discovery: NewNearbyDiscovery(
+		fakeNearbyStore{rows: map[NearbyMode][]NearbyCandidate{}, err: failures},
 		&fakeWalkingRouter{},
 	)}
 
@@ -87,8 +87,8 @@ type blockingNearbyStore struct {
 	release chan struct{}
 }
 
-func (s *blockingNearbyStore) Find(_ context.Context, mode nearbyMode, query nearbyQuery) ([]nearbyCandidate, error) {
-	if mode != nearbyBus {
+func (s *blockingNearbyStore) Find(_ context.Context, mode NearbyMode, query NearbyQuery) ([]NearbyCandidate, error) {
+	if mode != NearbyBus {
 		return nil, nil
 	}
 	s.mu.Lock()
@@ -107,7 +107,7 @@ func TestFindNearDropsViewportsSupersededWhileBusy(t *testing.T) {
 	requests := make(chan *pb.Ask_Near)
 	store := &blockingNearbyStore{started: make(chan struct{}), release: make(chan struct{})}
 	stream := &queuedNearStream{requests: requests}
-	server := &Near_Server{discovery: newNearbyDiscovery(store, nil)}
+	server := &NearServer{discovery: NewNearbyDiscovery(store, nil)}
 
 	done := make(chan error, 1)
 	go func() { done <- server.FindNear(stream) }()
@@ -146,7 +146,7 @@ func TestFindNearDropsViewportsSupersededWhileBusy(t *testing.T) {
 }
 
 func TestFindNearRejectsInvalidQuery(t *testing.T) {
-	server := &Near_Server{discovery: newNearbyDiscovery(panicNearbyStore{}, nil)}
+	server := &NearServer{discovery: NewNearbyDiscovery(panicNearbyStore{}, nil)}
 
 	err := server.FindNear(&fakeNearStream{request: &pb.Ask_Near{
 		PositionLon: math.Inf(1), PositionLat: 25, Radius: 500,

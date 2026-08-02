@@ -6,10 +6,10 @@ import 'package:geolocator/geolocator.dart';
 import 'package:wheres_the_bus/core/live_activity/alight_track.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_bus/features/live_activity/data/leg_eta_source.dart';
-import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
+import 'package:wheres_the_bus/data/tracking/leg_eta_source.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 
 /// Drives a journey/track Live Activity through [JourneySessionState].
 ///
@@ -412,7 +412,8 @@ class JourneySessionBloc
     // platform, not riding. `railAboard` comes from the schedule (delay
     // included), so the card only starts counting stops once the train has
     // actually reached the boarding stop.
-    final aboard = s.phase == JourneyPhase.riding ||
+    final aboard =
+        s.phase == JourneyPhase.riding ||
         (rail && s.railAboard) ||
         (!rail && s.plate != null);
 
@@ -466,9 +467,7 @@ class JourneySessionBloc
       etaMs: s.eta == null
           ? null
           : DateTime.now().add(s.eta!).millisecondsSinceEpoch,
-      etaMinutes: s.eta == null
-          ? null
-          : max(0, (s.eta!.inSeconds / 60).ceil()),
+      etaMinutes: s.eta == null ? null : max(0, (s.eta!.inSeconds / 60).ceil()),
       walkMinutes: aboard ? 0 : leg.leadingWalkMinutes,
       // Only while the train is still to come: a rider on the platform reads
       // the timetable and the slip against it, not a stop count. Both drop

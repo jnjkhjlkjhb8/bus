@@ -57,7 +57,7 @@ final class ConfigurationTests: XCTestCase {
 
   func testRunnerInfoPlistDisplayNameIsProductName() throws {
     let info = try plist(at: "Runner/Info.plist")
-    XCTAssertEqual(info["CFBundleDisplayName"] as? String, "我車呢")
+    XCTAssertEqual(info["CFBundleDisplayName"] as? String, "我公車呢")
   }
 
   // MARK: - Widget extension Info.plist (F03)

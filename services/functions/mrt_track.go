@@ -4,15 +4,14 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
 	"google.golang.org/protobuf/proto"
 )
@@ -126,7 +125,7 @@ func (t *mrtTracker) tick(ctx context.Context, now time.Time) {
 // poll is due, acquire a reading, apply the pure advance decision, fire the lead
 // vibration once, and persist + publish the new state.
 func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackReminder, now time.Time) {
-	raw, err := t.rc.WithContext(ctx).Get(shared.MrtTrackKey(track.ID)).Bytes()
+	raw, err := t.rc.Get(ctx, shared.MrtTrackKey(track.ID)).Bytes()
 	if errors.Is(err, redis.Nil) {
 		// The session's state has ended and its key expired (or was never
 		// written). Drop a never-fired row so the active query stops returning it;
@@ -188,12 +187,12 @@ func (t *mrtTracker) publishState(ctx context.Context, state *models.MrtTrackSta
 	if mrtIsTerminal(state.Status) {
 		ttl = mrtTrackEndedTTL
 	}
-	rc := t.rc.WithContext(ctx)
-	if err := rc.Set(shared.MrtTrackKey(state.TrackId), pb, ttl).Err(); err != nil {
+	rc := t.rc
+	if err := rc.Set(ctx, shared.MrtTrackKey(state.TrackId), pb, ttl).Err(); err != nil {
 		log.Warnf("[MRT_TRACK] action=publish event=set_error track=%s error=%v", state.TrackId, err)
 		return
 	}
-	if err := rc.Publish(shared.MrtTrackChannel(state.TrackId), pb).Err(); err != nil {
+	if err := rc.Publish(ctx, shared.MrtTrackChannel(state.TrackId), pb).Err(); err != nil {
 		log.Warnf("[MRT_TRACK] action=publish event=publish_error track=%s error=%v", state.TrackId, err)
 	}
 }
@@ -242,7 +241,7 @@ func (t *mrtTracker) fallbackFromLive(ctx context.Context, state *models.MrtTrac
 	if len(state.PathStationIds) == 0 {
 		return 0, false
 	}
-	rc := t.rc.WithContext(ctx)
+	rc := t.rc
 	// The terminal is the last station on the board→terminal path; it is part of
 	// the mrt_live key identity (a station has simultaneous arrivals per direction).
 	terminal := state.PathStationIds[len(state.PathStationIds)-1]
@@ -250,12 +249,19 @@ func (t *mrtTracker) fallbackFromLive(ctx context.Context, state *models.MrtTrac
 	for idx := start; idx < len(state.PathStationIds); idx++ {
 		station := state.PathStationIds[idx]
 		line := trtcLinePrefix(station)
-		raw, err := rc.Get(shared.MrtLiveKey("TRTC", station, line, terminal)).Bytes()
+		raw, err := rc.Get(ctx, shared.MrtLiveKey("TRTC", station, line, terminal)).Bytes()
 		if err != nil {
+			// A miss is the normal case: most stations on the path have no live
+			// arrival for this terminal. Anything else is a real Redis fault and
+			// would otherwise vanish, since the fallback reports only found/not.
+			if !errors.Is(err, redis.Nil) {
+				log.Warnf("[MRT_TRACK] action=fallback_live event=redis_error station=%s error=%v", station, err)
+			}
 			continue
 		}
 		var live models.MrtLive
 		if err := proto.Unmarshal(raw, &live); err != nil {
+			log.Warnf("[MRT_TRACK] action=fallback_live event=decode_error station=%s error=%v", station, err)
 			continue
 		}
 		if live.TrainNumber == state.TripId {
@@ -425,14 +431,9 @@ func mrtResolvePathIndex(names []string, stnName string) int {
 // station. Anything else carries no schedule, so the next poll uses the short
 // fallback interval instead.
 func parseTrtcTrainCountdown(s string) (time.Duration, bool) {
-	minutes, seconds, found := strings.Cut(s, ":")
-	if !found {
+	total, ok := parseMMSS(s)
+	if !ok {
 		return 0, false
 	}
-	mi, err1 := strconv.Atoi(minutes)
-	si, err2 := strconv.Atoi(seconds)
-	if err1 != nil || err2 != nil || mi < 0 || si < 0 || si > 59 {
-		return 0, false
-	}
-	return time.Duration(mi*60+si) * time.Second, true
+	return time.Duration(total) * time.Second, true
 }

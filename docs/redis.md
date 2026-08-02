@@ -33,6 +33,12 @@ made by claude
 ## 快取 key
 - MRT 下車提醒（ADR-0015）
   - `mrt_track:state:{track_id}`（一個 session 的即時位置狀態，`models.MrtTrackState` proto；router 的 `CreateTrack` 初始化並供 `WatchTrack` seed，functions tracker 每站覆寫。builder：`shared.MrtTrackKey`）
+- GTFS-RT（ADR-0019）
+  - `gtfs_rt:feed`（序列化後的整份 `FeedMessage`；`services/functions` 的
+    `gtfsRTBuilder` 每 30 秒覆寫，`services/router` 的
+    `/api/gtfs-rt/trip-updates.pb` 原樣吐出。TTL 是刻意的存活檢查：builder 停了
+    key 就過期，endpoint 回 503，規劃器退回靜態時刻表，而不是拿到一份沒人發現
+    已經過期數小時的快照。builder：`shared.GTFSRealtimeKey`）
 - Bus ETA Prediction
   - `weather:{city}`（天氣快照 JSON，`weatherSync` 寫入）
 - Bus
@@ -57,7 +63,8 @@ made by claude
 ## Hash key
 - `tra:delay`
   - key：`train_no`
-  - value：`delay` (秒)
+  - value：`delay`（**分鐘**，TDX `LiveTrainDelay.DelayTime` 的原值；App 以
+    `Duration(minutes:)` 讀取。任何以秒為單位的下游都必須自行換算）
 
 ## MQTT 快取 key
 - `mqtt:v2:Bus:News:City:{city}`
@@ -83,6 +90,9 @@ made by claude
   - `tra:delay`：180 秒（hash，trainNo → delay 秒數）
 - Bus DailyTimetable
   - `bus_daily_timetable:*`：23.5 小時
+- GTFS-RT
+  - `gtfs_rt:feed`：3 分鐘（重建週期 30 秒的數倍，慢一拍不會讓 feed 變空，
+    但 builder 真的死了會在幾分鐘內變成 503 而非繼續供應舊資料）
 - MQTT Alert
   - `mqtt:v2:Bus:News:*`：5 分鐘
   - `mqtt:v2:Bus:News:InterCity`：5 分鐘

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"time"
 
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
@@ -49,23 +50,65 @@ func adjustedEstimate(eta rawBusEsimated, now time.Time) int32 {
 	return max(est, 0)
 }
 
+// busEtaNoReading is the StopStatus published for a stop with no usable TDX
+// entry at all. Outside TDX's own 0-4 range, so the app falls through to its
+// unknown branch and renders '–' rather than a service state it was never told.
+const busEtaNoReading uint8 = 67
+
+// How long past its own predicted arrival instant a StopStatus 0 entry still
+// counts as 進站中. One ETA cron period plus a minute of slack for TDX's own
+// publish lag.
+const busEtaArrivingGrace = 90 * time.Second
+
+// arrivingExpired reports whether a StopStatus 0 entry has sat past its
+// arrival instant long enough that "進站中" is no longer a claim we can make.
+// TDX keeps republishing the last entry after a vehicle stops reporting, and
+// adjustedEstimate clamps its elapsed estimate to 0 — the same shape as a bus
+// genuinely at the kerb — so without this every stop on a route whose feed
+// went quiet pins at 進站中 for the rest of the day. Entries with no parseable
+// SrcUpdateTime cannot be aged and are left alone.
+func arrivingExpired(eta rawBusEsimated, now time.Time) bool {
+	srcT, ok := parseSrcUpdateTime(eta.SrcUpdateTime)
+	if !ok {
+		return false
+	}
+	arrival := srcT.Add(time.Duration(eta.EstimatedTime) * time.Second)
+	return now.Sub(arrival) > busEtaArrivingGrace
+}
+
+// busEtaDirectionUnknown is TDX's "direction not applicable" marker on an
+// EstimatedTimeOfArrival entry. Tainan sends it on every schedule-only (StopStatus
+// 1) entry, its SubRouteUID already naming the travel direction.
+const busEtaDirectionUnknown uint8 = 255
+
 // buildBusEtaMap collapses a city's raw TDX ETA array into one entry per
 // (canonical subroute, derived direction, stop). TDX emits one entry per (stop x
 // subroute x direction); canonicalizing the subroute/direction (ADR-0006) keeps
 // multi-route stops from overwriting each other, and pickBusEstimate resolves
-// collisions (prefer a bus en route, then the soonest).
+// collisions (prefer a bus en route, then the soonest). Canonicalization applies
+// to the feed only — mp arrives canonical from the loader, so its UIDs are used
+// as read.
 //
-// Taipei and NewTaipei are the exception: their EstimatedTimeOfArrival feed omits
-// SubRouteUID entirely and identifies arrivals only by RouteUID, so keying on the
-// subroute alone leaves every one of their stops unmatched (StopStatus 67, no
-// estimate). Such an entry is fanned out to every subroute of its route, taken
-// from mp — the same stop map the emit loop joins against. The fan-out cannot
-// invent arrivals: etaKey still carries the StopUID, so a subroute only picks up
-// the entry if it actually serves that stop.
+// Two feeds identify arrivals more loosely than the key needs, and each is
+// widened against mp — the same stop map the emit loop joins against. Neither
+// fan-out can invent an arrival: etaKey still carries the StopUID, so a subroute
+// only picks up an entry if it actually serves that stop.
+//
+//   - Taipei and NewTaipei omit SubRouteUID entirely and identify arrivals only by
+//     RouteUID. Such an entry fans out to every subroute of its route.
+//   - Tainan sends Direction 255 on schedule-only entries. Such an entry fans out
+//     to every direction mp records for its subroute.
+//
+// Without the widening those stops stay unmatched, reported as StopStatus 67 with
+// no estimate even though TDX supplied one.
 func buildBusEtaMap(city string, eat []rawBusEsimated, mp []busStationmap) map[etaKey]rawBusEsimated {
 	subsByRoute := make(map[string][]string)
+	dirsBySub := make(map[string][]uint8)
 	seenSub := make(map[string]bool)
 	for _, b := range mp {
+		if !slices.Contains(dirsBySub[b.SubRouteUID], b.Direction) {
+			dirsBySub[b.SubRouteUID] = append(dirsBySub[b.SubRouteUID], b.Direction)
+		}
 		if b.RouteUID == "" || seenSub[b.SubRouteUID] {
 			continue
 		}
@@ -81,15 +124,20 @@ func buildBusEtaMap(city string, eat []rawBusEsimated, mp []busStationmap) map[e
 		}
 	}
 	for _, e := range eat {
-		if e.SubRouteUID == "" {
-			for _, sub := range subsByRoute[e.RouteUID] {
-				uid, dir := shared.CanonicalSubroute(city, sub, e.Direction)
-				put(etaKey{uid, dir, e.StopUID}, e)
-			}
-			continue
-		}
 		uid, dir := shared.CanonicalSubroute(city, e.SubRouteUID, e.Direction)
-		put(etaKey{uid, dir, e.StopUID}, e)
+		subs := []string{uid}
+		if e.SubRouteUID == "" {
+			subs = subsByRoute[e.RouteUID]
+		}
+		for _, sub := range subs {
+			dirs := []uint8{dir}
+			if dir == busEtaDirectionUnknown {
+				dirs = dirsBySub[sub]
+			}
+			for _, d := range dirs {
+				put(etaKey{sub, d, e.StopUID}, e)
+			}
+		}
 	}
 	return etamap
 }
@@ -113,28 +161,27 @@ func parseGPSTimeUnix(s string) int64 {
 }
 
 // buildTotalStops counts the stops per canonical subroute from the static map,
-// giving each stop its route length (used as the stop-sequence denominator in the
-// travel-average interpolation and stored on history rows).
-func buildTotalStops(city string, mp []busStationmap) map[string]int {
+// giving each stop its route length (a model feature, and stored on history
+// rows).
+func buildTotalStops(mp []busStationmap) map[string]int {
 	totalStops := make(map[string]int)
 	for _, b := range mp {
-		uid, _ := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
-		totalStops[uid]++
+		totalStops[b.SubRouteUID]++
 	}
 	return totalStops
 }
 
-// collectFillKeys selects the route/directions whose baseline (schedule + travel
-// average) must be looked up: stops flagged status 1 with no TDX NextBusTime (the
+// collectFillKeys selects the route/directions whose baseline (schedule +
+// running time) must be looked up: stops flagged status 1 with no TDX NextBusTime (the
 // gap prediction fills), plus stops with a live bus en route (status 0) whose
 // baseline the delay-propagation pass needs at upstream stops. It returns the
 // route/direction keys (with duplicates, as the caller dedups) and the set of
-// canonical UIDs for the travel-average batch.
-func collectFillKeys(city string, mp []busStationmap, etamap map[etaKey]rawBusEsimated) ([]routeDirKey, map[string]bool) {
+// canonical UIDs for the stop-offset batch.
+func collectFillKeys(mp []busStationmap, etamap map[etaKey]rawBusEsimated) ([]routeDirKey, map[string]bool) {
 	var fillKeys []routeDirKey
 	fillUIDs := make(map[string]bool)
 	for _, b := range mp {
-		uid, dir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
+		uid, dir := b.SubRouteUID, b.Direction
 		etaEnt, ok := etamap[etaKey{uid, dir, b.StopUID}]
 		if !ok {
 			continue
@@ -143,9 +190,9 @@ func collectFillKeys(city string, mp []busStationmap, etamap map[etaKey]rawBusEs
 			fillKeys = append(fillKeys, routeDirKey{uid, int32(dir)})
 			fillUIDs[uid] = true
 		}
-		// Delay propagation needs the baseline (schedule + travel avg) at upstream
+		// Delay propagation needs the baseline (schedule + running time) at upstream
 		// stops where a live bus is en route, so include those routes' departures
-		// and travel averages in the batched lookups too.
+		// and stop offsets in the batched lookups too.
 		if etaEnt.StopStatus == 0 {
 			fillKeys = append(fillKeys, routeDirKey{uid, int32(dir)})
 			fillUIDs[uid] = true
@@ -154,29 +201,14 @@ func collectFillKeys(city string, mp []busStationmap, etamap map[etaKey]rawBusEs
 	return fillKeys, fillUIDs
 }
 
-// maxTravelAvgByRoute reduces the per-stop travel averages to the maximum per
-// route/direction, the fallback basis baselineArrival interpolates from when a
-// specific stop has no average of its own.
-func maxTravelAvgByRoute(travelAvgMap map[travelAvgKey]int) map[routeDirKey]int {
-	maxAvgMap := make(map[routeDirKey]int)
-	for k, v := range travelAvgMap {
-		rk := routeDirKey{k.subRouteUID, k.direction}
-		if v > maxAvgMap[rk] {
-			maxAvgMap[rk] = v
-		}
-	}
-	return maxAvgMap
-}
-
 // buildUpstreamObs runs the delay-propagation observation pass: for every stop
 // with a live bus en route (StopStatus 0) and a usable baseline, it records how
-// far that vehicle runs behind (or ahead of) the schedule+travel-average
+// far that vehicle runs behind (or ahead of) the schedule+running-time
 // baseline, keyed per route/direction. A downstream stop TDX later left blank
 // inherits the closest upstream vehicle's decayed delay before falling through to
 // the model. baselineFor is injected (it closes over the batched departure and
-// travel-average lookups) so this pass stays a pure function over its inputs.
+// stop-offset lookups) so this pass stays a pure function over its inputs.
 func buildUpstreamObs(
-	city string,
 	mp []busStationmap,
 	etamap map[etaKey]rawBusEsimated,
 	now time.Time,
@@ -184,7 +216,7 @@ func buildUpstreamObs(
 ) map[routeDirKey][]upstreamObs {
 	upstreamByRoute := make(map[routeDirKey][]upstreamObs)
 	for _, b := range mp {
-		uid, cdir := shared.CanonicalSubroute(city, b.SubRouteUID, b.Direction)
+		uid, cdir := b.SubRouteUID, b.Direction
 		eta, ok := etamap[etaKey{uid, cdir, b.StopUID}]
 		if !ok || eta.StopStatus != 0 {
 			continue

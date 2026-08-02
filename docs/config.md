@@ -39,10 +39,10 @@ diff 也更大（改動集中在 `docker-compose.yaml`、`Makefile`、新增兩�
 
 | Service | 讀取的變數 |
 |---|---|
-| router | `DATABASE_URL`, `PG_SCHEMA`, `ROUTER_DB_MAX_CONNS`, `ROUTER_DB_MIN_CONNS`, `ROUTER_METRICS_TOKEN`, `ROUTER_TRUSTED_PROXIES`, `ROUTER_MAX_LIVE_STREAMS`, `ROUTER_LIVE_SUBSCRIBER_QUEUE`, `REDIS_PASSWORD`, `EMBED_URL`, `TDX_CLIENT_ID`/`TDX_CLIENT_SECRET`（MaaS 路線規劃的專屬 carve-out，見下方說明）, `TRTC_USERNAME`/`TRTC_PASSWORD`（捷運下車提醒 `CreateTrack` 建立 session 時用 GetTrainInfo 驗證車廂綁定；空值 = no-op，回 NotFound；ADR-0015）, `FIREBASE_ENABLED`, `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `APP_ENV`, `GRPC_TLS`, `GRPC_TLS_CERT_FILE`, `GRPC_TLS_KEY_FILE`, `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `FEEDBACK_WEBHOOK_URL`（回報通知的 chat webhook；空值 = 不通知，回報仍照常寫入 `feedback_thread`） |
-| functions（`ROLE=""`，即 legacy prod 路徑：即時 ETA cron、通知、MQTT） | `DATABASE_URL`, `PG_SCHEMA`, `FUNCTIONS_DB_MAX_CONNS`/`MIN_CONNS`, `RAW_DATABASE_URL`, `RAW_DB_MAX_CONNS`, `LOAD_QUARANTINE_MAX_RATIO`, `REDIS_PASSWORD`, `CWA_API_KEY`, `EMBED_URL`, `MQTT_CLIENT_ID`/`USERNAME`/`PASSWORD`, `TDX_CLIENT_ID`/`TDX_CLIENT_SECRET`（`registerLiveCrons` 直接打 TDX 即時端點）, `TRTC_USERNAME`/`TRTC_PASSWORD`（北捷官網 SOAP API,trtcEta 即時到站+擁擠度,空值 = 跳過;ADR-0014）, `FIREBASE_ENABLED`, `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `APP_ENV`, `BUS_ETA_MODEL_PATH`, `HEALTH_FILE`, `SENTRY_*`, `ARCHIVE_MYSQL_DSN`（MySQL 歷史主機，見 `migrations/mysql/`；`bus_eta_history` 只存在那裡——30 秒的 ETA job 寫入，`computeTravelAvg` 與 `measurePredictionError` 讀取，PostgreSQL 上的同名表已 DROP。空值 = 完全不收集歷史；設了但連不上則拒絕啟動，不會靜默不記錄。必須帶 `parseTime=true`。**僅 prod 設定**：staging 指向同一台會把它的觀測混進 prod 的 ETA 訓練資料） |
+| router | `DATABASE_URL`, `PG_SCHEMA`, `ROUTER_DB_MAX_CONNS`, `ROUTER_DB_MIN_CONNS`, `ROUTER_METRICS_TOKEN`, `ROUTER_TRUSTED_PROXIES`, `ROUTER_MAX_LIVE_STREAMS`, `ROUTER_LIVE_SUBSCRIBER_QUEUE`, `REDIS_PASSWORD`, `EMBED_URL`, `TDX_CLIENT_ID`/`TDX_CLIENT_SECRET`（MaaS 路線規劃的專屬 carve-out，見下方說明）, `TRTC_USERNAME`/`TRTC_PASSWORD`（捷運下車提醒 `CreateTrack` 建立 session 時用 GetTrainInfo 驗證車廂綁定；空值 = no-op，回 NotFound；ADR-0015）, `FIREBASE_ENABLED`, `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `APP_ENV`, `GRPC_TLS`, `GRPC_TLS_CERT_FILE`, `GRPC_TLS_KEY_FILE`, `SENTRY_DSN`, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`, `FEEDBACK_WEBHOOK_URL`（回報通知的 chat webhook；空值 = 不通知，回報仍照常寫入 `feedback_thread`）, `GTFS_RT_CREDENTIAL`（GTFS-RT endpoint 的共享密鑰；空值 = 該路由完全不掛載，ADR-0019） |
+| functions（`ROLE=""`，即 legacy prod 路徑：即時 ETA cron、通知、MQTT） | `DATABASE_URL`, `PG_SCHEMA`, `FUNCTIONS_DB_MAX_CONNS`/`MIN_CONNS`, `RAW_DATABASE_URL`, `RAW_DB_MAX_CONNS`, `LOAD_QUARANTINE_MAX_RATIO`, `REDIS_PASSWORD`, `CWA_API_KEY`, `EMBED_URL`, `MQTT_CLIENT_ID`/`USERNAME`/`PASSWORD`, `TDX_CLIENT_ID`/`TDX_CLIENT_SECRET`（`registerLiveCrons` 直接打 TDX 即時端點）, `TRTC_USERNAME`/`TRTC_PASSWORD`（北捷官網 SOAP API,trtcEta 即時到站+擁擠度,空值 = 跳過;ADR-0014）, `FIREBASE_ENABLED`, `FIREBASE_PROJECT_ID`, `GOOGLE_APPLICATION_CREDENTIALS`, `APP_ENV`, `BUS_ETA_MODEL_PATH`, `HEALTH_FILE`, `SENTRY_*`, `ARCHIVE_MYSQL_DSN`（MySQL 歷史主機，見 `migrations/mysql/`；`bus_eta_history` 只存在那裡——30 秒的 ETA job 寫入，`measurePredictionError` 讀取，PostgreSQL 上的同名表已 DROP。空值 = 完全不收集歷史；設了但連不上則拒絕啟動，不會靜默不記錄。必須帶 `parseTime=true`。**僅 prod 設定**：staging 指向同一台會把它的觀測混進 prod 的 ETA 訓練資料） |
 | ingestor（`ROLE=ingestor`） | `DATABASE_URL`, `PG_SCHEMA`, `INGEST_DB_MAX_CONNS`/`MIN_CONNS`, `TDX_CLIENT_ID`/`TDX_CLIENT_SECRET`, `INGEST_ON_BOOT`, `REDIS_PASSWORD`, `HEALTH_FILE`, `SENTRY_*` |
-| loader（`ROLE=loader`） | `DATABASE_URL`, `PG_SCHEMA`, `LOAD_DB_MAX_CONNS`/`MIN_CONNS`, `RAW_DATABASE_URL`, `RAW_DB_MAX_CONNS`, `LOAD_ON_BOOT`, `LOAD_QUARANTINE_MAX_RATIO`, `PG_STATEMENT_TIMEOUT`, `REDIS_PASSWORD`, `HEALTH_FILE`, `SENTRY_*`（沒有 TDX——loader 只讀已落地的 `raw_tdx`，從不呼叫 TDX） |
+| loader（`ROLE=loader`） | `DATABASE_URL`, `PG_SCHEMA`, `LOAD_DB_MAX_CONNS`/`MIN_CONNS`, `RAW_DATABASE_URL`, `RAW_DB_MAX_CONNS`, `LOAD_ON_BOOT`, `LOAD_QUARANTINE_MAX_RATIO`, `PG_STATEMENT_TIMEOUT`, `REDIS_PASSWORD`, `HEALTH_FILE`, `SENTRY_*`, `GTFS_OUT_DIR`（GTFS 靜態 feed 的輸出目錄；空值 = `/data/gtfs`，即 compose 掛在 loader 上的 `gtfs_feed` named volume。loader 的 root filesystem 是 `read_only: true`，寫到 volume 以外的任何路徑都會失敗）（沒有 TDX——loader 只讀已落地的 `raw_tdx`，從不呼叫 TDX） |
 | powersync | `PS_DATABASE_URL`, `PS_SOURCE_DATABASE_URL` |
 
 **與 `AGENTS.md` 摘要表的差異**：`AGENTS.md` 的 `TDX_CLIENT_ID` /
@@ -154,6 +154,27 @@ functions 的 legacy prod 路徑（`registerLiveCrons` 即時 ETA cron）也直�
     openssl rand -base64 48
     ```
     Any scraper/dashboard that reads `/metrics` needs the same value in its own credential store.
+
+- GET /api/gtfs-rt/trip-updates.pb
+  - The GTFS-RT feed MOTIS polls (ADR-0019). Body is a serialized
+    `FeedMessage` (`application/x-protobuf`), rebuilt by `services/functions`
+    and handed over through the Redis key `gtfs_rt:feed`; the router only
+    returns the bytes.
+  - Requires `GTFS_RT_CREDENTIAL` as a `Bearer` credential, minimum 32
+    characters. **Unlike `/metrics` this is fail-open-by-omission on purpose**:
+    an empty value leaves the route unmounted (404) rather than refusing to
+    boot, because an environment with no planner attached should serve no feed.
+    A value that is set but too short or whitespace-padded *is* a startup error.
+  - Returns 503, never an empty feed, when the snapshot key is absent. An empty
+    `FeedMessage` is a valid claim that nothing is cancelled; 503 makes MOTIS
+    keep using the static timetable instead.
+  - MOTIS side:
+    ```yaml
+    rt:
+      - url: http://router:8080/api/gtfs-rt/trip-updates.pb
+        headers:
+          Authorization: Bearer <GTFS_RT_CREDENTIAL>
+    ```
 
 ## Compose network segmentation（O7 / review_results.md P2-03）
 

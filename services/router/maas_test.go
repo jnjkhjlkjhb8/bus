@@ -3,11 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,8 +16,6 @@ import (
 	"testing"
 	"time"
 
-	legacyredis "github.com/go-redis/redis"
-	"github.com/go-resty/resty/v2"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/pashagolub/pgxmock/v4"
@@ -36,7 +32,7 @@ type maasTDXStore struct {
 	gets   int32
 }
 
-func (s *maasTDXStore) Get(string) (string, error) {
+func (s *maasTDXStore) Get(context.Context, string) (string, error) {
 	atomic.AddInt32(&s.gets, 1)
 	if s.getErr != nil {
 		return "", s.getErr
@@ -44,8 +40,8 @@ func (s *maasTDXStore) Get(string) (string, error) {
 	return s.token, nil
 }
 
-func (*maasTDXStore) Set(string, string, time.Duration) error { return nil }
-func (*maasTDXStore) Del(...string) error                     { return nil }
+func (*maasTDXStore) Set(context.Context, string, string, time.Duration) error { return nil }
+func (*maasTDXStore) Del(context.Context, ...string) error                     { return nil }
 
 var errMaasCacheMiss = errors.New("cache miss")
 
@@ -181,7 +177,7 @@ func startBlockingRedisEndpoint(t *testing.T, targetCommand string) *blockingRed
 		if err != nil {
 			return
 		}
-		defer connection.Close()
+		defer func() { _ = connection.Close() }()
 		reader := bufio.NewReader(connection)
 		writer := bufio.NewWriter(connection)
 		for {
@@ -258,7 +254,7 @@ func TestMaasCanceledRequestDoesNotRetryOrReachUpstream(t *testing.T) {
 
 	store := &maasTDXStore{token: "tok"}
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: store, IMSKey: shared.TDXLegacyIMSKey})
-	client := newMaasServerWithCache(newControlledMaasCache(), nil, tdx, defaultMaasSharedWorkConfig).maasClient.SetBaseURL(upstream.URL)
+	client := NewMaasServerWithCache(newControlledMaasCache(), nil, tdx, DefaultMaasSharedWorkConfig).maasClient.SetBaseURL(upstream.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	started := time.Now()
@@ -285,7 +281,7 @@ func TestMaasAuthCacheErrorIsNotRetried(t *testing.T) {
 	cacheErr := errors.New("token cache unavailable")
 	store := &maasTDXStore{getErr: cacheErr}
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: store, IMSKey: shared.TDXLegacyIMSKey})
-	client := newMaasServerWithCache(newControlledMaasCache(), nil, tdx, defaultMaasSharedWorkConfig).maasClient.
+	client := NewMaasServerWithCache(newControlledMaasCache(), nil, tdx, DefaultMaasSharedWorkConfig).maasClient.
 		SetBaseURL(upstream.URL).
 		SetRetryWaitTime(time.Nanosecond).
 		SetRetryMaxWaitTime(time.Nanosecond)
@@ -298,59 +294,6 @@ func TestMaasAuthCacheErrorIsNotRetried(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Fatalf("upstream hits = %d, want 0", got)
-	}
-}
-
-func TestRedisMaasCacheCopiesLegacyConnectionOptionsAndOwnsClient(t *testing.T) {
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: "redis.internal"}
-	legacyOptions := &legacyredis.Options{
-		Network: "tcp", Addr: "redis.internal:6380", Password: "password", DB: 7,
-		MaxRetries: 2, MinRetryBackoff: 11 * time.Millisecond, MaxRetryBackoff: 29 * time.Millisecond,
-		DialTimeout: 31 * time.Millisecond, ReadTimeout: 37 * time.Millisecond, WriteTimeout: 41 * time.Millisecond,
-		PoolSize: 9, MinIdleConns: 3, PoolTimeout: 43 * time.Millisecond,
-		MaxConnAge: 47 * time.Millisecond, IdleTimeout: 53 * time.Millisecond, TLSConfig: tlsConfig,
-	}
-	mappedOptions := redisMaasOptions(legacyOptions)
-	if mappedOptions.ReadTimeout != legacyOptions.ReadTimeout || mappedOptions.WriteTimeout != legacyOptions.WriteTimeout {
-		t.Fatalf("positive timeout mapping = read %v write %v, want %v/%v", mappedOptions.ReadTimeout, mappedOptions.WriteTimeout, legacyOptions.ReadTimeout, legacyOptions.WriteTimeout)
-	}
-	cache := newRedisMaasCache(legacyOptions)
-	options := cache.client.Options()
-	if options.Network != legacyOptions.Network || options.Addr != legacyOptions.Addr ||
-		options.Username != "" || options.Password != legacyOptions.Password || options.DB != legacyOptions.DB {
-		t.Fatalf("connection identity was not copied: %+v", options)
-	}
-	if options.DialTimeout != legacyOptions.DialTimeout || options.ReadTimeout != legacyOptions.ReadTimeout ||
-		options.WriteTimeout != legacyOptions.WriteTimeout || options.PoolTimeout != legacyOptions.PoolTimeout {
-		t.Fatalf("finite timeouts were not copied: %+v", options)
-	}
-	if options.PoolSize != legacyOptions.PoolSize || options.MinIdleConns != legacyOptions.MinIdleConns ||
-		options.ConnMaxLifetime != legacyOptions.MaxConnAge || options.ConnMaxIdleTime != legacyOptions.IdleTimeout {
-		t.Fatalf("pool settings were not copied: %+v", options)
-	}
-	if options.Protocol != 2 || !options.ContextTimeoutEnabled || !options.DisableIdentity {
-		t.Fatalf("MaaS Redis safety options are not enabled: %+v", options)
-	}
-	if options.TLSConfig == nil || options.TLSConfig == tlsConfig ||
-		options.TLSConfig.ServerName != tlsConfig.ServerName || options.TLSConfig.MinVersion != tlsConfig.MinVersion {
-		t.Fatalf("TLS config was not safely cloned: got=%p want-clone-of=%p", options.TLSConfig, tlsConfig)
-	}
-	if err := cache.Close(); err != nil {
-		t.Fatalf("owned Redis client close failed: %v", err)
-	}
-	if err := cache.client.Ping(context.Background()).Err(); !errors.Is(err, redisv9.ErrClosed) {
-		t.Fatalf("owned Redis client remained usable after close: %v", err)
-	}
-}
-
-func TestRedisMaasCachePreservesEffectiveDisabledLegacyTimeouts(t *testing.T) {
-	options := redisMaasOptions(&legacyredis.Options{
-		Addr:         "redis.internal:6379",
-		ReadTimeout:  0,
-		WriteTimeout: 0,
-	})
-	if options.ReadTimeout != -1 || options.WriteTimeout != -1 {
-		t.Fatalf("effective disabled v6 timeouts became read=%v write=%v, want -1/-1 in v9", options.ReadTimeout, options.WriteTimeout)
 	}
 }
 
@@ -398,12 +341,12 @@ func TestRedisMaasCacheCommandsEndBeforeContextErrorReturns(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			endpoint := startBlockingRedisEndpoint(t, test.command)
-			cache := newRedisMaasCache(&legacyredis.Options{
-				Network: "tcp", Addr: endpoint.address, MaxRetries: -1,
+			cache := NewRedisMaasCache(&redisv9.Options{
+				Network: "tcp", Addr: endpoint.address, MaxRetries: -1, ContextTimeoutEnabled: true,
 				DialTimeout: time.Second, ReadTimeout: -1, WriteTimeout: -1,
 				PoolSize: 1, PoolTimeout: time.Second,
 			})
-			defer cache.Close()
+			defer func() { _ = cache.Close() }()
 			processDone := make(chan struct{})
 			cache.client.AddHook(&commandCompletionHook{target: test.command, done: processDone})
 			ctx, cancel := test.newCtx()
@@ -440,16 +383,16 @@ func TestRedisMaasCacheCommandsEndBeforeContextErrorReturns(t *testing.T) {
 
 func TestRedisMaasCacheCommandRetainsSharedPermitUntilTermination(t *testing.T) {
 	endpoint := startBlockingRedisEndpoint(t, "get")
-	cache := newRedisMaasCache(&legacyredis.Options{
-		Network: "tcp", Addr: endpoint.address, MaxRetries: -1,
+	cache := NewRedisMaasCache(&redisv9.Options{
+		Network: "tcp", Addr: endpoint.address, MaxRetries: -1, ContextTimeoutEnabled: true,
 		DialTimeout: time.Second, ReadTimeout: -1, WriteTimeout: -1,
 		PoolSize: 1, PoolTimeout: time.Second,
 	})
-	defer cache.Close()
+	defer func() { _ = cache.Close() }()
 	processDone := make(chan struct{})
 	cache.client.AddHook(&commandCompletionHook{target: "get", done: processDone})
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
-	server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 80 * time.Millisecond})
+	server := NewMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 80 * time.Millisecond})
 	request := &pb.MaasPlanRequest{FromLat: 25, FromLon: 121.5, ToLat: 25.1, ToLon: 121.6, Date: "2027-01-01", Time: "08:00"}
 	firstDone := make(chan error, 1)
 	go func() {
@@ -625,10 +568,10 @@ func (c *cancelAfterRateContext) Err() error {
 
 func TestMaasResourceInterceptorChecksCancellationBeforeAndAfterRateAccounting(t *testing.T) {
 	info := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}
-	handler := func(context.Context, interface{}) (interface{}, error) { return "ok", nil }
+	handler := func(context.Context, any) (any, error) { return "ok", nil }
 
 	t.Run("already canceled does not consume rate quota", func(t *testing.T) {
-		interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
+		interceptor := MaasResourceInterceptor(NewRateLimiter(), MaasResourceConfig{
 			RateLimit: 1, RateWindow: time.Minute,
 		})
 		peerCtx := limiterContext("203.0.113.40:1234")
@@ -643,12 +586,12 @@ func TestMaasResourceInterceptorChecksCancellationBeforeAndAfterRateAccounting(t
 	})
 
 	t.Run("cancellation immediately after rate accounting skips handler", func(t *testing.T) {
-		interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
+		interceptor := MaasResourceInterceptor(NewRateLimiter(), MaasResourceConfig{
 			RateLimit: 10, RateWindow: time.Minute,
 		})
 		ctx := &cancelAfterRateContext{Context: limiterContext("203.0.113.41:1234")}
 		called := false
-		_, err := interceptor(ctx, nil, info, func(context.Context, interface{}) (interface{}, error) {
+		_, err := interceptor(ctx, nil, info, func(context.Context, any) (any, error) {
 			called = true
 			return "unexpected", nil
 		})
@@ -685,14 +628,14 @@ func TestMaasSharedFlightSurvivesLeaderCancellationAndOwnsPermit(t *testing.T) {
 
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
 	cache := newControlledMaasCache()
-	server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 2 * time.Second})
+	server := NewMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 2 * time.Second})
 	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
-	interceptor := maasResourceInterceptor(newRateLimiter(), maasResourceConfig{
+	interceptor := MaasResourceInterceptor(NewRateLimiter(), MaasResourceConfig{
 		RateLimit: 100, RateWindow: time.Minute,
 	})
 	info := &grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName}
 	req := &pb.MaasPlanRequest{FromLat: 25.0, FromLon: 121.5, ToLat: 25.1, ToLon: 121.6, Date: "2027-01-01", Time: "08:00"}
-	planHandler := func(ctx context.Context, request interface{}) (interface{}, error) {
+	planHandler := func(ctx context.Context, request any) (any, error) {
 		return server.Plan(ctx, request.(*pb.MaasPlanRequest))
 	}
 
@@ -775,7 +718,7 @@ func TestMaasSharedCacheGetAndSetHonorContexts(t *testing.T) {
 		getCtxEnd := make(chan struct{})
 		cache := newControlledMaasCache()
 		cache.getStart, cache.getBlock, cache.getCtxEnd = getStarted, getRelease, getCtxEnd
-		server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 40 * time.Millisecond})
+		server := NewMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 40 * time.Millisecond})
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
@@ -810,7 +753,7 @@ func TestMaasSharedCacheGetAndSetHonorContexts(t *testing.T) {
 			_, _ = io.WriteString(w, `{"result":"success","data":{"routes":[]}}`)
 		}))
 		defer upstream.Close()
-		server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 40 * time.Millisecond})
+		server := NewMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 40 * time.Millisecond})
 		server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
 		done := make(chan error, 1)
 		go func() {
@@ -848,7 +791,7 @@ func TestMaasServerCloseJoinsFlightAfterCallerCancels(t *testing.T) {
 	cache := newControlledMaasCache()
 	cache.getStart, cache.getBlock, cache.getCtxEnd = getStarted, getRelease, getCtxEnd
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
-	server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 5 * time.Second})
+	server := NewMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: 1, Timeout: 5 * time.Second})
 
 	request := &pb.MaasPlanRequest{FromLat: 25, FromLon: 121.5, ToLat: 25.1, ToLon: 121.6, Date: "2027-01-01", Time: "08:00"}
 	callerCtx, cancelCaller := context.WithCancel(context.Background())
@@ -906,7 +849,7 @@ func TestMaasServerCloseVersusPlanRaceLeavesNoLeakedPermitOrCacheCommand(t *test
 	// MaxConcurrent covers every attempt so the shared-work permit never runs
 	// out; the only rejection this test exercises is the closing gate.
 	const attempts = 50
-	server := newMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: attempts, Timeout: time.Second})
+	server := NewMaasServerWithCache(cache, nil, tdx, maasSharedWorkConfig{MaxConcurrent: attempts, Timeout: time.Second})
 	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
 
 	var wg sync.WaitGroup
@@ -942,265 +885,6 @@ func TestMaasServerCloseVersusPlanRaceLeavesNoLeakedPermitOrCacheCommand(t *test
 	}
 	if got := cache.getCalls.Load(); got != getCallsAfterRace {
 		t.Fatalf("post-close Plan reached the cache: calls %d -> %d", getCallsAfterRace, got)
-	}
-}
-
-func TestWalkRouteFallsBackWithoutOSRM(t *testing.T) {
-	// A nil client or zero coordinates must report ok=false so the caller keeps
-	// the fixed TDX walk estimate and leaves the path and steps empty.
-	from := &pb.Location{Lat: 25.0, Lng: 121.5}
-	to := &pb.Location{Lat: 25.1, Lng: 121.6}
-	if _, _, _, ok := walkRoute(context.Background(), nil, from, to); ok {
-		t.Fatal("nil OSRM client must fall back")
-	}
-	zero := &pb.Location{}
-	if _, _, _, ok := walkRoute(context.Background(), resty.New(), zero, to); ok {
-		t.Fatal("zero origin must fall back")
-	}
-	if _, _, _, ok := walkRoute(context.Background(), resty.New(), from, zero); ok {
-		t.Fatal("zero destination must fall back")
-	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-// osrmClientReturning builds a resty client whose transport short-circuits every
-// request with a canned response, so the OSRM URL (which points at the internal
-// osrm:5000 host) never has to resolve.
-func osrmClientReturning(status int, body string) *resty.Client {
-	c := resty.New()
-	c.SetTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: status,
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-		}, nil
-	}))
-	return c
-}
-
-const osrmTransferRoute = `{
-  "code":"Ok",
-  "routes":[{
-    "duration":222.5,
-    "geometry":{"coordinates":[[121.50,25.00],[121.51,25.01],[121.52,25.02]]},
-    "legs":[{"steps":[
-      {"distance":50,"duration":40,"name":"忠孝東路四段","maneuver":{"type":"depart","modifier":"","location":[121.50,25.00]}},
-      {"distance":30,"duration":25,"name":"市民大道三段","maneuver":{"type":"turn","modifier":"left","location":[121.51,25.01]}},
-      {"distance":0,"duration":0,"name":"","maneuver":{"type":"arrive","modifier":"","location":[121.52,25.02]}}
-    ]}]
-  }]
-}`
-
-// A transfer walk (a middle section, not first/last) must get its TDX duration
-// replaced by the OSRM time and gain the geometry plus composed steps.
-func TestConvertWalkRouteMapsTransferSection(t *testing.T) {
-	api := &tdxAPIResponse{}
-	api.Data.Routes = []tdxRoute{{
-		Sections: []tdxSection{
-			{Type: "transit", Transport: tdxTransport{Mode: "BUS"},
-				Departure: tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.00, Lng: 121.50}}},
-				Arrival:   tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.00, Lng: 121.50}}}},
-			{Type: "pedestrian", Transport: tdxTransport{Mode: "pedestrian"},
-				TravelSummary: tdxSummary{Duration: 600},
-				Departure:     tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.00, Lng: 121.50}}},
-				Arrival:       tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.02, Lng: 121.52}}}},
-			{Type: "transit", Transport: tdxTransport{Mode: "BUS"},
-				Departure: tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.02, Lng: 121.52}}},
-				Arrival:   tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.02, Lng: 121.52}}}},
-		},
-	}}
-
-	out := convert(context.Background(), nil, osrmClientReturning(200, osrmTransferRoute), api)
-	walk := out.Routes[0].Sections[1]
-	if walk.TravelSummary.Duration != 222 {
-		t.Fatalf("duration = %d, want 222 (OSRM time)", walk.TravelSummary.Duration)
-	}
-	if len(walk.WalkPath) != 3 {
-		t.Fatalf("walkPath len = %d, want 3", len(walk.WalkPath))
-	}
-	if walk.WalkPath[0].Lat != 25.00 || walk.WalkPath[0].Lng != 121.50 {
-		t.Fatalf("first path point = %v, want lat 25.00 lng 121.50", walk.WalkPath[0])
-	}
-	wantSteps := []string{"沿忠孝東路四段出發", "左轉進入市民大道三段", "抵達目的地"}
-	if len(walk.WalkSteps) != len(wantSteps) {
-		t.Fatalf("walkSteps len = %d, want %d", len(walk.WalkSteps), len(wantSteps))
-	}
-	for i, want := range wantSteps {
-		if walk.WalkSteps[i].Instruction != want {
-			t.Fatalf("step[%d] = %q, want %q", i, walk.WalkSteps[i].Instruction, want)
-		}
-	}
-	if walk.WalkSteps[1].ManeuverType != "turn" || walk.WalkSteps[1].Modifier != "left" {
-		t.Fatalf("raw maneuver not preserved: %+v", walk.WalkSteps[1])
-	}
-}
-
-// An OSRM failure (non-Ok response) leaves the walk section untouched: the TDX
-// duration stays and no path or steps are attached. The plan never fails.
-func TestConvertWalkRouteFailureLeavesSectionUntouched(t *testing.T) {
-	api := &tdxAPIResponse{}
-	api.Data.Routes = []tdxRoute{{
-		Sections: []tdxSection{
-			{Type: "pedestrian", Transport: tdxTransport{Mode: "pedestrian"},
-				TravelSummary: tdxSummary{Duration: 600},
-				Departure:     tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.00, Lng: 121.50}}},
-				Arrival:       tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.02, Lng: 121.52}}}},
-		},
-	}}
-
-	out := convert(context.Background(), nil, osrmClientReturning(500, `{"code":"NoRoute"}`), api)
-	walk := out.Routes[0].Sections[0]
-	if walk.TravelSummary.Duration != 600 {
-		t.Fatalf("duration = %d, want 600 (TDX kept)", walk.TravelSummary.Duration)
-	}
-	if len(walk.WalkPath) != 0 || len(walk.WalkSteps) != 0 {
-		t.Fatalf("failed OSRM must leave path/steps empty: path=%d steps=%d",
-			len(walk.WalkPath), len(walk.WalkSteps))
-	}
-}
-
-func TestConvertWalkRoutesAreBoundedConcurrentAndOrderStable(t *testing.T) {
-	const walkCount = 9
-	var active, peak int32
-	client := resty.New()
-	client.SetTransport(roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		current := atomic.AddInt32(&active, 1)
-		defer atomic.AddInt32(&active, -1)
-		for {
-			observed := atomic.LoadInt32(&peak)
-			if current <= observed || atomic.CompareAndSwapInt32(&peak, observed, current) {
-				break
-			}
-		}
-		var fromLng float64
-		_, _ = fmt.Sscanf(strings.TrimPrefix(request.URL.Path, "/route/v1/foot/"), "%f,", &fromLng)
-		index := int(math.Round((fromLng - 121) * 100))
-		time.Sleep(time.Duration(walkCount-index) * 5 * time.Millisecond)
-		body := fmt.Sprintf(`{"code":"Ok","routes":[{"duration":%d,"geometry":{"coordinates":[[%f,25],[%f,25.01]]},"legs":[]}]}`,
-			100+index, fromLng, fromLng+0.001)
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-		}, nil
-	}))
-
-	api := &tdxAPIResponse{}
-	sections := make([]tdxSection, walkCount)
-	for index := range sections {
-		lng := 121 + float64(index)/100
-		sections[index] = tdxSection{
-			Type:          "pedestrian",
-			Transport:     tdxTransport{Mode: "pedestrian"},
-			TravelSummary: tdxSummary{Duration: 600},
-			Departure:     tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25, Lng: lng}}},
-			Arrival:       tdxPlaceInfo{Place: tdxPlace{Location: tdxLocation{Lat: 25.01, Lng: lng + 0.001}}},
-		}
-	}
-	api.Data.Routes = []tdxRoute{{Sections: sections}}
-
-	out := convert(context.Background(), nil, client, api)
-	if got := atomic.LoadInt32(&peak); got <= 1 || got > 4 {
-		t.Fatalf("peak OSRM concurrency = %d, want 2..4", got)
-	}
-	for index, section := range out.GetRoutes()[0].GetSections() {
-		if got, want := section.GetTravelSummary().GetDuration(), int64(100+index); got != want {
-			t.Fatalf("section %d duration = %d, want %d (results must retain input order)", index, got, want)
-		}
-	}
-}
-
-// clampInt guards the TDX plan-request parameters; a wrong bound sends invalid
-// values upstream, a broken zero-default breaks every old client that omits
-// the field.
-func TestClampInt(t *testing.T) {
-	tests := []struct {
-		name                   string
-		v, min, max, def, want int32
-	}{
-		{"unset falls back to default when 0 invalid", 0, 1, 10, 5, 5},
-		{"zero kept when 0 within range", 0, 0, 10, 5, 0},
-		{"zero kept when range spans negative", 0, -5, 5, 3, 0},
-		{"below min clamps up", -3, 1, 10, 5, 1},
-		{"above max clamps down", 99, 1, 10, 5, 10},
-		{"in range passes through", 7, 1, 10, 5, 7},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := clampInt(tt.v, tt.min, tt.max, tt.def); got != tt.want {
-				t.Fatalf("clampInt(%d,%d,%d,%d) = %d, want %d", tt.v, tt.min, tt.max, tt.def, got, tt.want)
-			}
-		})
-	}
-}
-
-// A cache-key collision between different plan requests would serve one user
-// another user's journey plan; identical requests must hit the same key or the
-// cache never helps.
-func TestMaasKeyIdentityAndCollision(t *testing.T) {
-	base := func() *pb.MaasPlanRequest {
-		return &pb.MaasPlanRequest{
-			FromLat: 25.0478, FromLon: 121.5170, ToLat: 25.0330, ToLon: 121.5654,
-			Date: "2026-07-11", Time: "08:00", Top: 5,
-		}
-	}
-	first, second := maasKey(base()), maasKey(base())
-	if first != second {
-		t.Fatal("identical requests must produce the same cache key")
-	}
-	mutations := map[string]func(r *pb.MaasPlanRequest){
-		"destination": func(r *pb.MaasPlanRequest) { r.ToLat += 0.001 },
-		"date":        func(r *pb.MaasPlanRequest) { r.Date = "2026-07-12" },
-		"arrive_by":   func(r *pb.MaasPlanRequest) { r.ArriveBy = true },
-		"modes":       func(r *pb.MaasPlanRequest) { r.TransitModes = []int32{3} },
-	}
-	seen := map[string]string{maasKey(base()): "base"}
-	for name, mutate := range mutations {
-		r := base()
-		mutate(r)
-		key := maasKey(r)
-		if prev, dup := seen[key]; dup {
-			t.Fatalf("cache key collision between %q and %q", name, prev)
-		}
-		seen[key] = name
-	}
-}
-
-// TestBatchSectionFaresPicksFullTraFare pins the TRA branch to the adult 成復
-// fare — the 區間車 tier a planner leg runs on. tra_fares packs 票種 and 車種 into
-// ticket_type, so the cheapest row is a discounted (sometimes 0) ticket and the
-// priciest is the 自強 fare; neither prices a 區間車 leg.
-func TestBatchSectionFaresPicksFullTraFare(t *testing.T) {
-	db, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	db.ExpectQuery("f.ticket_type = '成復'").
-		WithArgs([]int32{0}, []string{"rail"}, []string{"臺北"}, []string{"臺中"}).
-		WillReturnRows(pgxmock.NewRows([]string{"section_index", "fare"}).
-			AddRow(int32(0), int32(375)))
-
-	section := &pb.Section{}
-	route := &pb.Route{}
-	src := tdxSection{}
-	src.Transport.Mode = "RAIL"
-	src.Departure.Place.Name = "臺北"
-	src.Arrival.Place.Name = "臺中"
-
-	batchSectionFares(context.Background(), db, []maasSectionRef{
-		{index: 0, source: src, target: section, route: route},
-	})
-
-	if section.Fare != 375 || route.TotalFare != 375 {
-		t.Fatalf("fare = %d, total = %d, want 375 both", section.Fare, route.TotalFare)
-	}
-	if err := db.ExpectationsWereMet(); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -1245,7 +929,7 @@ func TestPlanStreamSendsRoutesBeforeGeometry(t *testing.T) {
 
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
 	cache := newControlledMaasCache()
-	server := newMaasServerWithCache(cache, nil, tdx, defaultMaasSharedWorkConfig)
+	server := NewMaasServerWithCache(cache, nil, tdx, DefaultMaasSharedWorkConfig)
 	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
 	server.osrmClient = osrmClientReturning(200, osrmTransferRoute)
 	defer server.Close()
@@ -1300,7 +984,7 @@ func TestPlanStreamCacheHitSendsSingleCompleteUpdate(t *testing.T) {
 
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
 	cache := newControlledMaasCache()
-	server := newMaasServerWithCache(cache, nil, tdx, defaultMaasSharedWorkConfig)
+	server := NewMaasServerWithCache(cache, nil, tdx, DefaultMaasSharedWorkConfig)
 	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
 	server.osrmClient = osrmClientReturning(200, osrmTransferRoute)
 	defer server.Close()
@@ -1337,7 +1021,7 @@ func TestPlanStreamMapsNoRouteToNotFound(t *testing.T) {
 	defer upstream.Close()
 
 	tdx := shared.NewTDXClient(shared.TDXConfig{Store: &maasTDXStore{token: "tok"}, IMSKey: shared.TDXLegacyIMSKey})
-	server := newMaasServerWithCache(newControlledMaasCache(), nil, tdx, defaultMaasSharedWorkConfig)
+	server := NewMaasServerWithCache(newControlledMaasCache(), nil, tdx, DefaultMaasSharedWorkConfig)
 	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
 	defer server.Close()
 
@@ -1355,15 +1039,15 @@ func TestPlanStreamMapsNoRouteToNotFound(t *testing.T) {
 // nothing for planStream. Without a shared bucket the streaming method would
 // hand every caller a second allowance.
 func TestMaasQuotaIsSharedBetweenPlanAndPlanStream(t *testing.T) {
-	rl := newRateLimiter()
-	config := maasResourceConfig{RateLimit: 1, RateWindow: time.Minute}
-	unary := maasResourceInterceptor(rl, config)
-	streamed := maasResourceStreamInterceptor(rl, config)
+	rl := NewRateLimiter()
+	config := MaasResourceConfig{RateLimit: 1, RateWindow: time.Minute}
+	unary := MaasResourceInterceptor(rl, config)
+	streamed := MaasResourceStreamInterceptor(rl, config)
 	ctx := limiterContext("203.0.113.77:5555")
 
 	_, err := unary(ctx, &pb.MaasPlanRequest{},
 		&grpc.UnaryServerInfo{FullMethod: pb.MaasService_Plan_FullMethodName},
-		func(context.Context, interface{}) (interface{}, error) { return "ok", nil })
+		func(context.Context, any) (any, error) { return "ok", nil })
 	if err != nil {
 		t.Fatalf("first plan = %v, want allowed", err)
 	}
@@ -1371,7 +1055,7 @@ func TestMaasQuotaIsSharedBetweenPlanAndPlanStream(t *testing.T) {
 	called := false
 	err = streamed(nil, &recordingPlanStream{ctx: ctx},
 		&grpc.StreamServerInfo{FullMethod: pb.MaasService_PlanStream_FullMethodName},
-		func(interface{}, grpc.ServerStream) error { called = true; return nil })
+		func(any, grpc.ServerStream) error { called = true; return nil })
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("planStream after quota spent = %v, want ResourceExhausted", err)
 	}
@@ -1382,12 +1066,12 @@ func TestMaasQuotaIsSharedBetweenPlanAndPlanStream(t *testing.T) {
 
 // Methods outside the plan family are none of this interceptor's business.
 func TestMaasResourceStreamInterceptorIgnoresOtherMethods(t *testing.T) {
-	rl := newRateLimiter()
-	streamed := maasResourceStreamInterceptor(rl, maasResourceConfig{RateLimit: 0, RateWindow: time.Minute})
+	rl := NewRateLimiter()
+	streamed := MaasResourceStreamInterceptor(rl, MaasResourceConfig{RateLimit: 0, RateWindow: time.Minute})
 	called := false
 	err := streamed(nil, &recordingPlanStream{ctx: limiterContext("203.0.113.78:5555")},
 		&grpc.StreamServerInfo{FullMethod: "/Bus_Route_Service/Live"},
-		func(interface{}, grpc.ServerStream) error { called = true; return nil })
+		func(any, grpc.ServerStream) error { called = true; return nil })
 	if err != nil || !called {
 		t.Fatalf("unrelated stream = (err=%v called=%v), want passthrough", err, called)
 	}

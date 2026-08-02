@@ -11,7 +11,7 @@ type ttlEntry struct {
 	expiresAt time.Time
 }
 
-type ttlCache struct {
+type TTLCache struct {
 	m sync.Map
 
 	// maxEntries bounds the live key count; 0 leaves the cache unbounded.
@@ -25,11 +25,11 @@ type ttlCache struct {
 	entries atomic.Int64
 }
 
-func newTTLCache() *ttlCache {
-	return &ttlCache{}
+func NewTTLCache() *TTLCache {
+	return &TTLCache{}
 }
 
-// newBoundedTTLCache returns a cache that drops everything once it holds
+// NewBoundedTTLCache returns a cache that drops everything once it holds
 // more than maxEntries keys.
 //
 // whole-cache flush at the cap, not LRU eviction. Tracking recency needs
@@ -37,11 +37,11 @@ func newTTLCache() *ttlCache {
 // cache whose entries expire on their own anyway, an occasional cold start
 // is the cheaper trade. Switch to LRU if the flush ever lands often enough
 // to show up in the hit rate.
-func newBoundedTTLCache(maxEntries int) *ttlCache {
-	return &ttlCache{maxEntries: maxEntries}
+func NewBoundedTTLCache(maxEntries int) *TTLCache {
+	return &TTLCache{maxEntries: maxEntries}
 }
 
-func (c *ttlCache) get(key string) ([]byte, bool) {
+func (c *TTLCache) get(key string) ([]byte, bool) {
 	v, ok := c.m.Load(key)
 	if !ok {
 		return nil, false
@@ -57,7 +57,7 @@ func (c *ttlCache) get(key string) ([]byte, bool) {
 	return e.data, true
 }
 
-func (c *ttlCache) set(key string, data []byte, ttl time.Duration) {
+func (c *TTLCache) set(key string, data []byte, ttl time.Duration) {
 	_, loaded := c.m.Swap(key, ttlEntry{data: data, expiresAt: time.Now().Add(ttl)})
 	if loaded || c.maxEntries <= 0 {
 		return
@@ -67,13 +67,13 @@ func (c *ttlCache) set(key string, data []byte, ttl time.Duration) {
 	}
 }
 
-func (c *ttlCache) delete(key string) {
+func (c *TTLCache) delete(key string) {
 	if _, loaded := c.m.LoadAndDelete(key); loaded && c.maxEntries > 0 {
 		c.entries.Add(-1)
 	}
 }
 
-func (c *ttlCache) flush() {
+func (c *TTLCache) flush() {
 	c.m.Range(func(k, _ any) bool {
 		c.m.Delete(k)
 		return true

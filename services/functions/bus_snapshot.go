@@ -104,7 +104,10 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	}
 	opByID := make(map[string]rawBusOperator, len(operators))
 	for i, op := range operators {
-		if strings.TrimSpace(op.OperatorID) == "" || strings.TrimSpace(op.OperatorName.Zhtw) == "" || strings.TrimSpace(op.AuthorityCode) == "" {
+		hasID := strings.TrimSpace(op.OperatorID) != ""
+		hasName := strings.TrimSpace(op.OperatorName.Zhtw) != ""
+		hasAuthority := strings.TrimSpace(op.AuthorityCode) != ""
+		if !hasID || !hasName || !hasAuthority {
 			return nil, fmt.Errorf("%w: Operator[%d] has incomplete identity", errBusSnapshotInvalid, i)
 		}
 		if op.AuthorityCode != prefix {
@@ -134,7 +137,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		op := opByID[operatorID]
 		snapshot.operatorRows = append(snapshot.operatorRows, []any{
 			op.OperatorID, op.AuthorityCode, op.OperatorName.Zhtw,
-			sanitizeOperatorPhone(op.OperatorPhone), op.OperatorUrl,
+			sanitizeOperatorPhone(op.OperatorPhone), op.OperatorURL,
 		})
 	}
 	subrouteCount := 0
@@ -145,7 +148,9 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	routeToCanonical := make(map[string]map[string]struct{})
 	nativeToCanonical := make(map[string]string)
 	for ri, route := range routes {
-		if strings.TrimSpace(route.RouteUID) == "" || strings.TrimSpace(route.RouteName.Zhtw) == "" || len(route.SubRoutes) == 0 {
+		hasUID := strings.TrimSpace(route.RouteUID) != ""
+		hasName := strings.TrimSpace(route.RouteName.Zhtw) != ""
+		if !hasUID || !hasName || len(route.SubRoutes) == 0 {
 			return nil, fmt.Errorf("%w: Route[%d] missing route identity or subroutes", errBusSnapshotInvalid, ri)
 		}
 		if !uidBelongsToPrefix(route.RouteUID, prefix) {
@@ -159,12 +164,15 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			}
 			ops = appendUniqueOperator(ops, &models.BusOperator{
 				OperatorId: ref.OperatorID, OperatorName: op.OperatorName.Zhtw,
-				OperatorPhone: sanitizeOperatorPhone(op.OperatorPhone), OperatorUrl: op.OperatorUrl,
+				OperatorPhone: sanitizeOperatorPhone(op.OperatorPhone), OperatorUrl: op.OperatorURL,
 			})
 		}
 		for si, sub := range route.SubRoutes {
 			uid, dir := shared.CanonicalSubroute(city, sub.SubRouteUID, sub.Direction)
-			if strings.TrimSpace(uid) == "" || strings.TrimSpace(sub.SubRouteUID) == "" || strings.TrimSpace(sub.SubRouteName.Zhtw) == "" || dir > 1 {
+			hasCanonicalUID := strings.TrimSpace(uid) != ""
+			hasNativeUID := strings.TrimSpace(sub.SubRouteUID) != ""
+			hasSubName := strings.TrimSpace(sub.SubRouteName.Zhtw) != ""
+			if !hasCanonicalUID || !hasNativeUID || !hasSubName || dir > 1 {
 				// Unusable identity: nothing downstream can key off this
 				// subroute, so it goes rather than the city.
 				q.drop("subroute", "subroute_identity", fmt.Sprintf("Route[%d].SubRoutes[%d] uid=%q dir=%d", ri, si, sub.SubRouteUID, sub.Direction))
@@ -222,7 +230,10 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 				}
 				snapshot.subroutes[uid] = existing
 			} else {
-				if existing.RouteUID != route.RouteUID || existing.RouteName != route.RouteName.Zhtw || existing.SubRouteName != sub.SubRouteName.Zhtw {
+				sameRouteUID := existing.RouteUID == route.RouteUID
+				sameRouteName := existing.RouteName == route.RouteName.Zhtw
+				sameSubName := existing.SubRouteName == sub.SubRouteName.Zhtw
+				if !sameRouteUID || !sameRouteName || !sameSubName {
 					return nil, fmt.Errorf("%w: canonical route %s has divergent route/name variants", errBusSnapshotConflict, uid)
 				}
 				for _, op := range ops {
@@ -291,7 +302,11 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		lastSequence := uint8(0)
 		unordered := false
 		for j, stop := range variant.Stops {
-			if strings.TrimSpace(stop.StopUID) == "" || strings.TrimSpace(stop.StopName.Zhtw) == "" || strings.TrimSpace(stop.StationID) == "" || stop.StopSequence == 0 || !validPosition(stop.StopPosition.PositionLon, stop.StopPosition.PositionLat) {
+			hasStopUID := strings.TrimSpace(stop.StopUID) != ""
+			hasStopName := strings.TrimSpace(stop.StopName.Zhtw) != ""
+			hasStationID := strings.TrimSpace(stop.StationID) != ""
+			hasPosition := validPosition(stop.StopPosition.PositionLon, stop.StopPosition.PositionLat)
+			if !hasStopUID || !hasStopName || !hasStationID || stop.StopSequence == 0 || !hasPosition {
 				return nil, fmt.Errorf("%w: StopOfRoute[%d].Stops[%d] has invalid identity/sequence/position", errBusSnapshotInvalid, i, j)
 			}
 			if stop.StopSequence <= lastSequence {
@@ -373,7 +388,10 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 		var targets []string
 		if shape.SubRouteUID != "" {
 			uid, _ := shared.CanonicalSubroute(city, shape.SubRouteUID, shape.Direction)
-			if !uidBelongsToPrefix(shape.RouteUID, prefix) || !uidBelongsToPrefix(shape.SubRouteUID, prefix) || !uidBelongsToPrefix(uid, prefix) {
+			ownRoute := uidBelongsToPrefix(shape.RouteUID, prefix)
+			ownNativeSub := uidBelongsToPrefix(shape.SubRouteUID, prefix)
+			ownCanonicalSub := uidBelongsToPrefix(uid, prefix)
+			if !ownRoute || !ownNativeSub || !ownCanonicalSub {
 				return nil, fmt.Errorf("%w: Shape[%d] subroute UID does not belong to %s", errBusSnapshotInvalid, i, city)
 			}
 			targets = []string{uid}
@@ -482,7 +500,9 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	stationIDs := make(map[string]string, len(stations))
 	stationsByUID := make(map[string]rawBusStation, len(stations))
 	for i, station := range stations {
-		if !uidBelongsToPrefix(station.StationUID, prefix) || station.StationID == "" || station.StationName.Zhtw == "" || !validPosition(station.StationPosition.PositionLon, station.StationPosition.PositionLat) {
+		ownUID := uidBelongsToPrefix(station.StationUID, prefix)
+		hasPosition := validPosition(station.StationPosition.PositionLon, station.StationPosition.PositionLat)
+		if !ownUID || station.StationID == "" || station.StationName.Zhtw == "" || !hasPosition {
 			return nil, fmt.Errorf("%w: Station[%d] has invalid identity/position", errBusSnapshotInvalid, i)
 		}
 		if prior, exists := stationsByUID[station.StationUID]; exists {
@@ -535,7 +555,9 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 	groupsByID := make(map[string]rawBusStationGroup)
 	groupsByUID := make(map[string]rawBusStationGroup)
 	for i, group := range groups {
-		if !uidBelongsToPrefix(group.StationGroupUID, prefix) || group.StationGroupID == "" || group.StationGroupName.Zhtw == "" || !validPosition(group.StationGroupPosition.PositionLon, group.StationGroupPosition.PositionLat) {
+		ownUID := uidBelongsToPrefix(group.StationGroupUID, prefix)
+		hasPosition := validPosition(group.StationGroupPosition.PositionLon, group.StationGroupPosition.PositionLat)
+		if !ownUID || group.StationGroupID == "" || group.StationGroupName.Zhtw == "" || !hasPosition {
 			return nil, fmt.Errorf("%w: StationGroup[%d] has invalid identity/position", errBusSnapshotInvalid, i)
 		}
 		if prior, ok := groupsByID[group.StationGroupID]; ok && !jsonSemanticEqual(prior, group) {
@@ -754,7 +776,7 @@ func buildScheduleRows(uid string, dir uint8, schedule rawBusSchedule) ([][]any,
 			return nil, nil, errors.New("timetable has empty TripID")
 		}
 		service := mask2(timetable.ServiceDay.Monday, timetable.ServiceDay.Tuesday, timetable.ServiceDay.Wednesday, timetable.ServiceDay.Thursday, timetable.ServiceDay.Friday, timetable.ServiceDay.Saturday, timetable.ServiceDay.Sunday)
-		// The DB keeps every stop of the trip (travel averages and ETA prediction
+		// The DB keeps every stop of the trip (segment times and ETA prediction
 		// read them); the proto payload carries only the origin, since the app's
 		// timetable board lists departures. TDX does not promise StopTimes are
 		// sorted, so the origin is the lowest StopSequence rather than the first
@@ -764,7 +786,10 @@ func buildScheduleRows(uid string, dir uint8, schedule rawBusSchedule) ([][]any,
 		for _, stop := range timetable.StopTimes {
 			// The upper bound is the bus_schedule.stop_sequence SMALLINT column: an
 			// out-of-range sequence would wrap to a negative on the int16 cast below.
-			if stop.StopSequence <= 0 || stop.StopSequence > math.MaxInt16 || stop.StopUID == "" || stop.StopName.Zhtw == "" || !validClock(stop.ArrivalTime) || !validClock(stop.DepartureTime) {
+			seqInRange := stop.StopSequence > 0 && stop.StopSequence <= math.MaxInt16
+			hasIdentity := stop.StopUID != "" && stop.StopName.Zhtw != ""
+			hasClocks := validClock(stop.ArrivalTime) && validClock(stop.DepartureTime)
+			if !seqInRange || !hasIdentity || !hasClocks {
 				return nil, nil, fmt.Errorf("trip %s has invalid stop identity/sequence/time", timetable.TripID)
 			}
 			rows = append(rows, []any{uid, int16(dir), false, timetable.TripID, timetable.IsLowFloor, int16(stop.StopSequence), stop.StopUID, stop.StopName.Zhtw, stop.ArrivalTime, stop.DepartureTime, int16(service)})
@@ -783,7 +808,9 @@ func buildScheduleRows(uid string, dir uint8, schedule rawBusSchedule) ([][]any,
 		}
 	}
 	for _, frequency := range schedule.Frequencys {
-		if !validClock(frequency.StartTime) || !validClock(frequency.EndTime) || frequency.MinHeadwayMins == 0 || frequency.MaxHeadwayMins < frequency.MinHeadwayMins {
+		hasClocks := validClock(frequency.StartTime) && validClock(frequency.EndTime)
+		hasHeadway := frequency.MinHeadwayMins != 0 && frequency.MaxHeadwayMins >= frequency.MinHeadwayMins
+		if !hasClocks || !hasHeadway {
 			return nil, nil, errors.New("frequency has invalid time/headway")
 		}
 		service := mask2(frequency.ServiceDay.Monday, frequency.ServiceDay.Tuesday, frequency.ServiceDay.Wednesday, frequency.ServiceDay.Thursday, frequency.ServiceDay.Friday, frequency.ServiceDay.Saturday, frequency.ServiceDay.Sunday)

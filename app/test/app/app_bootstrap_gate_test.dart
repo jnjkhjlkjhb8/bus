@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:hive_ce_flutter/adapters.dart';
@@ -8,6 +9,7 @@ import 'package:wheres_the_bus/app/app.dart';
 import 'package:wheres_the_bus/core/bootstrap/app_bootstrap.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
 import 'package:wheres_the_bus/features/alerts/view/notification_toast.dart';
+import 'package:wheres_the_bus/features/metro/bloc/mrt_track_bloc.dart';
 
 /// Covers: `app.dart` must gate on the real
 /// [AppBootstrapState] — `initializing`/`failed` never mount the router or
@@ -120,6 +122,29 @@ void main() {
     expect(find.byKey(const Key('bootstrapRetryButton')), findsNothing);
     expect(find.byType(NotificationToastHost), findsOneWidget);
     expect(find.text('home-placeholder'), findsOneWidget);
+  });
+
+  testWidgets('MrtTrackBloc can be created from above the MaterialApp', (
+    tester,
+  ) async {
+    final controller = AppBootstrapController(
+      initHive: () async {},
+      initGrpc: () async {},
+      initFirebase: () async {},
+      initPowerSync: () async {},
+    );
+    addTearDown(controller.dispose);
+    await controller.start();
+
+    await tester.pumpWidget(
+      App(bootstrap: controller, debugRouter: testRouter()),
+    );
+    await tester.pumpAndSettle();
+
+    // `_AppShell` provides it above the MaterialApp, so its lazy `create` runs
+    // without Localizations in scope — reading it must not throw.
+    final context = tester.element(find.text('home-placeholder'));
+    expect(BlocProvider.of<MrtTrackBloc>(context), isNotNull);
   });
 
   testWidgets('ready renders the main UI directly', (tester) async {

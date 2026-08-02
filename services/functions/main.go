@@ -5,7 +5,7 @@
 // empty ROLE runs the legacy prod path (Firebase notifications, all
 // transform/realtime crons, MQTT alerts) that writes static data to PostgreSQL
 // and realtime ETAs to Redis. It also fills missing bus ETAs via schedule and
-// travel-average prediction.
+// segment-time prediction.
 package main
 
 import (
@@ -18,12 +18,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
 )
 
@@ -138,7 +138,9 @@ func run() error {
 		waitForShutdown()
 		drainShutdown(r.Stop(), &boot, shutdownGrace)
 	case modeLegacyProd:
-		runLegacyProd(r, tdx, rc, rawPool, db)
+		if err := runLegacyProd(r, tdx, rc, rawPool, db); err != nil {
+			return err
+		}
 	case modeInvalid:
 		// Unreachable: resolveRole returns modeInvalid only with an error,
 		// which already returned above.
@@ -428,6 +430,82 @@ func addStaticCron(r *cron.Cron, spec string, job func()) (cron.EntryID, error) 
 	return r.AddJob(spec, guarded)
 }
 
+// staticJobSpec is one nightly pipeline job's recipe. Before this, every cron
+// closure composed the same decisions by hand and picked them à la carte: the
+// 04:00 chain hand-rolled its marker wait including the deadline margin, while
+// the 04:15 and 04:30 entries reached for runDaily directly. Making them fields
+// means a job that needs an upstream marker cannot forget the margin, and the
+// nightly pipeline's shape reads as a list instead of five closures.
+//
+// Deliberately not covered: weatherSync and loadHolidays. Those are best-effort
+// refreshes with a last-good Redis snapshot behind them, so they warn rather
+// than error and must not retry — a different category, not a missing field.
+//
+// Also deliberately absent: a locked flag. The static-pipeline advisory lock
+// would be redundant here, because waitFor already proves the upstream stage
+// finished, and adding it would mean bounding the whole chain under one more
+// timeout that could truncate a legitimately slow segment-time pass.
+type staticJobSpec struct {
+	name     string
+	schedule string
+	// waitFor is the upstream pipeline marker to poll before the first attempt.
+	// Empty means the job has no upstream stage.
+	waitFor string
+	// timeout bounds one attempt. Zero means run bounds itself, which is what the
+	// multi-pass entries do: each of their passes carries its own budget, so a
+	// failure in the third must not re-drive the first two.
+	timeout time.Duration
+	// attempts above 1 retries with a one-minute backoff (obs.Retry). Every failed
+	// daily attempt is transient by definition: the same bounded operation is safe
+	// to repeat.
+	attempts int
+	run      func(ctx context.Context) error
+}
+
+// registerStaticJob schedules one staticJobSpec, composing marker wait, timeout,
+// and retry in that order. Failures are logged, never fatal: the next daily tick
+// retries.
+func registerStaticJob(r *cron.Cron, marker pipelineMarkerReader, spec staticJobSpec) {
+	_, _ = addStaticCron(r, spec.schedule, func() {
+		runStaticJob(marker, spec, time.Now, sleepCtx, time.Minute)
+	})
+}
+
+// runStaticJob is registerStaticJob's testable core. Every wall-clock dependency
+// is injected for the same reason waitForPipelineMarker takes now and sleep: the
+// marker polls every five minutes against a two-hour deadline and retries back
+// off a minute apart, so a test on the real clock would genuinely wait.
+func runStaticJob(
+	marker pipelineMarkerReader,
+	spec staticJobSpec,
+	now func() time.Time,
+	sleep func(context.Context, time.Duration) error,
+	backoff time.Duration,
+) {
+	if spec.waitFor != "" {
+		waitCtx, cancel := context.WithTimeout(context.Background(), pipelineMarkerPollDeadline+time.Minute)
+		defer cancel()
+		err := waitForPipelineMarker(waitCtx, marker, spec.waitFor, now().In(taipei),
+			pipelineMarkerPollInterval, pipelineMarkerPollDeadline, now, sleep)
+		if err != nil {
+			log.Errorf("[PIPELINE] action=%s event=marker_wait_failed upstream=%s error=%v", spec.name, spec.waitFor, err)
+			return
+		}
+	}
+	var err error
+	switch {
+	case spec.timeout <= 0:
+		err = spec.run(context.Background())
+	case spec.attempts > 1:
+		err = runDailyWithRetry(context.Background(), spec.timeout, backoff, spec.run)
+	default:
+		err = runWithTimeout(context.Background(), spec.timeout, spec.run)
+	}
+	if err != nil {
+		log.Errorf("[crontab] action=%s event=failed error=%v", spec.name, err)
+	}
+}
+
 func vectorRefreshJob(rc vectorRedis, db vectorDB, embedder embeddingClient) func(context.Context) error {
 	return func(ctx context.Context) error {
 		return changeToVector(ctx, rc, db, embedder)
@@ -453,11 +531,13 @@ func runBootBusDailyTimetable(
 
 // runLegacyProd is the current prod path: Firebase, notification dispatcher, all
 // transform/realtime crons, and MQTT. Only ROLE="" reaches here — the ingestor
-// never initializes any of it.
-func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPool, db *pgxpool.Pool) {
+// never initializes any of it. A boot failure is returned rather than fatal, so
+// run's deferred Redis/PostgreSQL closes and the obs flush still get to run —
+// without the flush the failure that stopped boot never reaches Sentry.
+func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPool, db *pgxpool.Pool) error {
 	sender, err := notify.NewFirebaseSender(context.Background())
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("init Firebase sender: %w", err)
 	}
 	dispatcher := notify.NewDispatcher(notify.NewStore(db), sender)
 	bootLoadRunner := newStaticPipelineRunner(rawPool, loadTimeout)
@@ -481,19 +561,20 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		log.Warnf("[WEATHER] initial sync failed; keeping last good Redis snapshot: %v", err)
 	}
 	weatherCancel()
-	// The legacy direct-fetch static jobs are gone: the ingestor lands raw_tdx at
-	// 03:00 and the ROLE=loader container transforms it into this env's schema at
-	// 03:30. changetovector reads the tables the loader fills, and computeTravelAvg
-	// (below) reads what changetovector fills, so each cron entry here still fires
-	// on its historical clock offset (03:45 / 04:00) but first polls pipeline_runs
-	// for the upstream stage's durable completion marker (written by the loader/
-	// changetovector on success) instead of trusting the clock offset alone.
-	// changetovector now runs in the loader process immediately after the 03:30
-	// load (registerLoaderCrons -> runVectorRefresh), so this service no longer
-	// hosts it. markerReader stays: the computeTravelAvg cron below still polls
-	// the "changetovector" marker, now written by the loader.
+	// The ingestor lands raw_tdx at 03:00 and the ROLE=loader container transforms
+	// it into this env's schema at 03:30. changetovector runs in that same loader
+	// process right after the load (registerLoaderCrons -> runVectorRefresh), and
+	// the segment-time passes (below) read what it fills. Each cron entry here
+	// keeps its own clock offset (03:45 / 04:00) but first polls pipeline_runs for
+	// the upstream stage's durable completion marker (written by the
+	// loader/changetovector on success) rather than trusting the offset alone.
+	// markerReader is what the 04:00 cron polls the "changetovector" marker with.
 	markerReader := pgPipelineMarkerReader{db: db}
 	registerLiveCrons(r, tdx, rc, db, dispatcher)
+	// GTFS-RT snapshot (ADR-0019): rebuilt here, served by services/router. It
+	// reads rawPool because the static trip index is derived from
+	// raw_tdx.bus_schedule, the same source trips.txt is built from.
+	registerGTFSRTCron(r, rawPool, rc)
 	// Metro alight-reminder tracker (ADR-0015): a 15s cron that advances active
 	// car-bound sessions from GetTrainInfo (event-driven, one call per hop). Not a
 	// liveSpec — it never touches TDX. Nil-safe dispatcher when push is disabled.
@@ -512,22 +593,51 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 			log.Warnf("[HOLIDAY] refresh failed; keeping last good snapshot: %v", err)
 		}
 	})
-	_, _ = addStaticCron(r, "0 0 4 * * *", func() {
-		runDate := time.Now().In(taipei)
-		waitCtx, cancel := context.WithTimeout(context.Background(), pipelineMarkerPollDeadline+time.Minute)
-		defer cancel()
-		if err := waitForPipelineMarker(waitCtx, markerReader, "changetovector", runDate, pipelineMarkerPollInterval, pipelineMarkerPollDeadline, time.Now, sleepCtx); err != nil {
-			log.Errorf("[PIPELINE] action=compute_travel_avg event=marker_wait_failed error=%v", err)
-			return
-		}
-		runDaily("computeTravelAvg", 15*time.Minute, func(ctx context.Context) error { return computeTravelAvg(ctx, db, archiveHistory()) })
+	registerStaticJob(r, markerReader, staticJobSpec{
+		name: "segmentTimes", schedule: "0 0 4 * * *", waitFor: "changetovector",
+		// Each pass carries its own budget and retries independently, so the spec
+		// leaves timeout zero rather than bounding the chain: a failure in the third
+		// pass must not re-drive the two that already wrote.
+		run: func(context.Context) error {
+			// Both observation passes read the same history host, so it is resolved
+			// once: two resolves could disagree about whether the archive is reachable
+			// and leave the table half rebuilt from one pass.
+			hist := resolveHistory()
+			runDaily("computeSegmentTimes", 15*time.Minute, func(ctx context.Context) error {
+				return computeSegmentTimes(ctx, db, hist)
+			})
+			// Second pass over the same history, differencing adjacent stops within one
+			// snapshot instead of pairing arrivals by plate. It reaches the hops the
+			// plate method cannot — Taipei and NewTaipei publish no plate — and runs
+			// after it so the better-sampled figure is the one left in the table.
+			runDaily("computeSegmentTimesFromEstimates", 15*time.Minute, func(ctx context.Context) error {
+				return computeSegmentTimesFromEstimates(ctx, db, hist)
+			})
+			// Last, once both observation passes have written what they found: a
+			// distance-derived estimate for the hops still empty, so one unobserved
+			// segment does not cost GTFS the whole route direction. Marked
+			// sample_count = 0 and never written over an observed row.
+			runDaily("fillSegmentTimesFromDistance", 15*time.Minute, func(ctx context.Context) error {
+				return fillSegmentTimesFromDistance(ctx, db)
+			})
+			return nil
+		},
 	})
-	_, _ = addStaticCron(r, "0 15 4 * * *", func() {
-		runDaily("measurePredictionError", 10*time.Minute, func(ctx context.Context) error { return measurePredictionError(ctx, db, archiveHistory()) })
+	registerStaticJob(r, markerReader, staticJobSpec{
+		name: "measurePredictionError", schedule: "0 15 4 * * *",
+		timeout: 10 * time.Minute, attempts: 3,
+		run: func(ctx context.Context) error { return measurePredictionError(ctx, db, resolveHistory()) },
 	})
-	_, _ = addStaticCron(r, "0 30 4 * * *", func() {
-		runDaily("cleanupPredictionErrors", 10*time.Minute, func(ctx context.Context) error { return cleanupPredictionErrors(ctx, db) })
-		runDaily("cleanupBikeHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBikeHistory(ctx, db) })
+	registerStaticJob(r, markerReader, staticJobSpec{
+		// Both cleanups stay on one entry so they run in sequence. Two entries at
+		// 04:30 would open two pooled connections at once against an Azure B1ms that
+		// the nightly load already pushes hard.
+		name: "cleanups", schedule: "0 30 4 * * *",
+		run: func(context.Context) error {
+			runDaily("cleanupPredictionErrors", 10*time.Minute, func(ctx context.Context) error { return cleanupPredictionErrors(ctx, db) })
+			runDaily("cleanupBikeHistory", 10*time.Minute, func(ctx context.Context) error { return cleanupBikeHistory(ctx, db) })
+			return nil
+		},
 	})
 	r.Start()
 	touchHealthFile()
@@ -539,6 +649,7 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		mqttClient.Disconnect(500)
 	}
 	drainShutdown(r.Stop(), &sync.WaitGroup{}, shutdownGrace)
+	return nil
 }
 
 // waitForShutdown blocks until SIGINT or SIGTERM, letting deferred cleanup

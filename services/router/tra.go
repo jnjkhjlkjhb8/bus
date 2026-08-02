@@ -16,34 +16,34 @@ type railDB interface {
 }
 
 type traTimetableRow struct {
-	Train_date            time.Time `db:"train_date"`
-	Trainno               string    `db:"trainno"`
-	Starting_station_id   string    `db:"starting_station_id"`
-	Starting_station_name string    `db:"starting_station_name"`
-	Ending_station_id     string    `db:"ending_station_id"`
-	Ending_station_name   string    `db:"ending_station_name"`
-	Train_type_id         string    `db:"train_type_id"`
-	Train_type_code       string    `db:"train_type_code"`
-	Train_type_name       string    `db:"train_type_name"`
-	Tripline              int32     `db:"tripline"`
-	Stopsequence          int       `db:"stopsequence"`
-	Stationid             string    `db:"stationid"`
-	Stationname           string    `db:"stationname"`
-	Arrivaltime           time.Time `db:"arrivaltime"`
-	Departuretime         time.Time `db:"departuretime"`
-	Mask                  int32     `db:"mask"`
-	Note                  string    `db:"note"`
-}
-type traStationBoardRow struct {
-	Train_date          time.Time `db:"train_date"`
+	TrainDate           time.Time `db:"train_date"`
 	Trainno             string    `db:"trainno"`
-	Train_type_code     string    `db:"train_type_code"`
-	Train_type_name     string    `db:"train_type_name"`
-	Ending_station_name string    `db:"ending_station_name"`
+	StartingStationID   string    `db:"starting_station_id"`
+	StartingStationName string    `db:"starting_station_name"`
+	EndingStationID     string    `db:"ending_station_id"`
+	EndingStationName   string    `db:"ending_station_name"`
+	TrainTypeID         string    `db:"train_type_id"`
+	TrainTypeCode       string    `db:"train_type_code"`
+	TrainTypeName       string    `db:"train_type_name"`
+	Tripline            int32     `db:"tripline"`
+	Stopsequence        int       `db:"stopsequence"`
+	Stationid           string    `db:"stationid"`
+	Stationname         string    `db:"stationname"`
+	Arrivaltime         time.Time `db:"arrivaltime"`
 	Departuretime       time.Time `db:"departuretime"`
-	Direction           int32     `db:"direction"`
 	Mask                int32     `db:"mask"`
 	Note                string    `db:"note"`
+}
+type traStationBoardRow struct {
+	TrainDate         time.Time `db:"train_date"`
+	Trainno           string    `db:"trainno"`
+	TrainTypeCode     string    `db:"train_type_code"`
+	TrainTypeName     string    `db:"train_type_name"`
+	EndingStationName string    `db:"ending_station_name"`
+	Departuretime     time.Time `db:"departuretime"`
+	Direction         int32     `db:"direction"`
+	Mask              int32     `db:"mask"`
+	Note              string    `db:"note"`
 }
 type traStopsRow struct {
 	Stopsequence  int    `db:"stopsequence"`
@@ -53,7 +53,7 @@ type traStopsRow struct {
 	Departuretime string `db:"departuretime"`
 	Mask          int32  `db:"mask"`
 }
-type trafare struct {
+type traFareRow struct {
 	TicketType string `db:"ticket_type"`
 	Price      int32  `db:"price"`
 }
@@ -83,7 +83,7 @@ func buildTraTicketTypes() []string {
 	return out
 }
 
-// traFarePayload reads a TRA pair's fares from the loaded env schema and
+// TRAFarePayload reads a TRA pair's fares from the loaded env schema and
 // returns the marshaled TraFareItems proto, one item per 票種 × 車種 combination
 // the pair prices (see traTicketTypes), priciest first. The app picks the row
 // matching the train's class and the rider's 票種 preference; a combination TDX
@@ -91,7 +91,7 @@ func buildTraTicketTypes() []string {
 // showing a hole. It returns an empty slice (not an error) when no rows match,
 // so callers treat an unlanded date as NotFound (ADR-0005); it never fetches
 // from TDX.
-func traFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, error) {
+func TRAFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, error) {
 	start, err := resolveRailStationID(ctx, db, "tra_stations", start)
 	if err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func traFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[trafare])
+	row, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[traFareRow])
 	if err != nil {
 		return nil, err
 	}
@@ -122,10 +122,10 @@ func traFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, 
 	return proto.Marshal(&models.TraFareItems{Items: arr})
 }
 
-// traStoptimesPayload reads a TRA train's stop times for a date from the loaded
+// TRAStoptimesPayload reads a TRA train's stop times for a date from the loaded
 // env schema and returns the marshaled TraStoptimes proto plus the row count. A
 // zero count signals NotFound (ADR-0005); it never fetches from TDX.
-func traStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr string) ([]byte, int, error) {
+func TRAStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr string) ([]byte, int, error) {
 	const q = `SELECT stopsequence, stationid,stationname,arrivaltime,departuretime,mask FROM tra_timetable WHERE trainno = $1 AND train_date = $2 ORDER BY stopsequence;`
 	rows, err := db.Query(ctx, q, trainno, dateStr)
 	if err != nil {
@@ -196,7 +196,7 @@ func resolveRailStationID(ctx context.Context, db railDB, table, s string) (stri
 	return s, nil
 }
 
-// traStationBoardPayload reads every departure from one station on one date in
+// TRAStationBoardPayload reads every departure from one station on one date in
 // one direction, ordered by departure time. It is the whole day, not a window:
 // the handler slices it, so one cached day serves riders whose clocks differ.
 //
@@ -204,7 +204,7 @@ func resolveRailStationID(ctx context.Context, db railDB, table, s string) (stri
 // I board here", and a terminating train has nothing to board. An empty result
 // means the date is not landed for this station; it is never fetched from TDX
 // (ADR-0005).
-func traStationBoardPayload(ctx context.Context, db railDB, station string, date time.Time, direction int32) ([]*models.TraStationDeparture, error) {
+func TRAStationBoardPayload(ctx context.Context, db railDB, station string, date time.Time, direction int32) ([]*models.TraStationDeparture, error) {
 	station, err := resolveRailStationID(ctx, db, "tra_stations", station)
 	if err != nil {
 		return nil, err
@@ -221,11 +221,11 @@ func traStationBoardPayload(ctx context.Context, db railDB, station string, date
 	arr := make([]*models.TraStationDeparture, 0, len(row))
 	for _, temp := range row {
 		arr = append(arr, &models.TraStationDeparture{
-			TrainDate:                temp.Train_date.Format(time.DateOnly),
+			TrainDate:                temp.TrainDate.Format(time.DateOnly),
 			TrainNo:                  temp.Trainno,
-			TrainTypeCode:            temp.Train_type_code,
-			TrainTypeName:            temp.Train_type_name,
-			Destination_Station_Name: temp.Ending_station_name,
+			TrainTypeCode:            temp.TrainTypeCode,
+			TrainTypeName:            temp.TrainTypeName,
+			Destination_Station_Name: temp.EndingStationName,
 			DepartureTime:            temp.Departuretime.Format(time.TimeOnly),
 			Direction:                temp.Direction,
 			Mask:                     temp.Mask,
@@ -235,11 +235,11 @@ func traStationBoardPayload(ctx context.Context, db railDB, station string, date
 	return arr, nil
 }
 
-// traTimetablePayload reads TRA services calling at both the origin and
+// TRATimetablePayload reads TRA services calling at both the origin and
 // destination for a date, pairs them into origin/destination legs, and returns
 // the marshaled TraTimetables proto plus the number of paired legs. A zero count
 // signals NotFound (ADR-0005); it never fetches from TDX.
-func traTimetablePayload(ctx context.Context, db railDB, start, end string, date time.Time) ([]byte, int, error) {
+func TRATimetablePayload(ctx context.Context, db railDB, start, end string, date time.Time) ([]byte, int, error) {
 	start, err := resolveRailStationID(ctx, db, "tra_stations", start)
 	if err != nil {
 		return nil, 0, err
@@ -265,13 +265,13 @@ func traTimetablePayload(ctx context.Context, db railDB, start, end string, date
 		if temp.Stationid == start {
 			startSeq[temp.Trainno] = temp.Stopsequence
 			mp[temp.Trainno] = &models.TraTimetable{
-				TrainDate:             temp.Train_date.Format(time.DateOnly),
+				TrainDate:             temp.TrainDate.Format(time.DateOnly),
 				TrainNo:               temp.Trainno,
-				Starting_Station_Name: temp.Starting_station_name,
-				Ending_Station_Name:   temp.Ending_station_name,
-				TrainTypeCode:         temp.Train_type_code,
-				TrainTypeName:         temp.Train_type_name,
-				TrainTypeID:           temp.Train_type_id,
+				Starting_Station_Name: temp.StartingStationName,
+				Ending_Station_Name:   temp.EndingStationName,
+				TrainTypeCode:         temp.TrainTypeCode,
+				TrainTypeName:         temp.TrainTypeName,
+				TrainTypeID:           temp.TrainTypeID,
 				TripLine:              temp.Tripline,
 				Mask:                  temp.Mask,
 				Note:                  temp.Note,

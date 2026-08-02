@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
 )
 
@@ -40,7 +40,9 @@ type livePipe interface {
 	HSet(key, field string, value any)
 	Expire(key string, ttl time.Duration)
 	ReplaceOwnedKeys(key string, members []string, ttl time.Duration)
-	Exec() error
+	// Exec is the only method that touches the network: the others just buffer
+	// commands, so the context that governs the round-trip belongs here.
+	Exec(ctx context.Context) error
 }
 
 // liveSink is the seam between a live job and Redis. The production adapter
@@ -49,7 +51,7 @@ type livePipe interface {
 // the TTL on every key matching the given patterns (SCAN + EXPIRE), the
 // operation the 304 path needs.
 type liveSink interface {
-	pipelineContext(ctx context.Context) livePipe
+	pipeline() livePipe
 	refreshTTL(ctx context.Context, patterns []ttlPattern) error
 	refreshOwnedTTL(ctx context.Context, key string, ttl time.Duration) error
 	// getString and getHash close the read seam: two jobs need to read a value
@@ -85,9 +87,9 @@ type liveSpec struct {
 // boundFetch is the fetch a liveSpec's run closure calls. It is liveSource.fetch
 // pre-bound to one spec: on a 304 Not-Modified it refreshes that spec's
 // ttlPatterns before returning, generalizing the bus-only 304→TTL rule to every
-// live job (mrt/tra/bike previously just skipped and let their snapshots
-// expire). run still checks modified and returns on false; the TTL refresh has
-// already happened by then.
+// live job; without it mrt/tra/bike would skip and let their snapshots expire.
+// run still checks modified and returns on false; the TTL refresh has already
+// happened by then.
 type boundFetch func(ctx context.Context, url, name string) (*shared.TDXFetch, error)
 
 // bindFetch wraps src.fetch so a 304 for this spec re-arms its Redis TTLs
@@ -146,10 +148,10 @@ func decodeLiveItems[T any](dec *json.Decoder, fn func(T) error) error {
 		return fmt.Errorf("TDX payload ends with %v, want array", closing)
 	}
 	var trailing any
-	if err := dec.Decode(&trailing); err == io.EOF {
+	if err := dec.Decode(&trailing); errors.Is(err, io.EOF) {
 		return nil
 	} else if err != nil {
-		return err
+		return fmt.Errorf("decode TDX payload trailer: %w", err)
 	}
 	return errors.New("TDX payload contains trailing data")
 }
@@ -241,58 +243,55 @@ func (s restLiveSource) fetch(ctx context.Context, url, name string) (*shared.TD
 }
 
 // redisLiveSink is the production liveSink backed by *redis.Client. refreshTTL
-// re-arms matching keys via SCAN + pipelined EXPIRE, the logic previously inline
-// in refreshBusEtaTTLs, now shared by every live job's 304 path.
+// re-arms matching keys via SCAN + pipelined EXPIRE, shared by every live job's
+// 304 path.
 type redisLiveSink struct {
 	rc *redis.Client
 }
 
-func (s redisLiveSink) pipelineContext(ctx context.Context) livePipe {
+func (s redisLiveSink) pipeline() livePipe {
 	options := s.rc.Options()
 	return &redisLivePipe{
-		pipe: s.rc.WithContext(ctx).TxPipeline(),
-		ctx:  ctx,
+		pipe: s.rc.TxPipeline(),
 		finiteWait: options.DialTimeout > 0 && options.ReadTimeout > 0 &&
 			options.WriteTimeout > 0 && options.PoolTimeout > 0,
 	}
 }
 
 // getString reads a single string value, delegating to the underlying client so
-// a missing key surfaces the same redis.Nil error the jobs previously handled
-// inline.
+// a missing key surfaces redis.Nil to the caller rather than a sink-specific
+// error the jobs would each have to translate.
 func (s redisLiveSink) getString(ctx context.Context, key string) (string, error) {
-	return s.rc.WithContext(ctx).Get(key).Result()
+	return s.rc.Get(ctx, key).Result()
 }
 
 // getHash reads a whole hash, used by the tra job to merge cached per-train
 // delays into the live board.
 func (s redisLiveSink) getHash(ctx context.Context, key string) (map[string]string, error) {
-	return s.rc.WithContext(ctx).HGetAll(key).Result()
+	return s.rc.HGetAll(ctx, key).Result()
 }
 
 // refreshTTL re-arms the TTL on every key matching each pattern via SCAN +
 // pipelined EXPIRE. Errors are logged, wrapped, and returned so a failed 304
 // refresh cannot be reported as a successful live tick.
 func (s redisLiveSink) refreshTTL(ctx context.Context, patterns []ttlPattern) error {
-	rc := s.rc.WithContext(ctx)
+	rc := s.rc
 	total := 0
 	var refreshErr error
 	for _, p := range patterns {
 		var cursor uint64
 		for {
-			keys, next, err := rc.Scan(cursor, p.pattern, 500).Result()
+			keys, next, err := rc.Scan(ctx, cursor, p.pattern, 500).Result()
 			if err != nil {
-				log.Errorf("[LIVE] action=ttl_refresh event=scan_error pattern=%s error=%v", p.pattern, err)
 				refreshErr = errors.Join(refreshErr, fmt.Errorf("scan TTL pattern %s: %w", p.pattern, err))
 				break
 			}
 			if len(keys) > 0 {
 				pipe := rc.Pipeline()
 				for _, k := range keys {
-					pipe.Expire(k, p.ttl)
+					pipe.Expire(ctx, k, p.ttl)
 				}
-				if _, err := pipe.Exec(); err != nil {
-					log.Errorf("[LIVE] action=ttl_refresh event=expire_error pattern=%s error=%v", p.pattern, err)
+				if _, err := pipe.Exec(ctx); err != nil {
 					refreshErr = errors.Join(refreshErr, fmt.Errorf("expire TTL pattern %s: %w", p.pattern, err))
 					break
 				}
@@ -312,8 +311,8 @@ func (s redisLiveSink) refreshTTL(ctx context.Context, patterns []ttlPattern) er
 }
 
 func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time.Duration) error {
-	rc := s.rc.WithContext(ctx)
-	members, err := rc.SMembers(key).Result()
+	rc := s.rc
+	members, err := rc.SMembers(ctx, key).Result()
 	if err != nil {
 		return fmt.Errorf("read ownership set %s: %w", key, err)
 	}
@@ -323,9 +322,9 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 	pipe := rc.Pipeline()
 	expires := make([]*redis.BoolCmd, 0, len(members))
 	for _, member := range members {
-		expires = append(expires, pipe.Expire(member, ttl))
+		expires = append(expires, pipe.Expire(ctx, member, ttl))
 	}
-	if _, err := pipe.Exec(); err != nil {
+	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("refresh ownership set %s: %w", key, err)
 	}
 	missing := make([]string, 0)
@@ -344,7 +343,7 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 		// a failed invalidation invisible to the next 304, preventing a retry.
 		return fmt.Errorf("ownership set %s contains missing live keys %v", key, missing)
 	}
-	renewed, err := rc.Expire(key, ownedKeysTTL).Result()
+	renewed, err := rc.Expire(ctx, key, ownedKeysTTL).Result()
 	if err != nil {
 		return fmt.Errorf("refresh ownership metadata %s: %w", key, err)
 	}
@@ -356,55 +355,59 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 
 // redisLivePipe adapts a go-redis Pipeliner to the livePipe interface, dropping
 // the per-command result handles the live jobs never inspect (they only Exec).
+//
+// Queuing a command never touches the network — the v9 pipeline appends to a
+// buffer and discards the context it is handed — so the buffering methods pass
+// context.Background() and Exec's context is the one that governs the round-trip.
 type redisLivePipe struct {
 	pipe       redis.Pipeliner
-	ctx        context.Context
 	finiteWait bool
 }
 
 func (p *redisLivePipe) Set(key string, value any, ttl time.Duration) {
-	p.pipe.Set(key, value, ttl)
+	p.pipe.Set(context.Background(), key, value, ttl)
 }
 
 func (p *redisLivePipe) Publish(channel string, value any) {
-	p.pipe.Publish(channel, value)
+	p.pipe.Publish(context.Background(), channel, value)
 }
 
 func (p *redisLivePipe) HSet(key, field string, value any) {
-	p.pipe.HSet(key, field, value)
+	p.pipe.HSet(context.Background(), key, field, value)
 }
 
 func (p *redisLivePipe) Expire(key string, ttl time.Duration) {
-	p.pipe.Expire(key, ttl)
+	p.pipe.Expire(context.Background(), key, ttl)
 }
 
 func (p *redisLivePipe) ReplaceOwnedKeys(key string, members []string, ttl time.Duration) {
-	p.pipe.Del(key)
+	ctx := context.Background()
+	p.pipe.Del(ctx, key)
 	if len(members) == 0 {
 		return
 	}
-	values := make([]interface{}, len(members))
+	values := make([]any, len(members))
 	for i := range members {
 		values[i] = members[i]
 	}
-	p.pipe.SAdd(key, values...)
-	p.pipe.Expire(key, ttl)
+	p.pipe.SAdd(ctx, key, values...)
+	p.pipe.Expire(ctx, key, ttl)
 }
 
-func (p *redisLivePipe) Exec() error {
-	if err := p.ctx.Err(); err != nil {
+func (p *redisLivePipe) Exec(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if !p.finiteWait {
 		return errors.New("live Redis pipeline requires finite Redis read timeout and connection timeouts")
 	}
-	// go-redis v6 stores Context on the client but does not apply it to pipeline
-	// socket deadlines. Execute synchronously under the finite client timeouts so
-	// no transaction can land after this call returns and overwrite a newer run.
-	// A context that expires during the wait is joined with the Redis result so
-	// callers never acknowledge its TDX marker, even if EXEC itself succeeded.
-	_, execErr := p.pipe.Exec()
-	return errors.Join(execErr, p.ctx.Err())
+	// EXEC now runs under the caller's context, but the finite client timeouts
+	// are kept as a floor: an unbounded context must still not let a transaction
+	// land after this returns and overwrite a newer run. A context that expires
+	// during the wait is joined with the Redis result so callers never
+	// acknowledge their TDX marker, even if EXEC itself succeeded.
+	_, execErr := p.pipe.Exec(ctx)
+	return errors.Join(execErr, ctx.Err())
 }
 
 // TTL windows re-armed on a 304, per the CONTEXT.md operating rule. They match
@@ -421,7 +424,7 @@ const (
 )
 
 // liveRegistry lists every realtime dataset the runner knows how to refresh, in
-// the order runLegacyProd previously invoked them within a shared cron tick
+// the order runLegacyProd invokes them within a shared cron tick
 // (bike before bus on the 30s tick). db and dispatcher are captured by the specs
 // that need them (bus needs both for the static-map join, prediction, history,
 // and notifications; bike needs db for history sampling), mirroring how
@@ -449,11 +452,13 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				return bikeEta(ctx, fetch, sink, db)
 			}},
-		// bus keeps ttlPatterns nil: it fetches per city and re-arms exactly that
-		// city's keys inline (processBusEtaCity → sink.refreshTTL(busEtaTTLPatterns))
-		// on a 304, which is more precise than a whole-keyspace scan and avoids
-		// re-scanning every city's keys on each city's 304. boundFetch's generic
-		// refresh is for the jobs that previously skipped (bike/mrt/tra).
+		// bus keeps ttlPatterns nil, so boundFetch does not re-arm on its 304.
+		// It does not need to: a 304 city still republishes from the cached raw
+		// feed, and that write sets a fresh TTL. What does need re-arming is a
+		// city run that aborts before publishing, which runCity owns in one
+		// deferred guard covering all of its error returns. Wiring ttlPatterns
+		// here instead would SCAN and EXPIRE the city's keys on every 304 only
+		// for the republish to overwrite them moments later.
 		{key: "bus", cadence: "@every 30s", ttlPatterns: nil,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				return busEta(ctx, fetch, sink, db, dispatcher)

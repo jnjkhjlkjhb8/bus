@@ -224,12 +224,12 @@ class _SettingsView extends StatelessWidget {
                           : (v) => bloc.add(PushToggled(value: v)),
                     ),
                     if (!Platform.isAndroid) ...[
-                        _SettingsSwitchRow(
-                          icon: Icons.dashboard_customize_outlined,
-                          label: i18n.settingsLiveActivity,
-                          value: state.liveActivityEnabled,
-                          onChanged: (v) =>
-                              bloc.add(LiveActivityToggled(value: v)),
+                      _SettingsSwitchRow(
+                        icon: Icons.dashboard_customize_outlined,
+                        label: i18n.settingsLiveActivity,
+                        value: state.liveActivityEnabled,
+                        onChanged: (v) =>
+                            bloc.add(LiveActivityToggled(value: v)),
                       ),
                     ],
                   ],

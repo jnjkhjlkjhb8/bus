@@ -20,9 +20,8 @@ type fakeBusEtaStore struct {
 	nextDepartureKeys []routeDirKey
 	nextDepartureTOD  string
 	nextDepartureBit  int
-	travelAverageUIDs []string
-	travelAverageHour int
-	travelAverageDay  int
+	stopOffsetUIDs    []string
+	stopOffsetMap     map[stopOffsetKey]int
 	historyRows       [][]interface{}
 	predictions       []predictionRecord
 	predictionCalls   int
@@ -41,11 +40,12 @@ func (s *fakeBusEtaStore) nextDepartures(_ context.Context, keys []routeDirKey, 
 	return s.nextDepartureMap
 }
 
-func (s *fakeBusEtaStore) travelAverages(_ context.Context, uids []string, hour, day int) map[travelAvgKey]int {
-	s.travelAverageUIDs = append([]string(nil), uids...)
-	s.travelAverageHour = hour
-	s.travelAverageDay = day
-	return map[travelAvgKey]int{}
+func (s *fakeBusEtaStore) stopOffsets(_ context.Context, uids []string) map[stopOffsetKey]int {
+	s.stopOffsetUIDs = append([]string(nil), uids...)
+	if s.stopOffsetMap == nil {
+		return map[stopOffsetKey]int{}
+	}
+	return s.stopOffsetMap
 }
 
 func (s *fakeBusEtaStore) saveHistory(_ context.Context, rows [][]interface{}) {
@@ -160,9 +160,14 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 		"bus_RealTimeByFrequencyInterCity":    []byte(`[{"PlateNumb":"GPS-9999","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":9,"BusPosition":{"PositionLon":121.5,"PositionLat":25.05},"Azimuth":90,"Speed":30}]`),
 	}}
 	sink := &captureLiveSink{}
+	// The static map arrives already canonical: the loader canonicalizes on the
+	// ingestion boundary (ADR-0006), and bus_eta.go relies on that — running
+	// CanonicalSubroute over mp a second time would strip THB902301 twice. The
+	// live feeds above stay raw, because those come straight from TDX and the
+	// job canonicalizes them itself.
 	store := &fakeBusEtaStore{stops: []busStationmap{{
 		StationUID: "STATION1", StationName: "站牌一", GroupUID: "GROUP1", GroupName: "群組一",
-		SubRouteUID: "THB902301", SubRouteName: "9023", Direction: 9, StopUID: "STOP1",
+		SubRouteUID: "THB9023", SubRouteName: "9023", Direction: 0, StopUID: "STOP1",
 		StopSequence: 1, Lat: 25.05, Lon: 121.5,
 	}}}
 	notifier := &captureBusArrivalNotifier{}
@@ -251,8 +256,8 @@ func TestBusLiveJobBatchesPredictionInputs(t *testing.T) {
 	if store.nextDepartureTOD != "09:15:00" || store.nextDepartureBit != 1 {
 		t.Fatalf("next-departure time/day = %q/%d, want 09:15:00/1", store.nextDepartureTOD, store.nextDepartureBit)
 	}
-	if len(store.travelAverageUIDs) != 1 || store.travelAverageUIDs[0] != "TPE1" || store.travelAverageHour != 9 || store.travelAverageDay != int(time.Monday) {
-		t.Fatalf("travel-average inputs = %+v hour=%d day=%d", store.travelAverageUIDs, store.travelAverageHour, store.travelAverageDay)
+	if len(store.stopOffsetUIDs) != 1 || store.stopOffsetUIDs[0] != "TPE1" {
+		t.Fatalf("stop-offset inputs = %+v, want [TPE1]", store.stopOffsetUIDs)
 	}
 	if sink.setFor(shared.BusRouteEtaKey("TPE1")) == nil {
 		t.Fatal("modified feed did not publish the route snapshot")
@@ -290,5 +295,99 @@ func TestBusLiveJobReusesStaticStopCache(t *testing.T) {
 
 	if store.staticStopCalls != 1 {
 		t.Fatalf("static stop loads = %d, want 1", store.staticStopCalls)
+	}
+}
+
+// TestBusSpec304RefreshesCityTTL covers the plain 304 city: the bus spec keeps
+// its own precise per-city re-arm inside busLiveJob.runCity rather than in
+// boundFetch, so a city run that ends without republishing re-arms exactly that
+// city's station and route key patterns with the 180s window. Driven directly
+// (no db needed on the skip path) with an all-304 source, using a static-map
+// cache seeded for one city so the fetch is reached.
+func TestBusSpec304RefreshesCityTTL(t *testing.T) {
+	src := &fakeLiveSource{fixtures: map[string][]byte{}}
+	sink := &captureLiveSink{}
+	storeBusStaticMap(citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
+	t.Cleanup(func() { storeBusStaticMap(citymap["Taipei"], nil) })
+
+	job := busLiveJob{
+		fetch:    bindFetch(src, sink, specByKey(t, "bus")),
+		sink:     sink,
+		store:    pgBusEtaStore{},
+		notifier: (*notify.Dispatcher)(nil),
+		now:      time.Now,
+	}
+	_ = job.runCity(context.Background(), "Taipei")
+
+	if len(sink.refresh) != 1 {
+		t.Fatalf("refreshTTL calls = %d, want 1", len(sink.refresh))
+	}
+	got := sink.refresh[0]
+	want := busEtaTTLPatterns("Taipei")
+	if len(got) != len(want) {
+		t.Fatalf("refresh patterns = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("refresh pattern[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestBusCityAbortRefreshesCityTTL covers a path that used to return without
+// re-arming anything: only the ETA feed's decode error did that, so a stretch of
+// bad position payloads could let a still-valid snapshot age out. runCity now
+// re-arms on every abort before the publish, so this path refreshes too.
+func TestBusCityAbortRefreshesCityTTL(t *testing.T) {
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"bus_EstimatedTimeOfArrival" + "Taipei": []byte(`[]`),
+		"bus_RealTimeByFrequency" + "Taipei":    []byte(`[{"PlateNumb":`),
+	}}
+	sink := &captureLiveSink{}
+	storeBusStaticMap(citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
+	t.Cleanup(func() { storeBusStaticMap(citymap["Taipei"], nil) })
+
+	job := busLiveJob{
+		fetch:    bindFetch(src, sink, specByKey(t, "bus")),
+		sink:     sink,
+		store:    pgBusEtaStore{},
+		notifier: (*notify.Dispatcher)(nil),
+		now:      time.Now,
+	}
+	if err := job.runCity(context.Background(), "Taipei"); err == nil {
+		t.Fatal("want the malformed position payload to fail the city run")
+	}
+	if len(sink.refresh) != 1 {
+		t.Fatalf("refreshTTL calls = %d, want 1 (the abort must re-arm the city)", len(sink.refresh))
+	}
+	if got, want := sink.refresh[0], busEtaTTLPatterns("Taipei"); len(got) != len(want) {
+		t.Fatalf("refresh patterns = %+v, want %+v", got, want)
+	}
+}
+
+// TestBusCityPublishSkipsRedundantRefresh is the mirror: a city that publishes
+// has just written fresh TTLs, so the guard must not add a SCAN+EXPIRE on top of
+// every healthy tick.
+func TestBusCityPublishSkipsRedundantRefresh(t *testing.T) {
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"bus_EstimatedTimeOfArrival" + "Taipei": []byte(`[]`),
+		"bus_RealTimeByFrequency" + "Taipei":    []byte(`[]`),
+	}}
+	sink := &captureLiveSink{}
+	storeBusStaticMap(citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
+	t.Cleanup(func() { storeBusStaticMap(citymap["Taipei"], nil) })
+
+	job := busLiveJob{
+		fetch:    bindFetch(src, sink, specByKey(t, "bus")),
+		sink:     sink,
+		store:    pgBusEtaStore{},
+		notifier: (*notify.Dispatcher)(nil),
+		now:      time.Now,
+	}
+	if err := job.runCity(context.Background(), "Taipei"); err != nil {
+		t.Fatalf("runCity = %v, want a clean publish", err)
+	}
+	if len(sink.refresh) != 0 {
+		t.Fatalf("refreshTTL calls = %d, want 0 after a publish", len(sink.refresh))
 	}
 }

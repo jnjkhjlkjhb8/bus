@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/repositories/bus_repository.dart';
 import 'package:wheres_the_bus/data/repositories/tra_repository.dart';
-import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 
 typedef LegEtaStream = Stream<Duration?> Function(JourneyLeg leg);
 

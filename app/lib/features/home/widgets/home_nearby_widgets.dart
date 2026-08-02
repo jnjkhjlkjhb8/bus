@@ -314,6 +314,7 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
                 duration: reduceMotion ? Duration.zero : AppMotion.short,
                 switchInCurve: AppMotion.easeOut,
                 switchOutCurve: AppMotion.easeOut,
+                transitionBuilder: AppMotion.switchFade,
                 child: KeyedSubtree(key: ValueKey(kind), child: body),
               );
             },

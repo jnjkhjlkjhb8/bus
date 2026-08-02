@@ -15,29 +15,27 @@ import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
-import 'package:wheres_the_bus/data/models/eta_format.dart';
 import 'package:wheres_the_bus/data/models/fare_type.dart';
-import 'package:wheres_the_bus/data/models/plan_models.dart';
 import 'package:wheres_the_bus/data/models/timeline_stop.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_route_bloc.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_route_state.dart';
-import 'package:wheres_the_bus/features/bus/bus_vehicle_status.dart';
+import 'package:wheres_the_bus/features/bus/map/bus_route_overlay.dart';
 import 'package:wheres_the_bus/features/bus/widgets/bus_timeline_stops.dart';
 import 'package:wheres_the_bus/features/bus/widgets/bus_timetable_day.dart';
 import 'package:wheres_the_bus/features/bus/widgets/pinned_bus.dart';
 import 'package:wheres_the_bus/features/bus/widgets/track_trigger_stop.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_bloc.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_event.dart';
-import 'package:wheres_the_bus/features/live_activity/bloc/journey_session_state.dart';
-import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
+import 'package:wheres_the_bus/data/tracking/tracking_session.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
-import 'package:wheres_the_bus/shared/map/bus_heading.dart';
 import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
-import 'package:wheres_the_bus/shared/map/marker_factory.dart';
-import 'package:wheres_the_bus/shared/map/wkt.dart';
 import 'package:wheres_the_bus/shared/motion/app_motion.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_confirm_bar.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_pick_capsule.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_bell.dart';
 import 'package:wheres_the_bus/shared/widgets/app_accordion.dart';
 import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
 import 'package:wheres_the_bus/shared/widgets/app_card.dart';
@@ -74,64 +72,6 @@ const _kPickSheetOffset = SheetOffset.proportionalToViewport(0.35);
 const _kRouteSnapGrid = SheetSnapGrid(
   snaps: [AppSheetSnap.peek, AppSheetSnap.full],
   minFlingSpeed: AppSheetSnap.flingSpeed,
-);
-
-// Map overlays repaint on live ETA/vehicle churn; holding them in a notifier
-// keeps that repaint scoped to the GoogleMap layer instead of the whole screen.
-typedef _MapLayer = ({Set<Marker> markers, Set<Polyline> polylines});
-
-// A live vehicle frame lands every ~30 s; Google Maps markers have no position
-// tween, so without this they teleport. Each glide holds the interpolation
-// endpoints — position and heading both — plus the bitmaps, reused unchanged
-// across every tick of a single glide.
-class _BusGlide {
-  _BusGlide({
-    required this.from,
-    required this.to,
-    required this.icon,
-    this.fromHeading,
-    this.toHeading,
-    this.bubbleIcon,
-    this.rebuildBubble,
-  });
-
-  final LatLng from;
-  final LatLng to;
-  final BitmapDescriptor icon;
-
-  /// Heading to glide away from, null on a vehicle's first frame — there is no
-  /// previous direction to turn out of, so it starts pointed at [toHeading].
-  final double? fromHeading;
-
-  /// Heading to glide to, null when the vehicle has no usable one at all. The
-  /// mark is then painted without its chevron and the rotation means nothing.
-  final double? toHeading;
-
-  /// Only the pinned bus and any vehicle in a warning state carries one.
-  ///
-  /// Mutable, unlike everything else here: the bubble's GPS-freshness line is a
-  /// clock, so [_BusRouteScreenState._tickBubbles] swaps this in place between
-  /// live frames rather than rebuilding the glide (and the 60 stop plates that
-  /// a full resync would drag along) once a second.
-  BitmapDescriptor? bubbleIcon;
-
-  /// Repaints [bubbleIcon] against a fresh clock. Held instead of only the
-  /// finished bitmap because everything else the bubble says — status, plate,
-  /// pin glyph, theme colours — is fixed until the next live frame, so the
-  /// ticker has nothing to recompute but the time.
-  final Future<BitmapDescriptor> Function(DateTime now)? rebuildBubble;
-
-  /// Heading to paint at glide progress [t]. Read live for the same reason
-  /// [from] is: a frame landing mid-turn has to retarget from where the mark is
-  /// actually pointing, not snap back to where that turn began.
-  double? headingAt(double t) => toHeading == null
-      ? null
-      : lerpHeading(fromHeading ?? toHeading!, toHeading!, t);
-}
-
-LatLng _lerpLatLng(LatLng a, LatLng b, double t) => LatLng(
-  a.latitude + (b.latitude - a.latitude) * t,
-  a.longitude + (b.longitude - a.longitude) * t,
 );
 
 class BusRouteScreen extends StatefulWidget {
@@ -186,15 +126,16 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   String? _targetStopUid;
   int _leadStops = 2;
 
-  final ValueNotifier<_MapLayer> _mapLayer = ValueNotifier(
+  final ValueNotifier<BusMapLayer> _mapLayer = ValueNotifier(
     (markers: <Marker>{}, polylines: <Polyline>{}),
   );
-  List<LatLng> _routePts = [];
-  // Per-marker reuse cache: id → (rendered-inputs key, built Marker).
-  final _markerCache = <String, ({String key, Marker marker})>{};
-  String _mapSig = '';
-  String? _geomSig;
-  List<List<LatLng>> _geomLines = const [];
+
+  /// Owns everything pinned to a coordinate: the frame signature, the marker
+  /// and geometry caches, the in-flight glides, and the supersede rule.
+  late final BusRouteOverlay _overlay = BusRouteOverlay(
+    onStopTap: _flashStop,
+    onVehicleTap: _togglePin,
+  );
   bool _fitted = false;
   // didChangeDependencies fires for reasons other than a brightness flip (text
   // scale, locale, ...); this tracks the last-seen value so only an actual
@@ -202,17 +143,9 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   Brightness? _lastBrightness;
   // Sampled at 12pt, the size the marker bitmaps are scaled from.
   double? _lastTextScale;
-  // Bumped at the start of every _syncMap call; a call whose value no longer
-  // matches this field by the time it reaches the commit point was superseded
-  // by a newer one started while it was still awaiting bitmaps, and bails
-  // instead of overwriting the newer frame with stale markers.
-  int _syncGeneration = 0;
 
   // Vehicle markers slide between live frames; stops/polylines stay static, so
   // a glide tick only repaints the bus + bubble layer on top of them.
-  Set<Marker> _stopMarkers = <Marker>{};
-  Set<Polyline> _polylines = <Polyline>{};
-  final _glides = <String, _BusGlide>{};
   late final AnimationController _busGlide;
   late final CurvedAnimation _busGlideCurve;
 
@@ -248,210 +181,45 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     final textScale = MediaQuery.textScalerOf(context).scale(12);
     if ((_lastBrightness != null && _lastBrightness != brightness) ||
         (_lastTextScale != null && _lastTextScale != textScale)) {
-      _markerCache.clear();
-      _mapSig = '';
+      _overlay.invalidate();
       unawaited(_syncMap(_bloc.state));
     }
     _lastBrightness = brightness;
     _lastTextScale = textScale;
   }
 
-  BusStopEtaViewModel? _etaFor(BusRouteState s, BusStopModel st) =>
-      s.etaMap['seq:${s.direction}:${st.sequence}'] ??
-      s.etaMap['uid:${st.stopUid}'];
-
+  /// Asks the overlay for a new frame and commits it.
+  ///
+  /// Everything expensive — the signature short-circuit, geometry parsing,
+  /// marker and bubble rasterising, glide continuity, and the supersede rule —
+  /// lives behind [BusRouteOverlay.resolve]. A null frame means "nothing to
+  /// show that isn't already on screen", so this leaves the map alone.
   Future<void> _syncMap(BusRouteState s) async {
-    final route = s.route;
-    if (route == null) return;
-    final stops = s.direction == 0 ? route.stopsGo : route.stopsReturn;
-    if (stops.isEmpty) return;
-    // Resolved before the first await: every caller reaches this from
-    // didChangeDependencies or later, so the locale is readable here, and
-    // holding it avoids touching `context` across an async gap.
+    // Read before the first await: every caller reaches this from
+    // didChangeDependencies or later, so the locale and theme are readable
+    // here, and holding them avoids touching `context` across an async gap.
     final i18n = AppI18n.of(context);
-    final generation = ++_syncGeneration;
-    _stopUidsInOrder = [for (final st in stops) st.stopUid];
+    final colors = Theme.of(context).colorScheme;
+    final reduceMotion = MediaQuery.of(context).disableAnimations;
 
-    final vehicles = _vehiclePositionsFor(s);
-    // The one rule for who gets a bubble, shared with the paint below so the
-    // two cannot drift: a signature that omitted a shown bubble's clock would
-    // freeze its freshness label at whatever it read when the bus was pinned.
-    bool showsBubble(BusVehiclePosition v) =>
-        _pinnedPlate == v.plate ||
-        busVehicleStatus(i18n, v).tone == BusStatusTone.warning;
-
-    // gpsTimeUnix advances every live frame and nothing but the bubble reads
-    // it, so only a vehicle actually showing one contributes its clock.
-    // Otherwise a route with no bubbles on it invalidates every marker on the
-    // map twice a minute to refresh a label that isn't on screen.
-    final sig =
-        '${route.subRouteUid}:${s.direction}:${stops.length}:'
-        '${stops.map((st) => _markerEta(i18n, _etaFor(s, st))).join(',')}:'
-        '${vehicles.map(
-          (v) => '${v.plate}@${v.lat},${v.lon},${v.azimuth},${v.dutyStatus},'
-              '${v.busStatus}'
-              '${showsBubble(v) ? ',${v.gpsTimeUnix}' : ''}',
-        ).join(';')}';
-    if (sig == _mapSig) return;
-    _mapSig = sig;
-
-    final stopPts = [
-      for (final st in stops)
-        if (st.lat != 0 || st.lon != 0) LatLng(st.lat, st.lon),
-    ];
-
-    final geomSig = '${route.subRouteUid}:${s.direction}';
-    if (geomSig != _geomSig) {
-      _geomSig = geomSig;
-      final geometry = s.direction == 0
-          ? route.geometryGo
-          : route.geometryReturn;
-      var lines = parseWktLines(geometry);
-      if (lines.isEmpty && stopPts.length >= 2) lines = [stopPts];
-      _geomLines = lines;
-    }
-
-    final cs = Theme.of(context).colorScheme;
-    final isDark = cs.brightness == Brightness.dark;
-    // cs.onSurface already flips between near-black (light) and near-white
-    // (dark) — checked against both basemap styles in map_color_scheme.dart,
-    // it reads at high contrast on the light default style and on the dark
-    // style's #242f3e/#38414e geometry alike, so no extra token is needed
-    // here beyond making sure this rebuilds when the theme does (see
-    // didChangeDependencies).
-    final polylines = <Polyline>{
-      for (var i = 0; i < _geomLines.length; i++)
-        Polyline(
-          polylineId: PolylineId('route_$i'),
-          points: _geomLines[i],
-          color: cs.onSurface,
-          width: 4,
-          startCap: Cap.roundCap,
-          endCap: Cap.roundCap,
-          jointType: JointType.round,
-        ),
-    };
-
-    // Mid-longitude of the route: a selected stop's name leans away from it.
-    final bounds = stopPts.isEmpty ? null : _boundsOf(stopPts);
-    final stopMarkers = await _buildStopMarkers(
-      stops: stops,
-      etaFor: (st) => _etaFor(s, st),
-      cs: cs,
+    final frame = await _overlay.resolve(
+      state: s,
       i18n: i18n,
-      selectedUid: _selectedStopUid,
-      midLon: bounds == null
-          ? 0
-          : (bounds.southwest.longitude + bounds.northeast.longitude) / 2,
-      cache: _markerCache,
-      onTap: _flashStop,
+      colors: colors,
+      glideProgress: _busGlideCurve.value,
+      now: DateTime.now(),
+      selectedStopUid: _selectedStopUid,
+      pinnedPlate: _pinnedPlate,
+      pickingStop: _pickingStop,
     );
+    if (frame == null || !mounted) return;
 
-    // A newer frame may have started (and finished) while this one was still
-    // awaiting bitmap lookups above; yield to it rather than spend more time
-    // building vehicle bitmaps for a frame that's about to be discarded.
-    if (generation != _syncGeneration) return;
+    _stopUidsInOrder = [
+      for (final st in _currentStops(s)) st.stopUid,
+    ];
+    _syncBubbleTicker(wanted: frame.showsAnyBubble);
 
-    // Resolve each vehicle's mark (and bubble, where one is due), then hand the
-    // new position and heading to the glide controller. Every glide starts from
-    // where the marker sits *right now* — mid-glide included — so a fresh frame
-    // retargets smoothly instead of snapping back to the last reported point.
-    final isLight = !isDark;
-    final now = DateTime.now();
-    final t = _busGlideCurve.value;
-    final nextGlides = <String, _BusGlide>{};
-    for (final v in vehicles) {
-      final status = busVehicleStatus(i18n, v);
-      final statusColor = switch (status.tone) {
-        BusStatusTone.normal => cs.onSurface,
-        BusStatusTone.notice =>
-          isLight ? AppTheme.etaApproaching : AppTheme.statusApproach,
-        BusStatusTone.warning => cs.error,
-        BusStatusTone.muted => cs.onSurfaceVariant,
-      };
-
-      final target = LatLng(v.lat, v.lon);
-      final prev = _glides[v.plate];
-      // A newly-seen bus starts at its target (no fly-in from nowhere);
-      // otherwise glide from wherever it sits right now.
-      final from = prev == null ? target : _lerpLatLng(prev.from, prev.to, t);
-
-      // TDX sends azimuth 0 for "no heading" as readily as for "due north", so
-      // the reported value only counts when it is non-zero. Failing that, the
-      // bearing of the move between the last two reported points is the honest
-      // answer, and a bus that hasn't moved keeps whatever it last had. None of
-      // the three and the mark drops its chevron rather than claiming north.
-      final heading = v.azimuth != 0
-          ? v.azimuth.toDouble()
-          : (prev == null ? null : bearingIfMoved(prev.to, target)) ??
-                prev?.toHeading;
-
-      // Escalate by fill before colour, the same ladder the stop markers use:
-      // a warning takes the whole body, a notice or a muted state only a ring,
-      // and a bus with nothing to report stays ink.
-      final (Color markBody, Color? markRing) = switch (status.tone) {
-        BusStatusTone.normal => (cs.onSurface, null),
-        BusStatusTone.warning => (statusColor, null),
-        BusStatusTone.notice || BusStatusTone.muted => (
-          cs.onSurface,
-          statusColor,
-        ),
-      };
-      final icon = await MapMarkers.busMark(
-        body: markBody,
-        halo: isLight ? AppTheme.surfaceCardLight : AppTheme.surfaceDark,
-        ring: markRing,
-        showHeading: heading != null,
-        // The dark basemap gives a drop shadow nothing to land on; there the
-        // near-black halo is what separates the mark (see docs/design.md).
-        shadow: isLight,
-      );
-
-      // Takes [at] rather than closing over `now`, so the bubble ticker can
-      // call it again on a later clock with nothing else about the bubble
-      // moving.
-      Future<BitmapDescriptor> buildBubble(DateTime at) => MapMarkers.busBubble(
-        plate: v.plate,
-        fill: isLight ? Colors.white : cs.surfaceContainerHigh,
-        inkSecondary: cs.onSurfaceVariant,
-        statusLabel: status.label,
-        statusColor: statusColor,
-        gpsText: busGpsAge(i18n, v.gpsTimeUnix, at).text,
-        // ＋ while choosing the alight stop, ✓ once tracking is armed.
-        trackGlyph: _pinnedPlate == v.plate ? (_pickingStop ? '＋' : '✓') : null,
-      );
-
-      // Progressive detail: the plate and GPS freshness belong to the bus the
-      // rider asked about, not to all five running the route — five always-on
-      // bubbles overlap each other and the stop plates under them. A warning
-      // is the exception: a broken-down bus shouldn't need a tap to say so.
-      final rebuildBubble = showsBubble(v) ? buildBubble : null;
-
-      nextGlides[v.plate] = _BusGlide(
-        from: from,
-        to: target,
-        icon: icon,
-        // Where the mark points right now, so the turn continues from there.
-        fromHeading: prev?.headingAt(t),
-        toHeading: heading,
-        bubbleIcon: await rebuildBubble?.call(now),
-        rebuildBubble: rebuildBubble,
-      );
-    }
-
-    // Same supersede check as above, now guarding the actual commit: this is
-    // the write finding 5 targets, so a stale call must not reach it even if
-    // everything above it finished.
-    if (!mounted || generation != _syncGeneration) return;
-    _stopMarkers = stopMarkers;
-    _polylines = polylines;
-    _glides
-      ..clear()
-      ..addAll(nextGlides);
-    _routePts = stopPts;
-    _syncBubbleTicker();
-
-    if (MediaQuery.of(context).disableAnimations) {
+    if (reduceMotion) {
       // Reduce-motion: snap to the reported position, no glide.
       _busGlide.value = 1;
       _paintVehicles();
@@ -469,8 +237,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   /// Live frames land every ~30 s, so without this the freshness line sits at
   /// whatever it read when the bus was pinned and then jumps — which is the one
   /// number on this map whose whole job is to say how old the rest of it is.
-  void _syncBubbleTicker() {
-    final wanted = _glides.values.any((g) => g.rebuildBubble != null);
+  void _syncBubbleTicker({required bool wanted}) {
     if (wanted == (_bubbleTicker != null)) return;
     _bubbleTicker?.cancel();
     _bubbleTicker = !wanted
@@ -489,81 +256,32 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   /// very bitmap already on screen, and the identity check below skips the
   /// repaint. The once-a-second wake-up then costs a cache lookup per bubble.
   Future<void> _tickBubbles() async {
-    final now = DateTime.now();
-    var changed = false;
-    // Snapshot: _syncMap may clear and refill _glides across the awaits below.
-    for (final glide in _glides.values.toList()) {
-      final rebuild = glide.rebuildBubble;
-      if (rebuild == null) continue;
-      final icon = await rebuild(now);
-      if (identical(icon, glide.bubbleIcon)) continue;
-      glide.bubbleIcon = icon;
-      changed = true;
+    if (await _overlay.tickBubbles(DateTime.now()) && mounted) {
+      _paintVehicles();
     }
-    if (changed && mounted) _paintVehicles();
   }
 
   // Composes the animated bus + bubble markers over the static stop layer and
   // pushes them to the GoogleMap notifier. Runs per glide tick; the sprite and
   // bubble bitmaps are memoized upstream, so a tick is cheap position churn.
   void _paintVehicles() {
-    final t = _busGlideCurve.value;
-    final vehicleMarkers = <Marker>{};
-    _glides.forEach((plate, g) {
-      final pos = _lerpLatLng(g.from, g.to, t);
-      // Once a bus is pinned, the others recede so the pinned one leads.
-      final dimmed = _pinnedPlate != null && plate != _pinnedPlate;
-      final alpha = dimmed ? 0.35 : 1.0;
-      final bubbleIcon = g.bubbleIcon;
-      vehicleMarkers.add(
-        Marker(
-          markerId: MarkerId('bus:$plate'),
-          position: pos,
-          icon: g.icon,
-          anchor: const Offset(0.5, 0.5),
-          alpha: alpha,
-          // The mark is painted north-up; rotation is what points it along the
-          // vehicle's heading, and `flat` is what makes that a bearing on the
-          // ground rather than a spin on the screen.
-          rotation: g.headingAt(t) ?? 0,
-          flat: true,
-          // Above every stop plate, selected capsule included: the live bus
-          // is the one thing on this map that outranks the rider's own tap.
-          zIndexInt: 4,
-          onTap: () => _togglePin(plate),
-        ),
-      );
-      if (bubbleIcon != null) {
-        vehicleMarkers.add(
-          Marker(
-            markerId: MarkerId('bubble:$plate'),
-            position: pos,
-            icon: bubbleIcon,
-            alpha: alpha,
-            zIndexInt: 5,
-          ),
-        );
-      }
-    });
-    // repaints the whole marker Set per tick — fine for a handful of buses;
-    // batch/diff the marker channel if a route ever shows dozens.
-    _mapLayer.value = (
-      markers: {..._stopMarkers, ...vehicleMarkers},
-      polylines: _polylines,
+    _mapLayer.value = _overlay.paint(
+      glideProgress: _busGlideCurve.value,
+      pinnedPlate: _pinnedPlate,
     );
   }
 
   void _maybeFit() {
     if (_fitted) return;
     final c = _mapController;
-    if (c == null || _routePts.isEmpty) return;
+    if (c == null || _overlay.stopPoints.isEmpty) return;
     _fitted = true;
     unawaited(c.animateCamera(_fitUpdate()));
   }
 
-  CameraUpdate _fitUpdate() => _routePts.length == 1
-      ? CameraUpdate.newLatLngZoom(_routePts.first, 16)
-      : CameraUpdate.newLatLngBounds(_boundsOf(_routePts), 60);
+  CameraUpdate _fitUpdate() => _overlay.stopPoints.length == 1
+      ? CameraUpdate.newLatLngZoom(_overlay.stopPoints.first, 16)
+      : CameraUpdate.newLatLngBounds(boundsOf(_overlay.stopPoints), 60);
 
   void _recenterMap() {
     unawaited(HapticService.instance.lightTap());
@@ -571,7 +289,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     if (controller != null) {
       unawaited(
         controller.animateCamera(
-          _routePts.isEmpty
+          _overlay.stopPoints.isEmpty
               ? CameraUpdate.newCameraPosition(_kDefaultCamera)
               : _fitUpdate(),
         ),
@@ -729,8 +447,81 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   // Pin state lives in [State], not the map signature, so a select/confirm
   // repaints the bus bubbles (glyph + dim) by forcing [_syncMap] to rebuild.
   void _repaintPins() {
-    _mapSig = '';
     unawaited(_syncMap(_bloc.state));
+  }
+
+  /// The buses currently running this direction, in travel order, as the
+  /// candidates a reminder can bind to. One route can have several out at
+  /// once, and the reminder follows a plate — so this is a choice the rider
+  /// makes, not something the app can settle for them.
+  List<({String plate, String afterStopName, int index})> _plateCandidates(
+    List<TimelineStop> stops,
+  ) {
+    final out = <({String plate, String afterStopName, int index})>[];
+    for (final i in busVehicleMarkerIndices(stops)) {
+      final plate = stops[i].plate;
+      if (plate.isEmpty) continue;
+      out.add((plate: plate, afterStopName: stops[i].name, index: i));
+    }
+    return out;
+  }
+
+  /// Opens pick-mode from the bell with the first running bus pre-selected.
+  /// Deliberately not a guess at "the rider's own bus" — there is no location
+  /// signal good enough for that — so the pick is pre-filled, visible, and
+  /// changeable in the confirm bar.
+  void _enterPickFromBell(List<TimelineStop> stops) {
+    final candidates = _plateCandidates(stops);
+    // Opens even with nothing to bind to. A route with no bus out right now —
+    // or a frame that carried no plates — is a fact the confirm bar states;
+    // swallowing the tap would just make the bell look broken.
+    final first = candidates.firstOrNull;
+    unawaited(HapticService.instance.mediumTap());
+    setState(() {
+      _pinnedPlate = first?.plate;
+      _pickingStop = true;
+      _pinnedNextStopIndex = first?.index;
+      _targetStopUid = null;
+      _leadStops = 2;
+    });
+    _repaintPins();
+    _liftSheet(true);
+    _centerTimelineOnPick(first?.index);
+  }
+
+  /// Re-binds an open flow to a different plate without leaving pick-mode.
+  void _choosePlate(String plate, int nextStopIndex) {
+    unawaited(HapticService.instance.selectionClick());
+    setState(() {
+      _pinnedPlate = plate;
+      _pinnedNextStopIndex = nextStopIndex;
+    });
+    _repaintPins();
+  }
+
+  /// The confirm bar for an open bus flow: which plate, how many stops of
+  /// warning, and the commit. Bus is the one network where the binding is a
+  /// real choice, so it carries a list of candidate plates rather than a chip.
+  Widget _buildAlightConfirmBar(BuildContext context, BusRouteState state) {
+    final stops = _currentStops(state);
+    final target = _targetStopUid;
+    final targetStop = stops.where((s) => s.stopUid == target).firstOrNull;
+    if (targetStop == null) return const SizedBox.shrink();
+    final candidates = _plateCandidates(_stopsFor(AppI18n.of(context), state));
+    return AlightConfirmBar(
+      targetName: targetStop.stopName,
+      lead: _leadStops,
+      onLeadChanged: (v) => setState(() => _leadStops = clampLeadStops(v)),
+      onRepick: () => setState(() => _targetStopUid = null),
+      onCancel: _cancelPick,
+      onStart: _confirmPick,
+      canStart: _pinnedPlate != null,
+      binding: _PlateChooser(
+        candidates: candidates,
+        selected: _pinnedPlate,
+        onChoose: _choosePlate,
+      ),
+    );
   }
 
   void _onPickStop(String uid) {
@@ -743,36 +534,6 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     final route = s.route;
     if (route == null) return const [];
     return s.direction == 0 ? route.stopsGo : route.stopsReturn;
-  }
-
-  JourneyLeg _trackLeg({
-    required BusRouteViewModel route,
-    required List<BusStopModel> stops,
-    required int idx,
-    required int direction,
-  }) {
-    final routeName = route.routeName;
-    final headsign = direction == 0 ? route.headsignGo : route.headsignReturn;
-    return JourneyLeg(
-      kind: JourneyLegKind.bus,
-      routeLabel: headsign.isEmpty ? routeName : '$routeName 往$headsign',
-      boardStop: stops[idx].stopName,
-      alightStop: stops.last.stopName,
-      stopNames: const [],
-      identity: PlanIdentity(
-        routeType: 'bus',
-        routeKey: route.subRouteUid,
-        direction: '$direction',
-        departureStopKey: stops[idx].stopUid,
-        arrivalStopKey: '',
-        supported: false,
-      ),
-      leadingWalkMinutes: 0,
-      scheduledDeparture: null,
-      scheduledArrival: null,
-      boardLocation: PlanPoint(lat: stops[idx].lat, lng: stops[idx].lon),
-      stopLocations: const [],
-    );
   }
 
   /// 完成: start plate-tracked waiting on the picked alight stop and arm a
@@ -792,10 +553,10 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         trackOnly: true,
         plate: plate,
         legs: [
-          _trackLeg(
+          busTrackingLeg(
             route: route,
             stops: stops,
-            idx: idx,
+            boardIndex: idx,
             direction: s.direction,
           ),
         ],
@@ -830,10 +591,10 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         trackOnly: true,
         plate: plate,
         legs: [
-          _trackLeg(
+          busTrackingLeg(
             route: route,
             stops: stops,
-            idx: nextIdx,
+            boardIndex: nextIdx,
             direction: s.direction,
           ),
         ],
@@ -935,7 +696,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
               body: Stack(
                 children: [
                   Positioned.fill(
-                    child: ValueListenableBuilder<_MapLayer>(
+                    child: ValueListenableBuilder<BusMapLayer>(
                       valueListenable: _mapLayer,
                       builder: (context, layer, _) => GoogleMap(
                         style: mapStyleOf(context),
@@ -944,6 +705,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                         myLocationButtonEnabled: false,
                         zoomControlsEnabled: false,
                         mapToolbarEnabled: false,
+                        compassEnabled: false,
                         markers: layer.markers,
                         polylines: layer.polylines,
                         // Reserves the peek sheet's footprint so
@@ -1001,16 +763,28 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                             ),
                           );
                         },
-                        child: SafeArea(
-                          bottom: false,
-                          // Clears the floating app bar row (44px buttons + 8px
-                          // top/bottom padding) so back/bookmark stay reachable.
-                          child: Padding(
-                            padding: const EdgeInsets.only(top: 60),
-                            child: ErrorStateView(
-                              error: state.error!,
-                              onRetry: () => context.read<BusRouteBloc>().add(
-                                const BusRouteStarted(),
+                        // ErrorStateView carries no surface of its own — inside
+                        // a sheet it sits on the sheet's. Here its ground is
+                        // the live map, so it needs one: unbacked, the text
+                        // lands on streets and labels and stops being
+                        // readable. Opaque rather than translucent because the
+                        // map behind a failed load has nothing left to say,
+                        // and it returns the moment the sheet is pulled up
+                        // (this whole layer fades with the sheet).
+                        child: ColoredBox(
+                          color: cs.surface,
+                          child: SafeArea(
+                            bottom: false,
+                            // Clears the floating app bar row (44px buttons +
+                            // 8px top/bottom padding) so back/bookmark stay
+                            // reachable.
+                            child: Padding(
+                              padding: const EdgeInsets.only(top: 60),
+                              child: ErrorStateView(
+                                error: state.error!,
+                                onRetry: () => context.read<BusRouteBloc>().add(
+                                  const BusRouteStarted(),
+                                ),
                               ),
                             ),
                           ),
@@ -1108,7 +882,30 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                     onConfirmPick: _confirmPick,
                     onSkipPick: _skipPick,
                     onCancelPick: _cancelPick,
+                    onBellTapped: () => _enterPickFromBell(
+                      _stopsFor(AppI18n.of(context), state),
+                    ),
                   ),
+
+                  // The mode says itself once, over the map, and the settings
+                  // wait at the bottom until a stop has actually been picked —
+                  // the same two layers the metro and rail screens use.
+                  if (_pickingStop)
+                    Positioned(
+                      top: MediaQuery.paddingOf(context).top + 60,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: AlightPickCapsule(onCancel: _cancelPick),
+                      ),
+                    ),
+                  if (_pickingStop && _targetStopUid != null)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      child: _buildAlightConfirmBar(context, state),
+                    ),
                 ],
               ),
             ),

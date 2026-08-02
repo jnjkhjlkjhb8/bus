@@ -12,20 +12,18 @@ import (
 )
 
 // routeDirKey identifies one subroute direction, used as a map key when batching
-// next-departure and travel-average lookups.
+// next-departure and stop-offset lookups.
 type routeDirKey struct {
 	subRouteUID string
 	direction   int32
 }
 
-// travelAvgKey identifies a per-stop, time-bucketed travel-average sample:
-// subroute, direction, stop, hour of day, and day of week.
-type travelAvgKey struct {
+// stopOffsetKey identifies one stop's running-time offset from its subroute's
+// origin: subroute, direction, stop.
+type stopOffsetKey struct {
 	subRouteUID string
 	direction   int32
 	stopUID     string
-	hour        int
-	dayOfWeek   int
 }
 
 // dedupRouteDirPairs removes duplicate route/direction keys while preserving
@@ -118,23 +116,32 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 	return out
 }
 
-// batchTravelAvg loads precomputed average travel seconds (origin to each stop)
-// for the given subroutes at a specific hour and day of week, in one query. The
-// result feeds ETA prediction the expected time from departure to a stop. An
-// empty uid set or a query error yields an empty map.
-func batchTravelAvg(ctx context.Context, db *pgxpool.Pool, uids []string, hour, dayOfWeek int) map[travelAvgKey]int {
-	out := make(map[travelAvgKey]int)
+// batchStopOffsets loads each stop's running seconds from its subroute's origin
+// for the given subroutes, in one query. The result feeds ETA prediction the
+// expected time from departure to a stop. An empty uid set or a query error
+// yields an empty map.
+//
+// The offsets are accumulated from bus_segment_time, the observed running time
+// between consecutive stops, over busPatternSQL — the same statement the GTFS
+// export lays a trip out with, so a predicted arrival and a published stop time
+// cannot disagree about the same journey.
+//
+// Only directions busPatternSQL calls complete are returned. Accumulating past
+// an unobserved hop silently compresses every stop after it, so a direction
+// missing one segment yields nothing and the caller falls back to the bare
+// scheduled departure.
+func batchStopOffsets(ctx context.Context, db *pgxpool.Pool, uids []string) map[stopOffsetKey]int {
+	out := make(map[stopOffsetKey]int)
 	if len(uids) == 0 {
 		return out
 	}
 	rows, err := db.Query(ctx, `
-		SELECT sub_route_uid, direction, stop_uid, avg_seconds
-		FROM bus_travel_avg
-		WHERE hour = $2 AND day_of_week = $3
-		  AND sub_route_uid = ANY($1::text[])`,
-		uids, hour, dayOfWeek)
+		SELECT p.sub_route_uid, p.direction, p.stop_uid, p.offset_secs
+		FROM (`+busPatternSQL+`) p
+		WHERE p.complete AND p.sub_route_uid = ANY($1::text[])`,
+		uids)
 	if err != nil {
-		log.Errorf("[MODEL] batchTravelAvg error: %v", err)
+		log.Errorf("[MODEL] batchStopOffsets error: %v", err)
 		return out
 	}
 	defer rows.Close()
@@ -143,17 +150,17 @@ func batchTravelAvg(ctx context.Context, db *pgxpool.Pool, uids []string, hour, 
 		var dir int32
 		var sec int
 		if err := rows.Scan(&uid, &dir, &stop, &sec); err == nil {
-			out[travelAvgKey{subRouteUID: uid, direction: dir, stopUID: stop, hour: hour, dayOfWeek: dayOfWeek}] = sec
+			out[stopOffsetKey{subRouteUID: uid, direction: dir, stopUID: stop}] = sec
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Errorf("[MODEL] batchTravelAvg rows error: %v", err)
+		log.Errorf("[MODEL] batchStopOffsets rows error: %v", err)
 	}
 	return out
 }
 
 // etaModel is the loaded XGBoost ensemble that predicts a residual correction on
-// the schedule+travel-average ETA. It stays nil when no model file is present,
+// the schedule+running-time ETA. It stays nil when no model file is present,
 // which disables prediction (predictNextBusTime returns "").
 var etaModel *leaves.Ensemble
 
@@ -202,51 +209,42 @@ type busStopCtx struct {
 }
 
 // predictionInputs carries the per-call inputs to prediction: the current time,
-// the next scheduled departure, and the travel-average signal (its value, whether
-// one exists for this exact stop, and the route's max as a fallback basis).
+// the next scheduled departure, and the stop's running-time offset from the
+// origin (its value, and whether one exists for this stop at all).
 type predictionInputs struct {
-	now          time.Time
-	nextDep      time.Time
-	travelAvg    int
-	hasTravelAvg bool
-	maxTravelAvg int
+	now       time.Time
+	nextDep   time.Time
+	offsetSec int
+	hasOffset bool
 }
 
-// baselineArrival computes the schedule+travel-average arrival for a stop, with
-// no model correction: today's scheduled departure plus expected travel seconds.
-// When no per-stop travel average exists it interpolates from the route's max
-// average by stop-sequence ratio; if even that is unavailable (maxTravelAvg == 0)
-// it returns the bare departure. It returns the zero time when there is no
+// baselineArrival computes the schedule+running-time arrival for a stop, with no
+// model correction: today's scheduled departure plus the stop's offset from the
+// origin. Without an offset it returns the bare departure — the stop's direction
+// has an unobserved hop somewhere, and a guessed offset would be worse than
+// admitting the journey is unknown. It returns the zero time when there is no
 // upcoming scheduled departure. This is the delay-propagation baseline and the
 // pre-correction basis inside predictNextBusTime.
-func baselineArrival(stop busStopCtx, inputs predictionInputs) time.Time {
+func baselineArrival(inputs predictionInputs) time.Time {
 	if inputs.nextDep.IsZero() {
 		return time.Time{}
 	}
 	t := inputs.now.In(taipei)
 	dep := time.Date(t.Year(), t.Month(), t.Day(),
 		inputs.nextDep.Hour(), inputs.nextDep.Minute(), inputs.nextDep.Second(), 0, taipei)
-	travelSec := inputs.travelAvg
-	if !inputs.hasTravelAvg {
-		if inputs.maxTravelAvg == 0 {
-			return dep
-		}
-		ratio := 0.0
-		if stop.totalStops > 0 {
-			ratio = float64(stop.stopSequence) / float64(stop.totalStops)
-		}
-		travelSec = int(ratio * float64(inputs.maxTravelAvg))
+	if !inputs.hasOffset {
+		return dep
 	}
-	return dep.Add(time.Duration(travelSec) * time.Second)
+	return dep.Add(time.Duration(inputs.offsetSec) * time.Second)
 }
 
 // predictNextBusTime estimates a NextBusTime for a stop TDX left blank. It bases
-// the estimate on the next scheduled departure plus expected travel time, then
-// adds the XGBoost residual correction. When no per-stop travel average exists it
-// interpolates from the route's max average by stop-sequence ratio; if even that
-// is unavailable it falls back to the bare departure time. Returns "" when the
-// model is not loaded or there is no upcoming scheduled departure. Result is an
-// RFC3339 timestamp.
+// the estimate on the next scheduled departure plus the stop's running-time
+// offset from the origin, then adds the XGBoost residual correction. Without an
+// offset it falls back to the bare departure time, uncorrected: the correction is
+// a residual on a journey estimate, and there is no journey estimate to correct.
+// Returns "" when the model is not loaded or there is no upcoming scheduled
+// departure. Result is an RFC3339 timestamp.
 func predictNextBusTime(weather *weatherData, stop busStopCtx, inputs predictionInputs) string {
 	if etaModel == nil || inputs.nextDep.IsZero() {
 		return ""
@@ -254,16 +252,12 @@ func predictNextBusTime(weather *weatherData, stop busStopCtx, inputs prediction
 	t := inputs.now.In(taipei)
 	dep := time.Date(t.Year(), t.Month(), t.Day(),
 		inputs.nextDep.Hour(), inputs.nextDep.Minute(), inputs.nextDep.Second(), 0, taipei)
-	travelSec := inputs.travelAvg
+	if !inputs.hasOffset {
+		return dep.Format(time.RFC3339)
+	}
 	ratio := 0.0
 	if stop.totalStops > 0 {
 		ratio = float64(stop.stopSequence) / float64(stop.totalStops)
-	}
-	if !inputs.hasTravelAvg {
-		if inputs.maxTravelAvg == 0 {
-			return dep.Format(time.RFC3339)
-		}
-		travelSec = int(ratio * float64(inputs.maxTravelAvg))
 	}
 	// The caller passes the city's cached weather snapshot (read once per city
 	// through the live sink); a nil snapshot leaves the features zero-valued.
@@ -293,7 +287,7 @@ func predictNextBusTime(weather *weatherData, stop busStopCtx, inputs prediction
 		-1,
 	}
 	correction := etaModel.PredictSingle(features, 0)
-	eta := dep.Add(time.Duration(travelSec)*time.Second + time.Duration(correction)*time.Second)
+	eta := dep.Add(time.Duration(inputs.offsetSec)*time.Second + time.Duration(correction)*time.Second)
 	return eta.Format(time.RFC3339)
 }
 

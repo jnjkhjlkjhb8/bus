@@ -1,4 +1,4 @@
-import 'package:wheres_the_bus/features/live_activity/model/journey_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 
 abstract class JourneySessionEvent {
   const JourneySessionEvent();

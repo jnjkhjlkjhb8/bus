@@ -128,6 +128,19 @@ class AppTheme {
   static const Color surfacePressDark = Color(0xFF282828);
   static const Color surfaceHighlightDark = Color(0xFF333333);
 
+  /// The coming-soon highlight fill for the active brightness.
+  ///
+  /// The five surfaces that highlight an imminent arrival — the ETA tile, the
+  /// TRA departure board, the GenUI arrival card, the bus timetable's next
+  /// trip, and navigation's "bus is here" cue — each own their own geometry (a
+  /// card, a table cell, a pill), so only the fill is shared. Resolving it here
+  /// is what keeps the highlight achromatic and identical across all five: the
+  /// emphasis is this surface, never a tinted or pulsing foreground.
+  static Color surfaceHighlight(Brightness brightness) =>
+      brightness == Brightness.light
+      ? surfaceHighlightLight
+      : surfaceHighlightDark;
+
   // Custom static schemes ensuring pure neutral surfaces and maximum contrast
   static const ColorScheme lightScheme = ColorScheme(
     brightness: Brightness.light,

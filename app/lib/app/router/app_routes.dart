@@ -32,8 +32,7 @@ class AppRoutes {
   /// route it was showing: a report that says only which *kind* of screen
   /// misbehaved cannot be acted on. It travels in the URL so the page survives
   /// a cold deep link like every other route here.
-  static String feedbackLocation({String? from}) =>
-      from == null || from.isEmpty
+  static String feedbackLocation({String? from}) => from == null || from.isEmpty
       ? feedback
       : Uri(path: feedback, queryParameters: {'from': from}).toString();
 

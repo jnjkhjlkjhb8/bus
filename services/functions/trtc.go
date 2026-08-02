@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-resty/resty/v2"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
@@ -88,16 +89,29 @@ func parseTrtcCountdown(s string) (int32, bool) {
 	if s == "列車進站" {
 		return 0, true
 	}
-	m, sec, found := strings.Cut(s, ":")
+	total, ok := parseMMSS(s)
+	if !ok {
+		return 0, false
+	}
+	return int32(total), true
+}
+
+// parseMMSS parses a "mm:ss" countdown into total seconds. Minutes are
+// unbounded (the feed publishes three-digit waits); seconds must be 0..59.
+func parseMMSS(s string) (int, bool) {
+	minutes, seconds, found := strings.Cut(s, ":")
 	if !found {
 		return 0, false
 	}
-	mi, err1 := strconv.Atoi(m)
-	si, err2 := strconv.Atoi(sec)
-	if err1 != nil || err2 != nil || mi < 0 || si < 0 || si > 59 {
+	mi, errMin := strconv.Atoi(minutes)
+	si, errSec := strconv.Atoi(seconds)
+	if errMin != nil || errSec != nil {
 		return 0, false
 	}
-	return int32(mi*60 + si), true
+	if mi < 0 || si < 0 || si > 59 {
+		return 0, false
+	}
+	return mi*60 + si, true
 }
 
 // trtcLinePrefix returns the line letters of a station ID ("BL12" → "BL").
@@ -300,7 +314,7 @@ func trtcPublish(ctx context.Context, sink liveSink, names map[string][]string, 
 		}
 	}
 
-	pipe := sink.pipelineContext(ctx)
+	pipe := sink.pipeline()
 	ownedKeys := make([]string, 0, len(tracks))
 	var dropped, filtered int
 	for _, t := range tracks {
@@ -355,7 +369,7 @@ func trtcPublish(ctx context.Context, sink liveSink, names map[string][]string, 
 		pipe.Publish(shared.MrtLiveChannel("TRTC", stationID), string(pb))
 	}
 	pipe.ReplaceOwnedKeys(shared.LiveOwnedKeysKey("mrt", "TRTC"), ownedKeys, ownedKeysTTL)
-	if err := pipe.Exec(); err != nil {
+	if err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("publish TRTC live board: %w", err)
 	}
 	log.Infof("[TRTC_ETA] action=trtc_eta event=complete arrivals=%d dropped=%d out_of_service=%d", len(ownedKeys), dropped, filtered)

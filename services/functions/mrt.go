@@ -275,14 +275,21 @@ func parseHHMM(s string) (int, bool) {
 	if len(s) != 5 || s[2] != ':' {
 		return 0, false
 	}
+	allDigits := isASCIIDigit(s[0]) && isASCIIDigit(s[1]) && isASCIIDigit(s[3]) && isASCIIDigit(s[4])
+	if !allDigits {
+		return 0, false
+	}
+	// 24..29 are kept: TDX publishes past-midnight departures as hour 24+.
 	h := int(s[0]-'0')*10 + int(s[1]-'0')
 	m := int(s[3]-'0')*10 + int(s[4]-'0')
-	if s[0] < '0' || s[0] > '9' || s[1] < '0' || s[1] > '9' ||
-		s[3] < '0' || s[3] > '9' || s[4] < '0' || s[4] > '9' ||
-		h > 29 || m > 59 {
+	if h > 29 || m > 59 {
 		return 0, false
 	}
 	return h*60 + m, true
+}
+
+func isASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
 }
 
 // mrtServiceWindows returns the schedule windows keyed by
@@ -374,7 +381,6 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 		log.Infof("[MRT_ETA] action=mrt_eta system=%s event=system_start", system)
 		result, err := fetch(ctx, fmt.Sprintf("/v2/Rail/Metro/LiveBoard/%s", system), "mrt_LiveBoard"+system)
 		if err != nil {
-			log.Warnf("[MRT_ETA] action=mrt_eta system=%s event=skip reason=api_error", system)
 			jobErr = errors.Join(jobErr, fmt.Errorf("mrt %s fetch: %w", system, err))
 			continue
 		}
@@ -384,7 +390,7 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 			continue
 		}
 		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
-			pipe := sink.pipelineContext(ctx)
+			pipe := sink.pipeline()
 			ownedKeys := make([]string, 0)
 			if err := decodeLiveItems(dec, func(temp mrtLive) error {
 				if !mrtInService(windows, mrtWindowKey(system, temp.StationID, temp.LineID, temp.DestinationStaionID), now) {
@@ -414,12 +420,11 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 				return err
 			}
 			pipe.ReplaceOwnedKeys(shared.LiveOwnedKeysKey("mrt", system), ownedKeys, ownedKeysTTL)
-			if err := pipe.Exec(); err != nil {
+			if err := pipe.Exec(ctx); err != nil {
 				return fmt.Errorf("publish MRT live board for %s: %w", system, err)
 			}
 			return nil
 		}); err != nil {
-			log.Errorf("[MRT_ETA] action=mrt_eta system=%s event=process_error error=%v", system, err)
 			jobErr = errors.Join(jobErr, fmt.Errorf("mrt %s process: %w", system, err))
 		}
 		if filtered > 0 {

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	legacyredis "github.com/go-redis/redis"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
@@ -31,7 +30,7 @@ import (
 // in db.
 type MaasServer struct {
 	pb.UnimplementedMaasServiceServer
-	cache       maasCache
+	cache       MaasCache
 	db          maasDB
 	maasClient  *resty.Client
 	osrmClient  *resty.Client
@@ -67,63 +66,20 @@ type maasDB interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-type maasCache interface {
+type MaasCache interface {
 	Get(context.Context, string) ([]byte, error)
 	Set(context.Context, string, []byte, time.Duration) error
 }
 
 type redisMaasCache struct{ client *redisv9.Client }
 
-func v9SocketTimeout(effectiveLegacyTimeout time.Duration) time.Duration {
-	if effectiveLegacyTimeout == 0 {
-		return -1
-	}
-	return effectiveLegacyTimeout
-}
-
-func redisMaasOptions(legacy *legacyredis.Options) *redisv9.Options {
-	maxRetries := legacy.MaxRetries
-	if maxRetries == 0 {
-		// v6 defaults to no command retries, while v9 uses three when this is
-		// zero. Preserve the configured client's effective behavior.
-		maxRetries = -1
-	}
-	var tlsConfig = legacy.TLSConfig
-	if tlsConfig != nil {
-		tlsConfig = tlsConfig.Clone()
-	}
-	return &redisv9.Options{
-		Network: legacy.Network,
-		Addr:    legacy.Addr,
-
-		// go-redis v6 supports password-only authentication; it has no
-		// username setting to copy.
-		Password: legacy.Password,
-		DB:       legacy.DB,
-
-		MaxRetries:      maxRetries,
-		MinRetryBackoff: legacy.MinRetryBackoff,
-		MaxRetryBackoff: legacy.MaxRetryBackoff,
-
-		DialTimeout:  legacy.DialTimeout,
-		ReadTimeout:  v9SocketTimeout(legacy.ReadTimeout),
-		WriteTimeout: v9SocketTimeout(legacy.WriteTimeout),
-
-		PoolSize:        legacy.PoolSize,
-		MinIdleConns:    legacy.MinIdleConns,
-		PoolTimeout:     legacy.PoolTimeout,
-		ConnMaxLifetime: legacy.MaxConnAge,
-		ConnMaxIdleTime: legacy.IdleTimeout,
-
-		TLSConfig:             tlsConfig,
-		Protocol:              2,
-		ContextTimeoutEnabled: true,
-		DisableIdentity:       true,
-	}
-}
-
-func newRedisMaasCache(legacy *legacyredis.Options) *redisMaasCache {
-	return &redisMaasCache{client: redisv9.NewClient(redisMaasOptions(legacy))}
+// NewRedisMaasCache gives the MaaS plan cache its own connection pool, built
+// from the shared client's settings, so a slow plan lookup cannot occupy a
+// connection the live streams need. NewClient fills defaults into the Options
+// it is handed, so it gets a copy rather than the live client's own struct.
+func NewRedisMaasCache(opts *redisv9.Options) *redisMaasCache {
+	cloned := *opts
+	return &redisMaasCache{client: redisv9.NewClient(&cloned)}
 }
 
 func redisContextError(ctx context.Context, err error) error {
@@ -161,7 +117,7 @@ type maasSharedWorkConfig struct {
 	Timeout       time.Duration
 }
 
-var defaultMaasSharedWorkConfig = maasSharedWorkConfig{
+var DefaultMaasSharedWorkConfig = maasSharedWorkConfig{
 	MaxConcurrent: 4,
 	Timeout:       20 * time.Second,
 }
@@ -181,7 +137,7 @@ func shouldRetryMaas(resp *resty.Response, err error) bool {
 	return resp != nil && (resp.StatusCode() == http.StatusTooManyRequests || resp.StatusCode() == http.StatusServiceUnavailable)
 }
 
-func newMaasServerWithCache(cache maasCache, db maasDB, tdx *shared.TDXClient, workConfig maasSharedWorkConfig) *MaasServer {
+func NewMaasServerWithCache(cache MaasCache, db maasDB, tdx *shared.TDXClient, workConfig maasSharedWorkConfig) *MaasServer {
 	// The MaaS API family has a different base URL and retry policy than the
 	// basic conditional-GET client, so it gets its own resty client — but the
 	// bearer-token auth flows through the shared TDX client (NewAuthedClient) so
@@ -192,10 +148,10 @@ func newMaasServerWithCache(cache maasCache, db maasDB, tdx *shared.TDXClient, w
 		SetRetryWaitTime(500 * time.Millisecond).
 		AddRetryCondition(shouldRetryMaas)
 	if workConfig.MaxConcurrent <= 0 {
-		workConfig.MaxConcurrent = defaultMaasSharedWorkConfig.MaxConcurrent
+		workConfig.MaxConcurrent = DefaultMaasSharedWorkConfig.MaxConcurrent
 	}
 	if workConfig.Timeout <= 0 {
-		workConfig.Timeout = defaultMaasSharedWorkConfig.Timeout
+		workConfig.Timeout = DefaultMaasSharedWorkConfig.Timeout
 	}
 	lifecycleCtx, cancel := context.WithCancel(context.Background())
 	return &MaasServer{
@@ -289,7 +245,7 @@ type tdxStop struct {
 	Departure tdxPlaceInfo `json:"departure"`
 }
 type tdxAgency struct {
-	AgencyId string `json:"agency_id"`
+	AgencyID string `json:"agency_id"`
 	Name     string `json:"name"`
 	Website  string `json:"website"`
 	Phone    string `json:"phone"`
@@ -648,7 +604,7 @@ func convertSection(sec tdxSection) *pb.Section {
 	}
 	if sec.Agency.Name != "" {
 		pbSec.Agency = &pb.Agency{
-			AgencyId: sec.Agency.AgencyId,
+			AgencyId: sec.Agency.AgencyID,
 			Name:     sec.Agency.Name,
 			Website:  sec.Agency.Website,
 			Phone:    sec.Agency.Phone,
@@ -712,6 +668,7 @@ func batchBusNotificationIdentities(ctx context.Context, db maasDB, refs []maasS
 		FROM matches
 		WHERE match_rank = 1`, indices, departures, arrivals, names, shortNames, numbers)
 	if err != nil {
+		log.Errorf("[MAAS] action=batch_notification_identity event=query_error error=%v", err)
 		return
 	}
 	defer rows.Close()
@@ -719,7 +676,8 @@ func batchBusNotificationIdentities(ctx context.Context, db maasDB, refs []maasS
 		var index, direction int32
 		var routeKey, departureStopKey, arrivalStopKey string
 		var matchCount int64
-		if rows.Scan(&index, &routeKey, &direction, &departureStopKey, &arrivalStopKey, &matchCount) != nil {
+		if err := rows.Scan(&index, &routeKey, &direction, &departureStopKey, &arrivalStopKey, &matchCount); err != nil {
+			log.Errorf("[MAAS] action=batch_notification_identity event=scan_error error=%v", err)
 			return
 		}
 		if target := byIndex[index]; target != nil && matchCount == 1 {
@@ -728,6 +686,11 @@ func batchBusNotificationIdentities(ctx context.Context, db maasDB, refs []maasS
 				DepartureStopKey: departureStopKey, ArrivalStopKey: arrivalStopKey, Supported: true,
 			}
 		}
+	}
+	// A mid-stream failure leaves sections without an identity; enrichment is
+	// best-effort and has no error channel, so surface it in the log instead.
+	if err := rows.Err(); err != nil {
+		log.Errorf("[MAAS] action=batch_notification_identity event=iterate_error error=%v", err)
 	}
 }
 
@@ -795,13 +758,15 @@ func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
 		WHERE fare > 0
 		GROUP BY section_index`, indices, modes, departures, arrivals)
 	if err != nil {
+		log.Errorf("[MAAS] action=batch_section_fares event=query_error error=%v", err)
 		return
 	}
 	defer rows.Close()
 	fares := make(map[int32]int32, len(byIndex))
 	for rows.Next() {
 		var index, fare int32
-		if rows.Scan(&index, &fare) != nil {
+		if err := rows.Scan(&index, &fare); err != nil {
+			log.Errorf("[MAAS] action=batch_section_fares event=scan_error error=%v", err)
 			return
 		}
 		if _, ok := byIndex[index]; !ok || fare <= 0 {
@@ -810,6 +775,12 @@ func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
 		if current, ok := fares[index]; !ok || fare < current {
 			fares[index] = fare
 		}
+	}
+	// A mid-stream failure leaves fares partial, and applying it would understate
+	// TotalFare rather than leave it unset. Drop the batch, like the scan path.
+	if err := rows.Err(); err != nil {
+		log.Errorf("[MAAS] action=batch_section_fares event=iterate_error error=%v", err)
+		return
 	}
 	for index, fare := range fares {
 		ref := byIndex[index]

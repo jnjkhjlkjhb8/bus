@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-redis/redis"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pashagolub/pgxmock/v4"
+	"github.com/redis/go-redis/v9"
 )
 
 type stubEmbeddingClient struct {
@@ -36,11 +36,11 @@ type testVectorRedis struct {
 	successfulSets int
 }
 
-func (r *testVectorRedis) Get(string) *redis.StringCmd {
+func (r *testVectorRedis) Get(context.Context, string) *redis.StringCmd {
 	return redis.NewStringResult(r.value, r.getErr)
 }
 
-func (r *testVectorRedis) Set(_ string, value interface{}, _ time.Duration) *redis.StatusCmd {
+func (r *testVectorRedis) Set(_ context.Context, _ string, value any, _ time.Duration) *redis.StatusCmd {
 	r.setValues = append(r.setValues, fmt.Sprint(value))
 	if r.setErr == nil {
 		r.successfulSets++
@@ -99,7 +99,7 @@ func (b *trackingReadCloser) Close() error {
 	return nil
 }
 
-func (c *captureTimeArgs) Match(value interface{}) bool {
+func (c *captureTimeArgs) Match(value any) bool {
 	cutoff, ok := value.(time.Time)
 	if ok {
 		c.values = append(c.values, cutoff)

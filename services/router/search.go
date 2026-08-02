@@ -142,6 +142,12 @@ func embeddingURL() string {
 	return strings.TrimSpace(os.Getenv("EMBED_URL"))
 }
 
+// embedClient is process-wide so every search reuses one connection pool. A
+// per-call resty.New() builds its own http.Transport, so each query opened a
+// fresh connection and left an unreachable pool behind for the GC. Per-call
+// deadlines come from the request context, not a client timeout.
+var embedClient = resty.New().SetHeader("Content-Type", "application/json")
+
 func embedQuery(ctx context.Context, text string) ([]float32, error) {
 	url := embeddingURL()
 	if url == "" {
@@ -149,10 +155,9 @@ func embedQuery(ctx context.Context, text string) ([]float32, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, searchRequestTimeout)
 	defer cancel()
-	client := resty.New().SetHeader("Content-Type", "application/json")
-	resp, err := client.R().
+	resp, err := embedClient.R().
 		SetContext(ctx).
-		SetBody(map[string]interface{}{
+		SetBody(map[string]any{
 			"model": "qwen3-embedding:0.6b",
 			"input": []string{text},
 		}).
@@ -398,9 +403,9 @@ func searchCacheKey(q, city string, limit int) string {
 	return q + "\x00" + city + "\x00" + strconv.Itoa(limit)
 }
 
-func handleSearch(db searchDB) gin.HandlerFunc {
+func HandleSearch(db searchDB) gin.HandlerFunc {
 	// One cache per handler, built when the routes are wired.
-	cache := newBoundedTTLCache(searchCacheMaxEntries)
+	cache := NewBoundedTTLCache(searchCacheMaxEntries)
 	return func(c *gin.Context) {
 		q := strings.TrimSpace(c.Query("q"))
 		if len(q) == 0 {

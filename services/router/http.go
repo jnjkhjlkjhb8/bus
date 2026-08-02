@@ -27,6 +27,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -37,6 +38,10 @@ const (
 	httpSearchRateLimit  = 30
 	httpMetricsRateLimit = 60
 	httpBookingRateLimit = 30
+	httpGBFSRateLimit    = 120
+	// MOTIS polls its realtime endpoints once a minute by default, and the feed
+	// has exactly one authenticated consumer, so this is generous already.
+	httpGTFSRTRateLimit = 10
 
 	// Bound every phase of an HTTP request/connection so a slow or hostile
 	// client (or a stalled network path) cannot hold a connection open
@@ -76,7 +81,19 @@ type httpServerConfig struct {
 	// booking is the TDX deeplink proxy for the rail 訂購 handoff (ADR-0012).
 	// Set in main; nil in tests and any env without a TDX client, where the
 	// endpoint returns 503 and the app falls back to a plain booking site link.
-	booking *bookingProxy
+	booking *BookingProxy
+	// redis backs the GBFS station_status feed, which reads the same live
+	// availability keys the app's bike screens do. Set in main; when nil the
+	// GBFS routes are not mounted at all, so an env without Redis serves no
+	// half-working feed.
+	redis *redis.Client
+	// GBFSRateLimit bounds GBFS polling per client. The feed is public and
+	// unauthenticated, and station_status costs a full station scan.
+	GBFSRateLimit int
+	// GTFSRealtimeCredential gates the GTFS-RT endpoint (ADR-0019). Empty leaves
+	// the route unmounted, which is what every environment that has not been
+	// given a secret should serve.
+	GTFSRealtimeCredential string
 }
 
 func httpServerConfigFromEnv() (httpServerConfig, error) {
@@ -88,7 +105,15 @@ func httpServerConfigFromEnv() (httpServerConfig, error) {
 	if err != nil {
 		return httpServerConfig{}, err
 	}
-	return httpServerConfig{MetricsCredential: metricsCredential, TrustedProxies: trustedProxies}, nil
+	gtfsRTCredential, err := GTFSRTCredentialFromEnv()
+	if err != nil {
+		return httpServerConfig{}, err
+	}
+	return httpServerConfig{
+		MetricsCredential:      metricsCredential,
+		TrustedProxies:         trustedProxies,
+		GTFSRealtimeCredential: gtfsRTCredential,
+	}, nil
 }
 
 func trustedProxiesFromEnv() ([]netip.Prefix, error) {
@@ -174,7 +199,7 @@ type preparedHTTPServer struct {
 
 func prepareHTTPServer(
 	db *pgxpool.Pool,
-	live *liveHub,
+	live *LiveHub,
 	config httpServerConfig,
 	loadKey func() (*rsa.PrivateKey, error),
 	listen func(string, string) (net.Listener, error),
@@ -200,7 +225,7 @@ func prepareHTTPServer(
 	return preparedHTTPServer{server: server, listener: listener, handlers: handlers}, nil
 }
 
-func newHTTPRouter(db *pgxpool.Pool, live *liveHub, key *rsa.PrivateKey, config httpServerConfig) *gin.Engine {
+func newHTTPRouter(db *pgxpool.Pool, live *LiveHub, key *rsa.PrivateKey, config httpServerConfig) *gin.Engine {
 	r := gin.New()
 	trustedProxies := make([]string, len(config.TrustedProxies))
 	for index, prefix := range config.TrustedProxies {
@@ -211,11 +236,12 @@ func newHTTPRouter(db *pgxpool.Pool, live *liveHub, key *rsa.PrivateKey, config 
 	}
 	r.Use(safeAccessLogger(gin.DefaultWriter), gin.Recovery())
 	r.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
-	limiter := newRateLimiter()
+	limiter := NewRateLimiter()
 	tokenLimit := configuredLimit(config.TokenRateLimit, httpTokenRateLimit)
 	jwksLimit := configuredLimit(config.JWKSRateLimit, httpJWKSRateLimit)
 	searchLimit := configuredLimit(config.SearchRateLimit, httpSearchRateLimit)
 	metricsLimit := configuredLimit(config.MetricsRateLimit, httpMetricsRateLimit)
+	gbfsLimit := configuredLimit(config.GBFSRateLimit, httpGBFSRateLimit)
 	r.GET("/api/token/powersync",
 		httpRateLimit(limiter, "GET /api/token/powersync", tokenLimit, time.Minute),
 		handleToken(key))
@@ -224,10 +250,21 @@ func newHTTPRouter(db *pgxpool.Pool, live *liveHub, key *rsa.PrivateKey, config 
 		handleJWKS(key))
 	r.GET("/api/search",
 		httpRateLimit(limiter, "GET /api/search", searchLimit, time.Second),
-		handleSearch(db))
+		HandleSearch(db))
 	r.GET("/api/booking/deeplink",
 		httpRateLimit(limiter, "GET /api/booking/deeplink", httpBookingRateLimit, time.Minute),
-		handleBookingDeeplink(config.booking))
+		HandleBookingDeeplink(config.booking))
+	// GBFS is mounted only with a Redis client: station_status is the point of
+	// the feed, and it cannot be answered without one.
+	if config.redis != nil {
+		RegisterGBFSRoutes(r, db, config.redis,
+			httpRateLimit(limiter, "GET /gbfs", gbfsLimit, time.Minute))
+	}
+	// GTFS-RT is mounted only with both a Redis client and a credential: the
+	// snapshot lives in Redis, and prod's HTTP port is public, so an ungated
+	// route would publish a feed that was scoped as internal (ADR-0019).
+	RegisterGTFSRTRoutes(r, config.redis, config.GTFSRealtimeCredential,
+		httpRateLimit(limiter, "GET "+GTFSRTPath, httpGTFSRTRateLimit, time.Minute))
 	r.GET("/metrics",
 		requireMetricsCredential(config.MetricsCredential),
 		httpPrincipalRateLimit(limiter, "GET /metrics", metricsLimit, time.Minute),
@@ -263,7 +300,7 @@ func safeAccessLogger(writer io.Writer) gin.HandlerFunc {
 	}
 }
 
-func httpRateLimit(limiter *rateLimiter, scope string, limit int, window time.Duration) gin.HandlerFunc {
+func httpRateLimit(limiter *RateLimiter, scope string, limit int, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		caller := c.ClientIP()
 		if caller == "" {
@@ -280,7 +317,7 @@ func httpRateLimit(limiter *rateLimiter, scope string, limit int, window time.Du
 
 const metricsPrincipalContextKey = "metrics-principal"
 
-func httpPrincipalRateLimit(limiter *rateLimiter, scope string, limit int, window time.Duration) gin.HandlerFunc {
+func httpPrincipalRateLimit(limiter *RateLimiter, scope string, limit int, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		principal, ok := c.Get(metricsPrincipalContextKey)
 		caller, valid := principal.(string)
@@ -316,7 +353,7 @@ func requireMetricsCredential(expected string) gin.HandlerFunc {
 	principal := fmt.Sprintf("metrics:%x", expectedHash[:8])
 	return func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
-		provided := parseBearerCredential(c.GetHeader("Authorization"))
+		provided := ParseBearerCredential(c.GetHeader("Authorization"))
 		providedHash := sha256.Sum256([]byte(provided))
 		if provided == "" || subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) != 1 {
 			c.Header("WWW-Authenticate", "Bearer")
@@ -327,30 +364,7 @@ func requireMetricsCredential(expected string) gin.HandlerFunc {
 		c.Next()
 	}
 }
-
-func parseBearerCredential(header string) string {
-	if header == "" || header != strings.TrimSpace(header) {
-		return ""
-	}
-	separator := strings.IndexAny(header, " \t")
-	if separator <= 0 || !strings.EqualFold(header[:separator], "Bearer") {
-		return ""
-	}
-	credentialStart := separator
-	for credentialStart < len(header) && (header[credentialStart] == ' ' || header[credentialStart] == '\t') {
-		credentialStart++
-	}
-	if credentialStart == len(header) {
-		return ""
-	}
-	credential := header[credentialStart:]
-	if strings.ContainsAny(credential, " \t\r\n") {
-		return ""
-	}
-	return credential
-}
-
-func handleMetrics(live *liveHub) gin.HandlerFunc {
+func handleMetrics(live *LiveHub) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		stats := live.stats()
 		body := fmt.Sprintf(
@@ -376,7 +390,7 @@ func handleToken(key *rsa.PrivateKey) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		now := time.Now()
 		token, err := signRS256(key, map[string]any{
-			"sub": tokenSubject(c.GetHeader(installIDMetadataKey)),
+			"sub": tokenSubject(c.GetHeader(InstallIDMetadataKey)),
 			"aud": "powersync",
 			"iat": now.Unix(),
 			"exp": now.Add(powersyncTokenTTL).Unix(),

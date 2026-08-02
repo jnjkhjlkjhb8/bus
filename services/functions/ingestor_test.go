@@ -33,19 +33,19 @@ type fakeTDXStore struct {
 	set   func(key, value string, ttl time.Duration) error
 }
 
-func (f fakeTDXStore) Get(key string) (string, error) {
+func (f fakeTDXStore) Get(_ context.Context, key string) (string, error) {
 	if key == shared.TDXTokenKey || key == shared.TDXTokenKeyLegacy {
 		return f.token, nil
 	}
 	return "", nil
 }
-func (f fakeTDXStore) Set(key, value string, ttl time.Duration) error {
+func (f fakeTDXStore) Set(_ context.Context, key, value string, ttl time.Duration) error {
 	if f.set != nil {
 		return f.set(key, value, ttl)
 	}
 	return nil
 }
-func (fakeTDXStore) Del(...string) error { return nil }
+func (fakeTDXStore) Del(context.Context, ...string) error { return nil }
 
 // testTDXClient builds a TDX client pointed at a test server with a fake store,
 // so no request needs a live Redis or a real TDX token exchange.
@@ -64,7 +64,7 @@ func TestValidateRawTarget(t *testing.T) {
 		{"tra_station", ""}, {"tra_dailytimetable", "traindate"},
 	}
 	for _, v := range valid {
-		if err := validateRawTarget(v.table, v.part); err != nil {
+		if err := validateRawTarget(rawTarget{table: v.table, partCol: v.part}); err != nil {
 			t.Errorf("validateRawTarget(%q,%q) unexpected error: %v", v.table, v.part, err)
 		}
 	}
@@ -76,14 +76,14 @@ func TestValidateRawTarget(t *testing.T) {
 		{"bus_route", "route_uid"},          // non-partition column
 	}
 	for _, b := range bad {
-		if err := validateRawTarget(b.table, b.part); err == nil {
+		if err := validateRawTarget(rawTarget{table: b.table, partCol: b.part}); err == nil {
 			t.Errorf("validateRawTarget(%q,%q) expected error, got nil", b.table, b.part)
 		}
 	}
 }
 
 func TestRawDeleteSQL(t *testing.T) {
-	got := rawDeleteSQL("bus_route", "city")
+	got := rawDeleteSQL(rawTarget{table: "bus_route", partCol: "city"})
 	want := "DELETE FROM raw_tdx.bus_route WHERE city = $1"
 	if got != want {
 		t.Errorf("rawDeleteSQL = %q, want %q", got, want)
@@ -128,14 +128,14 @@ func TestRawDumpTargetStatic(t *testing.T) {
 		{"/v2/Rail/THSR/DailyTimetable/TrainDate/2026-07-02", "thsr_dailytimetable", "traindate", "2026-07-02"},
 	}
 	for _, c := range cases {
-		table, partCol, partVal, ok := rawDumpTarget(c.url)
+		got, ok := rawDumpTarget(c.url)
 		if !ok {
 			t.Errorf("%s: expected ok=true", c.url)
 			continue
 		}
-		if table != c.table || partCol != c.partCol || partVal != c.partVal {
-			t.Errorf("%s: got (%q,%q,%q), want (%q,%q,%q)",
-				c.url, table, partCol, partVal, c.table, c.partCol, c.partVal)
+		want := rawTarget{table: c.table, partCol: c.partCol, partVal: c.partVal}
+		if got != want {
+			t.Errorf("%s: got %+v, want %+v", c.url, got, want)
 		}
 	}
 }
@@ -153,8 +153,8 @@ func TestRawDumpTargetSkipsRealtimeAndUnmapped(t *testing.T) {
 		"/notv2/Bus/Route/City/Taipei",
 	}
 	for _, url := range skip {
-		if table, _, _, ok := rawDumpTarget(url); ok {
-			t.Errorf("%s: expected skip, got table=%q ok=true", url, table)
+		if got, ok := rawDumpTarget(url); ok {
+			t.Errorf("%s: expected skip, got table=%q ok=true", url, got.table)
 		}
 	}
 }
@@ -349,7 +349,7 @@ func TestFetchRawForcesOneEndpointRefetchOnLandingStateMismatch(t *testing.T) {
 		}
 		return shared.TDXIntoResult{Modified: true, Marker: "MARKER-NEW"}, nil
 	}}
-	verify := func(_ context.Context, _, _, _, _, cycle string) error {
+	verify := func(_ context.Context, _ rawTarget, _, cycle string) error {
 		if cycle != "cycle-test" {
 			t.Fatalf("landing cycle = %q, want cycle-test", cycle)
 		}
@@ -385,7 +385,7 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 		}}
 		err := fetchRawWithVerifier(
 			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
-			func(context.Context, string, string, string, string, string) error { return mismatch },
+			func(context.Context, rawTarget, string, string) error { return mismatch },
 		)
 		if !errors.Is(err, errRawLandingStateMismatch) {
 			t.Fatalf("error = %v, want state mismatch", err)
@@ -409,7 +409,7 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 		}}
 		err := fetchRawWithVerifier(
 			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
-			func(context.Context, string, string, string, string, string) error { return mismatch },
+			func(context.Context, rawTarget, string, string) error { return mismatch },
 		)
 		if !errors.Is(err, invalidateErr) || !errors.Is(err, errRawLandingStateMismatch) {
 			t.Fatalf("error = %v, want invalidation and mismatch", err)
@@ -435,7 +435,7 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 		}}
 		err := fetchRawWithVerifier(
 			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
-			func(context.Context, string, string, string, string, string) error { return dbErr },
+			func(context.Context, rawTarget, string, string) error { return dbErr },
 		)
 		if !errors.Is(err, dbErr) {
 			t.Fatalf("error = %v, want %v", err, dbErr)

@@ -54,6 +54,43 @@ func TestAdjustedEstimate(t *testing.T) {
 	}
 }
 
+func TestArrivingExpired(t *testing.T) {
+	now := time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		eta  rawBusEsimated
+		want bool
+	}{
+		{
+			name: "bus still en route",
+			eta:  rawBusEsimated{EstimatedTime: 120, SrcUpdateTime: "2026-07-10T07:59:30Z"},
+			want: false,
+		},
+		{
+			name: "just past arrival stays arriving through the grace",
+			eta:  rawBusEsimated{EstimatedTime: 0, SrcUpdateTime: "2026-07-10T07:59:00Z"},
+			want: false,
+		},
+		{
+			name: "feed stopped updating hours ago",
+			eta:  rawBusEsimated{EstimatedTime: 60, SrcUpdateTime: "2026-07-10T05:00:00Z"},
+			want: true,
+		},
+		{
+			name: "unparseable src time cannot be aged",
+			eta:  rawBusEsimated{EstimatedTime: 0, SrcUpdateTime: ""},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := arrivingExpired(tt.eta, now); got != tt.want {
+				t.Fatalf("arrivingExpired() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildBusEtaMap(t *testing.T) {
 	t.Run("collisions resolve via pickBusEstimate", func(t *testing.T) {
 		eat := []rawBusEsimated{
@@ -113,6 +150,49 @@ func TestBuildBusEtaMap(t *testing.T) {
 		}
 		if _, ok := m[etaKey{"TPE999990", 1, "S1"}]; ok {
 			t.Error("fan-out leaked the arrival to an unrelated route")
+		}
+	})
+
+	// The loader lands InterCity stops under their canonical UID, so mp must be
+	// joined as read. Canonicalizing it a second time strips THB0968 to THB096 and
+	// collapses the lettered variant THB0968A onto the base route.
+	t.Run("InterCity stop map is joined without a second canonicalization", func(t *testing.T) {
+		mp := []busStationmap{
+			{SubRouteUID: "THB0968", RouteUID: "THB0968", Direction: 0, StopUID: "S1"},
+			{SubRouteUID: "THB0968A", RouteUID: "THB0968", Direction: 0, StopUID: "S1"},
+		}
+		eat := []rawBusEsimated{
+			{SubRouteUID: "THB096801", RouteUID: "THB0968", Direction: 0, StopUID: "S1", StopStatus: 0, EstimatedTime: 120},
+		}
+		m := buildBusEtaMap("InterCity", eat, mp)
+		got, ok := m[etaKey{"THB0968", 0, "S1"}]
+		if !ok {
+			t.Fatal("canonical feed key THB0968/0 did not match the stop map")
+		}
+		if got.EstimatedTime != 120 {
+			t.Errorf("estimate = %d, want 120", got.EstimatedTime)
+		}
+		if _, ok := m[etaKey{"THB0968A", 0, "S1"}]; ok {
+			t.Error("the lettered variant picked up the base route's arrival")
+		}
+	})
+
+	// Tainan sends Direction 255 on schedule-only entries; the subroute UID already
+	// names the direction, so the entry belongs to whichever direction mp records.
+	t.Run("unknown direction fans out to the stop map's directions", func(t *testing.T) {
+		mp := []busStationmap{
+			{SubRouteUID: "TNN111001", RouteUID: "TNN1110", Direction: 1, StopUID: "S1"},
+			{SubRouteUID: "TNN111002", RouteUID: "TNN1110", Direction: 0, StopUID: "S1"},
+		}
+		eat := []rawBusEsimated{
+			{SubRouteUID: "TNN111001", RouteUID: "TNN1110", Direction: 255, StopUID: "S1", StopStatus: 1, NextBusTime: "2026-07-31T17:35:00+08:00"},
+		}
+		m := buildBusEtaMap("Tainan", eat, mp)
+		if _, ok := m[etaKey{"TNN111001", 1, "S1"}]; !ok {
+			t.Fatal("direction-255 entry did not reach the direction its stop map records")
+		}
+		if _, ok := m[etaKey{"TNN111002", 0, "S1"}]; ok {
+			t.Error("direction-255 entry leaked to the opposite-direction subroute")
 		}
 	})
 
@@ -186,7 +266,7 @@ func TestBuildTotalStops(t *testing.T) {
 		{SubRouteUID: "R1", Direction: 0, StopUID: "S3"},
 		{SubRouteUID: "R2", Direction: 1, StopUID: "S1"},
 	}
-	got := buildTotalStops("Taipei", mp)
+	got := buildTotalStops(mp)
 	if got["R1"] != 3 {
 		t.Errorf("R1 = %d, want 3", got["R1"])
 	}
@@ -207,7 +287,7 @@ func TestCollectFillKeys(t *testing.T) {
 		{"R1", 0, "S2"}: {StopStatus: 0},
 		{"R1", 0, "S3"}: {StopStatus: 1, NextBusTime: "2026-07-10T08:05:00Z"},
 	}
-	keys, uids := collectFillKeys("Taipei", mp, etamap)
+	keys, uids := collectFillKeys(mp, etamap)
 	if len(keys) != 2 {
 		t.Fatalf("fillKeys = %d (%v), want 2", len(keys), keys)
 	}
@@ -218,22 +298,6 @@ func TestCollectFillKeys(t *testing.T) {
 	}
 	if len(uids) != 1 || !uids["R1"] {
 		t.Errorf("fillUIDs = %v, want {R1}", uids)
-	}
-}
-
-func TestMaxTravelAvgByRoute(t *testing.T) {
-	in := map[travelAvgKey]int{
-		{"R1", 0, "S1", 8, 3}: 120,
-		{"R1", 0, "S2", 8, 3}: 300,
-		{"R1", 0, "S3", 8, 3}: 200,
-		{"R2", 1, "S1", 8, 3}: 90,
-	}
-	got := maxTravelAvgByRoute(in)
-	if got[routeDirKey{"R1", 0}] != 300 {
-		t.Errorf("R1/0 max = %d, want 300", got[routeDirKey{"R1", 0}])
-	}
-	if got[routeDirKey{"R2", 1}] != 90 {
-		t.Errorf("R2/1 max = %d, want 90", got[routeDirKey{"R2", 1}])
 	}
 }
 
@@ -256,7 +320,7 @@ func TestBuildUpstreamObs(t *testing.T) {
 		{"R1", 0, "S9"}: {StopStatus: 0, EstimatedTime: 60},
 		{"R1", 0, "S2"}: {StopStatus: 1},
 	}
-	got := buildUpstreamObs("Taipei", mp, etamap, now, baselineFor)
+	got := buildUpstreamObs(mp, etamap, now, baselineFor)
 	obs := got[routeDirKey{"R1", 0}]
 	if len(obs) != 1 {
 		t.Fatalf("obs count = %d, want 1", len(obs))

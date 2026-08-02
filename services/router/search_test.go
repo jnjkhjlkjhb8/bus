@@ -52,7 +52,7 @@ func newSearchRouter(t *testing.T, db searchDB) searchRouter {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	engine.GET("/api/search", handleSearch(db))
+	engine.GET("/api/search", HandleSearch(db))
 	return searchRouter{engine: engine}
 }
 

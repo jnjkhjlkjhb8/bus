@@ -37,3 +37,7 @@ SENTRY_TRACES_SAMPLE_RATE
 # (services/router/feedback_service.go newFeedbackNotifier). Empty disables
 # the announcement; reports are still stored.
 FEEDBACK_WEBHOOK_URL
+# Shared secret MOTIS sends to the GTFS-RT endpoint (services/router/gtfs_rt.go,
+# ADR-0019). Empty leaves the route unmounted; prod's HTTP port is public, so an
+# ungated feed would publish what was scoped as internal.
+GTFS_RT_CREDENTIAL

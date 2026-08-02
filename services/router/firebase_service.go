@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	appCheckMetadataKey      = "x-firebase-appcheck"
-	installIDMetadataKey     = "x-install-id"
+	AppCheckMetadataKey      = "x-firebase-appcheck"
+	InstallIDMetadataKey     = "x-install-id"
 	installSecretMetadataKey = "x-install-secret"
 )
 
@@ -31,7 +31,7 @@ type firebasePersistence interface {
 	UpsertDevice(context.Context, *pb.DeviceIdentity, *pb.DevicePrefs, []byte) (*pb.DeviceState, bool, error)
 	AuthorizeInstall(context.Context, string, []byte) (bool, error)
 	ReplaceRouteSubscriptions(context.Context, string, []*pb.RouteSubscription) error
-	CreateArrivalReminder(context.Context, firebaseArrivalReminder) error
+	CreateArrivalReminder(context.Context, FirebaseArrivalReminder) error
 	CancelArrivalReminder(context.Context, string, string) (bool, error)
 	ListDeviceState(context.Context, string) (*pb.DeviceState, error)
 }
@@ -54,7 +54,7 @@ type FirebaseServer struct {
 // The fcm_token is cleared from the response so it is never echoed back.
 func (s *FirebaseServer) UpsertDevice(ctx context.Context, request *pb.UpsertDeviceRequest) (*pb.DeviceState, error) {
 	identity, prefs := request.GetIdentity(), request.GetPrefs()
-	if identity == nil || prefs == nil || !validText(identity.GetInstallId(), 128) || !validText(identity.GetPlatform(), 16) {
+	if identity == nil || prefs == nil || !ValidText(identity.GetInstallId(), 128) || !ValidText(identity.GetPlatform(), 16) {
 		return nil, status.Error(codes.InvalidArgument, "identity and preferences are required")
 	}
 	// Clients have sent mixed case here (Dart's TargetPlatform.iOS.name is
@@ -63,10 +63,10 @@ func (s *FirebaseServer) UpsertDevice(ctx context.Context, request *pb.UpsertDev
 	if identity.Platform != "android" && identity.Platform != "ios" {
 		return nil, status.Error(codes.InvalidArgument, "platform must be android or ios")
 	}
-	if prefs.PushEnabled && !validText(identity.FcmToken, 4096) {
+	if prefs.PushEnabled && !ValidText(identity.FcmToken, 4096) {
 		return nil, status.Error(codes.InvalidArgument, "fcm_token is required when push is enabled")
 	}
-	secretHash, err := installationSecretHash(ctx, identity.InstallId)
+	secretHash, err := InstallationSecretHash(ctx, identity.InstallId)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,7 @@ const maxRouteSubscriptions = 1000
 // device. The caller is authorized against its install secret before the store
 // is touched.
 func (s *FirebaseServer) ReplaceRouteSubscriptions(ctx context.Context, request *pb.RouteSubscriptionsRequest) (*pb.Ack, error) {
-	if !validText(request.GetInstallId(), 128) {
+	if !ValidText(request.GetInstallId(), 128) {
 		return nil, status.Error(codes.InvalidArgument, "install_id is required")
 	}
 	subscriptions := request.GetSubscriptions()
@@ -101,7 +101,7 @@ func (s *FirebaseServer) ReplaceRouteSubscriptions(ctx context.Context, request 
 		return nil, status.Errorf(codes.InvalidArgument, "at most %d subscriptions", maxRouteSubscriptions)
 	}
 	for _, subscription := range subscriptions {
-		if !validAlertRoute(subscription.GetRouteType()) || !validText(subscription.GetRouteKey(), 256) {
+		if !validAlertRoute(subscription.GetRouteType()) || !ValidText(subscription.GetRouteKey(), 256) {
 			return nil, status.Error(codes.InvalidArgument, "each subscription needs a known route_type and a route_key")
 		}
 	}
@@ -130,8 +130,8 @@ func validAlertRoute(routeType string) bool {
 // 1..120 minutes, and expiry timestamps not in the future (measured against
 // s.now). It generates a UUIDv4 reminder ID and persists the reminder as pending.
 func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.CreateArrivalReminderRequest) (*pb.ArrivalReminder, error) {
-	if !validText(request.GetInstallId(), 128) || !validRoute(request.GetRouteType()) ||
-		!validText(request.GetRouteKey(), 256) || !validText(request.GetStopKey(), 256) || !validText(request.GetDirection(), 32) {
+	if !ValidText(request.GetInstallId(), 128) || !validRoute(request.GetRouteType()) ||
+		!ValidText(request.GetRouteKey(), 256) || !ValidText(request.GetStopKey(), 256) || !ValidText(request.GetDirection(), 32) {
 		return nil, status.Error(codes.InvalidArgument, "install_id, route, stop, and direction are required")
 	}
 	switch request.RouteType {
@@ -160,14 +160,14 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	if err := s.authorizeInstall(ctx, request.InstallId); err != nil {
 		return nil, err
 	}
-	reminderID, err := newUUIDv4()
+	reminderID, err := NewUUIDv4()
 	if err != nil {
 		return nil, status.Error(codes.Internal, "failed to create reminder ID")
 	}
-	stored := firebaseArrivalReminder{
+	stored := FirebaseArrivalReminder{
 		ReminderID: reminderID, InstallID: request.InstallId, RouteType: request.RouteType, RouteKey: request.RouteKey,
 		StopKey: request.StopKey, Direction: request.Direction, LeadMinutes: request.LeadMinutes,
-		ExpiresAt: expiresAt, Status: reminderPending, Plate: plate,
+		ExpiresAt: expiresAt, Status: ReminderPending, Plate: plate,
 	}
 	// Rail arrival times are known at creation, so fire on a schedule (arrival
 	// minus lead). Bus has no known arrival time and fires off the live ETA, so
@@ -190,7 +190,7 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 // when no matching pending reminder exists (already fired, already cancelled, or
 // owned by a different install). The caller is authorized first.
 func (s *FirebaseServer) CancelArrivalReminder(ctx context.Context, request *pb.CancelArrivalReminderRequest) (*pb.Ack, error) {
-	if !validText(request.GetReminderId(), 64) || !validText(request.GetInstallId(), 128) {
+	if !ValidText(request.GetReminderId(), 64) || !ValidText(request.GetInstallId(), 128) {
 		return nil, status.Error(codes.InvalidArgument, "reminder_id and install_id are required")
 	}
 	if err := s.authorizeInstall(ctx, request.InstallId); err != nil {
@@ -210,7 +210,7 @@ func (s *FirebaseServer) CancelArrivalReminder(ctx context.Context, request *pb.
 // NotFound when the install has no row. As with UpsertDevice, the fcm_token is
 // stripped from the response.
 func (s *FirebaseServer) ListDeviceState(ctx context.Context, request *pb.DeviceRequest) (*pb.DeviceState, error) {
-	if !validText(request.GetInstallId(), 128) {
+	if !ValidText(request.GetInstallId(), 128) {
 		return nil, status.Error(codes.InvalidArgument, "install_id is required")
 	}
 	if err := s.authorizeInstall(ctx, request.InstallId); err != nil {
@@ -235,7 +235,7 @@ func (s *FirebaseServer) authorizeInstall(ctx context.Context, installID string)
 // hash. It is shared by every device-scoped service, so one credential check
 // covers them all rather than each re-deriving the same three failure modes.
 func authorizeInstallation(ctx context.Context, devices installAuthorizer, installID string) error {
-	secretHash, err := installationSecretHash(ctx, installID)
+	secretHash, err := InstallationSecretHash(ctx, installID)
 	if err != nil {
 		return err
 	}
@@ -249,29 +249,29 @@ func authorizeInstallation(ctx context.Context, devices installAuthorizer, insta
 	return nil
 }
 
-func installationSecretHash(ctx context.Context, installID string) ([]byte, error) {
-	metadataInstallID, ok := installationCallerID(ctx)
+func InstallationSecretHash(ctx context.Context, installID string) ([]byte, error) {
+	metadataInstallID, ok := InstallationCallerID(ctx)
 	secrets := metadata.ValueFromIncomingContext(ctx, installSecretMetadataKey)
-	if !ok || metadataInstallID != installID || len(secrets) != 1 || !validText(secrets[0], 256) || len(secrets[0]) < 32 {
+	if !ok || metadataInstallID != installID || len(secrets) != 1 || !ValidText(secrets[0], 256) || len(secrets[0]) < 32 {
 		return nil, status.Error(codes.PermissionDenied, "valid installation credential required")
 	}
 	hash := sha256.Sum256([]byte(secrets[0]))
 	return hash[:], nil
 }
 
-// installationCallerID extracts the stable installation identifier used to
+// InstallationCallerID extracts the stable installation identifier used to
 // avoid grouping distinct app installations behind the same carrier NAT into
 // one rate-limit bucket. Authentication still happens independently through
 // installationSecretHash and App Check; this value is only a fairness key.
-func installationCallerID(ctx context.Context) (string, bool) {
-	values := metadata.ValueFromIncomingContext(ctx, installIDMetadataKey)
-	if len(values) != 1 || !validText(values[0], 128) {
+func InstallationCallerID(ctx context.Context) (string, bool) {
+	values := metadata.ValueFromIncomingContext(ctx, InstallIDMetadataKey)
+	if len(values) != 1 || !ValidText(values[0], 128) {
 		return "", false
 	}
 	return values[0], true
 }
 
-func validText(value string, limit int) bool {
+func ValidText(value string, limit int) bool {
 	return value != "" && len(value) <= limit && strings.TrimSpace(value) == value
 }
 
@@ -305,7 +305,7 @@ func validRoute(routeType string) bool {
 	}
 }
 
-func newUUIDv4() (string, error) {
+func NewUUIDv4() (string, error) {
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		return "", err
@@ -315,7 +315,7 @@ func newUUIDv4() (string, error) {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:16]), nil
 }
 
-type appCheckVerifier interface {
+type AppCheckVerifier interface {
 	VerifyToken(context.Context, string) error
 }
 
@@ -329,7 +329,7 @@ func (v firebaseAppCheckVerifier) VerifyToken(_ context.Context, token string) e
 	return err
 }
 
-func firebaseAppCheckFromEnv(ctx context.Context) (appCheckVerifier, bool, error) {
+func FirebaseAppCheckFromEnv(ctx context.Context) (AppCheckVerifier, bool, error) {
 	enabled := firebaseEnabledFromEnv()
 	if !enabled {
 		return nil, false, nil
@@ -361,10 +361,10 @@ func grpcTLSEnabledFromEnv() bool {
 	return strings.EqualFold(os.Getenv("GRPC_TLS"), "true")
 }
 
-// grpcTLSCredentialsFromEnv builds server TLS credentials when GRPC_TLS is
+// GRPCTLSCredentialsFromEnv builds server TLS credentials when GRPC_TLS is
 // enabled. It fails closed: GRPC_TLS=true without both cert and key paths
 // is a startup error rather than a silent fall-back to plaintext.
-func grpcTLSCredentialsFromEnv() (credentials.TransportCredentials, error) {
+func GRPCTLSCredentialsFromEnv() (credentials.TransportCredentials, error) {
 	if !grpcTLSEnabledFromEnv() {
 		return nil, nil
 	}
@@ -382,8 +382,8 @@ func grpcTLSCredentialsFromEnv() (credentials.TransportCredentials, error) {
 	}), nil
 }
 
-func appCheckUnaryInterceptor(verifier appCheckVerifier, enabled bool) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, request interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+func AppCheckUnaryInterceptor(verifier AppCheckVerifier, enabled bool) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, request any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		if !enabled || !strings.HasPrefix(info.FullMethod, "/Firebase_Service/") {
 			return handler(ctx, request)
 		}
@@ -394,8 +394,8 @@ func appCheckUnaryInterceptor(verifier appCheckVerifier, enabled bool) grpc.Unar
 	}
 }
 
-func appCheckStreamInterceptor(verifier appCheckVerifier, enabled bool) grpc.StreamServerInterceptor {
-	return func(server interface{}, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+func AppCheckStreamInterceptor(verifier AppCheckVerifier, enabled bool) grpc.StreamServerInterceptor {
+	return func(server any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		if enabled && strings.HasPrefix(info.FullMethod, "/Firebase_Service/") {
 			if err := verifyAppCheck(stream.Context(), verifier); err != nil {
 				return err
@@ -405,8 +405,8 @@ func appCheckStreamInterceptor(verifier appCheckVerifier, enabled bool) grpc.Str
 	}
 }
 
-func verifyAppCheck(ctx context.Context, verifier appCheckVerifier) error {
-	values := metadata.ValueFromIncomingContext(ctx, appCheckMetadataKey)
+func verifyAppCheck(ctx context.Context, verifier AppCheckVerifier) error {
+	values := metadata.ValueFromIncomingContext(ctx, AppCheckMetadataKey)
 	if len(values) != 1 || values[0] == "" || verifier == nil {
 		return status.Error(codes.Unauthenticated, "valid Firebase App Check token required")
 	}

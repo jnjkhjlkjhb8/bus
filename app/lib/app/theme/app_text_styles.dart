@@ -58,4 +58,31 @@ class AppTextStyles {
     fontSize: 13,
     height: 1.4,
   );
+
+  /// One time value: clock reading, countdown, duration, or headway.
+  ///
+  /// Every time value in the app renders through this, which is what makes the
+  /// mono-for-time rule enforceable rather than remembered. Tabular figures are
+  /// not decoration — a ticking countdown whose digits change width makes the
+  /// whole row twitch, so they are baked in here instead of being an argument
+  /// each of the forty-odd call sites had to remember to pass.
+  ///
+  /// Size and weight stay open because a departure board, a timeline cell, and
+  /// a map marker legitimately want different emphasis for the same reading.
+  static TextStyle timeValue({
+    double? size,
+    FontWeight? weight,
+    Color? color,
+    TextDecoration? decoration,
+    double? height,
+    double? letterSpacing,
+  }) => memo.copyWith(
+    fontSize: size,
+    fontWeight: weight,
+    color: color,
+    decoration: decoration,
+    height: height,
+    letterSpacing: letterSpacing,
+    fontFeatures: tabularFigures,
+  );
 }
