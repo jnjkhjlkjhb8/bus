@@ -357,7 +357,7 @@ func TestFetchRawForcesOneEndpointRefetchOnLandingStateMismatch(t *testing.T) {
 	}
 
 	err := fetchRawWithVerifier(
-		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", verify,
+		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", false, verify,
 	)
 	if err != nil {
 		t.Fatalf("fetchRawWithVerifier: %v", err)
@@ -384,7 +384,7 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			}, nil
 		}}
 		err := fetchRawWithVerifier(
-			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", false,
 			func(context.Context, rawTarget, string, string) error { return mismatch },
 		)
 		if !errors.Is(err, errRawLandingStateMismatch) {
@@ -408,7 +408,7 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			}, nil
 		}}
 		err := fetchRawWithVerifier(
-			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", false,
 			func(context.Context, rawTarget, string, string) error { return mismatch },
 		)
 		if !errors.Is(err, invalidateErr) || !errors.Is(err, errRawLandingStateMismatch) {
@@ -434,7 +434,7 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			}, nil
 		}}
 		err := fetchRawWithVerifier(
-			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", false,
 			func(context.Context, rawTarget, string, string) error { return dbErr },
 		)
 		if !errors.Is(err, dbErr) {
@@ -444,4 +444,40 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			t.Fatalf("invalidations = %d, want 0", invalidations.Load())
 		}
 	})
+}
+
+// TestFetchRawFullReland covers the FDPL-37 weekly re-land: a 304 is refused
+// once, the marker is dropped, and the unconditional second pass lands the body
+// without ever consulting the landing-state verifier.
+func TestFetchRawFullReland(t *testing.T) {
+	var calls, invalidations, verifications atomic.Int64
+	fetcher := fakeRawFetcher{getInto: func(
+		_ context.Context, _, _ string, _ func(shared.TDXIntoCommit) error,
+	) (shared.TDXIntoResult, error) {
+		if calls.Add(1) == 1 {
+			return shared.TDXIntoResult{
+				Marker: "MARKER",
+				Invalidate: func() error {
+					invalidations.Add(1)
+					return nil
+				},
+			}, nil
+		}
+		return shared.TDXIntoResult{Modified: true, Marker: "MARKER-NEW"}, nil
+	}}
+	verify := func(context.Context, rawTarget, string, string) error {
+		verifications.Add(1)
+		return nil
+	}
+
+	err := fetchRawWithVerifier(
+		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", true, verify,
+	)
+	if err != nil {
+		t.Fatalf("fetchRawWithVerifier: %v", err)
+	}
+	if calls.Load() != 2 || invalidations.Load() != 1 || verifications.Load() != 0 {
+		t.Fatalf("calls=%d invalidations=%d verifications=%d, want 2/1/0",
+			calls.Load(), invalidations.Load(), verifications.Load())
+	}
 }

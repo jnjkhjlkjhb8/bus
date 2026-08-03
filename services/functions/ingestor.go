@@ -93,6 +93,11 @@ const ingestTimeout = 20 * time.Minute
 // needs far less than the full run's budget.
 const busDailyIngestTimeout = 10 * time.Minute
 
+// fullRelandWeekday is the day the daily 03:00 run re-lands every static
+// endpoint unconditionally (FDPL-37). Sunday is the lightest traffic day, and
+// the following 03:30 load is the one most likely to be watched on a Monday.
+const fullRelandWeekday = time.Sunday
+
 // registerIngestorCrons schedules the daily 03:00 raw landing (under a 20-minute
 // timeout) plus the hourly bus_dailytimetable landing. When INGEST_ON_BOOT=true
 // it also kicks off one full landing immediately in a goroutine, which is how a
@@ -166,7 +171,14 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 			only[t] = true
 		}
 	}
-	log.Infof("[INGEST] action=raw event=start scope=%s", scope)
+	// A conditional GET cannot see a record TDX deleted without moving its
+	// dataset's Last-Modified: the answer stays 304 and the deleted record
+	// survives in raw_tdx, and downstream in the env schema, indefinitely. Once
+	// a week the whole feed is re-read unconditionally so such a deletion is
+	// corrected within seven days (FDPL-37). Full runs only — the hourly
+	// bus_dailytimetable subset stays conditional.
+	fullReland := len(only) == 0 && time.Now().In(taipei).Weekday() == fullRelandWeekday
+	log.Infof("[INGEST] action=raw event=start scope=%s full_reland=%t", scope, fullReland)
 	landingCycle, err := newRawLandingCycle()
 	if err != nil {
 		return fmt.Errorf("start raw landing cycle: %w", err)
@@ -201,7 +213,7 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 		go func(j job) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := fetchRaw(ctx, tdx, j.url, j.name, landingCycle); err != nil {
+			if err := fetchRaw(ctx, tdx, j.url, j.name, landingCycle, fullReland); err != nil {
 				failures <- err
 			}
 		}(j)
@@ -212,6 +224,11 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	for err := range failures {
 		joined = append(joined, err)
 	}
+	// Only a full run touches every partition, so only a full run can tell a
+	// partition nobody fetches from one this subset simply did not cover.
+	if len(only) == 0 && ingestDB != nil {
+		reportStalePartitions(ctx, ingestDB)
+	}
 	log.Infof("[INGEST] action=raw event=end scope=%s", scope)
 	return errors.Join(joined...)
 }
@@ -220,9 +237,10 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 // streamed to a seekable disk spool and dumped before the If-Modified-Since
 // marker advances, so a failed dump refetches next run instead of being masked
 // by a later 304. Endpoints with no raw_tdx mapping still advance their marker
-// after the spool completes (commit is a no-op).
-func fetchRaw(ctx context.Context, tdx rawFetcher, url, name, landingCycle string) error {
-	return fetchRawWithVerifier(ctx, tdx, url, name, landingCycle, verifyAndTouchRawLanding)
+// after the spool completes (commit is a no-op). forceReland drops the marker
+// on a 304 and takes the body instead (FDPL-37).
+func fetchRaw(ctx context.Context, tdx rawFetcher, url, name, landingCycle string, forceReland bool) error {
+	return fetchRawWithVerifier(ctx, tdx, url, name, landingCycle, forceReland, verifyAndTouchRawLanding)
 }
 
 type rawLandingVerifier func(context.Context, rawTarget, string, string) error
@@ -231,6 +249,7 @@ func fetchRawWithVerifier(
 	ctx context.Context,
 	tdx rawFetcher,
 	url, name, landingCycle string,
+	forceReland bool,
 	verify rawLandingVerifier,
 ) error {
 	if landingCycle == "" {
@@ -258,6 +277,22 @@ func fetchRawWithVerifier(
 		if !mapped {
 			log.Warnf("[INGEST] url=%s event=skip reason=not_modified", url)
 			return nil
+		}
+		// A weekly re-land wants the body, not the 304 it just got. Reuse the
+		// mismatch path's invalidate-then-refetch: the second pass carries no
+		// If-Modified-Since, so it returns a full snapshot. This costs one extra
+		// conditional request per endpoint on that day; deleting the markers up
+		// front would avoid it, but needs marker-store access this package does
+		// not have.
+		if forceReland && attempt == 0 {
+			if result.Invalidate == nil {
+				return fmt.Errorf("force reland %s: nil marker invalidator", url)
+			}
+			if err := result.Invalidate(); err != nil {
+				return fmt.Errorf("force reland %s: %w", url, err)
+			}
+			log.Infof("[INGEST] url=%s event=refetch reason=full_reland", url)
+			continue
 		}
 
 		err = verify(ctx, target, result.Marker, landingCycle)

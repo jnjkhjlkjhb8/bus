@@ -172,6 +172,66 @@ type rawTarget struct {
 // and, crucially, avoid caching a Last-Modified that would mask the failure.
 var errRawDump = errors.New("raw dump failed")
 
+// stalePartitionAfter bounds how long a landing_state partition may go untouched
+// before reportStalePartitions names it.
+const stalePartitionAfter = 7 * 24 * time.Hour
+
+// rawStateQuerier is the read-only slice of the pool reportStalePartitions
+// needs, so the sweep can be exercised without a database.
+type rawStateQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// reportStalePartitions logs every landing_state partition whose fetched_at is
+// older than stalePartitionAfter and returns how many it found (FDPL-38).
+//
+// A full ingestor run touches every partition it fetches, 304s included
+// (verifyAndTouchRawLanding), so a fetched_at that stops moving means nobody
+// fetches that partition any more: dropped from the feed, removed from the
+// fetch list, or failing every run. Every prune downstream is scoped to the
+// partitions that did load, so those rows would otherwise sit in raw_tdx and in
+// the env schema forever with no alarm behind them.
+//
+// It reports and never deletes: a partition TDX is briefly serving badly must
+// not lose the data it already has. Query failures are logged rather than
+// returned — this is a health signal appended to a run that already did its
+// work, and it must not turn a successful landing into a failed one.
+func reportStalePartitions(ctx context.Context, db rawStateQuerier) int {
+	if db == nil {
+		return 0
+	}
+	rows, err := db.Query(ctx, `
+		SELECT table_name, partition_value, fetched_at
+		FROM raw_tdx.landing_state
+		WHERE fetched_at < $1
+		ORDER BY fetched_at, table_name, partition_value`, time.Now().Add(-stalePartitionAfter))
+	if err != nil {
+		log.Errorf("[INGEST] action=landing_state event=stale_scan_error error=%v", err)
+		return 0
+	}
+	defer rows.Close()
+	var stale int
+	for rows.Next() {
+		var table, partition string
+		var fetchedAt time.Time
+		if err := rows.Scan(&table, &partition, &fetchedAt); err != nil {
+			log.Errorf("[INGEST] action=landing_state event=stale_scan_error error=%v", err)
+			return stale
+		}
+		stale++
+		log.Warnf("[INGEST] action=landing_state event=stale_partition table=%s partition=%s fetched_at=%s",
+			table, partition, fetchedAt.Format(time.RFC3339))
+	}
+	if err := rows.Err(); err != nil {
+		log.Errorf("[INGEST] action=landing_state event=stale_scan_error error=%v", err)
+		return stale
+	}
+	if stale > 0 {
+		log.Warnf("[INGEST] action=landing_state event=stale_summary count=%d older_than=%s", stale, stalePartitionAfter)
+	}
+	return stale
+}
+
 // errRawLandingStateMismatch marks a 304 whose durable landing metadata does
 // not agree with raw_tdx. It is intentionally distinct from database failures:
 // callers may invalidate the endpoint marker and perform one full refetch only

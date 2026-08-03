@@ -36,7 +36,7 @@ Redis 與 OSRM 僅對 localhost 開放，不對外暴露。
 
 - `services/functions`
   - 排程執行器；一個映像以 `ROLE` 環境變數分兩種模式：
-    - `ROLE=ingestor`：Stage 1，03:00 把 TDX 原始 payload 落地共用 `raw_tdx` schema。容器每個環境都會啟動（只有 `make up-test` 不啟動），但 TDX 憑證只放在 prod；`ingestRaw` 在缺任一憑證時直接跳過整趟落地、不發出任何請求（真正的 no-op，只記一行 `event=idle reason=no_credentials`）。
+    - `ROLE=ingestor`：Stage 1，03:00 把 TDX 原始 payload 落地共用 `raw_tdx` schema。容器每個環境都會啟動（只有 `make up-test` 不啟動），但 TDX 憑證只放在 prod；`ingestRaw` 在缺任一憑證時直接跳過整趟落地、不發出任何請求（真正的 no-op，只記一行 `event=idle reason=no_credentials`）。每趟落地都是 conditional GET，但週日的 03:00 會丟掉 If-Modified-Since marker 無條件重抓全部端點：TDX 若刪除資料而沒有推進 `Last-Modified`，只有全量重抓看得到。全量落地結束後會掃一次 `raw_tdx.landing_state`，把超過七天沒被碰過的分區記成 `event=stale_partition`（只回報，不刪除）。
     - `ROLE=""`（每個環境）：Stage 2 loader（03:30 `raw_tdx` → 該環境 `PG_SCHEMA`）＋ 即時 ETA ＋ MQTT ＋ 通知。
   - TDX MQTT 訂閱（`mqtt.go`），接收即時告警並推送至 Redis Pub/Sub
   - 使用 `robfig/cron` 設定排程（見 `docs/ingestion.md`）

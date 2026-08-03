@@ -342,3 +342,35 @@ func TestRawTDXSourceReturnsLandingCycleFromSameReadTransaction(t *testing.T) {
 		t.Fatalf("body/fetched/cycle = %s/%s/%q, want []/%s/cycle-shared", body, fetchedAt, cycle, fresh)
 	}
 }
+
+// TestReportStalePartitions covers the FDPL-38 sweep: rows older than the
+// window are counted and named, and a scan failure degrades to zero rather than
+// taking the landing run down with it.
+func TestReportStalePartitions(t *testing.T) {
+	const scanPattern = `SELECT table_name, partition_value, fetched_at FROM raw_tdx\.landing_state WHERE fetched_at < \$1`
+
+	t.Run("counts stale partitions", func(t *testing.T) {
+		db := newRawLandingMock(t)
+		old := time.Now().Add(-30 * 24 * time.Hour)
+		db.ExpectQuery(scanPattern).
+			WithArgs(pgxmock.AnyArg()).
+			WillReturnRows(pgxmock.NewRows([]string{"table_name", "partition_value", "fetched_at"}).
+				AddRow("bus_stationgroup", "Taoyuan", old).
+				AddRow("bus_routefare", "Keelung", old))
+
+		if got := reportStalePartitions(context.Background(), db); got != 2 {
+			t.Fatalf("stale count = %d, want 2", got)
+		}
+	})
+
+	t.Run("scan failure is not fatal", func(t *testing.T) {
+		db := newRawLandingMock(t)
+		db.ExpectQuery(scanPattern).
+			WithArgs(pgxmock.AnyArg()).
+			WillReturnError(errors.New("database unavailable"))
+
+		if got := reportStalePartitions(context.Background(), db); got != 0 {
+			t.Fatalf("stale count = %d, want 0", got)
+		}
+	})
+}
