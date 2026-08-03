@@ -32,6 +32,11 @@ type mrtTrainInfo interface {
 	GetTrainInfo(ctx context.Context, carID string) (*shared.TRTCTrainInfo, bool, error)
 }
 
+// mrtLeadReminderID names a session's 提前提醒站 row, the sibling of the
+// session-ID row that carries the 下車站 event (ADR-0020). Derived rather than
+// stored so any caller holding a track ID can reach both rows.
+func mrtLeadReminderID(trackID string) string { return trackID + ":lead" }
+
 // mrtTrackSessionTTL keeps a session's reminder row and Redis state alive for a
 // generous single ride; the functions tracker ends most sessions well before it.
 const mrtTrackSessionTTL = 3 * time.Hour
@@ -55,10 +60,12 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 	if request.System != "TRTC" {
 		return nil, status.Error(codes.FailedPrecondition, "metro alight reminders are supported for TRTC only")
 	}
-	// lead_stops reuses the reminders lead_minutes column, whose CHECK bounds it
-	// to 1..120; a stops-based lead is small but must satisfy that constraint.
-	if request.LeadStops < 1 || request.LeadStops > 120 {
-		return nil, status.Error(codes.InvalidArgument, "lead_stops must be between 1 and 120")
+	// lead_stops reuses the reminders lead_minutes column. 0 is the default
+	// (no early warning, ADR-0020) and is stored on the alight row as 1 so the
+	// column's 1..120 CHECK still holds — the lead row, which is what a lead
+	// actually produces, simply is not written at 0.
+	if request.LeadStops < 0 || request.LeadStops > 120 {
+		return nil, status.Error(codes.InvalidArgument, "lead_stops must be between 0 and 120")
 	}
 	if err := s.authorizeInstall(ctx, request.InstallId); err != nil {
 		return nil, err
@@ -99,13 +106,28 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 	// Reminders-table mapping for a metro session (ADR-0015): plate=carID,
 	// route_key=TripId, stop_key=target, direction=terminal, lead_minutes reused
 	// as the stops-based lead, fire_at NULL (fired off live position, like bus).
+	//
+	// Two rows, one per buzz (ADR-0020): the session's own ID carries the
+	// 下車站 event, and mrtLeadReminderID(trackID) carries the 提前提醒站 one.
+	// They are separate rows because the claim/fired machinery is per-row —
+	// one row could only ever deliver one of the two vibrations.
+	storedLead := max(request.LeadStops, 1)
 	stored := FirebaseArrivalReminder{
 		ReminderID: trackID, InstallID: request.InstallId, RouteType: "mrt", RouteKey: info.TripID,
-		StopKey: request.TargetStationId, Direction: request.DestStationId, LeadMinutes: request.LeadStops,
+		StopKey: request.TargetStationId, Direction: request.DestStationId, LeadMinutes: storedLead,
 		ExpiresAt: expiresAt, Status: ReminderPending, Plate: request.CarId,
+		AlightEvent: "alight",
 	}
 	if err := s.store.CreateArrivalReminder(ctx, stored); err != nil {
 		return nil, status.Error(codes.Internal, "failed to save metro session")
+	}
+	if request.LeadStops > 0 {
+		lead := stored
+		lead.ReminderID = mrtLeadReminderID(trackID)
+		lead.AlightEvent = "lead"
+		if err := s.store.CreateArrivalReminder(ctx, lead); err != nil {
+			return nil, status.Error(codes.Internal, "failed to save metro session")
+		}
 	}
 
 	nextStationID, nextStationName := "", ""
@@ -170,6 +192,13 @@ func (s *MrtServer) CancelTrack(ctx context.Context, request *pb.CancelMrtTrackR
 	}
 	if !cancelled {
 		return nil, status.Error(codes.NotFound, "metro session not found")
+	}
+	// The lead row only exists above 提前站數 0, and it may already have fired;
+	// either way "no pending row" is the normal outcome, not a failure. Only a
+	// database error is worth reporting, and not at the cost of a cancel that
+	// already succeeded on the row the session is named after.
+	if _, leadErr := s.store.CancelArrivalReminder(ctx, mrtLeadReminderID(request.TrackId), request.InstallId); leadErr != nil {
+		log.Warnf("[MRT_TRACK] action=cancel event=lead_row_error track=%s error=%v", request.TrackId, leadErr)
 	}
 	s.publishCancelledState(ctx, request.TrackId)
 	return &pb.MrtTrackAck{Ok: true}, nil

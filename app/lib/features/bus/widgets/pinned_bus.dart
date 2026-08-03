@@ -37,4 +37,4 @@ bool isAlightTarget(int index, int? nextStopIndex) =>
     index >= firstAlightIndex(nextStopIndex);
 
 /// Clamps a 提前站數 lead to at least one stop, matching the stepper's floor.
-int clampLeadStops(int leadStops) => leadStops < 1 ? 1 : leadStops;
+int clampLeadStops(int leadStops) => leadStops < 0 ? 0 : leadStops;

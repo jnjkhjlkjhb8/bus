@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"math"
+	"time"
 )
 
 // haversine returns the great-circle distance in meters between two lat/lon
@@ -27,6 +28,47 @@ var busEtaHistoryCols = []string{
 	"estimate", "next_bus_time", "src_update_time", "city", "hour", "day_of_week",
 	"is_holiday", "temperature", "precipitation", "wind_speed", "humidity",
 	"plate_numb", "bus_speed", "bus_distance_m", "recorded_at",
+}
+
+// historySnapshotInterval is how often a full ETA snapshot is recorded, and
+// busEtaTickInterval is the bus ETA cron's own cadence (live.go, "@every 30s").
+//
+// The bulk rows have one reader, segmentsByEstimate, and it differences adjacent
+// stops inside a single snapshot: it needs whole snapshots, not a dense series of
+// them. TDX reports StopStatus 0 for a median of 32 consecutive stops, so one
+// snapshot of a running route already yields nearly all its hops
+// (segment_time_eta.go), and a 14-day window still holds ~2,000 snapshots per
+// route direction where the median wants a handful.
+//
+// Recording every tick instead produced ~217M rows a day against the ~197k this
+// table was sized for. Four fifths were dropped at the flusher queue, and the
+// process spent its single CPU building rows it then threw away — starving the
+// live path in the same goroutine budget.
+const (
+	historySnapshotInterval = 10 * time.Minute
+	busEtaTickInterval      = 30 * time.Second
+)
+
+// snapshotTick reports whether the tick starting at now records a full snapshot.
+//
+// It is evaluated once per job run rather than per city: cities run
+// concurrently and each would otherwise read its own clock, so a tick firing
+// near the boundary would record some cities and not others, and
+// segmentsByEstimate would difference a snapshot that never existed whole.
+func snapshotTick(now time.Time) bool {
+	return now.Unix()%int64(historySnapshotInterval.Seconds()) < int64(busEtaTickInterval.Seconds())
+}
+
+// recordsHistory reports whether one stop's reading belongs in bus_eta_history.
+//
+// Arrivals ride at full density regardless of the snapshot clock. They are what
+// measurePredictionError matches a prediction against, and matchPredictionActual
+// takes the first arrival within 30 minutes — so a missing one is not a lost
+// sample but a prediction silently scored against the next bus. They are also
+// cheap: adjustedEstimate only reads zero inside busEtaArrivingGrace of the
+// arrival instant, so this covers a few ticks per approach rather than all of it.
+func recordsHistory(estimate int32, snapshot bool) bool {
+	return estimate <= 0 || snapshot
 }
 
 // saveBusEtaHistory appends collected ETA observations to bus_eta_history on the

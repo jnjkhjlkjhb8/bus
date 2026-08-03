@@ -147,7 +147,9 @@ class LiveActivityPlugin(
         val next = data["nextStation"] as? String ?: ""
         val hopCount = max(1, (data["hopCount"] as? Number)?.toInt() ?: 1)
         val remaining = max(0, (data["remainingStops"] as? Number)?.toInt() ?: 0)
-        val lead = max(1, (data["leadStops"] as? Number)?.toInt() ?: 1)
+        // 提前站數, 0 = no early warning (ADR-0020). The warm run still spans
+        // one stop at 0, because the 下車站 buzz is unconditional.
+        val lead = max(0, (data["leadStops"] as? Number)?.toInt() ?: 0)
         val etaMinutes = (data["etaMinutes"] as? Number)?.toInt()
         val departureMs = (data["scheduledDepartureMs"] as? Number)?.toLong()
         val delayMinutes = (data["delayMinutes"] as? Number)?.toInt() ?: 0
@@ -202,7 +204,7 @@ class LiveActivityPlugin(
         // The station the warm run starts after — the rider's own 提前站數.
         // Pushed past the end while there is nothing to warn about, so a
         // waiting or finished card has no warm run at all.
-        val warmFrom = if (riding) hopCount - lead else hopCount
+        val warmFrom = if (riding) hopCount - lead - 1 else hopCount
         // Tints the notification header. Measured on a Pixel 8 / Android 17:
         // this does NOT reach the status-bar chip (system neutral surface) nor
         // the action text (device accent) — promoted cards forbid custom views

@@ -21,11 +21,15 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
     private let channel: FlutterMethodChannel
     private var activityID: String?
 
-    /// The phase the card last rendered. The reminder alert fires on the
-    /// crossing into `approaching`, not on every update that happens to be past
-    /// the threshold — otherwise the card would buzz once per station for the
-    /// rest of the ride.
+    /// The phase the card last rendered, kept for the card itself.
     private var lastPhase: AlightTrackAttributes.Phase?
+
+    /// Stops remaining on the previous update. A 下車提醒 alerts twice — at the
+    /// 提前提醒站 and at the 下車站 — so the phase alone can no longer identify
+    /// which crossing just happened: both sit inside `approaching`. The alert
+    /// fires on a crossing, never on a condition, or the card would alert once
+    /// per station for the rest of the ride.
+    private var lastRemainingStops: Int?
 
     init(channel: FlutterMethodChannel) {
         self.channel = channel
@@ -77,6 +81,10 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
             )
             activityID = activity.id
             lastPhase = state.phase
+            // Seeds the crossing baseline, so a session that opens already
+            // inside a threshold does not alert for a crossing that happened
+            // before the card existed.
+            lastRemainingStops = state.remainingStops
             result(activity.id)
         } catch {
             result(FlutterError(
@@ -95,6 +103,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
         // condition.
         let alert = reminderAlert(for: state, target: activity.attributes.targetStation)
         lastPhase = state.phase
+        lastRemainingStops = state.remainingStops
 
         // A terminal reading is ended natively with a linger rather than left
         // for Dart to dismiss on a timer: an ending has to be seen, and a timer
@@ -176,23 +185,40 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
         return state.asOf.addingTimeInterval(window)
     }
 
-    /// The 提前站數 reminder, on the one update that crosses the threshold.
+    /// The two 下車提醒 alerts, each on the one update that crosses into it.
     ///
-    /// ADR-0015 asks for a vibration with nothing entering the notification
-    /// centre; an alerting Live Activity update is the platform's closest
-    /// primitive. `AlertConfiguration` offers no silent option, so on a device
-    /// that is not on silent this also makes the default alert sound.
+    /// ADR-0020 asks for a vibration with nothing entering the notification
+    /// centre. On iOS that is not reachable: no API vibrates a backgrounded
+    /// app, and an alerting Live Activity update is the closest primitive.
+    /// `AlertConfiguration` offers no silent option, so on a device that is not
+    /// on silent this also makes the default alert sound. That is a platform
+    /// ceiling, not an unfinished seam — do not "fix" it from Dart.
+    ///
+    /// The long/short distinction the in-app haptics draw cannot be expressed
+    /// here either, so the two events are told apart by their words instead.
     @available(iOS 16.2, *)
     private func reminderAlert(
         for state: AlightTrackAttributes.ContentState,
         target: String
     ) -> AlertConfiguration? {
-        guard state.phase == .approaching, lastPhase != .approaching else { return nil }
-        return AlertConfiguration(
-            title: "準備下車",
-            body: "\(target) 還剩 \(state.remainingStops) 站",
-            sound: .default
-        )
+        guard state.phase.isLive, let previous = lastRemainingStops else { return nil }
+        let remaining = state.remainingStops
+        guard remaining < previous else { return nil }
+        if remaining == 1 {
+            return AlertConfiguration(
+                title: "Get Set",
+                body: "下一站 \(target)",
+                sound: .default
+            )
+        }
+        if state.leadStops > 0, remaining == state.leadStops + 1 {
+            return AlertConfiguration(
+                title: "Ready",
+                body: "再過 \(remaining) 站到 \(target)",
+                sound: .default
+            )
+        }
+        return nil
     }
 
     /// Dart's `AlightTrackContent.toArgs()`, one field at a time.
@@ -208,7 +234,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
             hopCount: max(1, args["hopCount"] as? Int ?? 1),
             currentIndex: args["currentIndex"] as? Int ?? 0,
             remainingStops: max(0, args["remainingStops"] as? Int ?? 0),
-            leadStops: max(1, args["leadStops"] as? Int ?? 1),
+            leadStops: max(0, args["leadStops"] as? Int ?? 0),
             etaDate: etaDate,
             etaMinutes: args["etaMinutes"] as? Int,
             walkMinutes: args["walkMinutes"] as? Int ?? 0,

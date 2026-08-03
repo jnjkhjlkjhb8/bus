@@ -149,6 +149,10 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	if !validNormalizedPlate(plate) {
 		return nil, status.Error(codes.InvalidArgument, "plate must contain only letters, digits, and single hyphen separators")
 	}
+	alightEvent := request.GetAlightEvent()
+	if !validAlightEvent(alightEvent) {
+		return nil, status.Error(codes.InvalidArgument, "alight_event must be lead, alight, or empty")
+	}
 	now := s.now
 	if now == nil {
 		now = time.Now
@@ -167,7 +171,7 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	stored := FirebaseArrivalReminder{
 		ReminderID: reminderID, InstallID: request.InstallId, RouteType: request.RouteType, RouteKey: request.RouteKey,
 		StopKey: request.StopKey, Direction: request.Direction, LeadMinutes: request.LeadMinutes,
-		ExpiresAt: expiresAt, Status: ReminderPending, Plate: plate,
+		ExpiresAt: expiresAt, Status: ReminderPending, Plate: plate, AlightEvent: alightEvent,
 	}
 	// Rail arrival times are known at creation, so fire on a schedule (arrival
 	// minus lead). Bus has no known arrival time and fires off the live ETA, so
@@ -273,6 +277,16 @@ func InstallationCallerID(ctx context.Context) (string, bool) {
 
 func ValidText(value string, limit int) bool {
 	return value != "" && len(value) <= limit && strings.TrimSpace(value) == value
+}
+
+// validAlightEvent gates the two 下車提醒 buzzes (ADR-0020). Empty stays legal:
+// it is the legacy banner reminder, which has no vibration to choose between.
+func validAlightEvent(event string) bool {
+	switch event {
+	case "", "lead", "alight":
+		return true
+	}
+	return false
 }
 
 func validNormalizedPlate(plate string) bool {

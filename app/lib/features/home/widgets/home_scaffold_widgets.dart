@@ -342,10 +342,6 @@ extension _HomeScreenScaffold on _HomeScreenState {
 
           AppSheet.paged(
             controller: _sheetController,
-            onExit: () => _sheetController.animateToDetent(
-              AppSheetSnap.peek,
-              reduced: AppMotion.reduced(context),
-            ),
             navigator: Navigator(
               key: _sheetNavigatorKey,
               observers: [_sheetCarry],

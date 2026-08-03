@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:wheres_the_bus/core/firebase/firebase_telemetry.dart';
-import 'package:wheres_the_bus/features/metro/data/mrt_track_vibration.dart';
+import 'package:wheres_the_bus/core/haptics/alight_haptics.dart';
 import 'package:wheres_the_bus/firebase_options.dart';
 
 @pragma('vm:entry-point')
@@ -13,10 +13,10 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       options: DefaultFirebaseOptions.currentPlatform,
     );
   }
-  // The 捷運下車提醒 lead alert is a data-only message: vibrate with no banner,
-  // nothing in the notification center (ADR-0015). Background delivery lands
-  // here rather than on onMessage.
-  await FirebaseNotifications.maybeVibrateForMrt(message.data);
+  // A 下車提醒 alert is a data-only message: vibrate with no banner, nothing
+  // in the notification center (ADR-0020). Background delivery lands here
+  // rather than on onMessage.
+  await FirebaseNotifications.maybeVibrateForAlight(message.data);
   try {
     await FirebaseTelemetry.instance.notificationReceived(
       kind: FirebaseNotifications.kindFrom(message.data),
@@ -28,21 +28,29 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 class FirebaseNotifications {
   FirebaseNotifications._();
 
-  /// Data-message type for the metro alight lead vibration (ADR-0015).
-  static const _mrtVibrateType = 'mrt_vibrate';
+  /// Data-message type for a 下車提醒 vibration, any mode (ADR-0020).
+  static const _alightVibrateType = 'alight_vibrate';
 
   static String kindFrom(Map<String, dynamic> data) {
     final kind = data['kind']?.toString();
     return kind == null || kind.isEmpty ? 'unknown' : kind;
   }
 
-  /// Fires the alight vibration when [data] is a `mrt_vibrate` message,
-  /// guarded so it never double-buzzes against the WatchTrack stream path.
-  static Future<void> maybeVibrateForMrt(Map<String, dynamic> data) async {
-    if (data['type']?.toString() != _mrtVibrateType) return;
+  /// Fires the alight vibration when [data] is an `alight_vibrate` message,
+  /// guarded so it never double-buzzes against the live-stream path.
+  ///
+  /// An unrecognised `event` is dropped rather than defaulting to one of the
+  /// two: the wrong buzz is worse than none — the rider would read a long one
+  /// as "get off now" and stand up two stops early.
+  static Future<void> maybeVibrateForAlight(Map<String, dynamic> data) async {
+    if (data['type']?.toString() != _alightVibrateType) return;
     final trackId = data['track_id']?.toString() ?? '';
+    final event = AlightEvent.values
+        .where((e) => e.name == data['event']?.toString())
+        .firstOrNull;
+    if (event == null) return;
     try {
-      await fireMrtLeadVibration(trackId);
+      await fireAlightHaptics(trackId, event);
     } on Object catch (_) {}
   }
 
@@ -60,7 +68,7 @@ class FirebaseNotifications {
   }
 
   static Future<void> _received(RemoteMessage message) async {
-    await maybeVibrateForMrt(message.data);
+    await maybeVibrateForAlight(message.data);
     await FirebaseTelemetry.instance.notificationReceived(
       kind: kindFrom(message.data),
       foreground: true,

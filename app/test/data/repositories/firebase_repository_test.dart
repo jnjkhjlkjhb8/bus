@@ -34,7 +34,7 @@ void main() {
         expiresAt: DateTime(2026),
         plate: 'KKA-1288',
       );
-      expect(receipt.reminderId, 'local:bus:R1:S1:1:KKA-1288');
+      expect(receipt.reminderId, 'local:bus:R1:S1:1:KKA-1288:');
     });
 
     test('local id omits the plate when none is passed', () async {
@@ -47,7 +47,7 @@ void main() {
         leadMinutes: 1,
         expiresAt: DateTime(2026),
       );
-      expect(receipt.reminderId, 'local:bus:R1:S1:1:');
+      expect(receipt.reminderId, 'local:bus:R1:S1:1::');
     });
 
     test('pinned and unpinned local ids differ', () async {

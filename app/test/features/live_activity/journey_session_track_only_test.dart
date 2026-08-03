@@ -68,6 +68,9 @@ void main() {
     trackOnlyLinger: linger,
     channel: channel,
     liveActivityEnabled: liveActivityEnabled,
+    // The real haptics reach a platform channel these tests have no binding
+    // for; the crossing logic they would exercise is covered on its own.
+    vibrate: (_, _) async {},
   );
 
   setUp(() {

@@ -18,7 +18,6 @@ import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/diagnostics/report_screen.dart';
 import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
@@ -407,7 +406,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _selectMember(String? stationUid) {
-    unawaited(HapticService.instance.lightTap());
     _stopBloc?.add(BusStopStationSelected(stationUid));
   }
 
@@ -835,7 +833,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _recenter() {
-    unawaited(HapticService.instance.lightTap());
     unawaited(_locateUser());
   }
 

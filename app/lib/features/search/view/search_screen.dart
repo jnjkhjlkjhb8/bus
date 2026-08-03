@@ -8,7 +8,6 @@ import 'package:go_router/go_router.dart';
 import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/data/models/city_names.dart';
 import 'package:wheres_the_bus/data/models/search_models.dart';
 import 'package:wheres_the_bus/features/rail/view/rail_train_screen.dart';
@@ -46,7 +45,6 @@ String _todayIso() {
 }
 
 void _navigateToResult(BuildContext context, SearchResult result) {
-  unawaited(HapticService.instance.lightTap());
   // Persist the selection through the recent-search repository (owned by
   // SearchBloc) so every entry point — result rows, recents, and AI — records
   // history in one place instead of writing storage directly.
@@ -423,10 +421,8 @@ class _SearchViewState extends State<_SearchView> {
         _CityFilterRail(
           options: state.cityOptions,
           selected: state.city,
-          onToggle: (code) {
-            unawaited(HapticService.instance.selectionClick());
-            context.read<SearchBloc>().add(SearchCityToggled(code));
-          },
+          onToggle: (code) =>
+              context.read<SearchBloc>().add(SearchCityToggled(code)),
         ),
         if (state.loading)
           SizedBox(

@@ -167,6 +167,7 @@ const CreateArrivalReminderRequest$json = {
     {'1': 'lead_minutes', '3': 6, '4': 1, '5': 5, '10': 'leadMinutes'},
     {'1': 'expires_at_unix', '3': 7, '4': 1, '5': 3, '10': 'expiresAtUnix'},
     {'1': 'plate', '3': 8, '4': 1, '5': 9, '10': 'plate'},
+    {'1': 'alight_event', '3': 9, '4': 1, '5': 9, '10': 'alightEvent'},
   ],
 };
 
@@ -176,7 +177,8 @@ final $typed_data.Uint8List createArrivalReminderRequestDescriptor = $convert.ba
     'RhbGxJZBIdCgpyb3V0ZV90eXBlGAIgASgJUglyb3V0ZVR5cGUSGwoJcm91dGVfa2V5GAMgASgJ'
     'Ughyb3V0ZUtleRIZCghzdG9wX2tleRgEIAEoCVIHc3RvcEtleRIcCglkaXJlY3Rpb24YBSABKA'
     'lSCWRpcmVjdGlvbhIhCgxsZWFkX21pbnV0ZXMYBiABKAVSC2xlYWRNaW51dGVzEiYKD2V4cGly'
-    'ZXNfYXRfdW5peBgHIAEoA1INZXhwaXJlc0F0VW5peBIUCgVwbGF0ZRgIIAEoCVIFcGxhdGU=');
+    'ZXNfYXRfdW5peBgHIAEoA1INZXhwaXJlc0F0VW5peBIUCgVwbGF0ZRgIIAEoCVIFcGxhdGUSIQ'
+    'oMYWxpZ2h0X2V2ZW50GAkgASgJUgthbGlnaHRFdmVudA==');
 
 @$core.Deprecated('Use arrivalReminderDescriptor instead')
 const ArrivalReminder$json = {

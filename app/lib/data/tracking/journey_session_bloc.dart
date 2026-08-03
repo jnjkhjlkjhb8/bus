@@ -3,6 +3,7 @@ import 'dart:math';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:wheres_the_bus/core/haptics/alight_haptics.dart';
 import 'package:wheres_the_bus/core/live_activity/alight_track.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
@@ -30,6 +31,7 @@ class JourneySessionBloc
     AlightTrackChannel? channel,
     Stream<Position> Function()? positions,
     bool Function()? liveActivityEnabled,
+    Future<void> Function(String sessionId, AlightEvent event)? vibrate,
     this.sessionTimeout = const Duration(hours: 8),
     this.trackOnlyLinger = const Duration(minutes: 2),
   }) : _etaStream = etaStream,
@@ -40,6 +42,7 @@ class JourneySessionBloc
        _liveActivityEnabled =
            liveActivityEnabled ??
            (() => SettingsRepository.instance.liveActivityEnabled),
+       _vibrate = vibrate ?? fireAlightHaptics,
        super(const JourneySessionState()) {
     on<JourneyStarted>(_onStarted);
     on<BoardConfirmed>(_onBoarded);
@@ -82,6 +85,13 @@ class JourneySessionBloc
   /// Lease on the shared [AlightTrackChannel]'s current card, handed back by
   /// `start`. Null until this journey has one.
   int? _lease;
+
+  final Future<void> Function(String sessionId, AlightEvent event) _vibrate;
+
+  /// Stops remaining on the previous card push, so a buzz fires on the
+  /// crossing rather than on every frame sitting at the threshold. Null while
+  /// waiting — see [_maybeVibrate].
+  int? _lastRemaining;
 
   Future<void> _onStarted(
     JourneyStarted event,
@@ -236,8 +246,33 @@ class JourneySessionBloc
   /// Pushes [_content] through the shared channel under this journey's
   /// current lease; a no-op once another owner has superseded it.
   void _pushUpdate() {
+    final content = _content(state);
     final lease = _lease;
-    if (lease != null) unawaited(_channel?.update(lease, _content(state)));
+    if (lease != null) unawaited(_channel?.update(lease, content));
+    _maybeVibrate(content);
+  }
+
+  /// Buzzes on a stops-remaining crossing (ADR-0020). Every state change that
+  /// can move the count funnels through [_pushUpdate], so this is the one
+  /// place bus and 雙鐵 need it.
+  ///
+  /// Silent while waiting: before the rider is aboard the remaining count is
+  /// the whole leg's geometry, not a live position, and buzzing off it would
+  /// fire on the frame the session started.
+  void _maybeVibrate(AlightTrackContent content) {
+    if (content.phase == AlightTrackPhase.waiting) {
+      _lastRemaining = null;
+      return;
+    }
+    final event = alightEventFor(
+      previousRemaining: _lastRemaining,
+      remaining: content.remainingStops,
+      lead: content.leadStops,
+    );
+    _lastRemaining = content.remainingStops;
+    if (event != null) {
+      unawaited(_vibrate('journey-$_generation', event));
+    }
   }
 
   void _subscribeEta(JourneyLeg leg, int generation) {
@@ -452,7 +487,11 @@ class JourneySessionBloc
       phase: switch (s.phase) {
         JourneyPhase.done => AlightTrackPhase.arrived,
         _ when !aboard => AlightTrackPhase.waiting,
-        _ when clampedRemaining <= s.leadStops => AlightTrackPhase.approaching,
+        // `lead + 1` rather than `lead`: the card turns warm on the frame the
+        // rider is buzzed, and at the default lead of 0 that is "your stop is
+        // next" — on `<= lead` a default session would never warm at all.
+        _ when clampedRemaining <= s.leadStops + 1 =>
+          AlightTrackPhase.approaching,
         _ => AlightTrackPhase.riding,
       },
       vehicleLabel: leg.routeLabel.split(' 往').first.trim(),

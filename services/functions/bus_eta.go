@@ -89,12 +89,26 @@ func (b *busArrivalBatch) flush(ctx context.Context) error {
 	return b.target.Arrivals(ctx, events)
 }
 
+// busEtaSkip lists the cities with no bus network to resolve live ETA against,
+// so the tick does not spend a TDX request and a static-map lookup per city on
+// them. It is deliberately narrower than removing the city from `cities`, which
+// every ingestion loop also reads: Matsu's static datasets still land, there is
+// just no stop map for a live estimate to attach to. Without this the tick logs
+// skip_empty=no_stations twice a minute forever, which buries the same line
+// arriving for a city that genuinely lost its stop map.
+var busEtaSkip = map[string]struct{}{
+	"LienchiangCounty": {},
+}
+
 type busLiveJob struct {
 	fetch    boundFetch
 	sink     liveSink
 	store    busEtaStore
 	notifier busArrivalNotifier
 	now      func() time.Time
+	// snapshot is fixed for the whole run so every city lands on the same side
+	// of the history sampling clock (see snapshotTick).
+	snapshot bool
 }
 
 const busFeedCacheTTL = 10 * time.Minute
@@ -186,10 +200,11 @@ func busEta(
 ) error {
 	log.Infof("[BUS_ETA] action=Bus_eta event=start")
 	job := busLiveJob{
-		fetch: fetch,
-		sink:  sink,
-		store: pgBusEtaStore{db: db},
-		now:   time.Now,
+		fetch:    fetch,
+		sink:     sink,
+		store:    pgBusEtaStore{db: db},
+		now:      time.Now,
+		snapshot: snapshotTick(time.Now()),
 	}
 	jobErr := runBusEtaCities(ctx, cities, &job, dispatcher)
 	log.Infof("[BUS_ETA] action=Bus_eta event=complete")
@@ -288,6 +303,9 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 			err = errors.Join(err, refreshErr)
 		}
 	}()
+	if _, skip := busEtaSkip[city]; skip {
+		return nil
+	}
 	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=city_start", city)
 	prefix := citymap[city]
 	if prefix == "" {
@@ -518,31 +536,37 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 			if p := normalizeArrivalPlate(eta.PlateNumb); p != "" {
 				plateNumb = &p
 			}
-			var srcTime *time.Time
-			if t, ok := parseSrcUpdateTime(stime); ok {
-				srcTime = &t
+			// Only the history row is sampled. plateNumb above belongs to the live
+			// path as well, so the test sits here rather than on the branch — and
+			// it stays an if rather than a continue, because the loop still has
+			// this stop's Redis payload to build below.
+			if recordsHistory(est, j.snapshot) {
+				var srcTime *time.Time
+				if t, ok := parseSrcUpdateTime(stime); ok {
+					srcTime = &t
+				}
+				var nextBusTimePtr *string
+				if eta.NextBusTime != "" {
+					nbtp := eta.NextBusTime
+					nextBusTimePtr = &nbtp
+				}
+				// nil stays nil when the city has no weather reading: the history
+				// columns are nullable and a zero would read as a real measurement.
+				var weatherTemp, weatherPrecip, weatherWind, weatherHumid any
+				if weather != nil {
+					weatherTemp = weather.Temperature
+					weatherPrecip = weather.Precipitation
+					weatherWind = weather.WindSpeed
+					weatherHumid = weather.Humidity
+				}
+				historyRows = append(historyRows, []any{
+					uid, b.StopUID, int16(dir),
+					int16(b.StopSequence), int16(ts), est, nextBusTimePtr, srcTime,
+					city, int16(now.Hour()), int16(now.Weekday()), holiday,
+					weatherTemp, weatherPrecip, weatherWind, weatherHumid,
+					plateNumb, busSpeed, busDist, now,
+				})
 			}
-			var nextBusTimePtr *string
-			if eta.NextBusTime != "" {
-				nbtp := eta.NextBusTime
-				nextBusTimePtr = &nbtp
-			}
-			// nil stays nil when the city has no weather reading: the history
-			// columns are nullable and a zero would read as a real measurement.
-			var weatherTemp, weatherPrecip, weatherWind, weatherHumid any
-			if weather != nil {
-				weatherTemp = weather.Temperature
-				weatherPrecip = weather.Precipitation
-				weatherWind = weather.WindSpeed
-				weatherHumid = weather.Humidity
-			}
-			historyRows = append(historyRows, []any{
-				uid, b.StopUID, int16(dir),
-				int16(b.StopSequence), int16(ts), est, nextBusTimePtr, srcTime,
-				city, int16(now.Hour()), int16(now.Weekday()), holiday,
-				weatherTemp, weatherPrecip, weatherWind, weatherHumid,
-				plateNumb, busSpeed, busDist, now,
-			})
 		}
 		if status == 1 && eta.NextBusTime == "" {
 			rk := routeDirKey{uid, int32(dir)}

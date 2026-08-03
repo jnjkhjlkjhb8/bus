@@ -6,13 +6,11 @@ class _FloatingAppBar extends StatelessWidget {
     required this.routeName,
     required this.dirName,
     required this.direction,
-    required this.onBookmarkTapped,
   });
   final String subRouteUid;
   final String routeName;
   final String dirName;
   final int direction;
-  final VoidCallback onBookmarkTapped;
 
   @override
   Widget build(BuildContext context) {
@@ -31,7 +29,6 @@ class _FloatingAppBar extends StatelessWidget {
       ),
       trailing: AppBarCircleButton(
         semanticLabel: AppI18n.of(context).commonFavorite,
-        onTap: onBookmarkTapped,
         child: BookmarkButton(
           routeType: 'bus',
           routeKey: subRouteUid,

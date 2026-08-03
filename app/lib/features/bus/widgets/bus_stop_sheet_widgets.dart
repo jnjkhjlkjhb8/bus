@@ -28,21 +28,8 @@ class _StopSheet extends StatelessWidget {
 /// derived tile view-models (recomputed in the bloc only when arrivals move),
 /// the member set, selection, status, and error — never on the freshness time,
 /// which the meta line owns. Build is pure layout over the bloc's derivation.
-class _StopBody extends StatefulWidget {
+class _StopBody extends StatelessWidget {
   const _StopBody();
-
-  @override
-  State<_StopBody> createState() => _StopBodyState();
-}
-
-class _StopBodyState extends State<_StopBody> {
-  // Rows are built lazily by the sliver, so a row that scrolls off-screen and
-  // back gets a brand-new StaggerItem element — this set is what tells that
-  // apart from a row appearing for the first time, so the entrance motion
-  // never replays during steady-state scrolling. Lives as long as this sheet
-  // (the State survives BlocBuilder rebuilds of the same element), so it's
-  // effectively "already played, for this sheet instance."
-  final Set<Object> _played = {};
 
   @override
   Widget build(BuildContext context) {
@@ -73,7 +60,6 @@ class _StopBodyState extends State<_StopBody> {
               child: ErrorStateView(
                 error: state.error ?? const OfflineError(),
                 onRetry: () {
-                  unawaited(HapticService.instance.lightTap());
                   context.read<BusStopBloc>().add(
                     const BusStopRetryRequested(),
                   );
@@ -81,7 +67,7 @@ class _StopBodyState extends State<_StopBody> {
               ),
             );
           case BusStopStatus.loaded:
-            final rows = _rowBuilders(state, cs);
+            final rows = _rowBuilders(context, state, cs);
             return SliverList.builder(
               itemCount: rows.length,
               itemBuilder: (context, i) => rows[i](),
@@ -94,7 +80,11 @@ class _StopBodyState extends State<_StopBody> {
   /// Flattens the loaded state into per-row thunks. Deferring widget
   /// construction to the sliver's itemBuilder is the point: off-screen rows
   /// cost one closure, not a tile subtree.
-  List<Widget Function()> _rowBuilders(BusStopState state, ColorScheme cs) {
+  List<Widget Function()> _rowBuilders(
+    BuildContext context,
+    BusStopState state,
+    ColorScheme cs,
+  ) {
     // Sorted list + per-stop grouping are derived in the bloc; build only
     // lays them out.
     final arrivals = state.displays;
@@ -119,15 +109,11 @@ class _StopBodyState extends State<_StopBody> {
         ? groups.where((g) => g.$2.isNotEmpty).toList()
         : groups;
 
-    Widget Function() tile(BusStopArrivalItem a, int staggerIndex, int i) =>
-        () => StaggerItem(
+    Widget Function() tile(BusStopArrivalItem a, int i) =>
+        () => _EtaChevronTile(
           key: ValueKey(a.itemKey),
-          index: staggerIndex,
-          animate: _played.add(a.itemKey),
-          child: _EtaChevronTile(
-            arrival: a,
-            highlighted: i == 0 && a.display.isComingSoon,
-          ),
+          arrival: a,
+          highlighted: i == 0 && a.display.isComingSoon,
         );
     Widget divider() => Divider(
       height: 1,
@@ -147,16 +133,16 @@ class _StopBodyState extends State<_StopBody> {
         divider,
       ],
       if (members.isEmpty)
-        for (final (i, a) in arrivals.indexed) tile(a, i, i)
+        for (final (i, a) in arrivals.indexed) tile(a, i)
       else
-        for (final (memberIndex, group) in visibleGroups.indexed) ...[
+        for (final group in visibleGroups) ...[
           if (showHeaders)
             () => _StationSectionHeader(
               label: labels[group.$1.stationUid] ?? group.$1.stationName,
               routeCount: group.$2.length,
             ),
           for (final (i, a) in group.$2.indexed) ...[
-            tile(a, memberIndex * 10 + i, i),
+            tile(a, i),
             if (i < group.$2.length - 1) divider,
           ],
         ],
@@ -223,10 +209,7 @@ class _StationChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
-      onTap: () {
-        unawaited(HapticService.instance.lightTap());
-        context.read<BusStopBloc>().add(BusStopStationSelected(uid));
-      },
+      onTap: () => context.read<BusStopBloc>().add(BusStopStationSelected(uid)),
       child: AnimatedContainer(
         duration: AppMotion.micro,
         curve: AppMotion.easeInOut,

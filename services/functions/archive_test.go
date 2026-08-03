@@ -26,18 +26,16 @@ func (f *fakeExecer) ExecContext(_ context.Context, q string, a ...any) (sql.Res
 // With no database configured the rebuild must not run: writing from zero
 // segments would look like a successful rebuild that found nothing.
 func TestComputeSegmentTimesSkipsWithoutDB(t *testing.T) {
-	if err := computeSegmentTimes(context.Background(), nil, fixtureHistory{}); err != nil {
+	if err := computeSegmentTimesFromEstimates(context.Background(), nil, fixtureHistory{}); err != nil {
 		t.Errorf("want a silent skip, got %v", err)
 	}
 }
 
 // An unreachable history host is the same situation: the hops are nowhere, so
 // the rebuild must skip rather than write a table full of nothing over yesterday's
-// figures.
+// figures. This is also what makes clearing ARCHIVE_MYSQL_DSN a safe way to stop
+// collecting — the nightly rebuild freezes the table instead of flattening it.
 func TestSegmentRebuildsSkipWithoutHistory(t *testing.T) {
-	if err := computeSegmentTimes(context.Background(), nil, nil); err != nil {
-		t.Errorf("computeSegmentTimes: want a silent skip, got %v", err)
-	}
 	if err := computeSegmentTimesFromEstimates(context.Background(), nil, nil); err != nil {
 		t.Errorf("computeSegmentTimesFromEstimates: want a silent skip, got %v", err)
 	}

@@ -29,6 +29,9 @@ type arrivalReminder struct {
 	id, token, routeType, routeKey, stopKey, direction string
 	leadMinutes                                        int
 	plate                                              string
+	// alightEvent is "lead"/"alight" for a 下車提醒 row, "" for a legacy
+	// arrival reminder. It decides whether the push vibrates or banners.
+	alightEvent string
 }
 
 // subscribedTokens returns the push-enabled device tokens subscribed to a
@@ -75,7 +78,7 @@ func (s Store) activeRemindersForArrivals(ctx context.Context, events []ArrivalE
 			eta_seconds integer, arriving_plate text
 		)
 	)
-	SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes,r.plate,
+	SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes,r.plate,r.alight_event,
 		a.route_type,a.route_key,a.stop_key,a.direction,a.eta_seconds,a.arriving_plate
 	FROM arrivals a
 	JOIN firebase_arrival_reminder r
@@ -97,6 +100,7 @@ func (s Store) activeRemindersForArrivals(ctx context.Context, events []ArrivalE
 		if err := rows.Scan(
 			&match.reminder.id, &match.reminder.token, &match.reminder.routeType, &match.reminder.routeKey,
 			&match.reminder.stopKey, &match.reminder.direction, &match.reminder.leadMinutes, &match.reminder.plate,
+			&match.reminder.alightEvent,
 			&match.arrival.RouteType, &match.arrival.RouteKey, &match.arrival.StopKey, &match.arrival.Direction,
 			&match.arrival.ETASeconds, &match.arrival.ArrivingPlate,
 		); err != nil {
@@ -115,7 +119,7 @@ func (s Store) activeRemindersForArrivals(ctx context.Context, events []ArrivalE
 // activeRemindersForArrivals, claimable includes 'sending' rows with a claim
 // older than ReminderClaimTimeout, so a reminder stranded mid-send is retried.
 func (s Store) dueScheduledReminders(ctx context.Context, now time.Time) ([]arrivalReminder, error) {
-	rows, err := s.db.Query(ctx, `SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes FROM firebase_arrival_reminder r JOIN firebase_device d ON d.install_id=r.install_id WHERE (r.status='pending' OR (r.status='sending' AND (r.claimed_at IS NULL OR r.claimed_at<=$2))) AND r.fire_at IS NOT NULL AND r.fire_at<=$1 AND r.expires_at>$1 AND d.push_enabled AND d.fcm_token<>''`, now, now.Add(-ReminderClaimTimeout))
+	rows, err := s.db.Query(ctx, `SELECT r.reminder_id,d.fcm_token,r.route_type,r.route_key,r.stop_key,r.direction,r.lead_minutes,r.alight_event FROM firebase_arrival_reminder r JOIN firebase_device d ON d.install_id=r.install_id WHERE (r.status='pending' OR (r.status='sending' AND (r.claimed_at IS NULL OR r.claimed_at<=$2))) AND r.fire_at IS NOT NULL AND r.fire_at<=$1 AND r.expires_at>$1 AND d.push_enabled AND d.fcm_token<>''`, now, now.Add(-ReminderClaimTimeout))
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +127,7 @@ func (s Store) dueScheduledReminders(ctx context.Context, now time.Time) ([]arri
 	var out []arrivalReminder
 	for rows.Next() {
 		var v arrivalReminder
-		if err := rows.Scan(&v.id, &v.token, &v.routeType, &v.routeKey, &v.stopKey, &v.direction, &v.leadMinutes); err != nil {
+		if err := rows.Scan(&v.id, &v.token, &v.routeType, &v.routeKey, &v.stopKey, &v.direction, &v.leadMinutes, &v.alightEvent); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

@@ -217,7 +217,6 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
   }
 
   Future<void> _useCurrentLocation() async {
-    unawaited(HapticService.instance.lightTap());
     final i18n = AppI18n.of(context);
     _bloc.add(const LocationResolving(active: true));
     try {
@@ -236,16 +235,12 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
   }
 
   void _resolve(PlaceSuggestion suggestion, ResolveIntent intent) {
-    if (intent == ResolveIntent.pick) {
-      unawaited(HapticService.instance.lightTap());
-    }
     _bloc.add(PlaceResolveRequested(suggestion.placeId, intent));
   }
 
   // A recent/saved place already carries coordinates, so it returns straight
   // away without a fresh Places details lookup.
   void _pickPlace(PlannedPlace place) {
-    unawaited(HapticService.instance.lightTap());
     widget.onPicked(place);
   }
 

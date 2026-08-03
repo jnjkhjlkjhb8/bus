@@ -596,27 +596,19 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	registerStaticJob(r, markerReader, staticJobSpec{
 		name: "segmentTimes", schedule: "0 0 4 * * *", waitFor: "changetovector",
 		// Each pass carries its own budget and retries independently, so the spec
-		// leaves timeout zero rather than bounding the chain: a failure in the third
-		// pass must not re-drive the two that already wrote.
+		// leaves timeout zero rather than bounding the chain: a failure in the fill
+		// pass must not re-drive the observation pass that already wrote.
 		run: func(context.Context) error {
-			// Both observation passes read the same history host, so it is resolved
-			// once: two resolves could disagree about whether the archive is reachable
-			// and leave the table half rebuilt from one pass.
-			hist := resolveHistory()
-			runDaily("computeSegmentTimes", 15*time.Minute, func(ctx context.Context) error {
-				return computeSegmentTimes(ctx, db, hist)
-			})
-			// Second pass over the same history, differencing adjacent stops within one
-			// snapshot instead of pairing arrivals by plate. It reaches the hops the
-			// plate method cannot — Taipei and NewTaipei publish no plate — and runs
-			// after it so the better-sampled figure is the one left in the table.
+			// The observation pass: adjacent stops differenced within one recorded
+			// snapshot. A plate-pairing pass ran ahead of it until 2026-08-02
+			// (segment_time.go says why it went).
 			runDaily("computeSegmentTimesFromEstimates", 15*time.Minute, func(ctx context.Context) error {
-				return computeSegmentTimesFromEstimates(ctx, db, hist)
+				return computeSegmentTimesFromEstimates(ctx, db, resolveHistory())
 			})
-			// Last, once both observation passes have written what they found: a
-			// distance-derived estimate for the hops still empty, so one unobserved
-			// segment does not cost GTFS the whole route direction. Marked
-			// sample_count = 0 and never written over an observed row.
+			// Then, once the observations are in: a distance-derived estimate for
+			// the hops still empty, so one unobserved segment does not cost GTFS the
+			// whole route direction. Marked sample_count = 0 and never written over
+			// an observed row.
 			runDaily("fillSegmentTimesFromDistance", 15*time.Minute, func(ctx context.Context) error {
 				return fillSegmentTimesFromDistance(ctx, db)
 			})

@@ -172,7 +172,10 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			continue
 		}
 		if !result.Modified {
-			log.Warnf("[BIKE_ETA] action=bike_eta city=%s event=skip reason=no updated", city)
+			// A 304 is the expected answer most ticks: the cadence is well under
+			// how often the operators republish. Logged at info because a warning
+			// here is 840 lines an hour that never once means anything is wrong.
+			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=not_modified", city)
 			continue
 		}
 		if err := commitTDXFetch(result, func(dec *json.Decoder) error {

@@ -320,8 +320,6 @@ class _PlannerSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     return AppSheet(
       controller: controller,
-      // The header's own back button is the way out (see AppSheet.onExit).
-      onExit: null,
       initialOffset: initialOffset,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -731,17 +729,26 @@ class _RouteSkeleton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    Widget bar(double w, double h) => Container(
-      width: w,
-      height: h,
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+    // A fraction of the card's own width rather than a fixed pixel count —
+    // see the identical fix on genui's `_AnswerSkeleton`.
+    Widget bar(double widthFactor, double h) => FractionallySizedBox(
+      alignment: Alignment.centerLeft,
+      widthFactor: widthFactor,
+      child: Container(
+        height: h,
+        decoration: BoxDecoration(
+          color: cs.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+        ),
       ),
     );
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
+        // Stretched to match RouteOptionCard's width in the results
+        // ListView.separated — otherwise these shrink-wrap to their bar
+        // width and the real card snaps wider the moment routes land.
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           for (var i = 0; i < count; i++)
             _ShimmerFade(
@@ -757,11 +764,11 @@ class _RouteSkeleton extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    bar(72, 22),
+                    bar(0.24, 22),
                     const SizedBox(height: 12),
-                    bar(200, 16),
+                    bar(0.64, 16),
                     const SizedBox(height: 10),
-                    bar(120, 12),
+                    bar(0.38, 12),
                   ],
                 ),
               ),

@@ -85,9 +85,11 @@ void main() {
   });
 
   group('clampLeadStops', () {
-    test('floors at one stop', () {
-      expect(clampLeadStops(0), 1);
-      expect(clampLeadStops(-2), 1);
+    // 0 is the default and means 不提前提醒 (ADR-0020), so it must survive the
+    // clamp; only a negative lead is nonsense.
+    test('floors at zero stops', () {
+      expect(clampLeadStops(0), 0);
+      expect(clampLeadStops(-2), 0);
       expect(clampLeadStops(1), 1);
       expect(clampLeadStops(4), 4);
     });

@@ -9,7 +9,6 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/features/alerts/view/inline_notice.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_stop_bloc.dart';
@@ -160,7 +159,6 @@ class _BusStopScreenState extends State<BusStopScreen> {
   }
 
   void _recenterMap() {
-    unawaited(HapticService.instance.lightTap());
     unawaited(_moveToCurrentLocation());
   }
 
@@ -310,8 +308,6 @@ class _BusStopScreenState extends State<BusStopScreen> {
 
             AppSheet(
               controller: _sheetController,
-              // Back button in the app bar above (see AppSheet.onExit).
-              onExit: null,
               child: BusStopDetailView(
                 stopName: widget.stopName,
                 stopId: widget.stopId,

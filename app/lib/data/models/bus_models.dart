@@ -297,6 +297,16 @@ class BusRouteViewModel extends Equatable {
   final List<BusServiceEntry> schedulesReturn;
   final BusFareInfo? fare;
 
+  /// The single direction a one-way sub-route serves, or null when both
+  /// directions carry stops. TDX publishes plenty of sub-routes with only a
+  /// return leg (a `201A` that runs inbound only), so the outbound slot being
+  /// the populated one cannot be assumed.
+  int? get soleDirection {
+    if (stopsGo.isEmpty && stopsReturn.isNotEmpty) return 1;
+    if (stopsReturn.isEmpty && stopsGo.isNotEmpty) return 0;
+    return null;
+  }
+
   @override
   List<Object?> get props => [
     subRouteUid,

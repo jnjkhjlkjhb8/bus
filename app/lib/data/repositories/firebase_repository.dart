@@ -87,6 +87,7 @@ class FirebaseRepository {
     required int leadMinutes,
     required DateTime expiresAt,
     String plate = '',
+    String alightEvent = '',
   }) async {
     if (!isArrivalReminderRouteType(routeType) ||
         routeKey.isEmpty ||
@@ -96,7 +97,8 @@ class FirebaseRepository {
     }
     if (!FirebaseGate.enabled) {
       return ArrivalReminderReceipt(
-        reminderId: 'local:$routeType:$routeKey:$stopKey:$leadMinutes:$plate',
+        reminderId:
+            'local:$routeType:$routeKey:$stopKey:$leadMinutes:$plate:$alightEvent',
       );
     }
     final reminder = await _grpc.createArrivalReminder(
@@ -109,6 +111,7 @@ class FirebaseRepository {
         leadMinutes: leadMinutes,
         expiresAtUnix: Int64(expiresAt.millisecondsSinceEpoch ~/ 1000),
         plate: plate,
+        alightEvent: alightEvent,
       ),
       options: await FirebaseCallOptions.build(),
     );

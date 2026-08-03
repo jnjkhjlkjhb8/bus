@@ -923,7 +923,7 @@ func TestFireMrtVibrateSendsDataOnlyAndFiresOnce(t *testing.T) {
 	sender := &fakeFCM{}
 	d := NewDispatcher(store, sender)
 
-	fired, err := d.FireMrtVibrate(context.Background(), MrtVibrateEvent{ReminderID: "r1", Token: "tok", TrackID: "r1"})
+	fired, err := d.FireMrtVibrate(context.Background(), MrtVibrateEvent{ReminderID: "r1", Token: "tok", TrackID: "r1", AlightEvent: "alight"})
 	if err != nil || !fired {
 		t.Fatalf("FireMrtVibrate() = %v, %v", fired, err)
 	}
@@ -934,7 +934,7 @@ func TestFireMrtVibrateSendsDataOnlyAndFiresOnce(t *testing.T) {
 	if msg.Notification != nil {
 		t.Error("vibrate message must carry no notification payload")
 	}
-	if msg.Data["type"] != "mrt_vibrate" || msg.Data["track_id"] != "r1" {
+	if msg.Data["type"] != "alight_vibrate" || msg.Data["track_id"] != "r1" || msg.Data["event"] != "alight" {
 		t.Errorf("data = %v", msg.Data)
 	}
 	if msg.Android == nil || msg.Android.Priority != "high" {

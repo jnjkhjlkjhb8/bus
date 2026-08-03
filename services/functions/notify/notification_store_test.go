@@ -69,9 +69,9 @@ func TestNotificationStoreActiveRemindersUsesOneCompositeBatchQuery(t *testing.T
 		".*r\\.status='pending' OR \\(r\\.status='sending' AND \\(r\\.claimed_at IS NULL OR r\\.claimed_at<=\\$3\\)\\)").
 		WithArgs(arrivalEventsJSONMatcher{want: events}, now, now.Add(-ReminderClaimTimeout)).
 		WillReturnRows(pgxmock.NewRows([]string{
-			"reminder_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes", "plate",
+			"reminder_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes", "plate", "alight_event",
 			"arrival_route_type", "arrival_route_key", "arrival_stop_key", "arrival_direction", "eta_seconds", "arriving_plate",
-		}).AddRow("r2", "token-2", "bus", "R", "S2", "1", 5, "BUS-2", "bus", "R", "S2", "1", int32(240), "BUS-2"))
+		}).AddRow("r2", "token-2", "bus", "R", "S2", "1", 5, "BUS-2", "", "bus", "R", "S2", "1", int32(240), "BUS-2"))
 
 	matches, err := (Store{db: db}).activeRemindersForArrivals(context.Background(), events, now)
 	if err != nil {
@@ -197,8 +197,8 @@ func TestNotificationStoreScheduledSweepIncludesTimedOutSending(t *testing.T) {
 		".*r\\.status='pending' OR \\(r\\.status='sending' AND \\(r\\.claimed_at IS NULL OR r\\.claimed_at<=\\$2\\)\\)"+
 		".*r\\.fire_at<=\\$1 AND r\\.expires_at>\\$1").
 		WithArgs(now, now.Add(-ReminderClaimTimeout)).
-		WillReturnRows(pgxmock.NewRows([]string{"reminder_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes"}).
-			AddRow("r1", "token", "tra", "R", "S", "0", 5))
+		WillReturnRows(pgxmock.NewRows([]string{"reminder_id", "fcm_token", "route_type", "route_key", "stop_key", "direction", "lead_minutes", "alight_event"}).
+			AddRow("r1", "token", "tra", "R", "S", "0", 5, ""))
 	out, err := (Store{db: db}).dueScheduledReminders(context.Background(), now)
 	if err != nil || len(out) != 1 || out[0].id != "r1" {
 		t.Fatalf("out=%v err=%v", out, err)

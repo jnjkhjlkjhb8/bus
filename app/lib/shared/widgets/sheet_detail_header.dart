@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/data/models/favorite.dart';
 import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_bus/features/favorites/bloc/favorites_event.dart';
@@ -123,11 +122,10 @@ class FavoriteToggleButton extends StatelessWidget {
   /// Called after the toggle is dispatched, with `true` when the favorite
   /// was just added and `false` when it was just removed. Lets callers with
   /// additional side effects (e.g. syncing a push subscription) hook in
-  /// without reimplementing the toggle/haptic/undo behavior.
+  /// without reimplementing the toggle/undo behavior.
   final ValueChanged<bool>? onToggled;
 
   void _toggle(BuildContext context) {
-    unawaited(HapticService.instance.lightTap());
     final wasSaved = context.read<FavoritesBloc>().state.contains(favorite.id);
     context.read<FavoritesBloc>().add(FavoriteToggled(favorite));
     onToggled?.call(!wasSaved);

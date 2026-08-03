@@ -90,7 +90,7 @@ func TestCreateTrackValidation(t *testing.T) {
 		{"missing car", clone(func(r *pb.CreateMrtTrackRequest) { r.CarId = "" }), codes.InvalidArgument},
 		{"missing target", clone(func(r *pb.CreateMrtTrackRequest) { r.TargetStationId = "" }), codes.InvalidArgument},
 		{"non-TRTC system", clone(func(r *pb.CreateMrtTrackRequest) { r.System = "KRTC" }), codes.FailedPrecondition},
-		{"lead too low", clone(func(r *pb.CreateMrtTrackRequest) { r.LeadStops = 0 }), codes.InvalidArgument},
+		{"lead too low", clone(func(r *pb.CreateMrtTrackRequest) { r.LeadStops = -1 }), codes.InvalidArgument},
 		{"lead too high", clone(func(r *pb.CreateMrtTrackRequest) { r.LeadStops = 121 }), codes.InvalidArgument},
 	}
 	for _, c := range cases {

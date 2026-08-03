@@ -177,6 +177,9 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 		store:    store,
 		notifier: notifier,
 		now:      func() time.Time { return now },
+		// A recording tick: the assertion below is about which UID reaches the
+		// history row, not about the sampling clock (see recordsHistory).
+		snapshot: true,
 	}
 
 	job.runCity(context.Background(), "InterCity")
@@ -221,6 +224,47 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 	}
 	if notifier.batches != 1 || len(notifier.calls) != 1 || notifier.calls[0] != (busArrivalCall{routeKey: "THB9023", stopKey: "STOP1", direction: "0", seconds: 120, plate: "KKA-1234"}) {
 		t.Fatalf("canonical notification batches/calls = %d/%+v", notifier.batches, notifier.calls)
+	}
+}
+
+// A non-recording tick must still publish. The sampling test sits inside the
+// per-stop loop, and putting it on the branch (or reaching for a continue) would
+// take the stop's Redis payload with it — the live path would go dark for
+// nineteen ticks out of twenty while the logs showed nothing wrong.
+func TestBusLiveJobPublishesOnNonSnapshotTicks(t *testing.T) {
+	prefix := citymap["InterCity"]
+	busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+
+	now := time.Date(2026, time.July, 6, 9, 15, 0, 0, taipei)
+	src := &fakeLiveSource{fixtures: map[string][]byte{
+		"bus_EstimatedTimeOfArrivalInterCity": []byte(`[{"PlateNumb":"KKA-1234","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":0,"EstimateTime":120,"StopStatus":0,"SrcUpdateTime":"2026-07-06T09:15:00+08:00"}]`),
+		"bus_RealTimeByFrequencyInterCity":    []byte(`[]`),
+	}}
+	sink := &captureLiveSink{}
+	store := &fakeBusEtaStore{stops: []busStationmap{{
+		StationUID: "STATION1", StationName: "站牌一", GroupUID: "GROUP1", GroupName: "群組一",
+		SubRouteUID: "THB9023", SubRouteName: "9023", Direction: 0, StopUID: "STOP1",
+		StopSequence: 1, Lat: 25.05, Lon: 121.5,
+	}}}
+	job := busLiveJob{
+		fetch:    bindFetch(src, sink, specByKey(t, "bus")),
+		sink:     sink,
+		store:    store,
+		now:      func() time.Time { return now },
+		snapshot: false,
+	}
+
+	job.runCity(context.Background(), "InterCity")
+
+	if len(store.historyRows) != 0 {
+		t.Errorf("history rows = %+v, want none off a snapshot tick", store.historyRows)
+	}
+	if sink.setFor(shared.BusStationEtaKey("InterCity", "GROUP1")) == nil {
+		t.Error("station snapshot missing: sampling history must not gate the live publish")
+	}
+	if sink.setFor(shared.BusRouteEtaKey("THB9023")) == nil {
+		t.Error("route snapshot missing: sampling history must not gate the live publish")
 	}
 }
 

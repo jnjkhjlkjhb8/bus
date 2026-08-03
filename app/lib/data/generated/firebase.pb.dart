@@ -561,6 +561,7 @@ class CreateArrivalReminderRequest extends $pb.GeneratedMessage {
     $core.int? leadMinutes,
     $fixnum.Int64? expiresAtUnix,
     $core.String? plate,
+    $core.String? alightEvent,
   }) {
     final result = create();
     if (installId != null) result.installId = installId;
@@ -571,6 +572,7 @@ class CreateArrivalReminderRequest extends $pb.GeneratedMessage {
     if (leadMinutes != null) result.leadMinutes = leadMinutes;
     if (expiresAtUnix != null) result.expiresAtUnix = expiresAtUnix;
     if (plate != null) result.plate = plate;
+    if (alightEvent != null) result.alightEvent = alightEvent;
     return result;
   }
 
@@ -594,6 +596,7 @@ class CreateArrivalReminderRequest extends $pb.GeneratedMessage {
     ..aI(6, _omitFieldNames ? '' : 'leadMinutes')
     ..aInt64(7, _omitFieldNames ? '' : 'expiresAtUnix')
     ..aOS(8, _omitFieldNames ? '' : 'plate')
+    ..aOS(9, _omitFieldNames ? '' : 'alightEvent')
     ..hasRequiredFields = false;
 
   @$core.Deprecated('See https://github.com/google/protobuf.dart/issues/998.')
@@ -691,6 +694,19 @@ class CreateArrivalReminderRequest extends $pb.GeneratedMessage {
   $core.bool hasPlate() => $_has(7);
   @$pb.TagNumber(8)
   void clearPlate() => $_clearField(8);
+
+  /// Which 下車提醒 buzz this row fires — "lead" or "alight" (ADR-0020). A 下車
+  /// 提醒 arms two rows on two stops and they must feel different, so the event
+  /// rides back out on the push. Empty means the legacy arrival notification,
+  /// which still carries a banner.
+  @$pb.TagNumber(9)
+  $core.String get alightEvent => $_getSZ(8);
+  @$pb.TagNumber(9)
+  set alightEvent($core.String value) => $_setString(8, value);
+  @$pb.TagNumber(9)
+  $core.bool hasAlightEvent() => $_has(8);
+  @$pb.TagNumber(9)
+  void clearAlightEvent() => $_clearField(9);
 }
 
 class ArrivalReminder extends $pb.GeneratedMessage {

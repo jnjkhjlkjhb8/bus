@@ -398,7 +398,7 @@ class HiveStore {
   // box (opened on the critical path) so the bell state, Live Activity, and
   // re-watch survive an app restart. Only one session is active at a time.
   static const _mrtTrackKey = 'mrt_track_session';
-  static const _mrtTrackFiredKey = 'mrt_track_fired_id';
+  static const _alightFiredKey = 'mrt_track_fired_id';
 
   static Map<String, dynamic>? get mrtTrackSession {
     final raw = settings.get(_mrtTrackKey) as Map?;
@@ -410,14 +410,17 @@ class HiveStore {
 
   static Future<void> clearMrtTrackSession() => settings.delete(_mrtTrackKey);
 
-  /// Whether the lead-fired vibration has already gone off for [trackId] —
-  /// guards against a double buzz when the WatchTrack stream and the FCM data
-  /// message both deliver the same lead_fired transition.
-  static bool isMrtTrackFired(String trackId) =>
-      trackId.isNotEmpty && settings.get(_mrtTrackFiredKey) == trackId;
+  /// Whether a 下車提醒 vibration has already gone off for [firedKey]
+  /// (`sessionId:event`) — guards against a double buzz when the live stream
+  /// and the FCM data message both deliver the same crossing. One slot is
+  /// enough: a session's two events can only be crossed in order, and a new
+  /// session carries a different id. The Hive key keeps its ADR-0015 name so
+  /// an upgrade doesn't re-fire a session in flight.
+  static bool isAlightFired(String firedKey) =>
+      firedKey.isNotEmpty && settings.get(_alightFiredKey) == firedKey;
 
-  static Future<void> markMrtTrackFired(String trackId) =>
-      settings.put(_mrtTrackFiredKey, trackId);
+  static Future<void> markAlightFired(String firedKey) =>
+      settings.put(_alightFiredKey, firedKey);
 
   // Local mirror of arrival reminders (routeUid -> { stopUid -> {id, exp} }) so
   // the bell survives navigation/restart — the server has no listReminders RPC

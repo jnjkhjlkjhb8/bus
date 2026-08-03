@@ -40,16 +40,6 @@ typedef _RailRow = ({
   bool isAddedService,
 });
 
-// This screen's own detents. The query form only ever fills ~45% of the
-// screen, so every detent above `half` leaves it floating over blank space
-// while occluding the timetable behind it; Apple HIG sheets never present a
-// taller sheet than their content needs. `half` gives the form all the room
-// it has to fill. Defined locally rather than mutating [AppSheetSnap.grid],
-// which other screens depend on.
-const _railSheetSnapGrid = SheetSnapGrid(
-  snaps: [AppSheetSnap.peek, AppSheetSnap.half],
-  minFlingSpeed: AppSheetSnap.flingSpeed,
-);
 
 // Built per call rather than held in a const map: the names follow the
 // rider's language.
@@ -504,9 +494,6 @@ class _RailScreenState extends State<RailScreen> {
             // status-bar padding is what keeps its handle and title clear.
             AppSheet(
               controller: _sheetController,
-              // Back button in the app bar above (see AppSheet.onExit).
-              onExit: null,
-              snapGrid: _railSheetSnapGrid,
               color: cs.surface,
               child: RailQuerySheetContent(
                 preset: _preset,

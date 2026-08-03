@@ -18,18 +18,12 @@ class _RouteSheet extends StatelessWidget {
     required this.pickingStop,
     required this.pinnedNextStopIndex,
     required this.targetStopUid,
-    required this.leadStops,
+    required this.leadStopUid,
+    required this.boundPlate,
     required this.onPickStop,
-    required this.onLeadChanged,
-    required this.onConfirmPick,
-    required this.onSkipPick,
-    required this.onBellTapped,
-    this.onCancelPick,
+    required this.onSwipeVehicle,
+    required this.onCancelPick,
   });
-
-  /// Opens the 下車提醒 flow from the sheet header — the entry that does not
-  /// require spotting a moving pin on the map first.
-  final VoidCallback onBellTapped;
 
   final TabController tabController;
   final SheetController sheetController;
@@ -54,51 +48,20 @@ class _RouteSheet extends StatelessWidget {
   /// The chosen alight stop, or null before one is tapped.
   final String? targetStopUid;
 
-  /// 提前站數 lead (min 1).
-  final int leadStops;
+  /// The 提前提醒站, derived from 提前站數. Null at lead 0 (the default).
+  final String? leadStopUid;
+
+  /// The plate the running 下車提醒 follows, so its marker row carries the
+  /// seat glyph.
+  final String? boundPlate;
+
   final void Function(String uid) onPickStop;
-  final ValueChanged<int> onLeadChanged;
-  final VoidCallback onConfirmPick;
-  final VoidCallback onSkipPick;
 
-  /// Fully aborts pick-mode with no tracking session started. Optional and
-  /// unwired today — the caller (BusRouteScreen) would need to mirror the
-  /// unpin branch of its own _togglePin (session cancel + state reset) to
-  /// supply this. See finding 6, docs/audit-2026-07-18.md.
-  final VoidCallback? onCancelPick;
+  /// Swiping a vehicle marker right opens the flow bound to that plate.
+  final void Function(String plate, int markerIndex) onSwipeVehicle;
 
-  /// The stop this route is live-tracking (追蹤), or null. Only a trackOnly
-  /// waiting session on this very subroute counts — navigation sessions and
-  /// other routes' sessions leave the toggles idle.
-  String? _trackedStopUidFor(JourneySessionState s) =>
-      trackedBusStopUid(s, routeState.route?.subRouteUid);
-
-  void _toggleStopTracking(BuildContext context, TimelineStop stop) {
-    final session = context.read<JourneySessionBloc>();
-    unawaited(HapticService.instance.mediumTap());
-    if (_trackedStopUidFor(session.state) == stop.uid) {
-      session.add(const JourneyCancelled());
-      return;
-    }
-    final route = routeState.route;
-    if (route == null) return;
-    final stops = direction == 0 ? route.stopsGo : route.stopsReturn;
-    final idx = stops.indexWhere((s) => s.stopUid == stop.uid);
-    if (idx < 0) return;
-    session.add(
-      JourneyStarted(
-        trackOnly: true,
-        legs: [
-          busTrackingLeg(
-            route: route,
-            stops: stops,
-            boardIndex: idx,
-            direction: direction,
-          ),
-        ],
-      ),
-    );
-  }
+  /// Leaves pick-mode with nothing started.
+  final VoidCallback onCancelPick;
 
   @override
   Widget build(BuildContext context) {
@@ -106,6 +69,7 @@ class _RouteSheet extends StatelessWidget {
     // Route identity strip (finding 5): the floating app bar this doubles for
     // is painted under the sheet, so it needs the current headsign too.
     final dirName = direction == 0 ? dirNames[0] : dirNames[1];
+    final sole = routeState.route?.soleDirection;
 
     // Only the timeline observes live ETA churn; the sheet skeleton around it
     // stays put across frames.
@@ -152,31 +116,20 @@ class _RouteSheet extends StatelessWidget {
                 // not the tab bar or detail tab.
                 BlocSelector<BusRouteBloc, BusRouteState, List<TimelineStop>>(
                   selector: (s) => _stopsFor(AppI18n.of(context), s),
-                  builder: (context, stops) =>
-                      BlocSelector<
-                        JourneySessionBloc,
-                        JourneySessionState,
-                        String?
-                      >(
-                        selector: _trackedStopUidFor,
-                        builder: (context, trackedStopUid) => _StopListTab(
-                          stops: stops,
-                          scrollController: scrollController,
-                          flashStopUid: flashStopUid,
-                          trackedStopUid: trackedStopUid,
-                          // While a 下車站 is being chosen the rows pick
-                          // instead of arming an arrival reminder: one list,
-                          // one meaning at a time.
-                          picking: pickingStop,
-                          firstPickableIndex: firstAlightIndex(
-                            pinnedNextStopIndex,
-                          ),
-                          targetStopUid: targetStopUid,
-                          onPickStop: onPickStop,
-                          onTrackToggled: (stop) =>
-                              _toggleStopTracking(context, stop),
-                        ),
-                      ),
+                  builder: (context, stops) => _StopListTab(
+                    stops: stops,
+                    scrollController: scrollController,
+                    flashStopUid: flashStopUid,
+                    // While a 下車站 is being chosen the rows pick; outside the
+                    // flow they are inert. One list, one meaning at a time.
+                    picking: pickingStop,
+                    firstPickableIndex: firstAlightIndex(pinnedNextStopIndex),
+                    targetStopUid: targetStopUid,
+                    leadStopUid: leadStopUid,
+                    boundPlate: boundPlate,
+                    onPickStop: onPickStop,
+                    onSwipeVehicle: onSwipeVehicle,
+                  ),
                 ),
               _RouteDetailTab(state: routeState),
             ],
@@ -187,22 +140,14 @@ class _RouteSheet extends StatelessWidget {
 
     return AppSheet(
       controller: sheetController,
-      // Holding past the top edge returns the sheet to peek rather than
-      // leaving the page — the same answer the home sheet gives. The floating
-      // app bar's back button is the way out (see AppSheet.onExit). While
-      // picking an alight stop peek is out of the grid, so the hold lands on
-      // the pick detent instead.
-      onExit: () => sheetController.animateTo(
-        pickingStop ? _kPickSheetOffset : AppSheetSnap.peek,
-      ),
       initialOffset: AppSheetSnap.peek,
-      // While picking an alight stop the grid collapses: the pick bar inserts
-      // above the timeline and peek has no room for both (dragging down to
-      // peek used to clip the timeline's ETA labels away). The rider exits
-      // pick-mode via 完成/略過/取消 in the pick bar.
+      // Picking pins the sheet open. The gesture that starts the flow happens
+      // in the full-detent list and the stop tapped next is in that same
+      // list — a sheet that could drop would take the rows the rider is
+      // reaching for with it. The way out is 完成/略過/取消, not a drag.
       snapGrid: pickingStop
           ? const SheetSnapGrid(
-              snaps: [_kPickSheetOffset, AppSheetSnap.full],
+              snaps: [AppSheetSnap.full],
               minFlingSpeed: AppSheetSnap.flingSpeed,
             )
           : _kRouteSnapGrid,
@@ -252,13 +197,6 @@ class _RouteSheet extends StatelessWidget {
                                 ),
                               ),
                             ],
-                            AlightTrackBell(
-                              active: false,
-                              semanticLabel: AppI18n.of(
-                                context,
-                              ).alightReminderSet,
-                              onTap: onBellTapped,
-                            ),
                           ],
                         ),
                       ),
@@ -270,17 +208,24 @@ class _RouteSheet extends StatelessWidget {
           const SizedBox(height: 12),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            // A loop/one-way route has no return stop list; a two-slot
-            // slider with a blank half would render, so a static pill
-            // carries the single headsign instead.
-            child:
-                routeState.route != null &&
-                    routeState.route!.stopsReturn.isEmpty
+            // Picking takes the direction slider's slot rather than adding a
+            // band of its own: switching direction mid-pick would invalidate
+            // the pinned bus's position snapshot, so the control that must not
+            // be touched is exactly the one the capsule replaces.
+            child: pickingStop
+                ? Center(child: AlightPickCapsule(onCancel: onCancelPick))
+                // A loop/one-way route carries stops in one direction only; a
+                // two-slot slider with a blank half would render, so a static
+                // pill carries the single headsign instead. The populated side
+                // is either one — TDX publishes return-only sub-routes.
+                : sole != null
                 ? AppStaticSegment(
-                    label: dirNames[0].isNotEmpty ? dirNames[0] : routeName,
+                    label: dirNames[sole].isNotEmpty
+                        ? dirNames[sole]
+                        : routeName,
                     leading: Icons.repeat_rounded,
                     semanticLabel: AppI18n.of(context).busOneWayRoute(
-                      dirNames[0].isNotEmpty ? dirNames[0] : routeName,
+                      dirNames[sole].isNotEmpty ? dirNames[sole] : routeName,
                     ),
                   )
                 : AppSlidingSegment<int>(
@@ -345,103 +290,6 @@ class _RouteSheet extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-/// The candidate buses a reminder can bind to, as one row of plate chips.
-///
-/// A route can have several buses out at once and the reminder follows one
-/// plate, so this is the rider's choice to make. Each chip carries where that
-/// bus is right now, because a plate on its own is not something anyone can
-/// recognise from inside the vehicle.
-class _PlateChooser extends StatelessWidget {
-  const _PlateChooser({
-    required this.candidates,
-    required this.selected,
-    required this.onChoose,
-  });
-
-  final List<({String plate, String afterStopName, int index})> candidates;
-  final String? selected;
-  final void Function(String plate, int nextStopIndex) onChoose;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final i18n = AppI18n.of(context);
-    if (candidates.isEmpty) {
-      // The reminder binds to a plate, so with nothing running there is
-      // nothing to bind — said here, where the choice would have been, rather
-      // than left as a CTA that refuses without explaining itself.
-      return Text(
-        i18n.alightNoVehicles,
-        style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
-      );
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          i18n.alightPickVehicle,
-          style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
-        ),
-        const SizedBox(height: 8),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            children: [
-              for (final c in candidates) ...[
-                Pressable(
-                  onTap: () => onChoose(c.plate, c.index),
-                  semanticLabel: c.plate,
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 7,
-                    ),
-                    decoration: BoxDecoration(
-                      color: selected == c.plate
-                          ? cs.surfaceContainerHighest
-                          : null,
-                      border: Border.all(
-                        color: selected == c.plate
-                            ? cs.onSurface
-                            : cs.outlineVariant,
-                      ),
-                      borderRadius: BorderRadius.circular(
-                        AppTheme.radiusButton,
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          c.plate,
-                          style: AppTextStyles.memo.copyWith(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 1),
-                        Text(
-                          i18n.alightVehiclePassed(c.afterStopName),
-                          style: AppTextStyles.bodyVerySmall.copyWith(
-                            color: cs.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ],
     );
   }
 }

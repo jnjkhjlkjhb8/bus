@@ -59,3 +59,55 @@ func invalidateBusStaticMap() {
 func invalidateBusStaticMapCity(prefix string) {
 	busStaticMapCache.Delete(prefix)
 }
+
+// stopOffsetCache holds each subroute's stop offsets, keyed by sub_route_uid.
+//
+// batchStopOffsets runs busPatternSQL, whose known_stop CTE unnests every
+// raw_tdx.bus_stopofroute row before the uid filter is applied — so the cost is
+// the same whether one subroute is asked for or a thousand. On the 30s tick
+// across twenty cities that was ~2,400 executions an hour against the 2 GB Azure
+// server, and it is what the "batchStopOffsets rows error: context deadline
+// exceeded" line in the logs was.
+//
+// bus_segment_time, the only input that moves, is rewritten once a night by the
+// 04:00 segmentTimes job. An hour's TTL is well inside that cadence and needs no
+// invalidation hook: the worst case is one hour of yesterday's offsets, on a
+// figure that is a seven-day median.
+var stopOffsetCache sync.Map
+
+const stopOffsetCacheTTL = time.Hour
+
+type stopOffset struct {
+	direction int32
+	stopUID   string
+	secs      int
+}
+
+type stopOffsetCacheEntry struct {
+	offsets  []stopOffset
+	loadedAt time.Time
+}
+
+// cachedStopOffsets fills out from the cache and returns the uids that missed.
+func cachedStopOffsets(cache *sync.Map, uids []string, now time.Time, out map[stopOffsetKey]int) []string {
+	var missing []string
+	for _, uid := range uids {
+		v, ok := cache.Load(uid)
+		entry, typed := v.(stopOffsetCacheEntry)
+		if !ok || !typed || now.Sub(entry.loadedAt) >= stopOffsetCacheTTL {
+			cache.Delete(uid)
+			missing = append(missing, uid)
+			continue
+		}
+		for _, o := range entry.offsets {
+			out[stopOffsetKey{subRouteUID: uid, direction: o.direction, stopUID: o.stopUID}] = o.secs
+		}
+	}
+	return missing
+}
+
+func storeStopOffsets(cache *sync.Map, fetched map[string][]stopOffset, now time.Time) {
+	for uid, offsets := range fetched {
+		cache.Store(uid, stopOffsetCacheEntry{offsets: offsets, loadedAt: now})
+	}
+}

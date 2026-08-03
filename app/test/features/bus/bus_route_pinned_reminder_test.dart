@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_bus/core/haptics/alight_haptics.dart';
 import 'package:wheres_the_bus/data/models/firebase_models.dart';
 import 'package:wheres_the_bus/data/repositories/firebase_repository.dart';
 import 'package:wheres_the_bus/data/repositories/reminders_repository.dart';
@@ -13,6 +14,7 @@ class _CapturingFirebaseRepository extends FirebaseRepository {
   String? capturedPlate;
   int? capturedLeadMinutes;
   String? capturedStopKey;
+  String? capturedAlightEvent;
 
   @override
   Future<ArrivalReminderReceipt> createArrivalReminder({
@@ -23,8 +25,10 @@ class _CapturingFirebaseRepository extends FirebaseRepository {
     required int leadMinutes,
     required DateTime expiresAt,
     String plate = '',
+    String alightEvent = '',
   }) async {
     capturedPlate = plate;
+    capturedAlightEvent = alightEvent;
     capturedLeadMinutes = leadMinutes;
     capturedStopKey = stopKey;
     if (failCreate) throw Exception('grpc down');
@@ -50,6 +54,7 @@ void main() {
         const BusRoutePinnedReminderArmed(
           stopUid: 'TRIGGER',
           plate: 'KAA-1234',
+          event: AlightEvent.alight,
         ),
       );
       await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -75,7 +80,11 @@ void main() {
     addTearDown(bloc.close);
 
     bloc.add(
-      const BusRoutePinnedReminderArmed(stopUid: 'TRIGGER', plate: 'KAA-1234'),
+      const BusRoutePinnedReminderArmed(
+        stopUid: 'TRIGGER',
+        plate: 'KAA-1234',
+        event: AlightEvent.alight,
+      ),
     );
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
@@ -95,11 +104,19 @@ void main() {
     addTearDown(bloc.close);
 
     bloc.add(
-      const BusRoutePinnedReminderArmed(stopUid: 'TRIGGER', plate: 'KAA-1'),
+      const BusRoutePinnedReminderArmed(
+        stopUid: 'TRIGGER',
+        plate: 'KAA-1',
+        event: AlightEvent.alight,
+      ),
     );
     await Future<void>.delayed(const Duration(milliseconds: 50));
     bloc.add(
-      const BusRoutePinnedReminderArmed(stopUid: 'TRIGGER', plate: 'ZZZ-9'),
+      const BusRoutePinnedReminderArmed(
+        stopUid: 'TRIGGER',
+        plate: 'ZZZ-9',
+        event: AlightEvent.alight,
+      ),
     );
     await Future<void>.delayed(const Duration(milliseconds: 50));
 

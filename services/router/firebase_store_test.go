@@ -79,9 +79,10 @@ func TestFirebaseStoreSQL(t *testing.T) {
 	reminder := FirebaseArrivalReminder{
 		ReminderID: "reminder-1", InstallID: "install-1", RouteType: "bus", RouteKey: "route-1",
 		StopKey: "stop-1", Direction: "0", LeadMinutes: 5, ExpiresAt: expires, Status: ReminderPending, Plate: "AAA-1234",
+		AlightEvent: "alight",
 	}
 	mock.ExpectExec("INSERT INTO firebase_arrival_reminder").
-		WithArgs("reminder-1", "install-1", "bus", "route-1", "stop-1", "0", int32(5), (*time.Time)(nil), expires, ReminderPending, "AAA-1234").
+		WithArgs("reminder-1", "install-1", "bus", "route-1", "stop-1", "0", int32(5), (*time.Time)(nil), expires, ReminderPending, "AAA-1234", "alight").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	if err := store.CreateArrivalReminder(ctx, reminder); err != nil {
 		t.Fatal(err)

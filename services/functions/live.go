@@ -119,6 +119,18 @@ func bindFetch(src liveSource, sink liveSink, spec liveSpec) boundFetch {
 	}
 }
 
+// bufferedPrefix returns what the decoder has already buffered, capped so a
+// megabyte of unexpected payload cannot reach the log through an error string.
+func bufferedPrefix(dec *json.Decoder) string {
+	const limit = 256
+	buf := make([]byte, limit)
+	n, _ := io.ReadFull(dec.Buffered(), buf)
+	if n == limit {
+		return string(buf[:n]) + "…"
+	}
+	return string(buf[:n])
+}
+
 // decodeLiveItems strictly consumes one JSON array. Unlike the static-loader
 // decoder, realtime snapshots must fail closed: skipping a malformed element
 // and acknowledging the response would make the partial Redis snapshot look
@@ -129,7 +141,10 @@ func decodeLiveItems[T any](dec *json.Decoder, fn func(T) error) error {
 		return err
 	}
 	if opening != json.Delim('[') {
-		return fmt.Errorf("TDX payload starts with %v, want array", opening)
+		// The token alone ("{") does not say whether TDX wrapped the array in an
+		// envelope or returned an error object, and the body is gone by the time
+		// the error is read. Carry a bounded prefix of what is still buffered.
+		return fmt.Errorf("TDX payload starts with %v, want array: %s", opening, bufferedPrefix(dec))
 	}
 	for dec.More() {
 		var value T

@@ -1,7 +1,6 @@
 import 'dart:async';
-import 'package:flutter/gestures.dart' show kLongPressTimeout;
 import 'package:flutter/material.dart';
-import 'package:flutter/physics.dart' show SpringDescription, SpringSimulation;
+import 'package:flutter/physics.dart' show SpringSimulation;
 import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
@@ -55,41 +54,6 @@ abstract final class AppSheetSnap {
   );
 }
 
-/// [base]'s detents, each clamped to the sheet's own content height.
-///
-/// A sheet whose content ends short of its top detent otherwise drags a band of
-/// empty surface up with it — the metro station card with no live arrivals runs
-/// out well below [AppSheetSnap.tall]. Clamping parks the sheet's top edge on
-/// the last line of content wherever that falls; a sheet whose content fills
-/// the detent resolves to [base] unchanged.
-///
-/// Requires content that sizes itself (a shrink-wrapping scroll view, no
-/// [Expanded]) — content forced to the viewport height is never shorter than
-/// any detent, so nothing is ever clamped.
-class ContentCappedSnapGrid implements SheetSnapGrid {
-  const ContentCappedSnapGrid({required this.base});
-
-  final SheetSnapGrid base;
-
-  static const _content = SheetOffset(1);
-
-  SheetOffset _cap(ViewportLayout layout, SheetOffset offset) =>
-      offset.resolve(layout) > _content.resolve(layout) ? _content : offset;
-
-  @override
-  SheetOffset getSnapOffset(
-    ViewportLayout layout,
-    double offset,
-    double velocity,
-  ) => _cap(layout, base.getSnapOffset(layout, offset, velocity));
-
-  @override
-  (SheetOffset, SheetOffset) getBoundaries(ViewportLayout layout) {
-    final (min, max) = base.getBoundaries(layout);
-    return (_cap(layout, min), _cap(layout, max));
-  }
-}
-
 /// The one way a page moves its own sheet by code.
 ///
 /// A detent change the app makes on the rider's behalf has to read the same
@@ -118,18 +82,6 @@ extension SheetControllerMotion on SheetController {
 /// instead of with it. Hoisted out of `build` because the sheet rebuilds every
 /// drag frame and the physics is the same object each time.
 final _sheetSpring = ClampingSheetPhysics(spring: AppMotion.spring);
-
-/// The modal counterpart of [_sheetSpring]: a modal keeps the package's
-/// bouncing physics — it is swipe-dismissible, and clamping the drag at the
-/// bottom detent would fight that gesture — but settles on the same spring as
-/// every in-page sheet, so a modal dragged to full arrives at the tempo the
-/// rest of the app moves at.
-class _ModalSheetPhysics extends BouncingSheetPhysics {
-  const _ModalSheetPhysics();
-
-  @override
-  SpringDescription get spring => AppMotion.spring;
-}
 
 /// The viewport fraction a sibling sheet should open at to continue where a
 /// live sheet currently sits, clamped into [min]..[max]; [fallback] when the
@@ -273,7 +225,7 @@ class CurrentPageSheetTicks extends ChangeNotifier {
 }
 
 /// The standard chrome every draggable in-page sheet wears: the viewport, the
-/// hold-to-exit gesture, the drag haptics, and the physics/decoration that
+/// edge give, the drag haptics, and the physics/decoration that
 /// give the sheet its feel.
 ///
 /// Pages supply only what genuinely differs — the detents they snap to, the
@@ -283,11 +235,11 @@ class CurrentPageSheetTicks extends ChangeNotifier {
 class AppSheet extends StatefulWidget {
   const AppSheet({
     required this.child,
-    required this.onExit,
     this.controller,
     this.initialOffset = AppSheetSnap.half,
     this.snapGrid = AppSheetSnap.grid,
     this.color,
+    this.padStatusBar = true,
     super.key,
   }) : navigator = null;
 
@@ -301,13 +253,13 @@ class AppSheet extends StatefulWidget {
   /// call [statusBarPadding] through their own ticks instead.
   const AppSheet.paged({
     required Navigator this.navigator,
-    required this.onExit,
     this.controller,
     this.color,
     super.key,
   }) : child = const SizedBox.shrink(),
        initialOffset = AppSheetSnap.half,
-       snapGrid = AppSheetSnap.grid;
+       snapGrid = AppSheetSnap.grid,
+       padStatusBar = true;
 
   /// The top padding a sheet sitting [offset] tall needs for its content to
   /// stop at the status bar instead of sliding under it.
@@ -347,23 +299,6 @@ class AppSheet extends StatefulWidget {
 
   final Widget child;
 
-  /// Runs when the rider holds the sheet past either end edge — usually
-  /// `context.pop()`, or a return to [AppSheetSnap.peek] for a root sheet
-  /// that has nowhere to pop to.
-  ///
-  /// Null disarms the gesture entirely: the top edge then gives and springs
-  /// back like the bottom one, with no dim and no commit.
-  ///
-  /// Which is what most pages here pass. The full detent is where a rider
-  /// reads a long list, so the top edge is somewhere they arrive by scrolling
-  /// and then pause — the same shape as the exit hold, which took the page
-  /// away mid-read. Every one of those pages carries a back button in its own
-  /// chrome, so the gesture was a second way out that only ever fired by
-  /// accident. The sheets that kept an exit — home and the bus route page —
-  /// return to [AppSheetSnap.peek] with it rather than removing anything, so
-  /// the dim promises a collapse and delivers one.
-  final VoidCallback? onExit;
-
   final SheetController? controller;
   final SheetOffset initialOffset;
   final SheetSnapGrid snapGrid;
@@ -371,6 +306,12 @@ class AppSheet extends StatefulWidget {
   /// Defaults to `surfaceContainerLow`; pages override only when the sheet
   /// sits on a surface that would otherwise blend into it.
   final Color? color;
+
+  /// Whether the sheet ramps in top padding as it nears `full` (see
+  /// [statusBarPadding]). Off on pages whose max detent sits below `full` —
+  /// metro is capped at `tall`, and the ramp is keyed to `full`, so it never
+  /// finishes closing and leaves a permanent gap above the drag handle.
+  final bool padStatusBar;
 
   final Navigator? navigator;
 
@@ -419,9 +360,6 @@ class _AppSheetState extends State<AppSheet> {
   }
 
   bool _onNotification(SheetNotification notification) {
-    if (notification is SheetDragEndNotification) {
-      unawaited(HapticService.instance.lightTap());
-    }
     _edgeHaptics.observe(notification.metrics);
     return false;
   }
@@ -443,8 +381,7 @@ class _AppSheetState extends State<AppSheet> {
       child: NotificationListener<SheetNotification>(
         onNotification: _onNotification,
         child: SheetViewport(
-          child: SheetExitGestureDetector(
-            onExit: widget.onExit,
+          child: SheetEdgeGestureDetector(
             child: navigator == null
                 // Rebuilds per drag frame to re-pad the sheet, with the content
                 // passed through untouched so only the padding recomputes.
@@ -456,11 +393,15 @@ class _AppSheetState extends State<AppSheet> {
                       initialOffset: widget.initialOffset,
                       snapGrid: widget.snapGrid,
                       padding: EdgeInsets.only(
-                        top: AppSheet.statusBarPadding(
-                          offset: offset ?? 0,
-                          viewportHeight: MediaQuery.sizeOf(context).height,
-                          topInset: MediaQuery.paddingOf(context).top,
-                        ),
+                        top: widget.padStatusBar
+                            ? AppSheet.statusBarPadding(
+                                offset: offset ?? 0,
+                                viewportHeight: MediaQuery.sizeOf(
+                                  context,
+                                ).height,
+                                topInset: MediaQuery.paddingOf(context).top,
+                              )
+                            : 0,
                       ),
                       // No bounce past the end detents: the sheet is the page's
                       // primary surface, and overshoot there reads as the page
@@ -568,9 +509,9 @@ class _SheetPageTopInsetState extends State<SheetPageTopInset> {
 /// The modal counterpart of [AppSheet], pushed over the whole app rather than
 /// living inside a page.
 ///
-/// It shares [AppSheet.statusBarPadding] but stays overdraggable: a modal is
-/// swipe-dismissible, and clamping the drag at the bottom detent would fight
-/// the dismiss gesture (see [_ModalSheetPhysics]).
+/// It shares [AppSheet.statusBarPadding] and, like a page sheet, cannot be
+/// dragged away: the way out is the scrim, the back gesture, or the sheet's
+/// own control.
 class BottomSheetShell extends StatefulWidget {
   const BottomSheetShell({
     required this.child,
@@ -593,21 +534,12 @@ class BottomSheetShell extends StatefulWidget {
     SheetOffset maxOffset = AppSheetSnap.full,
   }) {
     return Navigator.of(context).push(
+      // `swipeDismissible` left off: dragging a sheet down never dismisses it
+      // anywhere in the app (see [SheetEdgeGestureDetector]), and a modal is
+      // not the place to make that gesture mean something else. The scrim tap
+      // (`barrierDismissible`, on by default) and the back gesture are the
+      // ways out, alongside whatever control the sheet carries itself.
       ModalSheetRoute<T>(
-        swipeDismissible: true,
-        // A modal rose from the bottom, so it leaves to the bottom: the floor
-        // an in-page sheet has (see [SheetExitGestureDetector]) would deny a
-        // modal the way out it arrived by, and none of these sheets carries a
-        // close control to fall back on. What it does need is a threshold the
-        // rider has to mean. The package defaults (0.3 / 2.0) hand the
-        // dismissal to any casual downward drag — the same over-eagerness
-        // [AppSheetSnap.flingSpeed] fixes for detents. Under the threshold the
-        // modal springs back, which is the "not yet" a page sheet says with
-        // its floor.
-        swipeDismissSensitivity: const SwipeDismissSensitivity(
-          minFlingVelocityRatio: 3.5,
-          dismissalOffset: SheetOffset(0.12),
-        ),
         builder: (_) => BottomSheetShell(
           initialOffset: initialOffset,
           minOffset: minOffset,
@@ -636,9 +568,6 @@ class _BottomSheetShellState extends State<BottomSheetShell> {
   }
 
   bool _onNotification(SheetNotification notification) {
-    if (notification is SheetDragEndNotification) {
-      unawaited(HapticService.instance.lightTap());
-    }
     _edgeHaptics.observe(notification.metrics);
     return false;
   }
@@ -673,7 +602,7 @@ class _BottomSheetShellState extends State<BottomSheetShell> {
             topInset: MediaQuery.paddingOf(context).top,
           ),
         ),
-        physics: const _ModalSheetPhysics(),
+        physics: _sheetSpring,
         scrollConfiguration: const SheetScrollConfiguration(),
         decoration: MaterialSheetDecoration(
           size: SheetSize.stretch,
@@ -735,89 +664,57 @@ class SheetDragHandle extends StatelessWidget {
   }
 }
 
-/// Which end of its travel the sheet is being pulled past.
-enum _SheetEdge {
-  /// Pulled up while already at the tallest detent. Gives from the top edge,
-  /// so the sheet appears to recede downward.
-  top,
-
-  /// Pulled down while already at the shortest detent. There is nothing below,
-  /// so the pull is answered with a floor: the sheet gives a little, resists
-  /// progressively, and springs back. It never commits to anything.
-  bottom,
-}
-
-/// Holding a sheet past its *top* edge leaves the layer it belongs to; pulling
-/// it past the *bottom* edge finds the floor.
+/// Pulling a sheet down past its lowest detent finds a floor: the sheet gives
+/// a little, resists progressively, and springs back.
 ///
-/// Only the top edge commits. Downward never means "leave": on a map-front
-/// page pulling the sheet down is how a rider asks for the map (the
-/// [AppSheetSnap] `map` detent), and a gesture that sometimes shrinks the sheet
-/// and sometimes throws the page away is not one a rider can spend without
-/// looking.
+/// It never commits to anything. A sheet leaves through the back button in its
+/// own chrome, never through a drag — a gesture that sometimes shrinks the
+/// sheet and sometimes throws the page away is not one a rider can spend
+/// without looking. The floor still answers the pull, because a boundary that
+/// does nothing reads as a frozen app rather than as an end of travel.
 ///
-/// Both edges still answer the pull, because a boundary that does nothing reads
-/// as a frozen app rather than as an end of travel. They answer it differently,
-/// which is the point: the top edge dims and recedes — the telegraph of
-/// something about to happen — while the bottom edge only gives ground and
-/// takes it back. Nothing there is about to happen, and the motion says so.
-class SheetExitGestureDetector extends StatefulWidget {
-  const SheetExitGestureDetector({
-    required this.child,
-    required this.onExit,
-    super.key,
-  });
+/// The top edge is left to the sheet's own clamping physics: it simply stops.
+/// The give there used to be the telegraph of a hold-to-exit that no longer
+/// exists, and on its own it is motion in place of information — 1.5% of scale
+/// on a stretched sheet also opens a strip of map down both sides, which reads
+/// as the surface coming loose rather than as resistance.
+class SheetEdgeGestureDetector extends StatefulWidget {
+  const SheetEdgeGestureDetector({required this.child, super.key});
 
   final Widget child;
 
-  /// Null disarms the gesture: both edges then only give ground and take it
-  /// back. See [AppSheet.onExit].
-  final VoidCallback? onExit;
-
   @override
-  State<SheetExitGestureDetector> createState() =>
-      _SheetExitGestureDetectorState();
+  State<SheetEdgeGestureDetector> createState() =>
+      _SheetEdgeGestureDetectorState();
 }
 
-class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector>
+class _SheetEdgeGestureDetectorState extends State<SheetEdgeGestureDetector>
     with SingleTickerProviderStateMixin {
-  Timer? _exitTimer;
-  bool _isHoldingOverflow = false;
-
-  /// How far past the edge the rider has pulled, in px — positive past the top
-  /// detent, negative past the bottom one — springing back to zero when they
-  /// let go.
+  /// How far past the lowest detent the rider has pulled, in px, springing
+  /// back to zero when they let go.
   ///
   /// [SheetOverflowNotification.overflow] reports the delta the sheet refused
   /// *this frame*, not a running total, so the pull is summed here. Reading the
   /// raw per-frame value instead would make the give track drag speed and
-  /// collapse to nothing the moment the finger stopped — exactly when the hold
-  /// is supposed to be at its strongest.
+  /// collapse to nothing the moment the finger stopped — exactly when the pull
+  /// is at its most deliberate.
   ///
   /// An [AnimationController] rather than a plain field behind `setState`: it
   /// is written on every drag frame, and on release it has to *settle* rather
-  /// than snap. At the top edge the snap was invisible because the layer was
-  /// already leaving; at the bottom edge the release is the whole gesture.
+  /// than snap. The release is the whole gesture.
   late final AnimationController _overflow = AnimationController.unbounded(
     vsync: this,
   );
 
-  /// Which edge the rider is currently pulling against; null when the sheet is
-  /// within bounds. Only the live pull sets this — the spring-back is not a
-  /// pull, so it runs with the edge already cleared.
-  _SheetEdge? _edge;
+  /// Whether the sheet is currently held against its floor by a live pull;
+  /// false once the rider lets go, so the spring-back does not read as more
+  /// pull.
+  bool _onFloor = false;
 
-  /// Whether the rider's finger is still on the sheet.
-  ///
-  /// A hold is something the rider is doing, so nothing but a live drag may
-  /// arm one. The case this actually catches is a cancelled drag: the arena
-  /// can take the gesture away mid-pull, and a cancel that only stopped the
-  /// overflow — without clearing the dwell — would commit the exit with no
-  /// finger on the glass.
+  /// Whether the rider's finger is still on the sheet. The give belongs to a
+  /// live drag, so a cancelled one — the arena can take the gesture away
+  /// mid-pull — hands the sheet straight back to its spring.
   bool _dragging = false;
-
-  /// Overflow (px) at which the top-edge telegraph reaches full strength.
-  static const _maxOverflowPx = 64.0;
 
   /// How far the sheet can be pushed below its lowest detent, however hard the
   /// rider pulls. Deep enough to read as ground given rather than as a jitter,
@@ -827,10 +724,6 @@ class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector>
   /// The share of the finger the sheet follows in the *first* pixels past the
   /// bottom detent, before the resistance builds. Apple's rubber-band constant.
   static const _floorResistance = 0.55;
-
-  /// Per-frame movement below this counts as holding still — a finger resting
-  /// on glass never reports exactly zero.
-  static const _stillnessSlopPx = 0.5;
 
   /// Below this the give is invisible, so it is treated as settled rather than
   /// re-sprung: a spring lands arbitrarily close to zero, never exactly on it.
@@ -844,82 +737,32 @@ class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector>
       (overshoot * _maxFloorGivePx * _floorResistance) /
       (_maxFloorGivePx + _floorResistance * overshoot);
 
-  /// Whether dwelling at [_edge] leads anywhere. The bottom edge resists but
-  /// never commits, so it must not dim: dimming is the part of the telegraph
-  /// that says "keep holding and this layer closes".
-  bool get _commits => _edge == _SheetEdge.top && widget.onExit != null;
+  /// Whether [overflow] is the sheet refusing to go any lower. Overflow is
+  /// signed — positive past the top detent, negative past the bottom one — and
+  /// only the bottom is this widget's business.
+  bool _isFloor(SheetMetrics metrics, double overflow) =>
+      overflow < 0 && (metrics.offset - metrics.minOffset).abs() < 1.0;
 
-  /// The edge [overflow] is pushing against, or null when the sheet is not
-  /// pinned to that edge. Overflow is signed: positive past the top detent,
-  /// negative past the bottom one.
-  _SheetEdge? _edgeFor(SheetMetrics metrics, double overflow) {
-    if (overflow > 0 && (metrics.offset - metrics.maxOffset).abs() < 1.0) {
-      return _SheetEdge.top;
-    }
-    if (overflow < 0 && (metrics.offset - metrics.minOffset).abs() < 1.0) {
-      return _SheetEdge.bottom;
-    }
-    return null;
+  void _onFloorOverflow(double overflow) {
+    // Assigning `value` also stops a spring-back still in flight, which is
+    // what lets the rider catch the sheet on its way home and keep pulling
+    // from where it is.
+    final from = _onFloor ? _overflow.value : 0.0;
+    _overflow.value = from + overflow.abs();
+    _onFloor = true;
   }
 
-  /// Arms — or re-arms — the dwell that commits the exit.
-  ///
-  /// The dwell measures *stillness*, not time spent in the overflow: while the
-  /// finger is still travelling it keeps being pushed back, so the exit only
-  /// fires once the rider has stopped and held. Letting it run from the first
-  /// overflow frame instead means a sheet that opens *at* an end detent exits
-  /// on the way there — no travel before the edge, so the dwell elapses while
-  /// the finger is still moving and nothing reads as a pause.
-  void _armDwell({required bool moving}) {
-    if (!_commits) return;
-    if (moving) {
-      _exitTimer?.cancel();
-      _exitTimer = null;
-    } else if (_exitTimer != null) {
-      return;
-    }
-    _isHoldingOverflow = true;
-    // The platform's own long-press threshold, not a transition duration.
-    // Pairing this with AppMotion.sheet (280ms) matched the sheet's settle
-    // tempo, which is the wrong scale: the question a hold answers is "did the
-    // rider mean it", and 280ms is inside the pause a fast swipe leaves behind
-    // on its own — short enough that a sheet reaching an edge in one flick
-    // committed on the rider's behalf.
-    _exitTimer = Timer(kLongPressTimeout, () {
-      if (_isHoldingOverflow && mounted) {
-        unawaited(HapticService.instance.mediumTap());
-        widget.onExit?.call();
-      }
-      _cleanup();
-    });
-  }
-
-  void _onOverflow(_SheetEdge edge, double overflow) {
-    final delta = overflow.abs();
-    // Reset rather than accumulate when the pull crosses to the other edge, so
-    // a sheet flung end to end doesn't arrive pre-charged. Assigning `value`
-    // also stops a spring-back still in flight, which is what lets the rider
-    // catch the sheet on its way home and keep pulling from where it is.
-    final from = edge == _edge ? _overflow.value : 0.0;
-    _overflow.value = from + (edge == _SheetEdge.top ? delta : -delta);
-    _edge = edge;
-    _armDwell(moving: delta >= _stillnessSlopPx);
-  }
-
-  /// Ends the pull: drops the dwell and hands the give back to a spring.
+  /// Ends the pull: hands the give back to a spring.
   ///
   /// [velocity] is the give's own rate of change, so the sheet leaves the
   /// finger at exactly the speed the finger left it — no seam between the drag
   /// and the settle.
   void _cleanup({double velocity = 0}) {
-    _exitTimer?.cancel();
-    _exitTimer = null;
-    _isHoldingOverflow = false;
-    _edge = null;
+    _onFloor = false;
     // Guarded on `isAnimating` because a drag past a detent reports "no
     // overflow" on every frame it is back within bounds; restarting the spring
     // on each of those would freeze it at its first frame.
-    if (_overflow.value.abs() > _settledPx && !_overflow.isAnimating) {
+    if (_overflow.value > _settledPx && !_overflow.isAnimating) {
       unawaited(
         _overflow.animateWith(
           SpringSimulation(AppMotion.spring, _overflow.value, 0, velocity),
@@ -930,18 +773,14 @@ class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector>
 
   @override
   void dispose() {
-    _exitTimer?.cancel();
-    _exitTimer = null;
     _overflow.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // Both gives are positional, so reduce-motion drops them and keeps only
-    // the top edge's dim — which still says "this is committing" without
-    // moving anything (see AppMotion.reduced). The bottom edge is left with
-    // the arrival haptic alone, which is the honest translation: there is
+    // The give is positional, so reduce-motion drops it (see AppMotion.reduced)
+    // and leaves the arrival haptic alone — the honest translation: there is
     // nothing to warn about down there, only a fact to state.
     final reduced = AppMotion.reduced(context);
     return NotificationListener<SheetNotification>(
@@ -950,22 +789,20 @@ class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector>
           case SheetDragStartNotification():
             _dragging = true;
           // Cancel matters as much as end: a drag the gesture arena takes away
-          // mid-pull would otherwise leave the dwell armed with no finger down.
+          // mid-pull would otherwise leave the sheet held off its detent.
           case SheetDragEndNotification(:final dragDetails):
             _dragging = false;
-            // The give grows as the sheet is pushed *up* past the top detent
-            // and as it is pushed *down* past the bottom one, so its rate is
-            // the finger's vertical velocity inverted, at either edge.
+            // The give grows as the sheet is pushed *down* past its lowest
+            // detent, so its rate is the finger's vertical velocity inverted.
             _cleanup(velocity: -dragDetails.velocityY);
           case SheetDragCancelNotification():
             _dragging = false;
             _cleanup();
           case SheetOverflowNotification(:final overflow, :final metrics):
-            final edge = _dragging ? _edgeFor(metrics, overflow) : null;
-            if (edge == null) {
-              _cleanup();
+            if (_dragging && _isFloor(metrics, overflow)) {
+              _onFloorOverflow(overflow);
             } else {
-              _onOverflow(edge, overflow);
+              _cleanup();
             }
           default:
             break;
@@ -978,36 +815,17 @@ class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector>
         // content never rebuilds for it.
         child: widget.child,
         builder: (context, child) {
-          final px = _overflow.value;
-          // Top: the telegraph. The sheet dims and recedes the longer the
-          // overflow is held, so the exit reads as a physical give-way instead
-          // of an unannounced timeout. Negative overflow clamps to nothing —
-          // the bottom edge commits to nothing and so must not dim. Neither
-          // does the top edge on a sheet with no [onExit]: dimming a sheet
-          // that is not going anywhere reads as the surface itself failing.
-          final commitT = widget.onExit == null
-              ? 0.0
-              : (px / _maxOverflowPx).clamp(0.0, 1.0);
-          // Bottom: the floor. The sheet is *moved*, not scaled: shrinking it
-          // here opened a gap around the surface that let the map show
-          // through, which reads as the sheet going translucent rather than as
-          // resistance. Sliding a stretched sheet down pushes its far edge off
-          // screen instead, leaving nothing to see through.
-          final floorPx = px < 0 && !reduced ? _rubberBand(-px) : 0.0;
-          return Opacity(
-            opacity: 1 - commitT * 0.08,
-            child: Transform.translate(
-              offset: Offset(0, floorPx),
-              child: Transform.scale(
-                scale: 1 - (reduced ? 0.0 : commitT) * 0.015,
-                // Anchored at the edge the rider is pulling away from, so the
-                // give points where the gesture points.
-                alignment: Alignment.topCenter,
-                child: _SheetFloorScope(
-                  load: floorPx / _maxFloorGivePx,
-                  child: child!,
-                ),
-              ),
+          // The sheet is *moved*, not scaled: shrinking it opened a gap around
+          // the surface that let the map show through, which reads as the
+          // sheet going translucent rather than as resistance. Sliding a
+          // stretched sheet down pushes its far edge off screen instead,
+          // leaving nothing to see through.
+          final floorPx = reduced ? 0.0 : _rubberBand(_overflow.value);
+          return Transform.translate(
+            offset: Offset(0, floorPx),
+            child: _SheetFloorScope(
+              load: floorPx / _maxFloorGivePx,
+              child: child!,
             ),
           );
         },
@@ -1019,7 +837,7 @@ class _SheetExitGestureDetectorState extends State<SheetExitGestureDetector>
 /// How hard the sheet above is being held against its lowest detent, 0..1, for
 /// the chrome that shows it.
 ///
-/// Zero outside a [SheetExitGestureDetector] — a modal has no floor, so its
+/// Zero outside a [SheetEdgeGestureDetector] — a modal has no floor, so its
 /// handle simply never takes any load.
 class _SheetFloorScope extends InheritedWidget {
   const _SheetFloorScope({required this.load, required super.child});

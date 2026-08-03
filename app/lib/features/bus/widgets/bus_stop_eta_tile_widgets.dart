@@ -4,6 +4,7 @@ class _EtaChevronTile extends StatelessWidget {
   const _EtaChevronTile({
     required this.arrival,
     required this.highlighted,
+    super.key,
   });
   final BusStopArrivalItem arrival;
   final bool highlighted;
@@ -23,7 +24,6 @@ class _EtaChevronTile extends StatelessWidget {
             highlighted: highlighted,
             muted: ended,
             onTap: () {
-              unawaited(HapticService.instance.lightTap());
               final target = arrival.subRouteUid.isNotEmpty
                   ? arrival.subRouteUid
                   : arrival.display.label;

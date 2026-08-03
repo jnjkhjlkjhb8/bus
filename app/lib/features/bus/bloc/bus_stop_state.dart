@@ -23,8 +23,9 @@ class BusStopArrivalItem extends Equatable {
   String get subRouteUid => source.subRouteUid;
   int get rank => display.rank;
 
-  /// Stable per-arrival identity for list keys: a route (sub-route) at a member
-  /// stop. Keeps StaggerItem element↔State pairing correct across a re-sort.
+  /// Stable per-arrival identity for list keys: a route (sub-route) at a
+  /// member stop. Keeps each row's element paired with the right item across
+  /// a re-sort.
   String get itemKey => '$stationId:$subRouteUid';
 
   @override

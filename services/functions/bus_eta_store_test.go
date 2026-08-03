@@ -33,6 +33,28 @@ func TestBusEtaFlusherRunsTaskOffTheCallersContext(t *testing.T) {
 	}
 }
 
+// The deadline has to scale with the batch, or it only ever fails the largest
+// flushes — and fails them at the end, after the work is already spent. The
+// 21,353-row snapshot that died on the last of its 22 statements is the case
+// that has to fit.
+func TestFlushBudgetScalesWithRows(t *testing.T) {
+	floor := 60 * time.Second
+	for _, tc := range []struct {
+		rows int
+		want time.Duration
+	}{
+		{rows: 0, want: floor},
+		{rows: 1, want: floor},
+		{rows: archiveRowsPerInsert - 1, want: floor},
+		{rows: archiveRowsPerInsert, want: floor + busEtaFlushPerBatch},
+		{rows: 21353, want: floor + 21*busEtaFlushPerBatch},
+	} {
+		if got := flushBudget(floor, tc.rows); got != tc.want {
+			t.Errorf("flushBudget(%v, %d) = %v, want %v", floor, tc.rows, got, tc.want)
+		}
+	}
+}
+
 // A database that cannot keep up must drop batches rather than queue an
 // unbounded backlog of increasingly stale rows.
 func TestBusEtaFlusherDropsWhenQueueFull(t *testing.T) {

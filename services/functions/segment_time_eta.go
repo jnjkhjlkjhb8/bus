@@ -12,23 +12,22 @@ import (
 // Running time between consecutive stops, differenced within one observation
 // instead of across two.
 //
-// computeSegmentTimes (segment_time.go) reconstructs a vehicle's run by grouping
-// history rows on plate_numb, which needs the same bus to be identified at both
-// stops. Taipei and NewTaipei publish no PlateNumb at all — over a week 36.8% and
-// 31.6% of their rows carry no plate — so the run cannot be assembled there, and
-// the plate that does get stored elsewhere used to be a nearest-GPS guess that
-// can name a different bus at each stop.
+// This is the only observation pass. A single ETA snapshot answers the question
+// directly: at one instant TDX gives the seconds-to-arrival for every stop the
+// approaching bus still has ahead of it, so the difference between two adjacent
+// stops' estimates is that bus's running time between them. One row, no pairing,
+// no vehicle identity.
 //
-// A single ETA snapshot already answers the question directly. At one instant TDX
-// gives the seconds-to-arrival for every stop the approaching bus still has ahead
-// of it, so the difference between two adjacent stops' estimates is that bus's
-// running time between them. One row, no pairing, no vehicle identity.
+// It outlived the plate-pairing pass it used to complement (removed 2026-08-02,
+// see segment_time.go). Needing no vehicle identity is why: Taipei and NewTaipei
+// publish no PlateNumb at all — over a week 36.8% and 31.6% of their rows carry
+// none — so pairing never reached the two largest networks anyway, and where both
+// did produce a hop they agreed to within 2 seconds of median over 45,775 of
+// them.
 //
-// The two methods agree where both produce a hop: over 45,775 overlapping hops
-// the medians differ by 2 seconds, and 84.0% fall within 30 seconds of each
-// other. This pass therefore runs after computeSegmentTimes and fills what the
-// plate method could not reach, keeping whichever figure rests on more
-// observations.
+// Needing only a snapshot is the other reason, and it is what lets the writer
+// sample: a pass that differences within one recorded instant is indifferent to
+// how far apart those instants are (historySnapshotInterval).
 const (
 	// segmentDiffMinSecs / segmentDiffMaxSecs match segmentMinSecs/segmentMaxSecs:
 	// both bound one hop's running time, and a disagreement would put two
@@ -79,9 +78,7 @@ func computeSegmentTimesFromEstimates(ctx context.Context, db *pgxpool.Pool, his
 	if err != nil {
 		return obs.Transient(fmt.Errorf("read estimate segments: %w", err))
 	}
-	// Whichever figure rests on more observations wins, whichever pass produced
-	// it. Most plate-derived rows are a single observation.
-	n, err := upsertSegmentTimes(ctx, db, segs, true)
+	n, err := upsertSegmentTimes(ctx, db, segs)
 	if err != nil {
 		return obs.Transient(fmt.Errorf("rebuild bus segment times from estimates: %w", err))
 	}

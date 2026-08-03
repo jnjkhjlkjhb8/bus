@@ -153,13 +153,10 @@ class _StationDetailSheet extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     ?staleBanner,
-                    for (final (i, a) in arrivals.indexed) ...[
-                      StaggerItem(
-                        // Stable identity (feed upsert key) so a re-sort keeps
-                        // each row paired with its own stagger delay.
+                    for (final a in arrivals) ...[
+                      MetroArrivalTile(
                         key: ValueKey('${a.line}:${a.destination}'),
-                        index: i,
-                        child: MetroArrivalTile(arrival: a),
+                        arrival: a,
                       ),
                       Divider(
                         height: 20,

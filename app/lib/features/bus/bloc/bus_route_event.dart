@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
 import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/haptics/alight_haptics.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
 
@@ -43,11 +44,17 @@ class BusRoutePinnedReminderArmed extends BusRouteEvent {
   const BusRoutePinnedReminderArmed({
     required this.stopUid,
     required this.plate,
+    required this.event,
   });
   final String stopUid;
   final String plate;
+
+  /// Which of the two 下車提醒 buzzes this row fires (ADR-0020). It rides to
+  /// the server so the push carries it back, which is the only way the
+  /// background path can tell a short buzz from a long one.
+  final AlightEvent event;
   @override
-  List<Object?> get props => [stopUid, plate];
+  List<Object?> get props => [stopUid, plate, event];
 }
 
 class BusRouteStreamFailed extends BusRouteEvent {

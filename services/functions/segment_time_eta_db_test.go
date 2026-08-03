@@ -31,7 +31,6 @@ func segmentEtaTestPool(t *testing.T) *pgxpool.Pool {
 // reach. What is still Go, and still worth pinning, is what the process does with
 // the rows that come back.
 type fixtureHistory struct {
-	plate    []segmentObs
 	estimate []segmentObs
 }
 
@@ -39,19 +38,17 @@ func (f fixtureHistory) arrivals(context.Context, time.Time) ([]arrivalEvent, er
 	return nil, nil
 }
 
-func (f fixtureHistory) segmentsByPlate(context.Context, time.Duration) ([]segmentObs, error) {
-	return f.plate, nil
-}
-
 func (f fixtureHistory) segmentsByEstimate(context.Context, time.Duration) ([]segmentObs, error) {
 	return f.estimate, nil
 }
 
 // TestComputeSegmentTimesFromEstimates asserts the conflict rule the estimate
-// pass carries: it runs after the plate pass, so it must fill a hop nobody
-// covered, replace a figure resting on fewer observations, and leave a
-// better-sampled one exactly as it was. Getting this backwards would quietly
-// overwrite every plate-derived hop with a worse-sampled snapshot difference.
+// pass carries now that it is the only observation pass: a fresh figure lands
+// whatever it rests on, over a hop nobody covered, over a distance-derived
+// estimate, and over its own previous run. The sample_count guard it used to
+// carry belonged to a two-pass world; keeping it here would mean a week with
+// fewer observations could never refresh a hop, and the stored seconds would age
+// indefinitely while updated_at said otherwise.
 func TestComputeSegmentTimesFromEstimates(t *testing.T) {
 	pool := segmentEtaTestPool(t)
 	defer pool.Close()
@@ -74,12 +71,14 @@ func TestComputeSegmentTimesFromEstimates(t *testing.T) {
 	cleanup()
 	t.Cleanup(cleanup)
 
-	// Two rows already in the table: S1->S2 rests on more observations than the
-	// estimate pass offers, S2->S3 on fewer.
+	// Three rows already in the table: S1->S2 rests on more observations than the
+	// estimate pass offers, S2->S3 on fewer, S4->S5 is a distance-derived
+	// estimate (sample_count 0) that no observation reaches this run.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO bus_segment_time
 		  (sub_route_uid, direction, from_stop_uid, to_stop_uid, secs, sample_count)
-		VALUES ($1, 0, 'S1', 'S2', 999, 50), ($1, 0, 'S2', 'S3', 999, 1)`, uid); err != nil {
+		VALUES ($1, 0, 'S1', 'S2', 999, 50), ($1, 0, 'S2', 'S3', 999, 1),
+		       ($1, 0, 'S4', 'S5', 777, 0)`, uid); err != nil {
 		t.Fatalf("seed segments: %v", err)
 	}
 
@@ -112,8 +111,9 @@ func TestComputeSegmentTimesFromEstimates(t *testing.T) {
 		t.Fatalf("rows: %v", err)
 	}
 
-	if v, ok := got["S1->S2"]; !ok || v[0] != 999 || v[1] != 50 {
-		t.Errorf("S1->S2 = %v, want the better-sampled row (999s, 50) left intact", v)
+	if v, ok := got["S1->S2"]; !ok || v[0] != 120 || v[1] != 8 {
+		t.Errorf("S1->S2 = %v, want (120, 8): the fresh figure wins even against a "+
+			"better-sampled older one, or a quiet week freezes the hop forever", v)
 	}
 	if v, ok := got["S2->S3"]; !ok || v[0] != 220 || v[1] != 8 {
 		t.Errorf("S2->S3 = %v, want (220, 8): more observations than the row it replaces", v)
@@ -121,56 +121,9 @@ func TestComputeSegmentTimesFromEstimates(t *testing.T) {
 	if v, ok := got["S3->S4"]; !ok || v[0] != 300 || v[1] != 8 {
 		t.Errorf("S3->S4 = %v, want (300, 8): a hop nothing covered before", v)
 	}
-}
-
-// The plate pass writes unconditionally — it runs first, so anything already in
-// the table is from a previous day's rebuild and the fresh figure wins whatever
-// it rests on.
-func TestComputeSegmentTimesOverwritesRegardlessOfSamples(t *testing.T) {
-	pool := segmentEtaTestPool(t)
-	defer pool.Close()
-	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS bus_segment_time (
-			sub_route_uid text NOT NULL, direction smallint NOT NULL,
-			from_stop_uid text NOT NULL, to_stop_uid text NOT NULL,
-			secs int NOT NULL, sample_count int NOT NULL,
-			updated_at timestamptz NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (sub_route_uid, direction, from_stop_uid, to_stop_uid))`); err != nil {
-		t.Fatalf("ddl: %v", err)
-	}
-
-	const uid = "TESTSEG0002"
-	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM bus_segment_time WHERE sub_route_uid = $1`, uid)
-	}
-	cleanup()
-	t.Cleanup(cleanup)
-
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO bus_segment_time
-		  (sub_route_uid, direction, from_stop_uid, to_stop_uid, secs, sample_count)
-		VALUES ($1, 0, 'P1', 'P2', 999, 50)`, uid); err != nil {
-		t.Fatalf("seed segment: %v", err)
-	}
-
-	hist := fixtureHistory{plate: []segmentObs{
-		{subRouteUID: uid, direction: 0, fromStopUID: "P1", toStopUID: "P2", secs: 140, sampleCount: 1},
-	}}
-	if err := computeSegmentTimes(ctx, pool, hist); err != nil {
-		t.Fatalf("computeSegmentTimes: %v", err)
-	}
-
-	var secs, samples int
-	if err := pool.QueryRow(ctx, `
-		SELECT secs, sample_count FROM bus_segment_time
-		WHERE sub_route_uid=$1 AND from_stop_uid='P1' AND to_stop_uid='P2'`, uid).
-		Scan(&secs, &samples); err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	if secs != 140 || samples != 1 {
-		t.Errorf("P1->P2 = (%d, %d), want (140, 1): the plate pass writes unconditionally", secs, samples)
+	if v, ok := got["S4->S5"]; !ok || v[0] != 777 || v[1] != 0 {
+		t.Errorf("S4->S5 = %v, want the estimate (777, 0) untouched: this pass only "+
+			"writes the hops it observed", v)
 	}
 }
 

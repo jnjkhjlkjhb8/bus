@@ -49,10 +49,7 @@ class _FilterButtonGroup extends StatelessWidget {
         children: [
           for (final filter in filters)
             Pressable(
-              onTap: () {
-                unawaited(HapticService.instance.lightTap());
-                onFilterChanged(filter);
-              },
+              onTap: () => onFilterChanged(filter),
               // 36 matches the second-layer station chips; the hit target is
               // widened back to the 44px floor rather than the painted chip.
               minTapSize: 44,

@@ -152,7 +152,7 @@ class _RailTrainScreenState extends State<RailTrainScreen>
 
   /// 提前站數, two on every network: one stop is often under a minute's warning
   /// on a fast train, three is most of a short ride.
-  int _alightLead = 2;
+  int _alightLead = 0;
 
   @override
   void initState() {
@@ -250,7 +250,7 @@ class _RailTrainScreenState extends State<RailTrainScreen>
     setState(() {
       _alightTarget = known?.name;
       _alightFromSearch = known != null;
-      _alightLead = 2;
+      _alightLead = 0;
       _alightMode = known == null ? _AlightMode.picking : _AlightMode.confirm;
     });
   }
@@ -487,6 +487,7 @@ class _RailTrainScreenState extends State<RailTrainScreen>
                               userOrigin: widget.userOrigin,
                               alight: _alightTarget ?? widget.userDest,
                               picking: _alightMode == _AlightMode.picking,
+                              leadStops: _alightLead,
                               onPickStop: _pickAlight,
                             ),
                             _InfoTab(
@@ -555,7 +556,6 @@ class _BookingBar extends StatelessWidget {
   // counts, TRA a booking class and a quantity — and the sheet exchanges the
   // deeplink in the background, so the tap no longer blocks on a round-trip.
   void _openSheet(BuildContext context) {
-    unawaited(HapticService.instance.lightTap());
     unawaited(
       showRailBookingSheet(
         context,
@@ -650,8 +650,13 @@ class _TimetableTab extends StatefulWidget {
     required this.alight,
     this.userOrigin,
     this.picking = false,
+    this.leadStops = 0,
     this.onPickStop,
   });
+
+  /// 提前站數. 0 (the default) means no 提前提醒站 exists, so no row carries
+  /// the bell — see ADR-0020.
+  final int leadStops;
 
   /// Whether the rider is choosing a 下車站 right now. Stops the train has
   /// already called at, and the boarding stop itself, stay untappable.
@@ -727,6 +732,16 @@ class _TimetableTabState extends State<_TimetableTab> {
       );
     }
 
+    // The 提前提醒站, derived rather than picked. Clamped away when the lead
+    // would land at or above the boarding stop: a warning for a stop the rider
+    // boards at or has already passed is not a warning.
+    final leadCandidate = (alightIndex != null && widget.leadStops > 0)
+        ? alightIndex - widget.leadStops
+        : null;
+    final leadIndex = (leadCandidate != null && leadCandidate > boardIndex)
+        ? leadCandidate
+        : null;
+
     // One decision for the whole list, not one per row: a column that appears
     // on some rows and not others is a column whose x moves.
     final showElapsed = boardIndex < last;
@@ -752,6 +767,7 @@ class _TimetableTabState extends State<_TimetableTab> {
           travelledBelow: position != null && i < position,
           isBoard: widget.userOrigin != null && i == boardIndex,
           isAlight: alightIndex != null && i == alightIndex,
+          isLeadStop: leadIndex != null && i == leadIndex,
           showElapsed: showElapsed,
         ),
       );
@@ -902,8 +918,13 @@ class _StopRow extends StatelessWidget {
     required this.isBoard,
     required this.isAlight,
     required this.showElapsed,
+    this.isLeadStop = false,
     this.onPick,
   });
+
+  /// The 提前提醒站. A bare bell, no fill and no row highlight: the app derived
+  /// this row from 提前站數, where 下車站 is the one the rider chose.
+  final bool isLeadStop;
 
   /// Set only while the rider is choosing a 下車站 and this row is a candidate.
   /// Rows without it stay plain text, which is what makes the pickable ones
@@ -1009,6 +1030,14 @@ class _StopRow extends StatelessWidget {
                           if (isAlight) ...[
                             const SizedBox(width: 6),
                             TimelineStopTag(AppI18n.of(context).railAlight),
+                          ],
+                          if (isLeadStop) ...[
+                            const SizedBox(width: 6),
+                            Icon(
+                              Icons.notifications_rounded,
+                              size: 16,
+                              color: cs.onSurfaceVariant,
+                            ),
                           ],
                           // The dwell note rides in the flexible area rather
                           // than in the time slot: a variable-width note inside
@@ -1173,15 +1202,18 @@ class _InfoTab extends StatelessWidget {
                   style: _labelStyle.copyWith(color: cs.onSurfaceVariant),
                 ),
                 Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   spacing: 5,
                   children: [
                     if (marks.isNotEmpty) ...[
                       RailServiceMarkChips(marks: marks),
                     ],
-                    Text(
-                      remark.trim(),
-                      style: AppTextStyles.bodyRegular.copyWith(
-                        color: cs.onSurface,
+                    Expanded(
+                      child: Text(
+                        remark.trim(),
+                        style: AppTextStyles.bodyRegular.copyWith(
+                          color: cs.onSurface,
+                        ),
                       ),
                     ),
                   ],

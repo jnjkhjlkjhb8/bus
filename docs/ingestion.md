@@ -12,7 +12,7 @@ made by claude
 | 每小時 :00 | ingestor | `ingestRaw(…, "bus_dailytimetable")`：只重抓公車每日時刻表（條件式 GET，未變更的城市回 304、不動 `raw_tdx`）|
 | 每小時 :10 | loader（每個環境）| `bus_dailytimetable` 增量 load：只轉換 `landing_state.last_modified` 有變的城市 → Redis |
 | 每日 03:45 | functions | `changetovector`：向量更新（在 load 之後執行） |
-| 每日 04:00 | functions | `computeSegmentTimes` 等三個階段：公車站間運行時間統計 |
+| 每日 04:00 | functions | `computeSegmentTimesFromEstimates` 等兩個階段：公車站間運行時間統計 |
 | 每日 04:30 | functions | `cleanupBusHistory`：刪除 30 天前的 ETA 歷史 |
 | 每 10 分鐘 | functions | `weatherSync`：CWA 天氣資料同步 |
 | 每 2 分鐘 | functions | `traEta` |
@@ -192,15 +192,16 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
 
 ## 站間運行時間（每日 04:00）
 
-從 `bus_eta_history` 近 7 天的資料計算相鄰兩站之間的運行時間中位數，寫入 `bus_segment_time`。三個階段依序執行，後者只補前者留下的空缺：
+從 `bus_eta_history` 近 14 天的資料計算相鄰兩站之間的運行時間中位數，寫入 `bus_segment_time`。兩個階段依序執行，後者只補前者留下的空缺：
 
 | 階段 | 來源 | 說明 |
 |---|---|---|
-| `computeSegmentTimes` | 同一車牌先後抵達兩站 | 主要來源；台北／新北不發布車牌，因此涵蓋不到 |
-| `computeSegmentTimesFromEstimates` | 同一次快照中相鄰兩站的 estimate 差 | 補上無車牌的城市 |
+| `computeSegmentTimesFromEstimates` | 同一次快照中相鄰兩站的 estimate 差 | 唯一的觀測來源；不需要車牌，所以台北／新北也涵蓋得到 |
 | `fillSegmentTimesFromDistance` | 站距推估 | 標記 `sample_count = 0`，永不覆蓋觀測值 |
 
 `sample_count` 一併存下，由讀取端自行決定信心門檻。ETA 預測與 GTFS 匯出都以 `busPatternSQL` 沿站序累加這些站間時間。
+
+2026-08-02 之前還有第三個階段 `computeSegmentTimes`，以 `plate_numb` 分組配對同一台車先後抵達兩站。它已移除：在 45,775 個重疊 hop 上與 estimate 差分法的中位數只差 2 秒，「抵達」本身也是由 estimate 推算的（`recorded_at + estimate`），而它是唯一需要連續密集觀測的讀取端——會把資料缺口當成公車進站。詳見 `services/functions/segment_time.go` 的檔頭。
 
 ## cleanupBusHistory（每日 04:30）
 

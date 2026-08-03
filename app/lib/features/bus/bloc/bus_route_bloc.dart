@@ -71,6 +71,9 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
           route: route,
           fare: route.fare,
           bufferSequences: decodeBufferSequences(route.fare),
+          // A return-only sub-route has no outbound stops; opening on
+          // direction 0 would show an empty timeline.
+          direction: route.soleDirection ?? state.direction,
           loading: false,
         ),
       );
@@ -175,6 +178,7 @@ class BusRouteBloc extends Bloc<BusRouteEvent, BusRouteState> {
         leadMinutes: _pinnedLeadMinutes,
         expiresAt: expiresAt,
         plate: event.plate,
+        alightEvent: event.event.name,
       );
       if (emit.isDone) return;
       emit(

@@ -4,7 +4,6 @@ class _RecentSearches extends StatelessWidget {
   const _RecentSearches();
 
   void _remove(BuildContext context, SearchResult result, int index) {
-    unawaited(HapticService.instance.lightTap());
     final bloc = context.read<SearchBloc>()..add(SearchRecentRemoved(result));
     AppSnackbar.show(
       context,
@@ -36,7 +35,6 @@ class _RecentSearches extends StatelessWidget {
       ),
     );
     if (confirmed ?? false) {
-      unawaited(HapticService.instance.lightTap());
       bloc.add(const SearchRecentsCleared());
     }
   }

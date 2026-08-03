@@ -36,3 +36,40 @@ func TestBusStaticCacheRedisOutageFallsBackOnlyUntilTTL(t *testing.T) {
 		t.Fatal("Redis outage allowed stale cache at/after TTL")
 	}
 }
+
+// The subroutes busPatternSQL returns nothing for are the majority, and they are
+// the ones worth caching: without a negative entry every incomplete direction
+// re-runs the statement on every tick, which is most of the cost the cache
+// exists to avoid.
+func TestStopOffsetCacheRemembersMisses(t *testing.T) {
+	var cache sync.Map
+	now := time.Now()
+
+	out := map[stopOffsetKey]int{}
+	missing := cachedStopOffsets(&cache, []string{"A", "B"}, now, out)
+	if len(missing) != 2 {
+		t.Fatalf("cold missing = %v, want both", missing)
+	}
+
+	// A returned one stop; B returned nothing but was still queried.
+	storeStopOffsets(&cache, map[string][]stopOffset{
+		"A": {{direction: 0, stopUID: "S1", secs: 42}},
+		"B": nil,
+	}, now)
+
+	out = map[stopOffsetKey]int{}
+	if missing := cachedStopOffsets(&cache, []string{"A", "B"}, now, out); missing != nil {
+		t.Errorf("warm missing = %v, want none: the empty result must be cached too", missing)
+	}
+	if got := out[stopOffsetKey{subRouteUID: "A", direction: 0, stopUID: "S1"}]; got != 42 {
+		t.Errorf("A/S1 = %d, want 42", got)
+	}
+	if len(out) != 1 {
+		t.Errorf("out = %v, want only A's stop", out)
+	}
+
+	out = map[stopOffsetKey]int{}
+	if missing := cachedStopOffsets(&cache, []string{"A", "B"}, now.Add(stopOffsetCacheTTL), out); len(missing) != 2 {
+		t.Errorf("expired missing = %v, want both re-queried at TTL", missing)
+	}
+}

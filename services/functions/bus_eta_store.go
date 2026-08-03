@@ -43,11 +43,23 @@ func (s pgBusEtaStore) stopOffsets(ctx context.Context, uids []string) map[stopO
 // tick's clock. The queue is deliberately shallow: a database that cannot keep
 // up should drop batches loudly rather than accumulate a backlog of rows that
 // are staler than the ones behind them.
+// busEtaFlushTimeout is the floor and busEtaFlushPerBatch the allowance for each
+// further archiveRowsPerInsert rows. One flush goes out in bounded batches, so a
+// flat deadline is the wrong shape: it fails only the largest bursts, and it
+// fails them at the end, after most of the work is already spent. A snapshot of
+// 21,353 rows died on the last of its 22 statements at a flat 60s, losing the
+// tail and keeping the other 21,000.
 const (
-	busEtaFlushTimeout = 60 * time.Second
-	busEtaFlushDepth   = 8
-	busEtaFlushWorkers = 2
+	busEtaFlushTimeout  = 60 * time.Second
+	busEtaFlushPerBatch = 5 * time.Second
+	busEtaFlushDepth    = 8
+	busEtaFlushWorkers  = 2
 )
+
+// flushBudget is how long one batch of rows may take.
+func flushBudget(floor time.Duration, rows int) time.Duration {
+	return floor + time.Duration(rows/archiveRowsPerInsert)*busEtaFlushPerBatch
+}
 
 type busEtaFlush struct {
 	table string
@@ -76,7 +88,7 @@ func (f *busEtaFlusher) submit(task busEtaFlush) {
 		for range f.workers {
 			go func() {
 				for t := range f.queue {
-					ctx, cancel := context.WithTimeout(context.Background(), f.timeout)
+					ctx, cancel := context.WithTimeout(context.Background(), flushBudget(f.timeout, t.rows))
 					t.write(ctx)
 					cancel()
 				}

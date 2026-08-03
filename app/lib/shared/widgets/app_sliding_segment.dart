@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/motion/app_motion.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
@@ -119,10 +118,6 @@ class _AppSlidingSegmentState<T> extends State<AppSlidingSegment<T>>
   /// drag move anything.
   bool _grabbed = false;
 
-  /// Segment the thumb last ticked past, so the crossing haptic fires once per
-  /// boundary rather than once per frame, and the commit does not repeat it.
-  int _ticked = 0;
-
   bool get _reduceMotion => AppMotion.reduced(context);
 
   int get _lastIndex => widget.options.length - 1;
@@ -178,10 +173,9 @@ class _AppSlidingSegmentState<T> extends State<AppSlidingSegment<T>>
     unawaited(down ? _press.forward() : _press.reverse());
   }
 
-  void _commit(int index, {bool haptic = true}) {
+  void _commit(int index) {
     final keys = widget.options.keys.toList();
     if (keys[index] == widget.value) return;
-    if (haptic) unawaited(HapticService.instance.lightTap());
     widget.onChanged(keys[index]);
   }
 
@@ -210,7 +204,6 @@ class _AppSlidingSegmentState<T> extends State<AppSlidingSegment<T>>
     if (!_grabbed) return;
     _thumb.stop();
     _dragRaw = _thumb.value;
-    _ticked = _dragRaw.round().clamp(0, _lastIndex);
   }
 
   void _handleDragUpdate(DragUpdateDetails details) {
@@ -218,11 +211,6 @@ class _AppSlidingSegmentState<T> extends State<AppSlidingSegment<T>>
     if (!_grabbed || stride <= 0) return;
     _dragRaw += details.delta.dx / stride;
     _thumb.value = _resist(_dragRaw);
-    final crossed = _thumb.value.round().clamp(0, _lastIndex);
-    if (crossed != _ticked) {
-      _ticked = crossed;
-      unawaited(HapticService.instance.lightTap());
-    }
   }
 
   void _handleDragEnd(DragEndDetails details) {
@@ -239,9 +227,7 @@ class _AppSlidingSegmentState<T> extends State<AppSlidingSegment<T>>
       0,
       _lastIndex,
     );
-    // The crossing tick already spoke for every boundary the drag passed;
-    // only a target the drag never reached still owes a haptic.
-    _commit(target, haptic: target != _ticked);
+    _commit(target);
     _springTo(
       target.toDouble(),
       velocity,

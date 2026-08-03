@@ -11,7 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/core/haptics/alight_haptics.dart';
 import 'package:wheres_the_bus/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
@@ -27,7 +27,6 @@ import 'package:wheres_the_bus/features/bus/widgets/pinned_bus.dart';
 import 'package:wheres_the_bus/features/bus/widgets/track_trigger_stop.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
-import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
 import 'package:wheres_the_bus/data/tracking/tracking_session.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
@@ -35,7 +34,7 @@ import 'package:wheres_the_bus/shared/motion/app_motion.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
 import 'package:wheres_the_bus/shared/widgets/alight_track/alight_confirm_bar.dart';
 import 'package:wheres_the_bus/shared/widgets/alight_track/alight_pick_capsule.dart';
-import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_bell.dart';
+import 'package:wheres_the_bus/shared/widgets/alight_track/alight_swipe_row.dart';
 import 'package:wheres_the_bus/shared/widgets/app_accordion.dart';
 import 'package:wheres_the_bus/shared/widgets/app_bars.dart';
 import 'package:wheres_the_bus/shared/widgets/app_card.dart';
@@ -60,11 +59,6 @@ const _kDefaultCamera = CameraPosition(
   target: LatLng(25.0416, 121.5501),
   zoom: 14,
 );
-
-// peek (0.25) only clears the handle + direction slider + timeline; the pick
-// bar inserts above the timeline and would clip it, so the sheet lifts to this
-// slightly taller detent while picking and drops back to peek afterwards.
-const _kPickSheetOffset = SheetOffset.proportionalToViewport(0.35);
 
 // Route sheet drops the shared grid's half detent: at half the timeline is
 // already fully visible and the tab content below it is still cut off, so the
@@ -119,12 +113,12 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   // is chosen (完成) or skipped (略過); [_pinnedNextStopIndex] snapshots the
   // bus's next-stop index at pin time so the passed/downstream split stays
   // stable while picking; [_targetStopUid] is the chosen alight stop;
-  // [_leadStops] is 提前站數 (default 2, min 1).
+  // [_leadStops] is 提前站數 (0–3, default 0 = no early warning).
   String? _pinnedPlate;
   bool _pickingStop = false;
   int? _pinnedNextStopIndex;
   String? _targetStopUid;
-  int _leadStops = 2;
+  int _leadStops = 0;
 
   final ValueNotifier<BusMapLayer> _mapLayer = ValueNotifier(
     (markers: <Marker>{}, polylines: <Polyline>{}),
@@ -210,6 +204,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       now: DateTime.now(),
       selectedStopUid: _selectedStopUid,
       pinnedPlate: _pinnedPlate,
+      trackedPlate: context.read<JourneySessionBloc>().state.plate,
       pickingStop: _pickingStop,
     );
     if (frame == null || !mounted) return;
@@ -284,7 +279,6 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       : CameraUpdate.newLatLngBounds(boundsOf(_overlay.stopPoints), 60);
 
   void _recenterMap() {
-    unawaited(HapticService.instance.lightTap());
     final controller = _mapController;
     if (controller != null) {
       unawaited(
@@ -303,7 +297,6 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   // index × estimated row height; move to scrollable_positioned_list
   // only if pixel-exact landing is ever needed.
   void _flashStop(String stopUid) {
-    unawaited(HapticService.instance.lightTap());
     _selectStop(_selectedStopUid == stopUid ? null : stopUid);
     final index = _stopUidsInOrder.indexOf(stopUid);
     if (index >= 0) {
@@ -378,15 +371,22 @@ class _BusRouteScreenState extends State<BusRouteScreen>
   /// Selects/deselects the bus marker [plate]. Selecting enters pick-mode
   /// (＋, "selected, not yet tracking"); tapping the pinned bus again unpins and
   /// cancels any armed tracking session.
+  /// Selects a bus, or deselects the one already selected.
+  ///
+  /// Selection is a glance: it brings up that bus's bubble (plate, status, GPS
+  /// freshness) and recedes the others. It deliberately does not start the
+  /// 下車提醒 flow — tapping a mark to read it should not arm anything. The
+  /// bell is the one entry point into picking an alight stop, and it uses this
+  /// selection when there is one.
   void _togglePin(String plate) {
     if (_pinnedPlate == plate) {
-      _cancelPick();
+      _clearPin();
       return;
     }
     final s = _bloc.state;
-    unawaited(HapticService.instance.mediumTap());
-    // Snapshot the bus's position so the passed/downstream split holds still
-    // while the rider picks, instead of shifting under each live frame.
+    // Snapshot the bus's position now, so that if the rider does go on to pick
+    // an alight stop the passed/downstream split holds still rather than
+    // shifting under each live frame.
     final nextStopIndex = pinnedBusNextStopIndex(
       etas: s.etaMap.values,
       stopUidsInOrder: _stopUidsInOrder,
@@ -395,51 +395,34 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     );
     setState(() {
       _pinnedPlate = plate;
-      _pickingStop = true;
       _pinnedNextStopIndex = nextStopIndex;
-      _targetStopUid = null;
-      _leadStops = 2;
     });
     _repaintPins();
-    _liftSheet(true);
-    // Entering pick-mode dims and IgnorePointers every stop before
-    // nextStopIndex; without this the timeline can open scrolled to a point
-    // where every visible cell is a passed, un-tappable stop and nothing on
-    // screen hints that more stops exist further along.
-    _centerTimelineOnPick(nextStopIndex);
   }
 
-  /// Scrolls the horizontal timeline so the first pickable alight stop sits
-  /// centred, using the same fixed-120px-cell centring math as [_flashStop].
-  void _centerTimelineOnPick(int? nextStopIndex) {
-    if (!_timelineController.hasClients) return;
-    final index = firstAlightIndex(nextStopIndex);
-    const cellWidth = 120.0;
-    final pos = _timelineController.position;
-    final target =
-        (index * cellWidth + cellWidth / 2 - pos.viewportDimension / 2).clamp(
-          0.0,
-          pos.maxScrollExtent,
-        );
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _timelineController.jumpTo(target);
-    } else {
-      unawaited(
-        _timelineController.animateTo(
-          target,
-          duration: const Duration(milliseconds: 320),
-          curve: AppMotion.easeInOut,
-        ),
-      );
-    }
+  /// Drops the selection without touching any running 追蹤.
+  ///
+  /// Distinct from [_cancelPick], which also ends the session: deselecting a
+  /// bus you were only looking at must not cancel a reminder you set earlier.
+  void _clearPin() {
+    setState(() {
+      _pinnedPlate = null;
+      _pinnedNextStopIndex = null;
+    });
+    _repaintPins();
   }
 
-  /// Raises the sheet to [_kPickSheetOffset] while picking so the pick bar has
-  /// room above the timeline, and drops it back to peek when picking ends.
-  /// Also what back collapses to, since the resting detent differs by mode.
+  /// Holds the sheet at full while picking — the swiped row and the stop about
+  /// to be tapped are both in that list — and drops it back to peek when
+  /// picking ends. Also what back collapses to, since the resting detent
+  /// differs by mode.
+  ///
+  /// No scroll-to accompanies it: the rider just swiped the vehicle row, so it
+  /// is on screen by definition, and every stop that bus has not reached is
+  /// directly below it.
   void _liftSheet(bool picking) => unawaited(
     _sheetController.animateToDetent(
-      picking ? _kPickSheetOffset : AppSheetSnap.peek,
+      picking ? AppSheetSnap.full : AppSheetSnap.peek,
       reduced: AppMotion.reduced(context),
     ),
   );
@@ -450,64 +433,35 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     unawaited(_syncMap(_bloc.state));
   }
 
-  /// The buses currently running this direction, in travel order, as the
-  /// candidates a reminder can bind to. One route can have several out at
-  /// once, and the reminder follows a plate — so this is a choice the rider
-  /// makes, not something the app can settle for them.
-  List<({String plate, String afterStopName, int index})> _plateCandidates(
-    List<TimelineStop> stops,
-  ) {
-    final out = <({String plate, String afterStopName, int index})>[];
-    for (final i in busVehicleMarkerIndices(stops)) {
-      final plate = stops[i].plate;
-      if (plate.isEmpty) continue;
-      out.add((plate: plate, afterStopName: stops[i].name, index: i));
-    }
-    return out;
-  }
-
-  /// Opens pick-mode from the bell with the first running bus pre-selected.
-  /// Deliberately not a guess at "the rider's own bus" — there is no location
-  /// signal good enough for that — so the pick is pre-filled, visible, and
-  /// changeable in the confirm bar.
-  void _enterPickFromBell(List<TimelineStop> stops) {
-    final candidates = _plateCandidates(stops);
-    // Opens even with nothing to bind to. A route with no bus out right now —
-    // or a frame that carried no plates — is a fact the confirm bar states;
-    // swallowing the tap would just make the bell look broken.
-    final first = candidates.firstOrNull;
-    unawaited(HapticService.instance.mediumTap());
+  /// Opens pick-mode from a right-swipe on a vehicle marker in the stop list —
+  /// the only entry (ADR-0020).
+  ///
+  /// The gesture *is* the 指定車輛 binding, which is why no plate chooser
+  /// follows it: the rider swiped the bus they are sitting on, so there is
+  /// nothing left to guess at and nothing to correct afterwards.
+  void _enterPickFromSwipe(String plate, int markerIndex) {
     setState(() {
-      _pinnedPlate = first?.plate;
+      _pinnedPlate = plate;
       _pickingStop = true;
-      _pinnedNextStopIndex = first?.index;
+      // The marker sits between the stop the bus just passed and the one it is
+      // heading for, so its own index is that next stop — the same snapshot
+      // _togglePin takes, held still for the rest of the flow.
+      _pinnedNextStopIndex = markerIndex;
       _targetStopUid = null;
-      _leadStops = 2;
+      _leadStops = 0;
     });
     _repaintPins();
     _liftSheet(true);
-    _centerTimelineOnPick(first?.index);
   }
 
-  /// Re-binds an open flow to a different plate without leaving pick-mode.
-  void _choosePlate(String plate, int nextStopIndex) {
-    unawaited(HapticService.instance.selectionClick());
-    setState(() {
-      _pinnedPlate = plate;
-      _pinnedNextStopIndex = nextStopIndex;
-    });
-    _repaintPins();
-  }
-
-  /// The confirm bar for an open bus flow: which plate, how many stops of
-  /// warning, and the commit. Bus is the one network where the binding is a
-  /// real choice, so it carries a list of candidate plates rather than a chip.
+  /// The confirm bar for an open bus flow: how many stops of warning, and the
+  /// commit. It carries no binding row — the swipe that opened the flow named
+  /// the vehicle, so there is nothing here for the rider to settle.
   Widget _buildAlightConfirmBar(BuildContext context, BusRouteState state) {
     final stops = _currentStops(state);
     final target = _targetStopUid;
     final targetStop = stops.where((s) => s.stopUid == target).firstOrNull;
     if (targetStop == null) return const SizedBox.shrink();
-    final candidates = _plateCandidates(_stopsFor(AppI18n.of(context), state));
     return AlightConfirmBar(
       targetName: targetStop.stopName,
       lead: _leadStops,
@@ -516,17 +470,30 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       onCancel: _cancelPick,
       onStart: _confirmPick,
       canStart: _pinnedPlate != null,
-      binding: _PlateChooser(
-        candidates: candidates,
-        selected: _pinnedPlate,
-        onChoose: _choosePlate,
-      ),
     );
   }
 
   void _onPickStop(String uid) {
-    unawaited(HapticService.instance.lightTap());
     setState(() => _targetStopUid = uid);
+  }
+
+  /// The 提前提醒站 for the current pick, or null when 提前站數 is 0 (the
+  /// default) or no 下車站 has been chosen yet. Derived rather than stored so
+  /// the 🔔 moves as the rider turns the stepper — the setting's effect is
+  /// visible in the list while it is still being set, not only after 開始.
+  String? get _leadStopUid {
+    final target = _targetStopUid;
+    if (target == null || _leadStops <= 0) return null;
+    final trigger = resolveTriggerStopUid(_stopUidsInOrder, target, _leadStops);
+    return trigger == target ? null : trigger;
+  }
+
+  /// The plate a running 下車提醒 on this subroute follows, so the stop list
+  /// can mark that vehicle's row. Null for another route's session, or none.
+  String? _boundPlate(BuildContext context) {
+    final session = context.watch<JourneySessionBloc>().state;
+    if (trackedBusStopUid(session, _bloc.subRouteUid) == null) return null;
+    return session.plate;
   }
 
   /// The current direction's stops, or empty when the route isn't loaded.
@@ -536,8 +503,13 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     return s.direction == 0 ? route.stopsGo : route.stopsReturn;
   }
 
-  /// 完成: start plate-tracked waiting on the picked alight stop and arm a
-  /// pinned reminder on the trigger stop (提前站數 before it).
+  /// 完成: start plate-tracked waiting on the picked alight stop and arm the
+  /// reminders that back it in the background.
+  ///
+  /// Two rows, not one (ADR-0020): the 下車站 always, and the 提前提醒站 as
+  /// well whenever 提前站數 is above 0. They are separate reminders because
+  /// they are separate events — a short buzz and a long one — and the server
+  /// fires each exactly once.
   void _confirmPick() {
     final plate = _pinnedPlate;
     final target = _targetStopUid;
@@ -566,45 +538,33 @@ class _BusRouteScreenState extends State<BusRouteScreen>
         leadStops: _leadStops,
       ),
     );
-    final trigger = resolveTriggerStopUid(_stopUidsInOrder, target, _leadStops);
     _bloc.add(
-      BusRoutePinnedReminderArmed(stopUid: trigger, plate: plate),
-    );
-    unawaited(HapticService.instance.mediumTap());
-    setState(() => _pickingStop = false);
-    _repaintPins();
-    _liftSheet(false);
-  }
-
-  /// 略過: track the pinned bus toward its next stop with no reminder.
-  void _skipPick() {
-    final plate = _pinnedPlate;
-    if (plate == null) return;
-    final s = _bloc.state;
-    final route = s.route;
-    if (route == null) return;
-    final stops = _currentStops(s);
-    final nextIdx = firstAlightIndex(_pinnedNextStopIndex);
-    if (nextIdx >= stops.length) return;
-    context.read<JourneySessionBloc>().add(
-      JourneyStarted(
-        trackOnly: true,
+      BusRoutePinnedReminderArmed(
+        stopUid: target,
         plate: plate,
-        legs: [
-          busTrackingLeg(
-            route: route,
-            stops: stops,
-            boardIndex: nextIdx,
-            direction: s.direction,
-          ),
-        ],
+        event: AlightEvent.alight,
       ),
     );
-    unawaited(HapticService.instance.mediumTap());
-    setState(() {
-      _pickingStop = false;
-      _targetStopUid = null;
-    });
+    if (_leadStops > 0) {
+      final trigger = resolveTriggerStopUid(
+        _stopUidsInOrder,
+        target,
+        _leadStops,
+      );
+      // A lead that resolves back onto the 下車站 (the bus is already inside
+      // the lead window) would arm the same stop twice; the bloc's own
+      // already-armed guard drops it, but not asking is clearer.
+      if (trigger != target) {
+        _bloc.add(
+          BusRoutePinnedReminderArmed(
+            stopUid: trigger,
+            plate: plate,
+            event: AlightEvent.lead,
+          ),
+        );
+      }
+    }
+    setState(() => _pickingStop = false);
     _repaintPins();
     _liftSheet(false);
   }
@@ -797,7 +757,6 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                     routeName: routeName,
                     dirName: dirName,
                     direction: state.direction,
-                    onBookmarkTapped: HapticService.instance.mediumTap,
                   ),
 
                   if (state.error == null)
@@ -860,7 +819,6 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                     isLoading: state.loading,
                     onDirectionChanged: (dir) {
                       if (state.direction == dir) return;
-                      unawaited(HapticService.instance.lightTap());
                       context.read<BusRouteBloc>().add(
                         BusRouteDirectionToggled(dir),
                       );
@@ -875,30 +833,17 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                     pickingStop: _pickingStop,
                     pinnedNextStopIndex: _pinnedNextStopIndex,
                     targetStopUid: _targetStopUid,
-                    leadStops: _leadStops,
+                    leadStopUid: _leadStopUid,
+                    boundPlate: _boundPlate(context),
                     onPickStop: _onPickStop,
-                    onLeadChanged: (v) =>
-                        setState(() => _leadStops = clampLeadStops(v)),
-                    onConfirmPick: _confirmPick,
-                    onSkipPick: _skipPick,
+                    onSwipeVehicle: _enterPickFromSwipe,
                     onCancelPick: _cancelPick,
-                    onBellTapped: () => _enterPickFromBell(
-                      _stopsFor(AppI18n.of(context), state),
-                    ),
                   ),
 
-                  // The mode says itself once, over the map, and the settings
-                  // wait at the bottom until a stop has actually been picked —
-                  // the same two layers the metro and rail screens use.
-                  if (_pickingStop)
-                    Positioned(
-                      top: MediaQuery.paddingOf(context).top + 60,
-                      left: 0,
-                      right: 0,
-                      child: Center(
-                        child: AlightPickCapsule(onCancel: _cancelPick),
-                      ),
-                    ),
+                  // The mode capsule now rides inside the sheet, in the
+                  // direction slider's slot: the list it changes the meaning of
+                  // is in the sheet, and a capsule over the map would be
+                  // labelling the wrong surface.
                   if (_pickingStop && _targetStopUid != null)
                     Positioned(
                       left: 0,

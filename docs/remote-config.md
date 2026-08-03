@@ -27,6 +27,7 @@ Firebase Remote Config 在 `core/firebase/firebase_bootstrap.dart` 初始化：`
 | `alert_sources` | `String` | `'metro:TRTC,bus:Taipei'` | `alert_bloc.dart` `parseAlertSources`——tagged token（見下），擴展城市免發版 |
 | `nearby_fallback_radius_m` | `int` | `900` | `home_marker_helpers.dart`（地圖 controller 未就緒時的回退半徑） |
 | `genui_enabled` | `bool` | `true` | `genui_ask_lane.dart` `GenUiAskLane.enabled`——搜尋頁「問問看」車道的 kill switch，false 則整條車道不渲染（關鍵字搜尋不受影響）。與 `FirebaseGate.enabled` 相 and，dev/test flavor 本來就沒有。 |
+| `genui_system_prompt` | `String` | 見 `remote_config.dart` `AppConfig.defaults` | `genui_service.dart` `GenUiService._systemPrompt`——問問看模型的系統提示詞，可在不發版的情況下修正提示詞問題。**改這個值前先讀程式碼**：提示詞裡點名的工具名稱（`searchTransit`/`renderUI`）與節點種類（`heading`/`text`/`route`/`step`/`chip`/`divider`）是程式寫死接的，線上改壞名稱或拿掉某個節點種類只會讓模型叫不動工具或吐出解析不了的節點，不是文字上的小事。 |
 
 > **`alert_sources` 格式變更**：舊值 `'TRTC,Taipei'` 無法區分 metro 系統與巴士城市（分別呼叫 `metroAlert()` / `busNews()`），改為 tagged token `metro:<系統>,bus:<城市>`（逗號分隔，可多個）。TRA/THSR 是全國性鐵路、直接寫死不列於此。無效或未知 kind 的 token 會被丟棄（壞值不會讓告警啟動失敗）。線上值已同步 deploy。
 

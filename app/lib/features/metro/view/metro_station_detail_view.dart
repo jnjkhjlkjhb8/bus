@@ -21,7 +21,6 @@ import 'package:wheres_the_bus/features/metro/view/metro_screen.dart';
 import 'package:wheres_the_bus/shared/widgets/alight_track/alight_confirm_bar.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
 import 'package:wheres_the_bus/shared/widgets/alight_track/alight_track_bell.dart';
-import 'package:wheres_the_bus/shared/motion/stagger.dart';
 import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_bus/shared/widgets/eta_list_tile.dart';
 import 'package:wheres_the_bus/shared/widgets/line_badge.dart';

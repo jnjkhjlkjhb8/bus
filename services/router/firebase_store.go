@@ -29,6 +29,10 @@ type FirebaseArrivalReminder struct {
 	Status      string
 	Token       string
 	Plate       string
+	// AlightEvent is "lead", "alight", or "" for a legacy banner reminder
+	// (ADR-0020). It travels back out on the push so the device knows which
+	// of the two vibrations to play.
+	AlightEvent string
 }
 
 type firebaseDeviceToken struct {
@@ -124,10 +128,11 @@ func (s *firebaseStore) ReplaceRouteSubscriptions(ctx context.Context, installID
 func (s *firebaseStore) CreateArrivalReminder(ctx context.Context, reminder FirebaseArrivalReminder) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO firebase_arrival_reminder
-			(reminder_id, install_id, route_type, route_key, stop_key, direction, lead_minutes, fire_at, expires_at, status, plate)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			(reminder_id, install_id, route_type, route_key, stop_key, direction, lead_minutes, fire_at, expires_at, status, plate, alight_event)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		reminder.ReminderID, reminder.InstallID, reminder.RouteType, reminder.RouteKey, reminder.StopKey,
-		reminder.Direction, reminder.LeadMinutes, reminder.FireAt, reminder.ExpiresAt, reminder.Status, reminder.Plate)
+		reminder.Direction, reminder.LeadMinutes, reminder.FireAt, reminder.ExpiresAt, reminder.Status, reminder.Plate,
+		reminder.AlightEvent)
 	return err
 }
 

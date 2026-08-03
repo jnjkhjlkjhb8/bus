@@ -32,7 +32,7 @@ func TestAdvanceMrtTrack(t *testing.T) {
 		wantCurrent   int32
 		wantRemaining int32
 		wantStatus    string
-		wantFire      bool
+		wantFire      string
 		wantTerminal  bool
 	}{
 		{
@@ -41,8 +41,10 @@ func TestAdvanceMrtTrack(t *testing.T) {
 			reading:       mrtReading{nextIndex: 3, resolved: true, gotInfo: true, hasCountdown: true, countdown: 60 * time.Second},
 			wantCurrent:   2,
 			wantRemaining: 2,
-			wantStatus:    mrtStatusTracking,
-			wantFire:      false,
+			// lead 1 means "buzz me when the stop before mine is next", which is
+			// remaining 2 — one stop earlier than the pre-ADR-0020 `<= lead`.
+			wantStatus: mrtStatusLeadFired,
+			wantFire:   mrtAlightEventLead,
 		},
 		{
 			name:          "reach lead, fire once",
@@ -51,7 +53,7 @@ func TestAdvanceMrtTrack(t *testing.T) {
 			wantCurrent:   2,
 			wantRemaining: 2,
 			wantStatus:    mrtStatusLeadFired,
-			wantFire:      true,
+			wantFire:      mrtAlightEventLead,
 		},
 		{
 			// fire is re-requested every tick inside the lead zone; the claim/fired
@@ -63,7 +65,7 @@ func TestAdvanceMrtTrack(t *testing.T) {
 			wantCurrent:   2,
 			wantRemaining: 2,
 			wantStatus:    mrtStatusLeadFired,
-			wantFire:      true,
+			wantFire:      mrtAlightEventLead,
 		},
 		{
 			name:          "arrival clamps and fires from tracking",
@@ -72,7 +74,7 @@ func TestAdvanceMrtTrack(t *testing.T) {
 			wantCurrent:   4,
 			wantRemaining: 0,
 			wantStatus:    mrtStatusArrived,
-			wantFire:      true,
+			wantFire:      mrtAlightEventAlight,
 			wantTerminal:  true,
 		},
 		{
@@ -81,7 +83,7 @@ func TestAdvanceMrtTrack(t *testing.T) {
 			reading:      mrtReading{lost: true},
 			wantCurrent:  2,
 			wantStatus:   mrtStatusLost,
-			wantFire:     false,
+			wantFire:     "",
 			wantTerminal: true,
 		},
 		{
@@ -93,7 +95,7 @@ func TestAdvanceMrtTrack(t *testing.T) {
 			reading:      mrtReading{lost: true},
 			wantCurrent:  4,
 			wantStatus:   mrtStatusArrived,
-			wantFire:     true,
+			wantFire:     mrtAlightEventAlight,
 			wantTerminal: true,
 		},
 		{
@@ -103,7 +105,7 @@ func TestAdvanceMrtTrack(t *testing.T) {
 			wantCurrent:   3,
 			wantRemaining: 1,
 			wantStatus:    mrtStatusLeadFired,
-			wantFire:      true,
+			wantFire:      mrtAlightEventAlight,
 		},
 	}
 	for _, c := range cases {
@@ -121,7 +123,7 @@ func TestAdvanceMrtTrack(t *testing.T) {
 				t.Errorf("status = %q want %q", got.Status, c.wantStatus)
 			}
 			if fire != c.wantFire {
-				t.Errorf("fire = %v want %v", fire, c.wantFire)
+				t.Errorf("fire = %q want %q", fire, c.wantFire)
 			}
 			if c.wantTerminal && got.NextPollAtUnix != 0 {
 				t.Errorf("terminal state should zero next_poll_at, got %d", got.NextPollAtUnix)
@@ -143,8 +145,8 @@ func TestAdvanceMrtTrackStale(t *testing.T) {
 	if got.Status != mrtStatusStale {
 		t.Errorf("status = %q want stale", got.Status)
 	}
-	if fire {
-		t.Error("stale ending must not fire")
+	if fire != "" {
+		t.Errorf("stale ending must not fire, got %q", fire)
 	}
 	if got.NextPollAtUnix != 0 {
 		t.Error("stale ending should zero next_poll_at")
@@ -164,8 +166,8 @@ func TestAdvanceMrtTrackStaleWhileFinishingIsArrival(t *testing.T) {
 	if got.CurrentIndex != 5 || got.RemainingStops != 0 {
 		t.Errorf("position = %d/%d want clamped to target", got.CurrentIndex, got.RemainingStops)
 	}
-	if !fire {
-		t.Error("arrival inside the lead zone should still request fire (claim dedups)")
+	if fire != mrtAlightEventAlight {
+		t.Errorf("arrival should request the alight buzz (claim dedups), got %q", fire)
 	}
 	if got.NextPollAtUnix != 0 {
 		t.Error("arrived ending should zero next_poll_at")

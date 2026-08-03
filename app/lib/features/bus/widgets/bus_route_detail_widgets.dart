@@ -1039,16 +1039,13 @@ class _TimetableState extends State<_Timetable> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              Flexible(
-                child: Text(
-                  rows.isEmpty
-                      ? _dayLabel(AppI18n.of(context))
-                      : AppI18n.of(context).busRunCount(rows.length),
-                  textAlign: TextAlign.end,
-                  style: AppTextStyles.bodySmall.copyWith(
-                    fontFeatures: _tnum,
-                    color: cs.onSurfaceVariant,
-                  ),
+              Text(
+                rows.isEmpty
+                    ? _dayLabel(AppI18n.of(context))
+                    : AppI18n.of(context).busRunCount(rows.length),
+                style: AppTextStyles.bodySmall.copyWith(
+                  fontFeatures: _tnum,
+                  color: cs.onSurfaceVariant,
                 ),
               ),
             ],

@@ -42,19 +42,18 @@ class _StopListTab extends StatelessWidget {
     required this.stops,
     required this.scrollController,
     required this.flashStopUid,
-    required this.trackedStopUid,
-    required this.onTrackToggled,
     this.picking = false,
     this.firstPickableIndex = 0,
     this.targetStopUid,
+    this.leadStopUid,
+    this.boundPlate,
     this.onPickStop,
+    this.onSwipeVehicle,
   });
 
   final List<TimelineStop> stops;
   final ScrollController scrollController;
   final String? flashStopUid;
-  final String? trackedStopUid;
-  final void Function(TimelineStop) onTrackToggled;
 
   /// Whether a 下車站 is being chosen. The same rule as the timeline above —
   /// only stops the pinned bus has not reached yet — so the two views can
@@ -62,7 +61,20 @@ class _StopListTab extends StatelessWidget {
   final bool picking;
   final int firstPickableIndex;
   final String? targetStopUid;
+
+  /// The 提前提醒站 — derived from 提前站數, not chosen. Null at lead 0, which
+  /// is the default, so most sessions never show it.
+  final String? leadStopUid;
+
+  /// The plate the running 下車提醒 follows, so its marker row can carry the
+  /// seat glyph.
+  final String? boundPlate;
+
   final ValueChanged<String>? onPickStop;
+
+  /// Swiping a vehicle marker right opens the 下車提醒 flow bound to that
+  /// plate. The only entry into picking — see ADR-0020.
+  final void Function(String plate, int markerIndex)? onSwipeVehicle;
 
   @override
   Widget build(BuildContext context) {
@@ -79,13 +91,28 @@ class _StopListTab extends StatelessWidget {
     for (var i = 0; i < stops.length; i++) {
       final stop = stops[i];
       if (markers.contains(i)) {
+        final plate = stop.plate;
+        final marker = TimelineVehicleMarker(
+          semanticLabel: plate == boundPlate && plate.isNotEmpty
+              ? AppI18n.of(context).alightBoundVehicle
+              : AppI18n.of(context).busVehicleHere,
+          // The marker stands for the bus this stop is counting down to, so
+          // its plate is the one to print. Empty when the feed sent none.
+          label: plate.isEmpty ? null : plate,
+          badge: plate.isNotEmpty && plate == boundPlate
+              ? Icons.airline_seat_recline_extra_rounded
+              : null,
+        );
         children.add(
-          TimelineVehicleMarker(
-            semanticLabel: AppI18n.of(context).busVehicleHere,
-            // The marker stands for the bus this stop is counting down to, so
-            // its plate is the one to print. Empty when the feed sent none.
-            label: stop.plate.isEmpty ? null : stop.plate,
-          ),
+          // A marker the feed gave no plate for is not swipeable: the flow
+          // binds to a plate, and there is nothing here to bind to.
+          plate.isEmpty || onSwipeVehicle == null || picking
+              ? marker
+              : AlightSwipeRow(
+                  rowKey: plate,
+                  onSwiped: () => onSwipeVehicle!(plate, i),
+                  child: marker,
+                ),
         );
       }
       // 兩段票 boundary. It changes what the ride costs, so it earns a line of
@@ -108,16 +135,14 @@ class _StopListTab extends StatelessWidget {
           liveBelow:
               i < stops.length - 1 && stop.isLiveEta && stops[i + 1].isLiveEta,
           isFlashed: stop.uid == flashStopUid,
-          isTracking: trackedStopUid == stop.uid,
-          isAlightTarget: picking && targetStopUid == stop.uid,
+          // Both marks outlive picking: mid-ride the list is what answers
+          // "which stop do I get off at, and where will it buzz".
+          isAlightTarget: targetStopUid == stop.uid,
+          isLeadStop: leadStopUid == stop.uid,
           dimmedForPick: picking && i < firstPickableIndex,
-          onTrackToggled: () {
-            if (!picking) {
-              onTrackToggled(stop);
-              return;
-            }
-            if (i >= firstPickableIndex) onPickStop?.call(stop.uid);
-          },
+          onPick: picking && i >= firstPickableIndex
+              ? () => onPickStop?.call(stop.uid)
+              : null,
           suppressEtaLabel: allStopsEnded,
         ),
       );
@@ -179,17 +204,24 @@ class _StopListItem extends StatelessWidget {
     required this.liveAbove,
     required this.liveBelow,
     required this.isFlashed,
-    required this.isTracking,
-    required this.onTrackToggled,
+    this.onPick,
     this.suppressEtaLabel = false,
     this.isAlightTarget = false,
+    this.isLeadStop = false,
     this.dimmedForPick = false,
   });
 
   /// The stop currently chosen as the 下車站, carried on the row the same way
   /// the rail timetable carries it: the static highlight the design system
-  /// reserves for "find this row", no new symbol.
+  /// reserves for "find this row", plus the one solid ink glyph the list is
+  /// allowed to spend.
   final bool isAlightTarget;
+
+  /// The 提前提醒站. Derived from 提前站數 rather than picked, so it reports in
+  /// a quieter register than [isAlightTarget] — a bare glyph, no fill, no row
+  /// highlight (docs/design.md:253, and the same solid/outlined split
+  /// [TimelineStopTag] already uses).
+  final bool isLeadStop;
 
   /// A stop the pinned bus has already passed while picking — visible, but not
   /// a candidate.
@@ -205,8 +237,11 @@ class _StopListItem extends StatelessWidget {
 
   /// True for the few seconds after this stop's map marker was tapped.
   final bool isFlashed;
-  final bool isTracking;
-  final VoidCallback onTrackToggled;
+
+  /// Chooses this stop as the 下車站. Null outside pick-mode, which is what
+  /// makes the row inert: the list has one meaning at a time, and outside the
+  /// flow it is a list of stops and their arrival times, nothing more.
+  final VoidCallback? onPick;
 
   /// True when every stop in the direction has ended, so the list-level
   /// banner already states it once and the per-row ETA text is redundant.
@@ -256,11 +291,11 @@ class _StopListItem extends StatelessWidget {
     }
 
     final row = Pressable(
-      // Setting an arrival reminder is a once-per-trip act, so the whole row
-      // carries it. It used to need a 28px button on every row: forty identical
-      // grey chips down the list, louder than the arrival times they sat beside
-      // and repeating an affordance the rider uses once.
-      onTap: onTrackToggled,
+      // Picking a 下車站 is a once-per-trip act, so the whole row carries it
+      // rather than a per-row button — forty identical chips down the list
+      // would be louder than the arrival times they sat beside.
+      enabled: onPick != null,
+      onTap: onPick ?? () {},
       semanticLabel: _semanticLabel(AppI18n.of(context)),
       child: Container(
         constraints: const BoxConstraints(minHeight: 44),
@@ -292,10 +327,15 @@ class _StopListItem extends StatelessWidget {
                       Expanded(child: nameWidget),
                       const SizedBox(width: 12),
                       if (!suppressEtaLabel) _buildEta(AppI18n.of(context), cs),
-                      // The radar mark is now a *state*, not a control: it
-                      // appears only on the row that actually has a reminder
-                      // armed, which is at most one at a time.
-                      if (isTracking) ...[
+                      if (isLeadStop) ...[
+                        const SizedBox(width: 10),
+                        Icon(
+                          Icons.notifications_rounded,
+                          size: 18,
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ],
+                      if (isAlightTarget) ...[
                         const SizedBox(width: 10),
                         Container(
                           width: 24,
@@ -307,7 +347,7 @@ class _StopListItem extends StatelessWidget {
                             ),
                           ),
                           child: Icon(
-                            Icons.radar_rounded,
+                            Icons.download_rounded,
                             size: 14,
                             color: cs.surface,
                           ),
@@ -337,7 +377,8 @@ class _StopListItem extends StatelessWidget {
       stop.name,
       if (eta != null && !suppressEtaLabel)
         stop.isLiveEta ? eta : i18n.busScheduledDeparture(eta),
-      if (isTracking) i18n.busReminderOnHint else i18n.busReminderOffHint,
+      if (isAlightTarget) i18n.alightTargetStopHint,
+      if (isLeadStop) i18n.alightLeadStopHint,
     ];
     return parts.join('，');
   }

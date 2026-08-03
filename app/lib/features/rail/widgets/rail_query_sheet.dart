@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
@@ -228,13 +227,11 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
 
   void _setMode(RailQueryMode mode) {
     if (mode == _mode) return;
-    unawaited(HapticService.instance.lightTap());
     setState(() => _mode = mode);
   }
 
   void _switchSystem(RailSystem system) {
     if (system == _system) return;
-    unawaited(HapticService.instance.lightTap());
     setState(() {
       _system = system;
       // TRA and THSR station names do not overlap, so a carried-over pick would
@@ -248,7 +245,6 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
   }
 
   void _swap() {
-    unawaited(HapticService.instance.lightTap());
     setState(() {
       final tmpName = _originName;
       final tmpId = _originId;
@@ -345,7 +341,6 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
   void _submitTrain() {
     final trainNo = _trainController.text.trim();
     if (trainNo.isEmpty) return;
-    unawaited(HapticService.instance.lightTap());
     widget.onSubmit(
       RailTrainQuerySubmission(
         system: _system,
@@ -363,7 +358,6 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
   }
 
   void _fillFromRecent(String system, String trainNo) {
-    unawaited(HapticService.instance.lightTap());
     final chipSystem = system == 'thsr' ? RailSystem.thsr : RailSystem.tra;
     final systemChanged = chipSystem != _system;
     setState(() {
@@ -561,10 +555,7 @@ class _RailQuerySheetContentState extends State<RailQuerySheetContent> {
         const SizedBox(height: 16),
         _SubmitButton(
           enabled: _originName.isNotEmpty && _destName.isNotEmpty,
-          onTap: () {
-            unawaited(HapticService.instance.lightTap());
-            _submitOd();
-          },
+          onTap: _submitOd,
         ),
       ],
     );

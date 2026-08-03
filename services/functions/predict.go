@@ -135,27 +135,44 @@ func batchStopOffsets(ctx context.Context, db *pgxpool.Pool, uids []string) map[
 	if len(uids) == 0 {
 		return out
 	}
+	missing := cachedStopOffsets(&stopOffsetCache, uids, time.Now(), out)
+	if len(missing) == 0 {
+		return out
+	}
 	rows, err := db.Query(ctx, `
 		SELECT p.sub_route_uid, p.direction, p.stop_uid, p.offset_secs
 		FROM (`+busPatternSQL+`) p
 		WHERE p.complete AND p.sub_route_uid = ANY($1::text[])`,
-		uids)
+		missing)
 	if err != nil {
 		log.Errorf("[MODEL] batchStopOffsets error: %v", err)
 		return out
 	}
 	defer rows.Close()
+	// Every queried uid gets an entry, including the ones the query returns
+	// nothing for. A direction busPatternSQL does not call complete is the common
+	// case, not an error, and caching only the hits would leave those re-running
+	// the statement on every tick — which is most of the cost being avoided.
+	fetched := make(map[string][]stopOffset, len(missing))
+	for _, uid := range missing {
+		fetched[uid] = nil
+	}
 	for rows.Next() {
 		var uid, stop string
 		var dir int32
 		var sec int
 		if err := rows.Scan(&uid, &dir, &stop, &sec); err == nil {
 			out[stopOffsetKey{subRouteUID: uid, direction: dir, stopUID: stop}] = sec
+			fetched[uid] = append(fetched[uid], stopOffset{direction: dir, stopUID: stop, secs: sec})
 		}
 	}
 	if err := rows.Err(); err != nil {
+		// A partial read is not cached: the uids it covered would look complete
+		// and stay that way for the whole TTL.
 		log.Errorf("[MODEL] batchStopOffsets rows error: %v", err)
+		return out
 	}
+	storeStopOffsets(&stopOffsetCache, fetched, time.Now())
 	return out
 }
 

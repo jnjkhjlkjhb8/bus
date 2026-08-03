@@ -1,11 +1,8 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/app/theme/notice_tone.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/data/models/alert_models.dart';
 import 'package:wheres_the_bus/features/alerts/bloc/alert_bloc.dart';
 import 'package:wheres_the_bus/features/alerts/bloc/alert_event.dart';
@@ -60,13 +57,11 @@ class _NotificationSheet extends StatelessWidget {
   final Set<String> unreadAtOpen;
 
   void _dismiss(BuildContext context, AlertViewModel alert) {
-    unawaited(HapticService.instance.lightTap());
     context.read<AlertBloc>().add(AlertDismissed(alert.message));
     _showUndo(context, [alert.message], AppI18n.of(context).alertsCleared);
   }
 
   void _clearAll(BuildContext context, List<AlertViewModel> alerts) {
-    unawaited(HapticService.instance.lightTap());
     // A maintenance window is ops-controlled; 清除全部 skips it rather than
     // appearing to clear something that reappears on the next rebuild.
     final messages = alerts
@@ -268,7 +263,6 @@ class _NotificationRowState extends State<_NotificationRow> {
   bool _expanded = false;
 
   void _toggle() {
-    unawaited(HapticService.instance.lightTap());
     setState(() => _expanded = !_expanded);
   }
 

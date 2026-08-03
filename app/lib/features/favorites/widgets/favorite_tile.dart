@@ -1,9 +1,6 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/data/models/favorite.dart';
 import 'package:wheres_the_bus/features/favorites/favorite_actions.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
@@ -18,10 +15,7 @@ class FavoriteTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
-      onTap: () {
-        unawaited(HapticService.instance.lightTap());
-        openFavorite(context, fav);
-      },
+      onTap: () => openFavorite(context, fav),
       semanticLabel: fav.subtitle.isEmpty
           ? fav.title
           : '${fav.title} ${fav.subtitle}',

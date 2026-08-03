@@ -9,7 +9,6 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
-import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/features/bike/bloc/bike_station_bloc.dart';
 import 'package:wheres_the_bus/features/bike/bloc/bike_station_state.dart';
@@ -132,7 +131,6 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
   }
 
   void _recenterMap() {
-    unawaited(HapticService.instance.lightTap());
     unawaited(_moveToLocation());
   }
 
@@ -251,8 +249,6 @@ class _BikeStationScreenState extends State<BikeStationScreen> {
 
           AppSheet(
             controller: _sheetController,
-            // Back button in the app bar above (see AppSheet.onExit).
-            onExit: null,
             child: BikeStationDetailView(
               stationUid: widget.stationUid,
               bloc: _bloc,

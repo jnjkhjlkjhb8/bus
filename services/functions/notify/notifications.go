@@ -77,27 +77,43 @@ func notificationMessage(token, title, body string, data map[string]string) *mes
 	return &messaging.Message{Token: token, Data: data, Notification: &messaging.Notification{Title: title, Body: body}, Android: &messaging.AndroidConfig{Priority: "high", Notification: &messaging.AndroidNotification{Sound: "default"}}, APNS: &messaging.APNSConfig{Payload: &messaging.APNSPayload{Aps: &messaging.Aps{Sound: "default"}}}}
 }
 
-// MrtVibrateEvent is one metro alight-reminder session reaching its lead: the
-// reminder/track ID to fire once and the device token to reach. TrackID is
-// echoed to the client so it can match the vibration to the session on screen.
+// MrtVibrateEvent is one metro alight-reminder session reaching one of its two
+// thresholds: the reminder row to fire once, the device token to reach, and
+// which buzz it is. TrackID is echoed to the client so it can match the
+// vibration to the session on screen.
 type MrtVibrateEvent struct {
 	ReminderID string
 	Token      string
 	TrackID    string
+	// AlightEvent is "lead" or "alight" (ADR-0020).
+	AlightEvent string
 }
 
-// vibrateMessage builds the alight-reminder push: a DATA-only, high-priority FCM
-// message with NO notification payload, so nothing enters the notification
-// center — the Android client wakes and vibrates (ADR-0015). iOS transport
-// (ActivityKit alerting) is out of scope for this phase; this message carries no
-// APNs config, so an iOS token receives a silent data message the client may
-// ignore until that seam is built.
-func vibrateMessage(token, trackID string) *messaging.Message {
+// vibrateMessage builds a 下車提醒 push: a DATA-only, high-priority FCM message
+// with NO notification payload, so nothing enters the notification center — the
+// Android client wakes and vibrates (ADR-0020). Every mode uses it; the event
+// tells the client which of the two vibrations to play.
+//
+// It carries no APNs config: iOS cannot vibrate a backgrounded app from a push
+// at all, so an iOS token receives a silent data message and the alert reaches
+// the rider through the Live Activity's own alerting update instead. That
+// asymmetry is a platform ceiling, not an unfinished seam — see ADR-0020.
+func vibrateMessage(token, trackID, alightEvent string) *messaging.Message {
 	return &messaging.Message{
 		Token:   token,
-		Data:    map[string]string{"type": "mrt_vibrate", "track_id": trackID},
+		Data:    map[string]string{"type": "alight_vibrate", "track_id": trackID, "event": alightEvent},
 		Android: &messaging.AndroidConfig{Priority: "high"},
 	}
+}
+
+// reminderMessage picks the shape a reminder's push takes: a 下車提醒 row
+// vibrates silently, and a legacy arrival reminder (no alight event) keeps its
+// banner. One helper so the live-ETA and scheduled paths cannot drift apart.
+func reminderMessage(r arrivalReminder, title, body string, data map[string]string) *messaging.Message {
+	if r.alightEvent != "" {
+		return vibrateMessage(r.token, r.id, r.alightEvent)
+	}
+	return notificationMessage(r.token, title, body, data)
 }
 
 // FireMrtVibrate delivers the alight vibration exactly once, reusing the
@@ -119,7 +135,7 @@ func (d *Dispatcher) FireMrtVibrate(ctx context.Context, event MrtVibrateEvent) 
 	if !claimed {
 		return false, nil
 	}
-	sendErr := d.sender.Send(ctx, vibrateMessage(event.Token, event.TrackID))
+	sendErr := d.sender.Send(ctx, vibrateMessage(event.Token, event.TrackID, event.AlightEvent))
 	finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
 	defer cancelFinalization()
 	if sendErr != nil {
@@ -245,7 +261,7 @@ func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error 
 		if !claimed {
 			continue
 		}
-		msg := notificationMessage(r.token, "即將到站", arrivalReminderBody((event.ETASeconds+59)/60), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
+		msg := reminderMessage(r, "即將到站", arrivalReminderBody((event.ETASeconds+59)/60), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
 		sendErr := d.sender.Send(ctx, msg)
 		finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
 		if sendErr != nil {
@@ -315,7 +331,7 @@ func (d *Dispatcher) FireScheduled(ctx context.Context) error {
 		if !claimed {
 			continue
 		}
-		msg := notificationMessage(r.token, "即將到站", fmt.Sprintf("預計 %d 分鐘後到站", r.leadMinutes), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
+		msg := reminderMessage(r, "即將到站", fmt.Sprintf("預計 %d 分鐘後到站", r.leadMinutes), map[string]string{"kind": "arrival_reminder", "route_type": r.routeType, "route_key": r.routeKey, "stop_key": r.stopKey, "direction": r.direction, "lead_minutes": strconv.Itoa(r.leadMinutes)})
 		sendErr := d.sender.Send(ctx, msg)
 		finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
 		if sendErr != nil {

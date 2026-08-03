@@ -479,9 +479,6 @@ class _NavSheet extends StatelessWidget {
     final isLast = activeLeg >= sections.length - 1;
     return AppSheet(
       controller: controller,
-      // 結束 lives in the sheet header; a hold must not end a live
-      // navigation (see AppSheet.onExit).
-      onExit: null,
       initialOffset: initialOffset,
       color: cs.surface,
       child: Column(

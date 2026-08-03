@@ -154,14 +154,19 @@ func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackRe
 	reading := t.readPosition(ctx, &state)
 	newState, fire := advanceMrtTrack(&state, reading, now)
 
-	if fire && track.Token != "" {
+	if fire != "" && track.Token != "" {
+		// Each event owns its own reminder row, so each claims and fires once.
+		reminderID := track.ID
+		if fire == mrtAlightEventLead {
+			reminderID = track.ID + ":lead"
+		}
 		fired, fireErr := t.vibrator.FireMrtVibrate(ctx, notify.MrtVibrateEvent{
-			ReminderID: track.ID, Token: track.Token, TrackID: track.ID,
+			ReminderID: reminderID, Token: track.Token, TrackID: track.ID, AlightEvent: fire,
 		})
 		if fireErr != nil {
 			log.Warnf("[MRT_TRACK] action=advance event=vibrate_error track=%s error=%v", track.ID, fireErr)
 		} else if fired {
-			log.Infof("[MRT_TRACK] action=advance event=lead_fired track=%s remaining=%d", track.ID, newState.RemainingStops)
+			log.Infof("[MRT_TRACK] action=advance event=vibrate_fired track=%s buzz=%s remaining=%d", track.ID, fire, newState.RemainingStops)
 		}
 	}
 
@@ -286,13 +291,35 @@ type mrtReading struct {
 	lost         bool
 }
 
+// The two 下車提醒 buzzes, as they travel to the device (ADR-0020).
+const (
+	mrtAlightEventLead   = "lead"
+	mrtAlightEventAlight = "alight"
+)
+
+// mrtFireEvent names the buzz owed at this position, or "" for none.
+//
+// remaining is stops to the 目標站, where 1 means "your station is next". The
+// lead window opens at lead+1 because the 提前提醒站 sits lead stations before
+// the target. At lead 0 only the alight window exists, which is what
+// 不提前提醒 means.
+func mrtFireEvent(remaining, lead int32) string {
+	switch {
+	case remaining <= 1:
+		return mrtAlightEventAlight
+	case lead > 0 && remaining <= lead+1:
+		return mrtAlightEventLead
+	}
+	return ""
+}
+
 // advanceMrtTrack is the pure session-advance decision: given the prior state, a
 // position reading, and the clock, it returns the next state and whether the
 // lead vibration should fire this tick. Position never moves backward. It sets
 // the ending status (arrived / lost / stale) or the live status
 // (tracking / lead_fired) and schedules the next poll. Firing is decided here
 // but performed by the caller (which owns the once-only claim machinery).
-func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.Time) (*models.MrtTrackState, bool) {
+func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.Time) (*models.MrtTrackState, string) {
 	next := proto.Clone(state).(*models.MrtTrackState)
 	target := next.TargetIndex
 
@@ -305,7 +332,7 @@ func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.T
 		if !finishing {
 			next.Status = mrtStatusLost
 			next.NextPollAtUnix = 0
-			return next, false
+			return next, ""
 		}
 		reading = mrtReading{nextIndex: int(target) + 1, resolved: true}
 	}
@@ -336,10 +363,13 @@ func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.T
 		next.Progress = 1
 	}
 
-	// fire is requested on every tick inside the lead zone, not just the first:
+	// fire is requested on every tick inside a threshold, not just the first:
 	// the claim/fired machinery makes delivery once-only, and re-requesting lets
 	// a transiently failed (released) send retry on a later tick.
-	fire := next.RemainingStops <= next.LeadStops
+	//
+	// The 下車站 buzz wins whenever both windows are open — at 提前站數 0 they
+	// are the same window, and there the rider is owed the long one.
+	fire := mrtFireEvent(next.RemainingStops, next.LeadStops)
 
 	switch {
 	case next.CurrentIndex >= target:
@@ -360,8 +390,11 @@ func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.T
 		}
 		next.Status = mrtStatusStale
 		next.NextPollAtUnix = 0
-		return next, false
-	case next.RemainingStops <= next.LeadStops:
+		return next, ""
+	case fire != "":
+		// The status is the card's "we are inside the warning window" reading,
+		// so it follows whichever buzz is owed rather than the lead alone —
+		// otherwise a default session (提前站數 0) would never show it.
 		next.Status = mrtStatusLeadFired
 	default:
 		next.Status = mrtStatusTracking

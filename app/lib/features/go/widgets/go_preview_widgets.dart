@@ -49,8 +49,6 @@ class _PreviewSheet extends StatelessWidget {
     ]);
     return AppSheet(
       controller: controller,
-      // The header's own back button is the way out (see AppSheet.onExit).
-      onExit: null,
       initialOffset: initialOffset,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

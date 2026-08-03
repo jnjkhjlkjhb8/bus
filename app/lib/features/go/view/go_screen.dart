@@ -25,13 +25,13 @@ import 'package:wheres_the_bus/features/go/model/planned_place.dart';
 import 'package:wheres_the_bus/features/go/navigation/navigation_coordinator.dart';
 import 'package:wheres_the_bus/features/go/view/place_search_screen.dart';
 import 'package:wheres_the_bus/features/go/widgets/route_option_card.dart';
+import 'package:wheres_the_bus/features/go/map/go_plan_overlay.dart';
 import 'package:wheres_the_bus/features/go/widgets/transit_visuals.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
-import 'package:wheres_the_bus/shared/map/marker_factory.dart';
 import 'package:wheres_the_bus/shared/motion/app_motion.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
 import 'package:wheres_the_bus/shared/widgets/app_badge.dart';
@@ -57,7 +57,6 @@ const _kDefaultPos = LatLng(25.0416, 121.5438);
 // Muted gray for non-selected alternate routes on the map. A fixed neutral
 // (rather than a theme color) so it reads as clearly secondary over both the
 // light and dark map styles.
-const _kAltRouteColor = Color(0xFF9AA0A6);
 
 // Follow-camera framing while navigating. Shared by the one-shot nav-start
 // camera and every follow tick so they stay in lockstep (spec: keep tilt 45 /
@@ -142,19 +141,22 @@ class _GoScreenState extends State<GoScreen> {
   // Memoized map overlays. Building the polyline/marker sets walks every route,
   // section, and intermediate stop, so cache them and reuse while the inputs
   // (result identity, selected route, active leg, theme colors) are unchanged.
-  PlanResult? _overlayResult;
-  int? _overlaySelected;
-  int? _overlayLeg;
-  ColorScheme? _overlayScheme;
-  Set<Polyline> _overlayPolylines = const {};
-  Set<Marker> _overlayMarkers = const {};
+  /// Owns everything pinned to a coordinate: the plan's polylines and markers,
+  /// the async bitmap cache behind them, and the memo that keeps a camera tick
+  /// from re-deriving the whole layer.
+  late final GoPlanOverlay _overlay = GoPlanOverlay(
+    onAlternateTap: _previewRouteIndex,
+    onPuckTap: _recenterFollow,
+    onBitmapReady: () => setState(() {}),
+  );
+
+  /// The layer the map is currently showing, recomputed in build.
+  GoMapLayer _layer = (markers: const {}, polylines: const {});
 
   // Canvas-drawn marker bitmaps resolve asynchronously; this mirrors the
   // resolved descriptors so overlay builds can read them synchronously. A
   // pending set dedupes in-flight generation. Resolving one invalidates the
   // overlay memo so the marker appears on the next frame.
-  final Map<String, BitmapDescriptor> _markerCache = {};
-  final Set<String> _markerPending = {};
 
   @override
   void initState() {
@@ -264,7 +266,6 @@ class _GoScreenState extends State<GoScreen> {
 
   void _swap() {
     if (_origin == null && _dest == null) return;
-    unawaited(HapticService.instance.lightTap());
     setState(() {
       final t = _origin;
       _origin = _dest;
@@ -285,8 +286,7 @@ class _GoScreenState extends State<GoScreen> {
     // drop them so the caches don't grow for the life of the screen across
     // successive searches. Markers for the new plan rebuild on the next
     // _ensureOverlays pass once results arrive.
-    _markerCache.clear();
-    _markerPending.clear();
+    _overlay.invalidate();
     context.read<PlanBloc>().add(
       PlanSearchRequested(
         fromLat: from.latLng.latitude,
@@ -396,7 +396,6 @@ class _GoScreenState extends State<GoScreen> {
   // A map alternate-polyline tap selects that route and enters preview.
   void _previewRouteIndex(int index) {
     if (index < 0) return;
-    unawaited(HapticService.instance.lightTap());
     context.read<PlanBloc>().add(RouteSelected(index: index));
   }
 
@@ -639,12 +638,12 @@ class _GoScreenState extends State<GoScreen> {
     return LatLng(point.lat, point.lng);
   }
 
-  void _fitTo(PlanRoute route) => _fitBounds(_routePoints(route));
+  void _fitTo(PlanRoute route) => _fitBounds(routePoints(route));
 
   // Results phase frames every alternative at once.
   void _fitAll(PlanResult result) {
     final points = [
-      for (final route in result.routes) ..._routePoints(route),
+      for (final route in result.routes) ...routePoints(route),
     ];
     _fitBounds(points);
   }
@@ -674,323 +673,6 @@ class _GoScreenState extends State<GoScreen> {
     );
   }
 
-  List<LatLng> _routePoints(PlanRoute route) => [
-    for (final point in route.points) LatLng(point.lat, point.lng),
-  ];
-
-  // Full per-mode colored rendering of one route (the selected/previewed one).
-  Set<Polyline> _polylines(
-    PlanRoute route,
-    ColorScheme cs, {
-    int? activeLeg,
-  }) {
-    final lines = <Polyline>{};
-    for (final (i, s) in route.sections.indexed) {
-      final walk = isWalk(s);
-      final pts = <LatLng>[];
-      void add(PlanPoint point) {
-        if (point.lat != 0 || point.lng != 0) {
-          pts.add(LatLng(point.lat, point.lng));
-        }
-      }
-
-      // Walk sections trace the real OSRM foot path when it resolved; rail
-      // transit sections trace the line geometry the router clipped to this
-      // section's stops when it resolved. Either way, an unresolved path
-      // falls back to a straight line through departure→intermediateStops→
-      // arrival.
-      if (walk && s.walkPath.isNotEmpty) {
-        s.walkPath.forEach(add);
-      } else if (!walk && s.transitPath.isNotEmpty) {
-        s.transitPath.forEach(add);
-      } else {
-        add(s.departure.location);
-        for (final stop in s.intermediateStops) {
-          add(stop.location);
-        }
-        add(s.arrival.location);
-      }
-      if (pts.length < 2) continue;
-      final dim = activeLeg != null && i < activeLeg;
-      Color d(Color c) => dim ? c.withValues(alpha: 0.3) : c;
-      if (walk) {
-        // White-cased ink dots: a wide card-colored casing under narrower ink
-        // dots, both on the same points/pattern so the dots read against any
-        // map background. Card color matches the nav header's card.
-        final card = cs.brightness == Brightness.light
-            ? Colors.white
-            : cs.surfaceContainerHigh;
-        final pattern = [PatternItem.dot, PatternItem.gap(16)];
-        lines
-          ..add(
-            Polyline(
-              polylineId: PolylineId('leg_${i}_casing'),
-              points: pts,
-              width: 11,
-              color: d(card),
-              // Casing sits below its dots, both above the muted alternates.
-              zIndex: 2,
-              patterns: pattern,
-            ),
-          )
-          ..add(
-            Polyline(
-              polylineId: PolylineId('leg_$i'),
-              points: pts,
-              width: 7,
-              color: d(cs.onSurface),
-              zIndex: 3,
-              patterns: pattern,
-            ),
-          );
-      } else {
-        final base = transitColor(s.transport, cs);
-        lines.add(
-          Polyline(
-            polylineId: PolylineId('leg_$i'),
-            points: pts,
-            width: 6,
-            color: d(base),
-            // Sits above the muted alternates.
-            zIndex: 2,
-          ),
-        );
-      }
-    }
-    return lines;
-  }
-
-  // Every route on the map: muted single-color polylines for the alternates
-  // (tap to select), the selected route's full colored rendering on top. During
-  // navigation only the selected route draws (no alternates).
-  Set<Polyline> _buildPolylines(
-    PlanResult result,
-    int selectedIndex,
-    int? activeLeg,
-    ColorScheme cs,
-  ) {
-    final lines = <Polyline>{};
-    if (activeLeg == null) {
-      for (final (i, route) in result.routes.indexed) {
-        if (i == selectedIndex) continue;
-        final pts = _routePoints(route);
-        if (pts.length < 2) continue;
-        lines.add(
-          Polyline(
-            polylineId: PolylineId('alt_$i'),
-            points: pts,
-            width: 4,
-            color: _kAltRouteColor,
-            consumeTapEvents: true,
-            onTap: () => _previewRouteIndex(i),
-          ),
-        );
-      }
-    }
-    lines.addAll(
-      _polylines(result.routes[selectedIndex], cs, activeLeg: activeLeg),
-    );
-    return lines;
-  }
-
-  Color _dim(Color c, {required bool dim}) =>
-      dim ? c.withValues(alpha: 0.3) : c;
-
-  // Returns the cached descriptor, or null while it renders. Requesting a
-  // missing one schedules its generation; on completion the overlay memo is
-  // invalidated so the marker joins the set on the next frame.
-  BitmapDescriptor? _resolveMarker(
-    String key,
-    Future<BitmapDescriptor> Function() build,
-  ) {
-    final cached = _markerCache[key];
-    if (cached != null) return cached;
-    if (_markerPending.add(key)) {
-      unawaited(
-        build().then((icon) {
-          if (!mounted) return;
-          _markerPending.remove(key);
-          _markerCache[key] = icon;
-          // Force the overlay memo to rebuild now the bitmap is available.
-          setState(() => _overlayResult = null);
-        }),
-      );
-    }
-    return null;
-  }
-
-  BitmapDescriptor? _originMarker(ColorScheme cs, {required bool dim}) {
-    final ring = _dim(cs.onSurface, dim: dim);
-    final fill = _dim(Colors.white, dim: dim);
-    return _resolveMarker(
-      'go_origin|${ring.toARGB32()}|${fill.toARGB32()}',
-      () => MapMarkers.dot(fill, ring: ring, size: 20),
-    );
-  }
-
-  BitmapDescriptor? _destMarker(ColorScheme cs, {required bool dim}) {
-    final fill = _dim(cs.onSurface, dim: dim);
-    final inner = _dim(Colors.white, dim: dim);
-    return _resolveMarker(
-      'go_dest|${fill.toARGB32()}|${inner.toARGB32()}',
-      () => MapMarkers.targetDot(fill, inner),
-    );
-  }
-
-  BitmapDescriptor? _boundaryMarker(Color color, {required bool dim}) {
-    final ring = _dim(color, dim: dim);
-    final fill = _dim(Colors.white, dim: dim);
-    return _resolveMarker(
-      'go_boundary|${ring.toARGB32()}|${fill.toARGB32()}',
-      () => MapMarkers.dot(fill, ring: ring, size: 16),
-    );
-  }
-
-  BitmapDescriptor? _stopMarker(ColorScheme cs, {required bool dim}) {
-    final ring = _dim(cs.outline, dim: dim);
-    final fill = _dim(Colors.white, dim: dim);
-    return _resolveMarker(
-      'go_stop|${ring.toARGB32()}|${fill.toARGB32()}',
-      () => MapMarkers.dot(fill, ring: ring, size: 9),
-    );
-  }
-
-  // Markers for the selected/previewed route only. Origin/destination anchor
-  // the ends; each transit leg's board/alight get a leg-colored ring (transfers
-  // dedupe by position); intermediate stops get tiny neutral dots. While
-  // navigating, markers of already-passed legs dim in step with their lines.
-  Set<Marker> _buildMarkers(PlanRoute route, int? activeLeg, ColorScheme cs) {
-    final sections = route.sections;
-    if (sections.isEmpty) return const {};
-    final markers = <Marker>{};
-    // Higher-priority markers claim a coordinate first; a lower-priority marker
-    // at the same spot (e.g. a transfer boundary under the origin) is skipped.
-    final used = <String>{};
-    String posKey(PlanPoint p) =>
-        '${p.lat.toStringAsFixed(6)},${p.lng.toStringAsFixed(6)}';
-    bool valid(PlanPoint p) => p.lat != 0 || p.lng != 0;
-    bool dimLeg(int i) => activeLeg != null && i < activeLeg;
-
-    void place(String id, PlanPoint p, BitmapDescriptor? icon, int z) {
-      if (icon == null || !valid(p) || !used.add(posKey(p))) return;
-      markers.add(
-        Marker(
-          markerId: MarkerId(id),
-          position: LatLng(p.lat, p.lng),
-          icon: icon,
-          anchor: const Offset(0.5, 0.5),
-          zIndexInt: z,
-        ),
-      );
-    }
-
-    place(
-      'origin',
-      sections.first.departure.location,
-      _originMarker(cs, dim: dimLeg(0)),
-      30,
-    );
-    place(
-      'dest',
-      sections.last.arrival.location,
-      _destMarker(cs, dim: dimLeg(sections.length - 1)),
-      30,
-    );
-    for (final (i, s) in sections.indexed) {
-      if (isWalk(s)) continue;
-      final color = transitColor(s.transport, cs);
-      final dim = dimLeg(i);
-      final icon = _boundaryMarker(color, dim: dim);
-      place('board_$i', s.departure.location, icon, 20);
-      place('alight_$i', s.arrival.location, icon, 20);
-    }
-    for (final (i, s) in sections.indexed) {
-      if (isWalk(s)) continue;
-      final dim = dimLeg(i);
-      for (final (j, stop) in s.intermediateStops.indexed) {
-        place('stop_${i}_$j', stop.location, _stopMarker(cs, dim: dim), 10);
-      }
-    }
-    return markers;
-  }
-
-  // Directional user puck during navigation: an ink arrow on a white disc at
-  // the latest fix, replacing the default blue dot. Flat + center-anchored;
-  // its rotation is the north-referenced compass heading and the map stays at
-  // _kNavBearing, so the arrow points at the device's true heading on the map.
-  // Shown for the whole navigation regardless of follow state — gated only on
-  // having a fix. Rebuilt on each fix (position) and each applied heading
-  // (rotation), both throttled upstream, so never at raw compass rate.
-  Marker? _navPuck(ColorScheme cs) {
-    final fix = _lastFix;
-    if (fix == null) return null;
-    // Card color matches the nav header's card (white in light, elevated
-    // surface in dark); it forms the puck's ring and arrow glyph.
-    final card = cs.brightness == Brightness.light
-        ? Colors.white
-        : cs.surfaceContainerHigh;
-    final icon = _resolveMarker(
-      'go_nav_puck|${cs.onSurface.toARGB32()}|${card.toARGB32()}',
-      () => MapMarkers.navArrow(cs.onSurface, card),
-    );
-    if (icon == null) return null;
-    return Marker(
-      markerId: const MarkerId('nav_puck'),
-      position: LatLng(fix.latitude, fix.longitude),
-      icon: icon,
-      anchor: const Offset(0.5, 0.5),
-      rotation: _puckHeading,
-      flat: true,
-      zIndexInt: 40,
-      // Doubles as the recenter affordance: tapping re-arms follow and snaps
-      // back to the user. Harmless while already following (puck is centered);
-      // it only matters after a gesture pause.
-      onTap: _recenterFollow,
-    );
-  }
-
-  // What the map can honestly show before the router answers: the two ends and
-  // the straight line between them. It is not a route and does not pretend to
-  // be one — dotted, muted, and replaced the moment real geometry arrives.
-  Set<Polyline> _pendingLines(ColorScheme cs) {
-    final from = _origin?.latLng;
-    final to = _dest?.latLng;
-    if (from == null || to == null) return const {};
-    return {
-      Polyline(
-        polylineId: const PolylineId('pending_direct'),
-        points: [from, to],
-        width: 3,
-        color: cs.onSurface.withValues(alpha: 0.45),
-        patterns: [PatternItem.dot, PatternItem.gap(14)],
-      ),
-    };
-  }
-
-  Set<Marker> _pendingMarkers(ColorScheme cs) {
-    final from = _origin?.latLng;
-    final to = _dest?.latLng;
-    if (from == null || to == null) return const {};
-    final origin = _originMarker(cs, dim: false);
-    final dest = _destMarker(cs, dim: false);
-    return {
-      if (origin != null)
-        Marker(
-          markerId: const MarkerId('pending_origin'),
-          position: from,
-          icon: origin,
-          anchor: const Offset(0.5, 0.5),
-        ),
-      if (dest != null)
-        Marker(
-          markerId: const MarkerId('pending_dest'),
-          position: to,
-          icon: dest,
-          anchor: const Offset(0.5, 0.5),
-        ),
-    };
-  }
-
   // Frames the pair while the query runs, so the map is about this trip from
   // the first frame instead of sitting on a default city view.
   void _fitPending() {
@@ -998,32 +680,6 @@ class _GoScreenState extends State<GoScreen> {
     final to = _dest?.latLng;
     if (from == null || to == null) return;
     _fitBounds([from, to]);
-  }
-
-  // Recomputes the cached overlays only when the result identity, selected
-  // route, active leg, or theme colors change; identical inputs reuse the sets.
-  void _ensureOverlays(
-    PlanResult result,
-    int selectedIndex,
-    int? activeLeg,
-    ColorScheme cs,
-  ) {
-    if (identical(_overlayResult, result) &&
-        _overlaySelected == selectedIndex &&
-        _overlayLeg == activeLeg &&
-        identical(_overlayScheme, cs)) {
-      return;
-    }
-    _overlayResult = result;
-    _overlaySelected = selectedIndex;
-    _overlayLeg = activeLeg;
-    _overlayScheme = cs;
-    _overlayPolylines = _buildPolylines(result, selectedIndex, activeLeg, cs);
-    _overlayMarkers = _buildMarkers(
-      result.routes[selectedIndex],
-      activeLeg,
-      cs,
-    );
   }
 
   @override
@@ -1083,14 +739,23 @@ class _GoScreenState extends State<GoScreen> {
         final route = _activeRoute(state);
         final result = state.result;
         final selectedIndex = _selectedIndex(state);
-        if (result != null && selectedIndex != null) {
-          _ensureOverlays(
-            result,
-            selectedIndex,
-            navigating ? state.activeLegIndex : null,
-            Theme.of(context).colorScheme,
-          );
-        }
+        final colors = Theme.of(context).colorScheme;
+        _layer = (result != null && selectedIndex != null && route != null)
+            ? _overlay.forPlan(
+                result: result,
+                selectedIndex: selectedIndex,
+                colors: colors,
+                activeLeg: navigating ? state.activeLegIndex : null,
+                fix: navigating && _lastFix != null
+                    ? LatLng(_lastFix!.latitude, _lastFix!.longitude)
+                    : null,
+                puckHeading: _puckHeading,
+              )
+            : _overlay.pending(
+                origin: _origin?.latLng,
+                destination: _dest?.latLng,
+                colors: colors,
+              );
         // Back walks the phases outward: navigating → end nav, previewing →
         // results list, results → leave the screen.
         return PopScope(
@@ -1201,16 +866,8 @@ class _GoScreenState extends State<GoScreen> {
             zoomControlsEnabled: false,
             compassEnabled: false,
             mapToolbarEnabled: false,
-            polylines: route == null
-                ? _pendingLines(Theme.of(context).colorScheme)
-                : _overlayPolylines,
-            markers: {
-              if (route != null)
-                ..._overlayMarkers
-              else
-                ..._pendingMarkers(Theme.of(context).colorScheme),
-              if (navigating) ?_navPuck(Theme.of(context).colorScheme),
-            },
+            polylines: _layer.polylines,
+            markers: _layer.markers,
             // Map shares a Stack with the draggable sheet; without an eager
             // recognizer the map loses the gesture arena, so pan/pinch leak
             // to the sheet instead of moving the map.

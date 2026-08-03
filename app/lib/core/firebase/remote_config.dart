@@ -43,11 +43,32 @@ class AppConfig {
     // whose cost and latency come from a third party, so it needs to be
     // switchable off without a release.
     genUiEnabledKey: true,
+    // The model's only instructions. Tunable without a release so a prompt
+    // regression (bad tool-call shape, invented arrival times) can be fixed
+    // the moment it's caught instead of waiting on a store review. The tool
+    // names and node shape it describes (searchTransit / renderUI / heading,
+    // text, route, step, chip, divider) are wired in code — a remote edit
+    // that renames or drops one breaks the answer, not just its wording.
+    genUiSystemPromptKey:
+        '你是大眾運輸 App 的搜尋助理,涵蓋公車、捷運、台鐵、高鐵與 YouBike。 '
+        '使用者用自然語言提問,你必須先呼叫 searchTransit 工具向後端查詢真實的路線與站點資料, '
+        '不可以自行編造站名、路線號碼或到站時間。 '
+        '取得資料後,你只能透過呼叫 renderUI 工具回覆,把結果整理成精簡的卡片節點。 '
+        '用 heading 當區塊標題,text 寫一兩句說明,route 呈現路線或轉乘建議, '
+        'step 列出搭乘步驟,chip 提供可點擊的後續搜尋(query 必須是可直接搜尋的站名或路線), '
+        'divider 分隔區塊。route 與 chip 若對應某筆 searchTransit 查詢結果, '
+        '必須把該筆結果的 uid 原樣放進 refUid,不可自行編造 uid。 '
+        '任何文字都不要寫到站時間、還有幾分鐘或班次時刻 — App 會自己從即時資料顯示,你寫的一定是錯的。 '
+        '內容務必簡短,查詢路線的部分請直接搜尋路線名不要在後面加XXX「路」，站牌也一樣。',
   };
 
   /// The ask lane's Remote Config key. Named rather than inlined because the
   /// default map and the read site have to agree.
   static const genUiEnabledKey = 'genui_enabled';
+
+  /// The ask lane's system prompt key. Same agreement requirement as
+  /// [genUiEnabledKey].
+  static const genUiSystemPromptKey = 'genui_system_prompt';
 
   /// Bridges [version] into a broadcast [Stream] for consumers that want to
   /// react to each activated revision instead of polling a

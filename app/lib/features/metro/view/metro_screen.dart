@@ -168,7 +168,6 @@ class _MetroScreenState extends State<MetroScreen> {
   void _onMapStationTap(MetroMapStation station) {
     final track = context.read<MrtTrackBloc>();
     if (track.state.picking) {
-      unawaited(HapticService.instance.selectionClick());
       track.add(MrtAlightTargetPicked(station.id));
       return;
     }
@@ -190,14 +189,12 @@ class _MetroScreenState extends State<MetroScreen> {
       _selected = station;
     });
     _metroBloc.add(MetroStationTapped(stationId: station.id));
-    // Selecting a station turns the whole map into the answer — every other
-    // station gets a travel-time/fare label. At `half` the sheet covers the
-    // southern third of the network, so it yields to `peek` and lets the map
-    // be read; pulling it back up is one drag. The map itself never moves,
-    // so a station tapped while zoomed in stays exactly under the finger.
+    // `half`: enough room to read the station's detail card without a drag,
+    // while the map above it stays visible. The map itself never moves, so a
+    // station tapped while zoomed in stays exactly under the finger.
     unawaited(
       _sheetController.animateToDetent(
-        AppSheetSnap.peek,
+        AppSheetSnap.half,
         reduced: AppMotion.reduced(context),
       ),
     );
@@ -230,23 +227,19 @@ class _MetroScreenState extends State<MetroScreen> {
   Widget _buildBottomSheetWidget(BuildContext context, ColorScheme cs) {
     return AppSheet(
       controller: _sheetController,
-      // The station card's close button and the app bar's back button both
-      // stay (see AppSheet.onExit).
-      onExit: null,
       // Capped at `tall`, not `full`: keeps the line map peeking above the
-      // sheet (metro is not a map-front page — the map is the content).
-      // Capped a second time at the content's own height: a station with no
-      // live arrivals is a short card, and without this the rider can drag it
-      // to `tall` and pull a screenful of blank surface up behind it.
-      snapGrid: const ContentCappedSnapGrid(
-        base: SheetSnapGrid(
-          snaps: [AppSheetSnap.peek, AppSheetSnap.half, AppSheetSnap.tall],
-          minFlingSpeed: AppSheetSnap.flingSpeed,
-        ),
+      // sheet (metro is not a map-front page — the map is the content). Not
+      // content-capped: the station detail card must reach the same max as
+      // the station list, even on a station whose own card is short.
+      snapGrid: const SheetSnapGrid(
+        snaps: [AppSheetSnap.peek, AppSheetSnap.half, AppSheetSnap.tall],
+        minFlingSpeed: AppSheetSnap.flingSpeed,
       ),
-      // Sizes to its content (no Expanded, and the pages inside shrink-wrap)
-      // so the grid above has a content height to clamp against. Pages whose
-      // own content fills the sheet — the station list — still do.
+      // The status-bar padding ramp targets `full`; this sheet never reaches
+      // it, so the ramp would never finish closing and leaves a permanent gap
+      // above the drag handle at `tall`.
+      padStatusBar: false,
+      // Sizes to its content (no Expanded, and the pages inside shrink-wrap).
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [

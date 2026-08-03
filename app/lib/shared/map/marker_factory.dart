@@ -9,13 +9,25 @@ import 'package:wheres_the_bus/app/theme/app_theme.dart';
 class MapMarkers {
   const MapMarkers._();
 
-  // LRU-bounded: stop plates x live states x themes, plus selected capsules and
-  // vehicle bubbles keyed by plate and GPS age, would otherwise grow the cache
-  // monotonically for the life of the app. Sized so one frame of the longest
-  // route plus its vehicles fits without evicting itself — asserted by
-  // stop_marker_test.
+  // LRU-bounded: stop plates x live states x themes, plus selected capsules,
+  // would otherwise grow the cache monotonically for the life of the app. Sized
+  // so one frame of the longest route plus its vehicles fits without evicting
+  // itself — asserted by stop_marker_test.
   static const int _cacheCap = 256;
   static final LinkedHashMap<String, Object> _cache =
+      LinkedHashMap<String, Object>();
+
+  // Bubbles get their own cache because their key carries the GPS-freshness
+  // text, which changes every second through the 15–59 s window. Sharing the
+  // main cache meant one open bubble minted ~45 write-once entries a minute and
+  // evicted the stop plates behind it, so the next live frame had to re-paint
+  // plates it had already drawn. Measured on a 66-stop route: frames needing
+  // fresh plates cost 53 ms against 2 ms for frames that still had them.
+  //
+  // Small on purpose: only a pinned bus and any vehicle in a warning state
+  // carries a bubble, and each is re-keyed every second regardless.
+  static const int _bubbleCacheCap = 16;
+  static final LinkedHashMap<String, Object> _bubbleCache =
       LinkedHashMap<String, Object>();
 
   static double _dpr = 3;
@@ -558,7 +570,7 @@ class MapMarkers {
         'bubble:$plate:$statusLabel:$gpsText:${fill.toARGB32()}:'
         '${inkSecondary.toARGB32()}:${statusColor.toARGB32()}:'
         '${trackGlyph ?? ''}';
-    return _memo(key, () async {
+    return _memo(key, store: _bubbleCache, cap: _bubbleCacheCap, () async {
       final statusPainter = TextPainter(
         text: TextSpan(
           text: statusLabel,
@@ -663,25 +675,29 @@ class MapMarkers {
 
   static Future<T> _memo<T extends Object>(
     String key,
-    Future<T> Function() build,
-  ) async {
+    Future<T> Function() build, {
+    LinkedHashMap<String, Object>? store,
+    int? cap,
+  }) async {
+    final cache = store ?? _cache;
+    final cacheCap = cap ?? _cacheCap;
     // Both scales join every key here rather than in each entry point's own
     // key: a painter that forgets one serves a bitmap built for the wrong size,
     // and this is the single place that cannot be forgotten. The markers that
     // paint no text pay one redundant rebuild after a text-size change.
     final cacheKey = '$key:$_dpr:$_textScale';
-    final hit = _cache.remove(cacheKey);
+    final hit = cache.remove(cacheKey);
     if (hit != null) {
       // Re-insert to mark most-recently-used (LinkedHashMap preserves
       // insertion order). BitmapDescriptor needs no explicit dispose.
-      _cache[cacheKey] = hit;
+      cache[cacheKey] = hit;
       return hit as T;
     }
     final made = await build();
-    if (_cache.length >= _cacheCap) {
-      _cache.remove(_cache.keys.first);
+    if (cache.length >= cacheCap) {
+      cache.remove(cache.keys.first);
     }
-    _cache[cacheKey] = made;
+    cache[cacheKey] = made;
     return made;
   }
 

@@ -56,7 +56,6 @@ type segmentObs struct {
 // instead.
 type historySource interface {
 	arrivals(ctx context.Context, since time.Time) ([]arrivalEvent, error)
-	segmentsByPlate(ctx context.Context, window time.Duration) ([]segmentObs, error)
 	segmentsByEstimate(ctx context.Context, window time.Duration) ([]segmentObs, error)
 }
 
@@ -67,7 +66,7 @@ type historySource interface {
 type mysqlHistory struct{ db *sql.DB }
 
 // segmentMedianTail reduces a `kept` CTE of (key..., secs) observations to one
-// median row per key, and is the tail of both segment queries.
+// median row per key, and is the tail of the segment query.
 //
 // MySQL has no percentile_cont, so the middle one or two values are picked by
 // rank and averaged — for an odd count that is the middle value, for an even one
@@ -94,65 +93,6 @@ const segmentMedianTail = `
 	FROM ranked
 	WHERE rn IN (FLOOR((n + 1) / 2), CEILING((n + 1) / 2))
 	GROUP BY sub_route_uid, direction, from_stop_uid, to_stop_uid`
-
-// segmentsByPlate reconstructs each vehicle's run from plate_numb and differences
-// consecutive arrivals, returning one median running time per hop.
-//
-// A history row is only written while a bus is en route, so the arrival itself is
-// never recorded: TDX flips StopStatus on arrival and the writer stops. The end
-// of an approach therefore has to stand in for it — the last estimate a plate
-// reported at a stop before going quiet, placed at the moment that estimate was
-// pointing to.
-//
-// plate_numb is what makes this sound: it separates buses converging on one stop,
-// so a run is one vehicle's approach rather than several interleaved. Where the
-// operator publishes no plate, this pass finds nothing and segmentsByEstimate
-// covers the hop instead.
-func (m mysqlHistory) segmentsByPlate(ctx context.Context, window time.Duration) ([]segmentObs, error) {
-	rows, err := m.db.QueryContext(ctx, `
-		WITH ordered AS (
-			SELECT sub_route_uid, direction, stop_uid, stop_sequence, estimate,
-			       recorded_at, plate_numb,
-			       LEAD(recorded_at) OVER p AS next_plate_at
-			FROM bus_eta_history
-			WHERE recorded_at >= UTC_TIMESTAMP() - INTERVAL ? SECOND
-			  AND plate_numb IS NOT NULL
-			WINDOW p AS (PARTITION BY sub_route_uid, direction, stop_uid, plate_numb
-			             ORDER BY recorded_at)
-		), arrival AS (
-			-- The end of one vehicle's approach to one stop, placed at the moment
-			-- its last estimate was pointing to.
-			SELECT sub_route_uid, direction, plate_numb, stop_uid, stop_sequence,
-			       recorded_at + INTERVAL estimate SECOND AS arrived_at
-			FROM ordered
-			WHERE estimate BETWEEN 1 AND ?
-			  AND (next_plate_at IS NULL
-			       OR TIMESTAMPDIFF(SECOND, recorded_at, next_plate_at) > ?)
-		), kept AS (
-			SELECT sub_route_uid, direction, from_stop_uid, to_stop_uid, secs
-			FROM (
-				SELECT sub_route_uid, direction,
-				       LAG(stop_uid) OVER w AS from_stop_uid,
-				       stop_uid AS to_stop_uid,
-				       stop_sequence - LAG(stop_sequence) OVER w AS seq_gap,
-				       TIMESTAMPDIFF(SECOND, LAG(arrived_at) OVER w, arrived_at) AS secs
-				FROM arrival
-				WINDOW w AS (PARTITION BY sub_route_uid, direction, plate_numb
-				             ORDER BY stop_sequence, arrived_at)
-			) segment
-			WHERE from_stop_uid IS NOT NULL
-			  -- Adjacent stops only. A gap means the vehicle was not seen at the
-			  -- stops between, and spanning them would record one hop's time for
-			  -- several.
-			  AND seq_gap = 1
-			  AND secs BETWEEN ? AND ?`+segmentMedianTail,
-		int64(window.Seconds()), segmentApproachSecs, segmentGapSecs,
-		segmentMinSecs, segmentMaxSecs)
-	if err != nil {
-		return nil, fmt.Errorf("query plate segments: %w", err)
-	}
-	return scanSegmentObs(rows)
-}
 
 // segmentsByEstimate differences adjacent stops' estimates within one snapshot,
 // returning one median running time per hop.
