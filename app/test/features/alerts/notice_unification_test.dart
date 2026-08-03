@@ -1,0 +1,151 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:wheres_the_bus/data/models/alert_models.dart';
+import 'package:wheres_the_bus/data/repositories/alert_repository.dart';
+import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_bloc.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_event.dart';
+import 'package:wheres_the_bus/features/alerts/bloc/alert_state.dart';
+
+import '../../support/helpers/in_memory_settings_store.dart';
+
+AlertRepository _repo([Map<String, Object?> initial = const {}]) =>
+    AlertRepository(
+      settings: SettingsRepository(store: InMemorySettingsStore(initial)),
+    );
+
+AlertViewModel _notice(
+  String message, {
+  required AlertSourceKind kind,
+  AlertSeverity level = AlertSeverity.yellow,
+}) => AlertViewModel(
+  message: message,
+  level: level,
+  source: AlertSource(kind),
+);
+
+const _disruption = AlertSourceId(AlertSourceKind.metro);
+
+void main() {
+  group('notice kind and tone', () {
+    test('a disruption takes its tone from severity', () {
+      expect(
+        _notice(
+          '停駛',
+          kind: AlertSourceKind.metro,
+          level: AlertSeverity.red,
+        ).tone,
+        NoticeTone.critical,
+      );
+      expect(
+        _notice('延誤', kind: AlertSourceKind.tra).tone,
+        NoticeTone.caution,
+      );
+    });
+
+    test('news and announcements never reach critical, whatever the feed '
+        'puts on them', () {
+      final news = _notice(
+        '路線延駛',
+        kind: AlertSourceKind.busNews,
+        level: AlertSeverity.red,
+      );
+      final announcement = _notice(
+        '新功能上線',
+        kind: AlertSourceKind.appNotice,
+        level: AlertSeverity.red,
+      );
+      expect(news.tone, NoticeTone.info);
+      expect(news.kind, NoticeKind.news);
+      expect(announcement.tone, NoticeTone.info);
+      expect(announcement.kind, NoticeKind.announcement);
+    });
+
+    test('a maintenance window is caution, and the rider may not clear it', () {
+      final maintenance = _notice('系統維護', kind: AlertSourceKind.appMaintenance);
+      expect(maintenance.tone, NoticeTone.caution);
+      expect(maintenance.dismissible, isFalse);
+      expect(
+        _notice('新功能上線', kind: AlertSourceKind.appNotice).dismissible,
+        isTrue,
+      );
+    });
+  });
+
+  group('inbox grouping', () {
+    AlertState stateWith(List<AlertViewModel> notices) =>
+        AlertState(alertsBySource: {_disruption: notices});
+
+    test('進行中 holds disruptions, 訊息 holds news and announcements', () {
+      final state = stateWith([
+        _notice('停駛', kind: AlertSourceKind.metro, level: AlertSeverity.red),
+        _notice('路線延駛', kind: AlertSourceKind.busNews),
+        _notice('新功能上線', kind: AlertSourceKind.appNotice),
+      ]);
+
+      expect(state.ongoingNotices.map((n) => n.message), ['停駛']);
+      expect(state.messageNotices.map((n) => n.message), [
+        '路線延駛',
+        '新功能上線',
+      ]);
+    });
+
+    test('an announcement cannot reach the interrupt layer', () {
+      final state = stateWith([
+        _notice(
+          '重大公告',
+          kind: AlertSourceKind.appNotice,
+          level: AlertSeverity.red,
+        ),
+      ]);
+      expect(state.redAlerts, isEmpty);
+    });
+  });
+
+  group('announcement rail', () {
+    test('a general announcement leaves the rail once read; maintenance '
+        'stays', () {
+      final notices = [
+        _notice('系統維護', kind: AlertSourceKind.appMaintenance),
+        _notice('新功能上線', kind: AlertSourceKind.appNotice),
+      ];
+      final unread = AlertState(alertsBySource: {_disruption: notices});
+      expect(unread.railAnnouncements.map((n) => n.message), [
+        '系統維護',
+        '新功能上線',
+      ]);
+
+      final read = AlertState(
+        alertsBySource: {_disruption: notices},
+        readMessages: const {'系統維護', '新功能上線'},
+      );
+      expect(read.railAnnouncements.map((n) => n.message), ['系統維護']);
+      // Reading only clears the rail — the inbox keeps both.
+      expect(read.messageNotices.length, 2);
+    });
+  });
+
+  test('announcements arrive through the bloc like any other source', () async {
+    final bloc = AlertBloc(
+      repository: _repo(),
+      alertSourcesConfig: Stream<String>.empty,
+      scopeSource: Stream<Set<String>>.empty,
+      announcements: () => Stream.value([
+        _notice('系統維護', kind: AlertSourceKind.appMaintenance),
+      ]),
+    );
+    addTearDown(bloc.close);
+
+    final landed = expectLater(
+      bloc.stream,
+      emitsThrough(
+        isA<AlertState>().having(
+          (s) => s.railAnnouncements.map((n) => n.message),
+          'railAnnouncements',
+          contains('系統維護'),
+        ),
+      ),
+    );
+    bloc.add(const AlertStarted());
+    await landed;
+  });
+}

@@ -40,7 +40,6 @@ typedef _RailRow = ({
   bool isAddedService,
 });
 
-
 // Built per call rather than held in a const map: the names follow the
 // rider's language.
 Map<int, String> _weekdayMap(AppI18n i18n) => {

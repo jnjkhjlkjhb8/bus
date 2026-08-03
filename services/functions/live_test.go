@@ -1150,7 +1150,7 @@ func TestRedisOwnedTTLIntegration(t *testing.T) {
 		t.Skip("REDIS_TEST_ADDR not set")
 	}
 	rc := redis.NewClient(&redis.Options{Addr: addr})
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	if err := rc.FlushDB(context.Background()).Err(); err != nil {
 		t.Fatalf("flush Redis: %v", err)
 	}
@@ -1217,7 +1217,7 @@ func TestRedisMissingOwnedMemberRetriesInvalidationThenReplacesOwner(t *testing.
 		t.Skip("REDIS_TEST_ADDR not set")
 	}
 	rc := redis.NewClient(&redis.Options{Addr: addr})
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	if err := rc.FlushDB(context.Background()).Err(); err != nil {
 		t.Fatalf("flush Redis: %v", err)
 	}
@@ -1297,7 +1297,7 @@ func TestRedisCanceledTHSRExecDoesNotAcknowledge(t *testing.T) {
 		t.Skip("REDIS_TEST_ADDR not set")
 	}
 	rc := redis.NewClient(&redis.Options{Addr: addr})
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	if err := rc.FlushDB(context.Background()).Err(); err != nil {
 		t.Fatalf("flush Redis: %v", err)
 	}
@@ -1345,7 +1345,7 @@ func TestRedisLivePipelineRejectsUnboundedSocketWait(t *testing.T) {
 		Addr:        "127.0.0.1:1",
 		ReadTimeout: -1,
 	})
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	pipe := redisLiveSink{rc: rc}.pipeline()
 	pipe.Set("unreachable", "value", time.Minute)
 	if err := pipe.Exec(context.Background()); err == nil || !strings.Contains(err.Error(), "finite Redis read timeout") {

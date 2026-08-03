@@ -182,7 +182,7 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 		snapshot: true,
 	}
 
-	job.runCity(context.Background(), "InterCity")
+	_ = job.runCity(context.Background(), "InterCity")
 
 	stationKey := shared.BusStationEtaKey("InterCity", "GROUP1")
 	stationWrite := sink.setFor(stationKey)
@@ -255,7 +255,7 @@ func TestBusLiveJobPublishesOnNonSnapshotTicks(t *testing.T) {
 		snapshot: false,
 	}
 
-	job.runCity(context.Background(), "InterCity")
+	_ = job.runCity(context.Background(), "InterCity")
 
 	if len(store.historyRows) != 0 {
 		t.Errorf("history rows = %+v, want none off a snapshot tick", store.historyRows)
@@ -292,7 +292,7 @@ func TestBusLiveJobBatchesPredictionInputs(t *testing.T) {
 		notifier: &captureBusArrivalNotifier{}, now: func() time.Time { return now },
 	}
 
-	job.runCity(context.Background(), "Taipei")
+	_ = job.runCity(context.Background(), "Taipei")
 
 	if len(store.nextDepartureKeys) != 1 || store.nextDepartureKeys[0] != wantKey {
 		t.Fatalf("next-departure keys = %+v, want [%+v]", store.nextDepartureKeys, wantKey)
@@ -334,8 +334,8 @@ func TestBusLiveJobReusesStaticStopCache(t *testing.T) {
 		notifier: &captureBusArrivalNotifier{}, now: func() time.Time { return time.Date(2026, time.July, 6, 9, 15, 0, 0, taipei) },
 	}
 
-	job.runCity(context.Background(), "Taipei")
-	job.runCity(context.Background(), "Taipei")
+	_ = job.runCity(context.Background(), "Taipei")
+	_ = job.runCity(context.Background(), "Taipei")
 
 	if store.staticStopCalls != 1 {
 		t.Fatalf("static stop loads = %d, want 1", store.staticStopCalls)

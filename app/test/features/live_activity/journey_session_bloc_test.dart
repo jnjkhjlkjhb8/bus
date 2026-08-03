@@ -3,10 +3,10 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
-import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 
 /// Mutable gate so the disabled branch isn't statically dead in the test.
 class _Gate {

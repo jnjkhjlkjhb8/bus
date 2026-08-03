@@ -174,7 +174,7 @@ func TestIngestRaw_FetchesAllBusCityAPIs(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ingestRaw(context.Background(), testTDXClient(srv.URL))
+	_ = ingestRaw(context.Background(), testTDXClient(srv.URL))
 
 	for _, city := range cities {
 		for _, api := range ingestBusAPIs {
@@ -271,7 +271,7 @@ func TestIngestRaw_NoOpWithoutCredentials(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			ingestRaw(context.Background(), testTDXClient(srv.URL))
+			_ = ingestRaw(context.Background(), testTDXClient(srv.URL))
 
 			if got := atomic.LoadInt32(&calls); got != 0 {
 				t.Fatalf("ingestRaw made %d requests without credentials, want 0", got)

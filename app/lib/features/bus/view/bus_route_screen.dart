@@ -17,6 +17,9 @@ import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
 import 'package:wheres_the_bus/data/models/fare_type.dart';
 import 'package:wheres_the_bus/data/models/timeline_stop.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
+import 'package:wheres_the_bus/data/tracking/tracking_session.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_route_bloc.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_route_event.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_route_state.dart';
@@ -25,9 +28,6 @@ import 'package:wheres_the_bus/features/bus/widgets/bus_timeline_stops.dart';
 import 'package:wheres_the_bus/features/bus/widgets/bus_timetable_day.dart';
 import 'package:wheres_the_bus/features/bus/widgets/pinned_bus.dart';
 import 'package:wheres_the_bus/features/bus/widgets/track_trigger_stop.dart';
-import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
-import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
-import 'package:wheres_the_bus/data/tracking/tracking_session.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/map/map_color_scheme.dart';
 import 'package:wheres_the_bus/shared/motion/app_motion.dart';
@@ -48,12 +48,14 @@ import 'package:wheres_the_bus/shared/widgets/fare_preference.dart';
 import 'package:wheres_the_bus/shared/widgets/route_tab_bar.dart';
 import 'package:wheres_the_bus/shared/widgets/transit_timeline.dart';
 
-part '../widgets/bus_route_data_helpers.dart';
 part '../widgets/bus_route_chrome_widgets.dart';
-part '../widgets/bus_route_sheet_widgets.dart';
-part '../widgets/bus_route_horizontal_timeline.dart';
-part '../widgets/bus_route_stop_list_widgets.dart';
+part '../widgets/bus_route_data_helpers.dart';
 part '../widgets/bus_route_detail_widgets.dart';
+part '../widgets/bus_route_fare_widgets.dart';
+part '../widgets/bus_route_horizontal_timeline.dart';
+part '../widgets/bus_route_sheet_widgets.dart';
+part '../widgets/bus_route_stop_list_widgets.dart';
+part '../widgets/bus_route_timetable_widgets.dart';
 
 const _kDefaultCamera = CameraPosition(
   target: LatLng(25.0416, 121.5501),

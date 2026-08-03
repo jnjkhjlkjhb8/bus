@@ -10,7 +10,8 @@ class _RecentSearches extends StatelessWidget {
       AppI18n.of(context).searchRecentRemoved(result.name),
       action: AppI18n.of(context).commonUndo,
       // Restores at the original index. Re-adding would promote the entry to
-      // the top of the list, which isn't what AppI18n.of(context).commonUndo claims to do.
+      // the top of the list, which isn't what
+      // AppI18n.of(context).commonUndo claims to do.
       onAction: () => bloc.add(SearchRecentRestored(result, index)),
     );
   }

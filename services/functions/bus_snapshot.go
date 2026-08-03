@@ -677,8 +677,8 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 				// per-operator variants) and Bus_Fare holds one offer. First wins:
 				// the payload order is stable, so the pick is deterministic, and a
 				// route priced two ways beats a city frozen at its last snapshot.
-				// ponytail: one fare per subroute — repeated field in the wire
-				// model if the app ever has to show every offer.
+				// one fare per subroute — repeated field in the wire model if the
+				// app ever has to show every offer.
 				q.drop("routefare", "routefare_divergent", uid)
 				break
 			}

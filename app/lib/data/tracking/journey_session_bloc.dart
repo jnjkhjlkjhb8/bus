@@ -7,10 +7,10 @@ import 'package:wheres_the_bus/core/haptics/alight_haptics.dart';
 import 'package:wheres_the_bus/core/live_activity/alight_track.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
 import 'package:wheres_the_bus/data/tracking/leg_eta_source.dart';
-import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 
 /// Drives a journey/track Live Activity through [JourneySessionState].
 ///

@@ -348,7 +348,7 @@ func TestLoaderExceptionalBindingsUseSemanticSink(t *testing.T) {
 // skips when one is not reachable, mirroring the DB-gated tests' skip posture.
 func TestLoadBusDailyTimetableWritesRedis(t *testing.T) {
 	rc := dialTestRedis(t)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	const uid = "KHH_DTT_SUB1"
 	key := "bus_daily_timetable:" + uid

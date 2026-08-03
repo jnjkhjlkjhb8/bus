@@ -177,10 +177,10 @@ class _NearbyStationsTabState extends State<_NearbyStationsTab> {
   }
 
   // At the peek detent, chrome (handle + search + tab bar) already consumes
-  // most of the available height, and AppI18n.of(context).commonAll — the default filter — costs
-  // 60px for a row that changes nothing. Keep the filter row collapsed until
-  // the sheet has grown roughly halfway toward the half detent, so peek
-  // spends its height on station rows instead.
+  // most of the available height, and AppI18n.of(context).commonAll — the
+  // default filter — costs 60px for a row that changes nothing. Keep the
+  // filter row collapsed until the sheet has grown roughly halfway toward
+  // the half detent, so peek spends its height on station rows instead.
   Widget _buildFilterRow(BuildContext context) {
     final reduceMotion = AppMotion.reduced(context);
     return AnimatedBuilder(

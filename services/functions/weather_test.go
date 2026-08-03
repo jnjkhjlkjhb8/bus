@@ -58,7 +58,7 @@ func TestFetchWeatherSnapshotHonorsContext(t *testing.T) {
 
 func TestWriteWeatherSnapshotReturnsRedisError(t *testing.T) {
 	rc := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", DialTimeout: 20 * time.Millisecond, ReadTimeout: 20 * time.Millisecond, WriteTimeout: 20 * time.Millisecond})
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	err := writeWeatherSnapshot(context.Background(), rc, map[string]weatherData{"Taipei": {Temperature: 30}})
 	if err == nil {
 		t.Fatal("Redis connection failure returned nil error")

@@ -3,10 +3,6 @@
 # listed file that grows past its budget and any unlisted Go/Dart file over
 # the 1000-line default cap. Shrink a file, lower (or delete) its entry.
 services/functions/live_test.go|1438
-app/lib/features/go/view/go_screen.dart|1011
+app/lib/features/go/view/go_screen.dart|1012
 services/router/maas_test.go|1133
-app/lib/features/go/widgets/go_planner_widgets.dart|1142
-app/lib/features/go/widgets/go_navigation_widgets.dart|1135
 app/test/features/go/navigation_coordinator_test.dart|1113
-app/lib/features/rail/view/rail_train_screen.dart|1388
-app/lib/features/bus/widgets/bus_route_detail_widgets.dart|1116

@@ -98,7 +98,8 @@ class FirebaseRepository {
     if (!FirebaseGate.enabled) {
       return ArrivalReminderReceipt(
         reminderId:
-            'local:$routeType:$routeKey:$stopKey:$leadMinutes:$plate:$alightEvent',
+            'local:$routeType:$routeKey:$stopKey:'
+            '$leadMinutes:$plate:$alightEvent',
       );
     }
     final reminder = await _grpc.createArrivalReminder(

@@ -57,7 +57,8 @@ void main() {
 
       final first = repo.all();
       final second = repo.all();
-      // No write between reads: same cached instance is reused (no rescan+sort).
+      // No write between reads: same cached instance is reused (no
+      // rescan+sort).
       expect(identical(first, second), isTrue);
       expect(first.map((f) => f.refId).toList(), ['a', 'b']);
 

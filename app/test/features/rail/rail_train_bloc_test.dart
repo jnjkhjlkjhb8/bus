@@ -217,8 +217,7 @@ void main() {
         trainNo: '123',
         date: '2026-07-20',
         tra: repo,
-      );
-      b.add(const RailTrainStarted());
+      )..add(const RailTrainStarted());
       await b.close(); // awaits the in-flight handler to completion
       // Let any leaked delay frame land after close.
       await Future<void>.delayed(const Duration(milliseconds: 10));

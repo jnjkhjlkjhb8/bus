@@ -2,14 +2,14 @@ import 'dart:async';
 
 import 'package:geolocator/geolocator.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_models.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
+import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
 import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_bus/features/go/bloc/plan_event.dart';
 import 'package:wheres_the_bus/features/go/widgets/transit_visuals.dart'
     show isWalk;
-import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
-import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
-import 'package:wheres_the_bus/data/tracking/journey_session_state.dart';
-import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 
 // GPS-noise tunables for decideNavAction. Bump these if real-world
 // testing shows false triggers; the ceiling is "wide enough to fire near a

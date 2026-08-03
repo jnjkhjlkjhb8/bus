@@ -345,7 +345,7 @@ func TestLoadBusEnrichesFromRawTDX(t *testing.T) {
 		WriteTimeout: time.Millisecond,
 		MaxRetries:   0,
 	})
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	src := rawTDXSource{pool: pool}
 	if err := loadBus(ctx, src, pool, rc, city); err == nil || !strings.Contains(err.Error(), "committed; invalidate cache") {

@@ -159,12 +159,13 @@ void main() {
     // a tap would miss. A phone-shaped surface puts it in reach.
     setUp(() {
       final view =
-          TestWidgetsFlutterBinding.instance.platformDispatcher.views.first;
-      view.physicalSize = const Size(400, 1600);
-      view.devicePixelRatio = 1;
+          TestWidgetsFlutterBinding.instance.platformDispatcher.views.first
+            ..physicalSize = const Size(400, 1600)
+            ..devicePixelRatio = 1;
       addTearDown(() {
-        view.resetPhysicalSize();
-        view.resetDevicePixelRatio();
+        view
+          ..resetPhysicalSize()
+          ..resetDevicePixelRatio();
       });
     });
 

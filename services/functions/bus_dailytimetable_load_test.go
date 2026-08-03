@@ -155,7 +155,7 @@ func TestLoadBusDailyTimetableRejectsInvalidCanonicalIdentityBeforeRedis(t *test
 
 func TestLoadBusDailyTimetableMalformedSuffixWritesNoKeys(t *testing.T) {
 	rc := dialTestRedis(t)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	const uid = "ZZ_TASK5_NO_PARTIAL"
 	key := shared.BusDailyTimetableKey(uid)
 	_ = rc.Del(context.Background(), key).Err()
@@ -176,7 +176,7 @@ func TestLoadBusDailyTimetableMalformedSuffixWritesNoKeys(t *testing.T) {
 
 func TestLoadBusDailyTimetableReturnsPipelineError(t *testing.T) {
 	rc := unavailableRedisClient()
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	body := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]}]`
 	err := loadBusDailyTimetable(context.Background(), decodeInto(body), nil, nil, rc, "Kaohsiung")
 	if err == nil || !strings.Contains(err.Error(), "Redis transaction") {
@@ -186,7 +186,7 @@ func TestLoadBusDailyTimetableReturnsPipelineError(t *testing.T) {
 
 func TestLoadBusDailyTimetableDuplicateTripPolicy(t *testing.T) {
 	rc := dialTestRedis(t)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	key := shared.BusDailyTimetableKey("KHH1")
 	_ = rc.Del(context.Background(), key).Err()
 	defer func() { _ = rc.Del(context.Background(), key).Err() }()
@@ -226,7 +226,7 @@ func TestLoadBusDailyTimetableDuplicateTripPolicy(t *testing.T) {
 
 func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
 	rc := dialTestRedis(t)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	key := shared.BusDailyTimetableKey("KHH1")
 	_ = rc.Del(context.Background(), key).Err()
 	defer func() { _ = rc.Del(context.Background(), key).Err() }()
@@ -270,7 +270,7 @@ func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
 // direction's origin. Without StopOfRoute data (nil src) everything is kept.
 func TestLoadBusDailyTimetableFiltersMisfiledDirectionTrips(t *testing.T) {
 	rc := dialTestRedis(t)
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	key := shared.BusDailyTimetableKey("KHH1")
 	_ = rc.Del(context.Background(), key).Err()
 	defer func() { _ = rc.Del(context.Background(), key).Err() }()
@@ -349,7 +349,7 @@ func (h blockingPipelineHook) ProcessPipelineHook(_ redis.ProcessPipelineHook) r
 
 func TestLoadBusDailyTimetableObservesCancellationDuringRedisExec(t *testing.T) {
 	rc := unavailableRedisClient()
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	rc.AddHook(blockingPipelineHook{entered: entered, release: release})
