@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"go.uber.org/zap"
 )
 
 // pipelineMarkerReader checks pipeline_runs for a completed job on a given
@@ -68,11 +69,25 @@ func recordPipelineMarkerWithRetry(ctx context.Context, db *pgxpool.Pool, job st
 		return obs.Transient(recordPipelineMarker(ctx, db, job, runDate))
 	})
 	if err != nil {
-		log.Errorf("[PIPELINE] action=record_marker event=failed job=%s run_date=%s error=%v", job, runDate.Format(time.DateOnly), err)
+		zap.S().Errorw("failed",
+			"component", "pipeline",
+			"action", "record_marker",
+			"event", "failed",
+			"job", job,
+			"run_date", runDate.Format(time.DateOnly),
+			"err", err,
+		)
 		return
 	}
-	log.Infof("[PIPELINE] action=record_marker event=recorded job=%s run_date=%s gauge=marker_lag_seconds value=%.0f",
-		job, runDate.Format(time.DateOnly), time.Since(runDate).Seconds())
+	zap.S().Infow("recorded",
+		"component", "pipeline",
+		"action", "record_marker",
+		"event", "recorded",
+		"job", job,
+		"run_date", runDate.Format(time.DateOnly),
+		"gauge", "marker_lag_seconds",
+		"value", time.Since(runDate).Seconds(),
+	)
 }
 
 const (
@@ -102,16 +117,35 @@ func waitForPipelineMarker(
 		ok, err := reader.MarkerExists(ctx, job, runDate)
 		if err != nil {
 			lastErr = err
-			log.Errorf("[PIPELINE] action=wait_marker event=read_error job=%s run_date=%s error=%v", job, runDate.Format(time.DateOnly), err)
+			zap.S().Errorw("read error",
+				"component", "pipeline",
+				"action", "wait_marker",
+				"event", "read_error",
+				"job", job,
+				"run_date", runDate.Format(time.DateOnly),
+				"err", err,
+			)
 		} else {
 			lastErr = nil
 			if ok {
 				return nil
 			}
-			log.Warnf("[PIPELINE] action=wait_marker event=not_ready job=%s run_date=%s", job, runDate.Format(time.DateOnly))
+			zap.S().Warnw("not ready",
+				"component", "pipeline",
+				"action", "wait_marker",
+				"event", "not_ready",
+				"job", job,
+				"run_date", runDate.Format(time.DateOnly),
+			)
 		}
 		if !now().Before(deadlineAt) {
-			log.Errorf("[PIPELINE] action=wait_marker event=give_up job=%s run_date=%s", job, runDate.Format(time.DateOnly))
+			zap.S().Errorw("give up",
+				"component", "pipeline",
+				"action", "wait_marker",
+				"event", "give_up",
+				"job", job,
+				"run_date", runDate.Format(time.DateOnly),
+			)
 			if lastErr != nil {
 				return fmt.Errorf("pipeline marker %q not confirmed for %s by deadline: %w", job, runDate.Format(time.DateOnly), lastErr)
 			}

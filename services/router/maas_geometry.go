@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -353,7 +354,13 @@ func clipRailShape(ctx context.Context, db maasDB, mode string, a, b transitStop
 	rows, err := db.Query(ctx, transitPathClipSQL,
 		mode, a.lng, a.lat, b.lng, b.lat, railShapeSnapMeters, railShapeSimplifyTolerance)
 	if err != nil {
-		log.Warnf("[MAAS] action=transit_path event=query_error mode=%s error=%v", mode, err)
+		zap.S().Warnw("query error",
+			"component", "maas",
+			"action", "transit_path",
+			"event", "query_error",
+			"mode", mode,
+			"err", err,
+		)
 		return nil, false
 	}
 	defer rows.Close()
@@ -362,12 +369,24 @@ func clipRailShape(ctx context.Context, db maasDB, mode string, a, b transitStop
 	}
 	var wkt string
 	if err := rows.Scan(&wkt); err != nil {
-		log.Warnf("[MAAS] action=transit_path event=scan_error mode=%s error=%v", mode, err)
+		zap.S().Warnw("scan error",
+			"component", "maas",
+			"action", "transit_path",
+			"event", "scan_error",
+			"mode", mode,
+			"err", err,
+		)
 		return nil, false
 	}
 	points, err := parseWKTLineString(wkt)
 	if err != nil || len(points) < 2 {
-		log.Warnf("[MAAS] action=transit_path event=parse_error mode=%s error=%v", mode, err)
+		zap.S().Warnw("parse error",
+			"component", "maas",
+			"action", "transit_path",
+			"event", "parse_error",
+			"mode", mode,
+			"err", err,
+		)
 		return nil, false
 	}
 	return points, true

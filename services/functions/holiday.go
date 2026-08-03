@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 const holidayCSVURL = "https://data.ntpc.gov.tw/api/datasets/308dcd75-6434-45bc-a95f-584da4fed251/csv/file"
@@ -70,7 +72,7 @@ func refreshHolidays(ctx context.Context, client *http.Client, url string) error
 		return fmt.Errorf("parse holiday CSV: %w", err)
 	}
 	currentHolidaySnapshot.Store(&holidaySnapshot{dates: dates})
-	log.Infof("[HOLIDAY] loaded %d entries", len(dates))
+	zap.S().Infow(fmt.Sprintf("loaded %d entries", len(dates)), "component", "holiday")
 	return nil
 }
 

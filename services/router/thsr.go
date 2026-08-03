@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -206,12 +208,12 @@ func THSRTimetablePayload(ctx context.Context, db railDB, start, end string, dat
 		}
 		w, err := time.Parse(time.TimeOnly, seed.Starting_Time)
 		if err != nil {
-			log.Errorf("parse time error: %v", err)
+			zap.S().Errorw(fmt.Sprintf("parse time error: %v", err))
 			continue
 		}
 		t, err := time.Parse(time.TimeOnly, temp.Arrivaltime)
 		if err != nil {
-			log.Errorf("parse time error: %v", err)
+			zap.S().Errorw(fmt.Sprintf("parse time error: %v", err))
 			continue
 		}
 		duration := t.Sub(w)

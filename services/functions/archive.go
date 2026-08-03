@@ -9,6 +9,7 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"go.uber.org/zap"
 )
 
 // The MySQL host owns the observation history outright — it is the primary
@@ -182,7 +183,7 @@ func (m mysqlHistory) arrivals(ctx context.Context, since time.Time) ([]arrivalE
 // readers, none of them concurrent with each other.
 func initArchive(ctx context.Context, dsn string) error {
 	if strings.TrimSpace(dsn) == "" {
-		log.Infof("[ARCHIVE] event=disabled reason=empty_dsn")
+		zap.S().Infow("disabled", "component", "archive", "event", "disabled", "reason", "empty_dsn")
 		return nil
 	}
 	// Without parseTime the driver hands DATETIME back as []byte and every
@@ -204,7 +205,7 @@ func initArchive(ctx context.Context, dsn string) error {
 		return fmt.Errorf("ping archive: %w", errors.Join(err, db.Close()))
 	}
 	archiveDB = db
-	log.Infof("[ARCHIVE] event=ready")
+	zap.S().Infow("ready", "component", "archive", "event", "ready")
 	return nil
 }
 
@@ -240,10 +241,15 @@ func archiveHistory() historySource {
 func resolveHistory() historySource {
 	h := archiveHistory()
 	if h == nil {
-		log.Warnf("[HISTORY] action=resolve source=none reason=archive_disabled")
+		zap.S().Warnw("log",
+			"component", "history",
+			"action", "resolve",
+			"source", "none",
+			"reason", "archive_disabled",
+		)
 		return nil
 	}
-	log.Infof("[HISTORY] action=resolve source=mysql")
+	zap.S().Infow("log", "component", "history", "action", "resolve", "source", "mysql")
 	return h
 }
 

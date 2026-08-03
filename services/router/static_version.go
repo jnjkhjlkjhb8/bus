@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 )
 
 // StaticVersionPath serves the identity of the static dataset this environment
@@ -66,13 +67,23 @@ func handleStaticVersion(cache *TTLCache, read func(context.Context) (string, er
 			// The client treats any failure as "keep what you have", so a blip
 			// here degrades to the previous behaviour (cache stays valid)
 			// rather than to a wipe.
-			log.Errorf("[HTTP] action=static_version event=read_failed error=%v", err)
+			zap.S().Errorw("read failed",
+				"component", "http",
+				"action", "static_version",
+				"event", "read_failed",
+				"err", err,
+			)
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "static version unavailable"})
 			return
 		}
 		body, err := json.Marshal(staticVersionResponse{Version: version})
 		if err != nil {
-			log.Errorf("[HTTP] action=static_version event=encode_failed error=%v", err)
+			zap.S().Errorw("encode failed",
+				"component", "http",
+				"action", "static_version",
+				"event", "encode_failed",
+				"err", err,
+			)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "static version unavailable"})
 			return
 		}

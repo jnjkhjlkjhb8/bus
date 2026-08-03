@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"go.uber.org/zap"
 )
 
 // MaasServer answers multimodal route-planning requests by proxying the TDX
@@ -71,15 +72,15 @@ type MaasCache interface {
 	Set(context.Context, string, []byte, time.Duration) error
 }
 
-type redisMaasCache struct{ client *redisv9.Client }
+type RedisMaasCache struct{ client *redisv9.Client }
 
 // NewRedisMaasCache gives the MaaS plan cache its own connection pool, built
 // from the shared client's settings, so a slow plan lookup cannot occupy a
 // connection the live streams need. NewClient fills defaults into the Options
 // it is handed, so it gets a copy rather than the live client's own struct.
-func NewRedisMaasCache(opts *redisv9.Options) *redisMaasCache {
+func NewRedisMaasCache(opts *redisv9.Options) *RedisMaasCache {
 	cloned := *opts
-	return &redisMaasCache{client: redisv9.NewClient(&cloned)}
+	return &RedisMaasCache{client: redisv9.NewClient(&cloned)}
 }
 
 func redisContextError(ctx context.Context, err error) error {
@@ -99,16 +100,16 @@ func redisContextError(ctx context.Context, err error) error {
 	return err
 }
 
-func (c *redisMaasCache) Get(ctx context.Context, key string) ([]byte, error) {
+func (c *RedisMaasCache) Get(ctx context.Context, key string) ([]byte, error) {
 	value, err := c.client.Get(ctx, key).Bytes()
 	return value, redisContextError(ctx, err)
 }
 
-func (c *redisMaasCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+func (c *RedisMaasCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	return redisContextError(ctx, c.client.Set(ctx, key, value, ttl).Err())
 }
 
-func (c *redisMaasCache) Close() error {
+func (c *RedisMaasCache) Close() error {
 	return c.client.Close()
 }
 
@@ -282,10 +283,10 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 // logs at Warn and answers NotFound.
 func maasPlanError(err error) error {
 	if errors.Is(err, errMaasNoRoute) {
-		log.Warnf("[MAAS] action=plan event=no_route error=%v", err)
+		zap.S().Warnw("no route", "component", "maas", "action", "plan", "event", "no_route", "err", err)
 		return status.Error(codes.NotFound, "no route for this origin/destination")
 	}
-	log.Errorf("[MAAS] plan error: %v", err)
+	zap.S().Errorw(fmt.Sprintf("plan error: %v", err), "component", "maas")
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return status.FromContextError(err).Err()
 	}
@@ -364,7 +365,7 @@ func (s *MaasServer) cachePlan(ctx context.Context, cacheKey string, response *p
 		return
 	}
 	if err := s.cache.Set(ctx, cacheKey, encoded, maasCacheTTL); err != nil && ctx.Err() == nil {
-		log.Errorf("[MAAS] cache set failed: %v", err)
+		zap.S().Errorw(fmt.Sprintf("cache set failed: %v", err), "component", "maas")
 	}
 }
 
@@ -404,7 +405,7 @@ func (s *MaasServer) runSharedPlan(cacheKey string, req *pb.MaasPlanRequest) (*p
 		if contextErr := workCtx.Err(); contextErr != nil {
 			return nil, contextErr
 		}
-		log.Errorf("[MAAS] cache set failed: %v", err)
+		zap.S().Errorw(fmt.Sprintf("cache set failed: %v", err), "component", "maas")
 	}
 	return response, nil
 }
@@ -668,7 +669,12 @@ func batchBusNotificationIdentities(ctx context.Context, db maasDB, refs []maasS
 		FROM matches
 		WHERE match_rank = 1`, indices, departures, arrivals, names, shortNames, numbers)
 	if err != nil {
-		log.Errorf("[MAAS] action=batch_notification_identity event=query_error error=%v", err)
+		zap.S().Errorw("query error",
+			"component", "maas",
+			"action", "batch_notification_identity",
+			"event", "query_error",
+			"err", err,
+		)
 		return
 	}
 	defer rows.Close()
@@ -677,7 +683,12 @@ func batchBusNotificationIdentities(ctx context.Context, db maasDB, refs []maasS
 		var routeKey, departureStopKey, arrivalStopKey string
 		var matchCount int64
 		if err := rows.Scan(&index, &routeKey, &direction, &departureStopKey, &arrivalStopKey, &matchCount); err != nil {
-			log.Errorf("[MAAS] action=batch_notification_identity event=scan_error error=%v", err)
+			zap.S().Errorw("scan error",
+				"component", "maas",
+				"action", "batch_notification_identity",
+				"event", "scan_error",
+				"err", err,
+			)
 			return
 		}
 		if target := byIndex[index]; target != nil && matchCount == 1 {
@@ -690,7 +701,12 @@ func batchBusNotificationIdentities(ctx context.Context, db maasDB, refs []maasS
 	// A mid-stream failure leaves sections without an identity; enrichment is
 	// best-effort and has no error channel, so surface it in the log instead.
 	if err := rows.Err(); err != nil {
-		log.Errorf("[MAAS] action=batch_notification_identity event=iterate_error error=%v", err)
+		zap.S().Errorw("iterate error",
+			"component", "maas",
+			"action", "batch_notification_identity",
+			"event", "iterate_error",
+			"err", err,
+		)
 	}
 }
 
@@ -758,7 +774,12 @@ func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
 		WHERE fare > 0
 		GROUP BY section_index`, indices, modes, departures, arrivals)
 	if err != nil {
-		log.Errorf("[MAAS] action=batch_section_fares event=query_error error=%v", err)
+		zap.S().Errorw("query error",
+			"component", "maas",
+			"action", "batch_section_fares",
+			"event", "query_error",
+			"err", err,
+		)
 		return
 	}
 	defer rows.Close()
@@ -766,7 +787,12 @@ func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
 	for rows.Next() {
 		var index, fare int32
 		if err := rows.Scan(&index, &fare); err != nil {
-			log.Errorf("[MAAS] action=batch_section_fares event=scan_error error=%v", err)
+			zap.S().Errorw("scan error",
+				"component", "maas",
+				"action", "batch_section_fares",
+				"event", "scan_error",
+				"err", err,
+			)
 			return
 		}
 		if _, ok := byIndex[index]; !ok || fare <= 0 {
@@ -779,7 +805,12 @@ func batchSectionFares(ctx context.Context, db maasDB, refs []maasSectionRef) {
 	// A mid-stream failure leaves fares partial, and applying it would understate
 	// TotalFare rather than leave it unset. Drop the batch, like the scan path.
 	if err := rows.Err(); err != nil {
-		log.Errorf("[MAAS] action=batch_section_fares event=iterate_error error=%v", err)
+		zap.S().Errorw("iterate error",
+			"component", "maas",
+			"action", "batch_section_fares",
+			"event", "iterate_error",
+			"err", err,
+		)
 		return
 	}
 	for index, fare := range fares {

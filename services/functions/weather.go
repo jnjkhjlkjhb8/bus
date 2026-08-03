@@ -14,6 +14,7 @@ import (
 
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 const cwaBase = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
@@ -41,7 +42,7 @@ var countyToCity = map[string]string{
 func weatherSync(ctx context.Context, rc *redis.Client) error {
 	apiKey := os.Getenv("CWA_API_KEY")
 	if apiKey == "" {
-		log.Warnf("[WEATHER] CWA_API_KEY not set, skipping")
+		zap.S().Warnw("CWA_API_KEY not set, skipping", "component", "weather")
 		return nil
 	}
 	if rc == nil {
@@ -67,7 +68,7 @@ func writeWeatherSnapshot(ctx context.Context, rc *redis.Client, snapshot map[st
 	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("write weather snapshot to Redis: %w", err)
 	}
-	log.Infof("[WEATHER] synced %d cities", len(snapshot))
+	zap.S().Infow(fmt.Sprintf("synced %d cities", len(snapshot)), "component", "weather")
 	return nil
 }
 

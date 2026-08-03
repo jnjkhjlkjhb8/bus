@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // healthFilePath is the liveness marker addStaticCron touches after every
@@ -24,7 +26,13 @@ func touchHealthFile() {
 	}
 	f, err := os.Create(healthFilePath)
 	if err != nil {
-		log.Warnf("[HEALTH] action=touch event=failed path=%s error=%v", healthFilePath, err)
+		zap.S().Warnw("failed",
+			"component", "health",
+			"action", "touch",
+			"event", "failed",
+			"path", healthFilePath,
+			"err", err,
+		)
 		return
 	}
 	_ = f.Close()

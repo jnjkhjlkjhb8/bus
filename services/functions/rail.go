@@ -10,6 +10,7 @@ import (
 
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -556,9 +557,14 @@ func loadTraStation(ctx context.Context, dec *json.Decoder, sink loadSink, _ str
 			return err
 		}
 	} else {
-		log.Infof("[RAIL] action=tra_station event=complete reason=no_data")
+		zap.S().Infow("complete",
+			"component", "rail",
+			"action", "tra_station",
+			"event", "complete",
+			"reason", "no_data",
+		)
 	}
-	log.Infof("[RAIL] action=tra_station event=complete")
+	zap.S().Infow("complete", "component", "rail", "action", "tra_station", "event", "complete")
 	return nil
 }
 
@@ -770,14 +776,19 @@ func loadThsrFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ strin
 // delays as hash tra:delay plus a published tra:delay:all snapshot, all with a
 // 3-minute TTL so stale data expires.
 func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
-	log.Infof("[TRA_ETA] action=tra_eta event=start")
+	zap.S().Infow("start", "component", "tra_eta", "action", "tra_eta", "event", "start")
 	result, err := fetch(ctx, "/v2/Rail/TRA/LiveTrainDelay", "tra_delay")
 	if err != nil {
 		return fmt.Errorf("fetch TRA live train delay: %w", err)
 	}
 	if !result.Modified {
 		// On a 304, boundFetch has already re-armed the delay keys' TTL.
-		log.Warnf("[TRA_ETA] action=tra_eta event=skip_delay reason=no_update")
+		zap.S().Warnw("skip delay",
+			"component", "tra_eta",
+			"action", "tra_eta",
+			"event", "skip_delay",
+			"reason", "no_update",
+		)
 		return nil
 	}
 	err = commitTDXFetch(result, func(dec *json.Decoder) error {
@@ -812,12 +823,17 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 		if err := pipe.Exec(ctx); err != nil {
 			return fmt.Errorf("publish TRA delay snapshot: %w", err)
 		}
-		log.Infof("[TRA_ETA] action=tra_eta event=delay_redis_success count=%d", count)
+		zap.S().Infow("delay redis success",
+			"component", "tra_eta",
+			"action", "tra_eta",
+			"event", "delay_redis_success",
+			"count", count,
+		)
 		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("process TRA live train delay: %w", err)
 	}
-	log.Infof("[TRA_ETA] action=tra_eta event=complete")
+	zap.S().Infow("complete", "component", "tra_eta", "action", "tra_eta", "event", "complete")
 	return nil
 }

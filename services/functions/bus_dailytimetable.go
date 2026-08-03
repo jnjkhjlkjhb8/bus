@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	"go.uber.org/zap"
 )
 
 // busDailyHourlyTimeout bounds one hourly bus_dailytimetable load. Only the
@@ -39,7 +40,12 @@ func registerBusDailyTimetableCron(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *
 			return loadChangedBusDailyTimetables(ctx, rawPool, src, db, rc, loaded)
 		})
 		if err != nil {
-			log.Errorf("[LOAD] action=bus_dailytimetable_hourly event=failed error=%v", err)
+			zap.S().Errorw("failed",
+				"component", "load",
+				"action", "bus_dailytimetable_hourly",
+				"event", "failed",
+				"err", err,
+			)
 		}
 	})
 }
@@ -124,7 +130,13 @@ func loadChangedBusDailyTimetables(
 		}
 		loaded[city] = markers[city]
 	}
-	log.Infof("[LOAD] action=bus_dailytimetable_hourly event=done changed=%d failed=%d", len(pending), len(failures))
+	zap.S().Infow("done",
+		"component", "load",
+		"action", "bus_dailytimetable_hourly",
+		"event", "done",
+		"changed", len(pending),
+		"failed", len(failures),
+	)
 	return errors.Join(failures...)
 }
 

@@ -27,6 +27,7 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	// Registers the gzip compressor. grpc-go answers a request in whatever
@@ -58,8 +59,15 @@ func logPoolStats(pool *pgxpool.Pool) {
 	t := time.NewTicker(1 * time.Minute)
 	for range t.C {
 		s := pool.Stat()
-		log.Infof("[DB] action=pool_stat total=%d acquired=%d idle=%d empty_acquires=%d max=%d",
-			s.TotalConns(), s.AcquiredConns(), s.IdleConns(), s.EmptyAcquireCount(), s.MaxConns())
+		zap.S().Infow("log",
+			"component", "db",
+			"action", "pool_stat",
+			"total", s.TotalConns(),
+			"acquired", s.AcquiredConns(),
+			"idle", s.IdleConns(),
+			"empty_acquires", s.EmptyAcquireCount(),
+			"max", s.MaxConns(),
+		)
 	}
 }
 
@@ -233,7 +241,7 @@ func (c serverCoordinator) serve(grpcListener, httpListener net.Listener) error 
 		c.stopServers()
 		<-results // Both Serve goroutines must finish before backend cleanup.
 	case <-c.shutdown:
-		log.Infoln("[ROUTER] action=shutdown event=signal_received")
+		zap.S().Infow("signal received", "component", "router", "action", "shutdown", "event", "signal_received")
 		c.stopServers()
 		<-results // Both Serve goroutines must finish before backend cleanup.
 		<-results
@@ -317,7 +325,7 @@ func run() error {
 		rc := shared.ConnectRedis()
 		runtime.addCleanup(func() {
 			if err := rc.Close(); err != nil {
-				log.Errorf("[REDIS] action=close event=failed error=%v", err)
+				zap.S().Errorw("failed", "component", "redis", "action", "close", "event", "failed", "err", err)
 			}
 		})
 		live := NewLiveHubWithQueueSize(
@@ -343,7 +351,7 @@ func run() error {
 		maasCache := NewRedisMaasCache(rc.Options())
 		runtime.addCleanup(func() {
 			if err := maasCache.Close(); err != nil {
-				log.Errorf("[MAAS] action=cache_close event=failed error=%v", err)
+				zap.S().Errorw("failed", "component", "maas", "action", "cache_close", "event", "failed", "err", err)
 			}
 		})
 		lis, err := net.Listen("tcp", "0.0.0.0:50051")
@@ -412,8 +420,8 @@ func run() error {
 			devices:  NewFirebaseStore(db),
 			notifier: NewFeedbackNotifier(),
 		})
-		log.Infof("gRPC server is running on port %d", 50051)
-		log.Infof("[HTTP] server running on 0.0.0.0:8080")
+		zap.S().Infow(fmt.Sprintf("gRPC server is running on port %d", 50051))
+		zap.S().Infow("server running on 0.0.0.0:8080", "component", "http")
 		coordinator := serverCoordinator{
 			grpcServer:       grpcServer,
 			httpServer:       httpRuntime.server,

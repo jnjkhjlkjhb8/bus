@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // decodeLoadArray consumes exactly one JSON array, returning a wrapped error
@@ -234,6 +235,12 @@ func runCopyUpsert(ctx context.Context, db loadTxBeginner, spec copyUpsertSpec, 
 		return fmt.Errorf("copy-upsert %s commit: %w", spec.key, err)
 	}
 	committed = true
-	log.Infof("[LOAD] action=copy_upsert dataset=%s event=success rows=%d", spec.key, len(rows))
+	zap.S().Infow("success",
+		"component", "load",
+		"action", "copy_upsert",
+		"dataset", spec.key,
+		"event", "success",
+		"rows", len(rows),
+	)
 	return nil
 }

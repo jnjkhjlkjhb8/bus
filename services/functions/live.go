@@ -14,6 +14,7 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	"go.uber.org/zap"
 )
 
 // This file is the live counterpart of loader.go : the realtime ETA
@@ -233,16 +234,22 @@ func runLive(ctx context.Context, src liveSource, sink liveSink, specs []liveSpe
 func runLiveSpec(ctx context.Context, src liveSource, sink liveSink, spec liveSpec) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Errorf("[LIVE] action=run event=panic job=%s recovered=%v", spec.key, r)
+			zap.S().Errorw("panic",
+				"component", "live",
+				"action", "run",
+				"event", "panic",
+				"job", spec.key,
+				"recovered", r,
+			)
 		}
 	}()
-	log.Infof("[LIVE] action=run event=start job=%s", spec.key)
+	zap.S().Infow("start", "component", "live", "action", "run", "event", "start", "job", spec.key)
 	fetch := bindFetch(src, sink, spec)
 	if err := spec.run(ctx, fetch, sink); err != nil {
-		log.Errorf("[LIVE] action=run event=error job=%s error=%v", spec.key, err)
+		zap.S().Errorw("error", "component", "live", "action", "run", "event", "error", "job", spec.key, "err", err)
 		return
 	}
-	log.Infof("[LIVE] action=run event=complete job=%s", spec.key)
+	zap.S().Infow("complete", "component", "live", "action", "run", "event", "complete", "job", spec.key)
 }
 
 // restLiveSource is the production liveSource: it wraps the shared TDX client's
@@ -321,7 +328,7 @@ func (s redisLiveSink) refreshTTL(ctx context.Context, patterns []ttlPattern) er
 	if refreshErr != nil {
 		return refreshErr
 	}
-	log.Infof("[LIVE] action=ttl_refresh event=success keys=%d", total)
+	zap.S().Infow("success", "component", "live", "action", "ttl_refresh", "event", "success", "keys", total)
 	return nil
 }
 
@@ -548,17 +555,31 @@ func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db
 		group := byCadence[cadence]
 		deadline := liveTickDeadline(cadence)
 		_, _ = addStaticCron(r, cadence, func() {
-			log.Infof("[LIVE] action=tick event=start cadence=%s jobs=%d deadline=%s", cadence, len(group), deadline)
+			zap.S().Infow("start",
+				"component", "live",
+				"action", "tick",
+				"event", "start",
+				"cadence", cadence,
+				"jobs", len(group),
+				"deadline", deadline,
+			)
 			withTimeout(deadline, func(ctx context.Context) {
 				for _, spec := range group {
 					if ctx.Err() != nil {
-						log.Warnf("[LIVE] action=tick event=overrun cadence=%s deadline=%s job=%s", cadence, deadline, spec.key)
+						zap.S().Warnw("overrun",
+							"component", "live",
+							"action", "tick",
+							"event", "overrun",
+							"cadence", cadence,
+							"deadline", deadline,
+							"job", spec.key,
+						)
 						break
 					}
 					runLiveSpec(ctx, src, sink, spec)
 				}
 			})
-			log.Infof("[LIVE] action=tick event=end cadence=%s", cadence)
+			zap.S().Infow("end", "component", "live", "action", "tick", "event", "end", "cadence", cadence)
 		})
 	}
 
@@ -568,7 +589,13 @@ func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db
 	_, _ = addStaticCron(r, "@every 30s", func() {
 		withTimeout(liveJobTimeout, func(ctx context.Context) {
 			if err := dispatcher.FireScheduled(ctx); err != nil {
-				log.Errorf("[LIVE] action=run event=error job=scheduled_reminders error=%v", err)
+				zap.S().Errorw("error",
+					"component", "live",
+					"action", "run",
+					"event", "error",
+					"job", "scheduled_reminders",
+					"err", err,
+				)
 			}
 		})
 	})

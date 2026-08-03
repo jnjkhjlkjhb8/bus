@@ -25,6 +25,7 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	"go.uber.org/zap"
 )
 
 // main boots the functions binary: it initializes observability, resolves the
@@ -54,7 +55,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log.Infof("[BOOT] action=start role=%q", role)
+	zap.S().Infow("log", "component", "boot", "action", "start", "role", role)
 
 	r := cron.New(cron.WithSeconds())
 	rc := shared.ConnectRedis()
@@ -74,7 +75,7 @@ func run() error {
 	ingestDB = db
 	defer func(rc *redis.Client) {
 		if cerr := rc.Close(); cerr != nil {
-			log.Errorf("[REDIS] action=close event=failed error=%v", cerr)
+			zap.S().Errorw("failed", "component", "redis", "action", "close", "event", "failed", "err", cerr)
 		}
 	}(rc)
 	defer db.Close()
@@ -84,7 +85,7 @@ func run() error {
 	defer func() {
 		if archiveDB != nil {
 			if cerr := archiveDB.Close(); cerr != nil {
-				log.Errorf("[ARCHIVE] action=close event=failed error=%v", cerr)
+				zap.S().Errorw("failed", "component", "archive", "action", "close", "event", "failed", "err", cerr)
 			}
 		}
 	}()
@@ -215,7 +216,7 @@ func runDailyWithRetry(parent context.Context, d, backoff time.Duration, job fun
 func runDaily(name string, d time.Duration, job func(context.Context) error) {
 	err := runDailyWithRetry(context.Background(), d, time.Minute, job)
 	if err != nil {
-		log.Errorf("[crontab] action=%s event=failed error=%v", name, err)
+		zap.S().Errorw("failed", "component", "crontab", "action", name, "event", "failed", "err", err)
 	}
 }
 
@@ -488,7 +489,13 @@ func runStaticJob(
 		err := waitForPipelineMarker(waitCtx, marker, spec.waitFor, now().In(taipei),
 			pipelineMarkerPollInterval, pipelineMarkerPollDeadline, now, sleep)
 		if err != nil {
-			log.Errorf("[PIPELINE] action=%s event=marker_wait_failed upstream=%s error=%v", spec.name, spec.waitFor, err)
+			zap.S().Errorw("marker wait failed",
+				"component", "pipeline",
+				"action", spec.name,
+				"event", "marker_wait_failed",
+				"upstream", spec.waitFor,
+				"err", err,
+			)
 			return
 		}
 	}
@@ -502,7 +509,7 @@ func runStaticJob(
 		err = runWithTimeout(context.Background(), spec.timeout, spec.run)
 	}
 	if err != nil {
-		log.Errorf("[crontab] action=%s event=failed error=%v", spec.name, err)
+		zap.S().Errorw("failed", "component", "crontab", "action", spec.name, "event", "failed", "err", err)
 	}
 }
 
@@ -544,11 +551,13 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	if err := runBootBusDailyTimetable(
 		context.Background(), bootLoadRunner, rawTDXSource{pool: rawPool}, db, rc,
 	); err != nil {
-		log.Errorf("[bus] action=bus_dailyroute event=error error=%v", err)
+		zap.S().Errorw("error", "component", "bus", "action", "bus_dailyroute", "event", "error", "err", err)
 	}
 	holidayCtx, holidayCancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
 	if err := loadHolidays(holidayCtx); err != nil {
-		log.Warnf("[HOLIDAY] initial refresh failed; weekend/last-good fallback active: %v", err)
+		zap.S().Warnw(fmt.Sprintf("initial refresh failed; weekend/last-good fallback active: %v", err),
+			"component", "holiday",
+		)
 	}
 	holidayCancel()
 	loadModel()
@@ -558,7 +567,9 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	// startup delay finite while avoiding a detached refresh goroutine.
 	weatherCtx, weatherCancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
 	if err := weatherSync(weatherCtx, rc); err != nil {
-		log.Warnf("[WEATHER] initial sync failed; keeping last good Redis snapshot: %v", err)
+		zap.S().Warnw(fmt.Sprintf("initial sync failed; keeping last good Redis snapshot: %v", err),
+			"component", "weather",
+		)
 	}
 	weatherCancel()
 	// The ingestor lands raw_tdx at 03:00 and the ROLE=loader container transforms
@@ -583,14 +594,16 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		ctx, cancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
 		defer cancel()
 		if err := weatherSync(ctx, rc); err != nil {
-			log.Warnf("[WEATHER] sync failed; keeping last good Redis snapshot: %v", err)
+			zap.S().Warnw(fmt.Sprintf("sync failed; keeping last good Redis snapshot: %v", err),
+				"component", "weather",
+			)
 		}
 	})
 	_, _ = addStaticCron(r, "@every 24h", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
 		defer cancel()
 		if err := loadHolidays(ctx); err != nil {
-			log.Warnf("[HOLIDAY] refresh failed; keeping last good snapshot: %v", err)
+			zap.S().Warnw(fmt.Sprintf("refresh failed; keeping last good snapshot: %v", err), "component", "holiday")
 		}
 	})
 	registerStaticJob(r, markerReader, staticJobSpec{
@@ -650,7 +663,7 @@ func waitForShutdown() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
-	log.Infoln("[BOOT] action=shutdown event=signal_received")
+	zap.S().Infow("signal received", "component", "boot", "action", "shutdown", "event", "signal_received")
 }
 
 // shutdownGrace bounds how long drainShutdown waits for in-flight cron/boot
@@ -677,9 +690,14 @@ func drainShutdown(cronDone context.Context, boot *sync.WaitGroup, grace time.Du
 	}()
 	select {
 	case <-done:
-		log.Infoln("[BOOT] action=shutdown event=jobs_drained")
+		zap.S().Infow("jobs drained", "component", "boot", "action", "shutdown", "event", "jobs_drained")
 	case <-time.After(grace):
-		log.Warnf("[BOOT] action=shutdown event=grace_timeout grace=%s", grace)
+		zap.S().Warnw("grace timeout",
+			"component", "boot",
+			"action", "shutdown",
+			"event", "grace_timeout",
+			"grace", grace,
+		)
 	}
 }
 
@@ -726,7 +744,12 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 			&temp.GroupName, &temp.SubRouteUID, &temp.RouteUID, &temp.SubRouteName, &temp.Destination, &temp.Direction, &temp.StopUID, &temp.StopSequence,
 			&temp.Lat, &temp.Lon)
 		if err != nil {
-			log.Errorf("[BUS_STATIC] action=station_map event=scan_error error=%v", err)
+			zap.S().Errorw("scan error",
+				"component", "bus_static",
+				"action", "station_map",
+				"event", "scan_error",
+				"err", err,
+			)
 			continue
 		}
 		list = append(list, temp)

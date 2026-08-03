@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
+	"go.uber.org/zap"
 )
 
 const (
@@ -440,14 +441,14 @@ func HandleSearch(db searchDB) gin.HandlerFunc {
 			var err error
 			trainResults, err = trainNumberSearch(ctx, q, db)
 			if err != nil {
-				log.Errorf("[SEARCH] train number search failed: %v", err)
+				zap.S().Errorw(fmt.Sprintf("train number search failed: %v", err), "component", "search")
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
 				return
 			}
 		}
 		textResults, err := textSearch(ctx, q, city, limit, db)
 		if err != nil {
-			log.Errorf("[SEARCH] error: %v", err)
+			zap.S().Errorw(fmt.Sprintf("error: %v", err), "component", "search")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
 			return
 		}
@@ -466,7 +467,7 @@ func HandleSearch(db searchDB) gin.HandlerFunc {
 			// result instead of turning "no match" into a 500.
 			vectorResults, err := vectorSearch(ctx, q, limit, db)
 			if err != nil {
-				log.Errorf("[SEARCH] vector search failed: %v", err)
+				zap.S().Errorw(fmt.Sprintf("vector search failed: %v", err), "component", "search")
 			} else {
 				results = mergeSearchResults(limit, results, vectorResults)
 			}
@@ -477,7 +478,7 @@ func HandleSearch(db searchDB) gin.HandlerFunc {
 		if len(results) < limit {
 			expandedResults, err := expandStationRoutes(ctx, results, db)
 			if err != nil {
-				log.Errorf("[SEARCH] route expansion failed: %v", err)
+				zap.S().Errorw(fmt.Sprintf("route expansion failed: %v", err), "component", "search")
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
 				return
 			}
@@ -485,7 +486,7 @@ func HandleSearch(db searchDB) gin.HandlerFunc {
 		}
 		body, err := json.Marshal(gin.H{"results": results})
 		if err != nil {
-			log.Errorf("[SEARCH] response encode failed: %v", err)
+			zap.S().Errorw(fmt.Sprintf("response encode failed: %v", err), "component", "search")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
 			return
 		}

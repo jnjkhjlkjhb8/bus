@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // loadSource is the seam between the loader and the raw landing store. The
@@ -125,7 +126,13 @@ func quarantineRatioLimit() float64 {
 		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
 			return f
 		}
-		log.Warnf("[LOAD] action=quarantine event=bad_ratio_env value=%q using=%v", v, defaultQuarantineRatio)
+		zap.S().Warnw("bad ratio env",
+			"component", "load",
+			"action", "quarantine",
+			"event", "bad_ratio_env",
+			"value", v,
+			"using", defaultQuarantineRatio,
+		)
 	}
 	return defaultQuarantineRatio
 }
@@ -182,8 +189,18 @@ func (q *loadQuarantine) report() {
 		if seen > 0 {
 			ratio = float64(q.dropped[r]) / float64(seen)
 		}
-		log.Warnf("[LOAD] action=quarantine event=dropped dataset=%s partition=%s reason=%s count=%d of=%d ratio=%.3f first=%s",
-			q.dataset, q.part, r, q.dropped[r], seen, ratio, q.sample[r])
+		zap.S().Warnw("dropped",
+			"component", "load",
+			"action", "quarantine",
+			"event", "dropped",
+			"dataset", q.dataset,
+			"partition", q.part,
+			"reason", r,
+			"count", q.dropped[r],
+			"of", seen,
+			"ratio", ratio,
+			"first", q.sample[r],
+		)
 	}
 }
 
@@ -253,7 +270,13 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 			// a stale one means a landing that should have happened did
 			// not, which is worth failing the run over.
 			if fetchedAt.IsZero() {
-				log.Warnf("[LOAD] action=skip event=never_landed dataset=%s partition=%s", spec.key, part)
+				zap.S().Warnw("never landed",
+					"component", "load",
+					"action", "skip",
+					"event", "never_landed",
+					"dataset", spec.key,
+					"partition", part,
+				)
 				stats.skipped++
 				continue
 			}
@@ -269,12 +292,25 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 				stats.failed++
 				continue
 			}
-			log.Infof("[LOAD] action=transform event=success dataset=%s partition=%s", spec.key, part)
+			zap.S().Infow("success",
+				"component", "load",
+				"action", "transform",
+				"event", "success",
+				"dataset", spec.key,
+				"partition", part,
+			)
 			stats.ok++
 		}
 		reportQuality(ctx, db, spec)
 	}
-	log.Infof("[LOAD] action=run event=done ok=%d failed=%d skipped=%d", stats.ok, stats.failed, stats.skipped)
+	zap.S().Infow("done",
+		"component", "load",
+		"action", "run",
+		"event", "done",
+		"ok", stats.ok,
+		"failed", stats.failed,
+		"skipped", stats.skipped,
+	)
 	return stats, errors.Join(failures...)
 }
 
@@ -304,7 +340,14 @@ func reportQuality(ctx context.Context, db *pgxpool.Pool, spec loadSpec) {
 			dest[i] = &vals[i]
 		}
 		if err := db.QueryRow(ctx, q).Scan(dest...); err != nil {
-			log.Errorf("[LOAD] action=quality_report event=query_error dataset=%s table=%s error=%v", spec.key, t.table, err)
+			zap.S().Errorw("query error",
+				"component", "load",
+				"action", "quality_report",
+				"event", "query_error",
+				"dataset", spec.key,
+				"table", t.table,
+				"err", err,
+			)
 			continue
 		}
 		rows := vals[0]
@@ -318,7 +361,7 @@ func reportQuality(ctx context.Context, db *pgxpool.Pool, spec loadSpec) {
 			}
 			fmt.Fprintf(&b, " %s_empty_ratio=%.3f", c, ratio)
 		}
-		log.Infof("%s", b.String())
+		zap.S().Infow(b.String())
 	}
 }
 

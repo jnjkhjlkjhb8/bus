@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -309,7 +310,12 @@ func mrtServiceWindows(ctx context.Context, db *pgxpool.Pool) map[string][]mrtSe
 	}
 	rows, err := db.Query(ctx, `SELECT system, station_id, lineid, destinationstaionid, firsttraintime, lasttraintime FROM mrt_schedule`)
 	if err != nil {
-		log.Errorf("[MRT_ETA] action=mrt_windows event=query_error error=%v", err)
+		zap.S().Errorw("query error",
+			"component", "mrt_eta",
+			"action", "mrt_windows",
+			"event", "query_error",
+			"err", err,
+		)
 		return mrtWindowCache.byKey // stale beats none; nil on first failure
 	}
 	defer rows.Close()
@@ -331,12 +337,22 @@ func mrtServiceWindows(ctx context.Context, db *pgxpool.Pool) map[string][]mrtSe
 		byKey[k] = append(byKey[k], mrtServiceWindow{first: first, last: last})
 	}
 	if err := rows.Err(); err != nil {
-		log.Errorf("[MRT_ETA] action=mrt_windows event=scan_error error=%v", err)
+		zap.S().Errorw("scan error",
+			"component", "mrt_eta",
+			"action", "mrt_windows",
+			"event", "scan_error",
+			"err", err,
+		)
 		return mrtWindowCache.byKey
 	}
 	mrtWindowCache.byKey = byKey
 	mrtWindowCache.loaded = time.Now()
-	log.Infof("[MRT_ETA] action=mrt_windows event=reloaded keys=%d", len(byKey))
+	zap.S().Infow("reloaded",
+		"component", "mrt_eta",
+		"action", "mrt_windows",
+		"event", "reloaded",
+		"keys", len(byKey),
+	)
 	return byKey
 }
 
@@ -371,14 +387,19 @@ func mrtInService(windows map[string][]mrtServiceWindow, key string, now time.Ti
 //
 //nolint:unused // ADR-0014: TDX metro LiveBoard is paused, not removed
 func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) error {
-	log.Infof("[MRT_ETA] action=mrt_eta event=start")
+	zap.S().Infow("start", "component", "mrt_eta", "action", "mrt_eta", "event", "start")
 	windows := mrtServiceWindows(ctx, db)
 	now := time.Now().In(taipei)
 	var systems = []string{"TRTC", "KRTC", "KLRT", "TYMC"}
 	var jobErr error
 	for _, system := range systems {
 		filtered := 0
-		log.Infof("[MRT_ETA] action=mrt_eta system=%s event=system_start", system)
+		zap.S().Infow("system start",
+			"component", "mrt_eta",
+			"action", "mrt_eta",
+			"system", system,
+			"event", "system_start",
+		)
 		result, err := fetch(ctx, fmt.Sprintf("/v2/Rail/Metro/LiveBoard/%s", system), "mrt_LiveBoard"+system)
 		if err != nil {
 			jobErr = errors.Join(jobErr, fmt.Errorf("mrt %s fetch: %w", system, err))
@@ -386,7 +407,13 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 		}
 		if !result.Modified {
 			// A 304 has already refreshed the cached arrivals' TTL via boundFetch.
-			log.Warnf("[MRT_ETA] action=mrt_eta system=%s event=skip reason=no updated", system)
+			zap.S().Warnw("skip",
+				"component", "mrt_eta",
+				"action", "mrt_eta",
+				"system", system,
+				"event", "skip",
+				"reason", "not_updated",
+			)
 			continue
 		}
 		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
@@ -428,10 +455,16 @@ func mrtEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Po
 			jobErr = errors.Join(jobErr, fmt.Errorf("mrt %s process: %w", system, err))
 		}
 		if filtered > 0 {
-			log.Infof("[MRT_ETA] action=mrt_eta system=%s event=out_of_service_filtered count=%d", system, filtered)
+			zap.S().Infow("out of service filtered",
+				"component", "mrt_eta",
+				"action", "mrt_eta",
+				"system", system,
+				"event", "out_of_service_filtered",
+				"count", filtered,
+			)
 		}
 	}
-	log.Infof("[MRT_ETA] action=mrt_eta event=complete")
+	zap.S().Infow("complete", "component", "mrt_eta", "action", "mrt_eta", "event", "complete")
 	return jobErr
 }
 
@@ -718,7 +751,14 @@ func loadMrtTrtcTravelTime(ctx context.Context, src loadSource, sink copyUpsertS
 		return fmt.Errorf("mrt travel graph %s: %w", system, err)
 	}
 	if len(stations) == 0 || segCount == 0 {
-		log.Infof("[MRT] action=trtc_traveltime system=%s event=no_graph segments=%d transfers=%d", system, segCount, transferCount)
+		zap.S().Infow("no graph",
+			"component", "mrt",
+			"action", "trtc_traveltime",
+			"system", system,
+			"event", "no_graph",
+			"segments", segCount,
+			"transfers", transferCount,
+		)
 		return nil
 	}
 
@@ -804,7 +844,12 @@ func loadMrtAdjacency(ctx context.Context, dec *json.Decoder, sink loadSink, sys
 	}
 	rows := mrtAdjacencyRows(lines, system)
 	if len(rows) == 0 {
-		log.Infof("[MRT] action=mrt_adjacency system=%s event=no_edges", system)
+		zap.S().Infow("no edges",
+			"component", "mrt",
+			"action", "mrt_adjacency",
+			"system", system,
+			"event", "no_edges",
+		)
 		return nil
 	}
 	return sink.copyUpsert(ctx, copyUpsertSpec{

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -157,7 +158,7 @@ var bikeHistorySampleGate bikeHistorySampler
 // prediction. A nil db skips history collection so the realtime path can run
 // without a database.
 func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) error {
-	log.Infof("[BIKE_ETA] action=bike_eta event=start")
+	zap.S().Infow("start", "component", "bike_eta", "action", "bike_eta", "event", "start")
 	now := time.Now()
 	var historyRows [][]any
 	var jobErr error
@@ -165,7 +166,12 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 		if _, skip := bikeAvailabilitySkip[city]; skip {
 			continue
 		}
-		log.Infof("[BIKE_ETA] action=bike_eta city=%s event=city_start", city)
+		zap.S().Infow("city start",
+			"component", "bike_eta",
+			"action", "bike_eta",
+			"city", city,
+			"event", "city_start",
+		)
 		result, err := fetch(ctx, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
 		if err != nil {
 			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s fetch: %w", city, err))
@@ -175,7 +181,13 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			// A 304 is the expected answer most ticks: the cadence is well under
 			// how often the operators republish. Logged at info because a warning
 			// here is 840 lines an hour that never once means anything is wrong.
-			log.Infof("[BIKE_ETA] action=bike_eta city=%s event=skip reason=not_modified", city)
+			zap.S().Warnw("skip",
+				"component", "bike_eta",
+				"action", "bike_eta",
+				"city", city,
+				"event", "skip",
+				"reason", "not_modified",
+			)
 			continue
 		}
 		if err := commitTDXFetch(result, func(dec *json.Decoder) error {
@@ -216,7 +228,7 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			if err := pipe.Exec(ctx); err != nil {
 				return fmt.Errorf("publish bike availability for %s: %w", city, err)
 			}
-			log.Infof("[BIKE_ETA] action= %s bike_eta event=complete", city)
+			zap.S().Infow("complete", "component", "bike_eta", "action", "bike_eta", "city", city, "event", "complete")
 			return nil
 		}); err != nil {
 			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s process: %w", city, err))
@@ -225,6 +237,6 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 	if db != nil {
 		saveBikeAvailabilityHistory(ctx, db, historyRows)
 	}
-	log.Infof("[BIKE_ETA] action=bike_eta event=complete")
+	zap.S().Infow("complete", "component", "bike_eta", "action", "bike_eta", "event", "complete")
 	return jobErr
 }

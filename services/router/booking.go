@@ -12,6 +12,7 @@ import (
 	"github.com/go-resty/resty/v2"
 
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"go.uber.org/zap"
 )
 
 // BookingProxy exchanges rail booking parameters for a short-lived TDX deeplink
@@ -301,8 +302,19 @@ func HandleBookingDeeplink(booking *BookingProxy) gin.HandlerFunc {
 		}
 		url, expired, err := booking.exchange(c.Request.Context(), client, resource, req)
 		if err != nil {
-			log.Errorf("[BOOKING] action=exchange event=failed agency=%s kind=%s start=%q end=%q date=%s time=%s train=%s error=%v",
-				agency, kind, req.start, req.end, req.date, req.time, req.train, err)
+			zap.S().Errorw("failed",
+				"component", "booking",
+				"action", "exchange",
+				"event", "failed",
+				"agency", agency,
+				"kind", kind,
+				"start", req.start,
+				"end", req.end,
+				"date", req.date,
+				"time", req.time,
+				"train", req.train,
+				"err", err,
+			)
 			if shared.IsTDXAuthError(err) {
 				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "booking unavailable", "reason": "auth"})
 				return

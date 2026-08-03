@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -256,10 +257,15 @@ func trtcSOAP(ctx context.Context, page, method, user, pass string) ([]byte, err
 func trtcEta(ctx context.Context, sink liveSink, db *pgxpool.Pool) error {
 	user, pass := os.Getenv("TRTC_USERNAME"), os.Getenv("TRTC_PASSWORD")
 	if user == "" || pass == "" {
-		log.Infof("[TRTC_ETA] action=trtc_eta event=skip reason=no_credentials")
+		zap.S().Warnw("skip",
+			"component", "trtc_eta",
+			"action", "trtc_eta",
+			"event", "skip",
+			"reason", "no_credentials",
+		)
 		return nil
 	}
-	log.Infof("[TRTC_ETA] action=trtc_eta event=start")
+	zap.S().Infow("start", "component", "trtc_eta", "action", "trtc_eta", "event", "start")
 
 	var (
 		wg       sync.WaitGroup
@@ -279,7 +285,13 @@ func trtcEta(ctx context.Context, sink liveSink, db *pgxpool.Pool) error {
 				*fatal = fmt.Errorf("%s: %w", method, err)
 				return
 			}
-			log.Warnf("[TRTC_ETA] action=trtc_eta event=weight_fetch_failed method=%s error=%v", method, err)
+			zap.S().Warnw("weight fetch failed",
+				"component", "trtc_eta",
+				"action", "trtc_eta",
+				"event", "weight_fetch_failed",
+				"method", method,
+				"err", err,
+			)
 		}
 	}
 	wg.Add(3)
@@ -325,7 +337,13 @@ func trtcPublish(ctx context.Context, sink liveSink, names map[string][]string, 
 		stationID, destID, line, ok := resolveTrtcStation(names, t.StationName, t.DestinationName, t.TrainNumber)
 		if !ok {
 			dropped++
-			log.Warnf("[TRTC_ETA] action=trtc_eta event=resolve_failed station=%s dest=%s", t.StationName, t.DestinationName)
+			zap.S().Warnw("resolve failed",
+				"component", "trtc_eta",
+				"action", "trtc_eta",
+				"event", "resolve_failed",
+				"station", t.StationName,
+				"dest", t.DestinationName,
+			)
 			continue
 		}
 		if !mrtInService(windows, mrtWindowKey("TRTC", stationID, line, destID), now) {
@@ -372,6 +390,13 @@ func trtcPublish(ctx context.Context, sink liveSink, names map[string][]string, 
 	if err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("publish TRTC live board: %w", err)
 	}
-	log.Infof("[TRTC_ETA] action=trtc_eta event=complete arrivals=%d dropped=%d out_of_service=%d", len(ownedKeys), dropped, filtered)
+	zap.S().Infow("complete",
+		"component", "trtc_eta",
+		"action", "trtc_eta",
+		"event", "complete",
+		"arrivals", len(ownedKeys),
+		"dropped", dropped,
+		"out_of_service", filtered,
+	)
 	return nil
 }

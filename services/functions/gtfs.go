@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 )
 
 // The GTFS static feed builder.
@@ -95,11 +96,17 @@ func runGTFSExport(db *pgxpool.Pool, runDate time.Time) {
 	started := time.Now()
 	path, rows, err := buildGTFSFeed(ctx, db, gtfsOutputDir(), runDate)
 	if err != nil {
-		log.Errorf("[GTFS] action=export event=failed error=%v", err)
+		zap.S().Errorw("failed", "component", "gtfs", "action", "export", "event", "failed", "err", err)
 		return
 	}
-	log.Infof("[GTFS] action=export event=success path=%s rows=%d elapsed=%s",
-		path, rows, time.Since(started).Round(time.Millisecond))
+	zap.S().Infow("success",
+		"component", "gtfs",
+		"action", "export",
+		"event", "success",
+		"path", path,
+		"rows", rows,
+		"elapsed", time.Since(started).Round(time.Millisecond),
+	)
 }
 
 // buildGTFSFeed writes a dated feed, points the stable name at it, and prunes
@@ -146,7 +153,7 @@ func buildGTFSFeed(ctx context.Context, db *pgxpool.Pool, dir string, runDate ti
 	if err := pruneGTFSFeeds(dir, gtfsKeepFeeds); err != nil {
 		// A failed prune leaves extra files behind; the feed itself is published
 		// and usable, so this is reported without failing the build.
-		log.Warnf("[GTFS] action=prune event=failed error=%v", err)
+		zap.S().Warnw("failed", "component", "gtfs", "action", "prune", "event", "failed", "err", err)
 	}
 	return final, rows, nil
 }
@@ -184,7 +191,13 @@ func writeGTFSArchive(ctx context.Context, db *pgxpool.Pool, w io.Writer, versio
 		if err != nil {
 			return 0, fmt.Errorf("gtfs export: copy %s: %w", file.name, err)
 		}
-		log.Infof("[GTFS] action=export file=%s rows=%d event=written", file.name, tag.RowsAffected())
+		zap.S().Infow("written",
+			"component", "gtfs",
+			"action", "export",
+			"file", file.name,
+			"rows", tag.RowsAffected(),
+			"event", "written",
+		)
 		total += tag.RowsAffected()
 	}
 	if err := zw.Close(); err != nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"go.uber.org/zap"
 )
 
 // bikeHistorySampleInterval is the minimum spacing between persisted history
@@ -56,9 +57,9 @@ func saveBikeAvailabilityHistory(ctx context.Context, db *pgxpool.Pool, rows [][
 	cols := []string{"station_uid", "available_rent", "available_return", "recorded_at"}
 	_, err := db.CopyFrom(ctx, pgx.Identifier{"bike_availability_history"}, cols, pgx.CopyFromRows(rows))
 	if err != nil {
-		log.Errorf("[BIKE_HISTORY] copy error: %v rows=%d", err, len(rows))
+		zap.S().Errorw("copy error", "component", "bike_history", "rows", len(rows), "err", err)
 	} else {
-		log.Infof("[BIKE_HISTORY] inserted %d rows", len(rows))
+		zap.S().Infow(fmt.Sprintf("inserted %d rows", len(rows)), "component", "bike_history")
 	}
 }
 
@@ -70,6 +71,6 @@ func cleanupBikeHistory(ctx context.Context, db *pgxpool.Pool) error {
 	if err != nil {
 		return obs.Transient(fmt.Errorf("cleanup bike history: %w", err))
 	}
-	log.Infof("[BIKE_HISTORY] cleanup deleted %d rows", tag.RowsAffected())
+	zap.S().Infow(fmt.Sprintf("cleanup deleted %d rows", tag.RowsAffected()), "component", "bike_history")
 	return nil
 }

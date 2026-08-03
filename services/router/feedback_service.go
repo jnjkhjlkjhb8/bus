@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -99,7 +100,13 @@ func (s *FeedbackServer) PostFeedback(ctx context.Context, request *pb.PostFeedb
 		return nil, status.Errorf(codes.ResourceExhausted, "at most %d reports per day", feedbackQuota)
 	}
 	if err != nil {
-		log.Errorf("[feedback] action=post event=store_failed install=%s error=%v", request.InstallId, err)
+		zap.S().Errorw("store failed",
+			"component", "feedback",
+			"action", "post",
+			"event", "store_failed",
+			"install", request.InstallId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to save report")
 	}
 	s.notifier.Notify(feedbackNotice{
@@ -172,7 +179,12 @@ type webhookNotifier struct {
 func NewFeedbackNotifier() feedbackNotifier {
 	url := os.Getenv("FEEDBACK_WEBHOOK_URL")
 	if url == "" {
-		log.Infof("[feedback] action=configure event=webhook_disabled reason=empty_url")
+		zap.S().Infow("webhook disabled",
+			"component", "feedback",
+			"action", "configure",
+			"event", "webhook_disabled",
+			"reason", "empty_url",
+		)
 		return silentNotifier{}
 	}
 	return &webhookNotifier{url: url, client: &http.Client{Timeout: 10 * time.Second}}
@@ -189,7 +201,13 @@ func (n *webhookNotifier) Notify(notice feedbackNotice) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := n.post(ctx, notice); err != nil {
-			log.Warnf("[feedback] action=notify event=post_failed thread=%s error=%v", notice.ThreadID, err)
+			zap.S().Warnw("post failed",
+				"component", "feedback",
+				"action", "notify",
+				"event", "post_failed",
+				"thread", notice.ThreadID,
+				"err", err,
+			)
 		}
 	}()
 }

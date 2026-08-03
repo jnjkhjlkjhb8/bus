@@ -1,35 +1,39 @@
 // Package obs provides Sentry-backed error tracking plus small error and
 // retry helpers shared by the router and functions binaries. When SENTRY_DSN
 // is empty, Sentry is not initialized and the capture paths become no-ops
-// while structured slog output continues unchanged.
+// while structured zap output continues unchanged.
 package obs
 
 import (
 	"context"
-	"log/slog"
 	"net/url"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/getsentry/sentry-go"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// Init installs the slog default logger (JSON, tagged with service) and, when
-// SENTRY_DSN is set, initializes Sentry. The returned function flushes buffered
-// events and must be deferred; with no DSN, or if init fails, it is a no-op.
-// SENTRY_TRACES_SAMPLE_RATE (default 0.1) tunes tracing; an unparseable value
-// is ignored.
+// Init installs the zap global logger (JSON, tagged with service) that every
+// call site reaches through zap.L/zap.S, and, when SENTRY_DSN is set,
+// initializes Sentry. The returned function flushes buffered events and must be
+// deferred. SENTRY_TRACES_SAMPLE_RATE (default 0.1) tunes tracing; an
+// unparseable value is ignored.
 func Init(service string) func() {
-	logger := slog.New(NewHandler(slog.NewJSONHandler(os.Stderr, nil))).With("service", service)
-	slog.SetDefault(logger)
+	logger := zap.New(NewCore(newZapCore())).With(zap.String("service", service))
+	zap.ReplaceGlobals(logger)
+	// zap buffers nothing when writing straight to stderr, but Sync is the
+	// documented contract and keeps this correct if the sink ever changes.
+	sync := func() { _ = logger.Sync() }
 	dsn := os.Getenv("SENTRY_DSN")
 	if dsn == "" {
-		slog.Info("sentry disabled", "reason", "no_dsn")
-		return func() {}
+		zap.S().Infow("sentry disabled", "reason", "no_dsn")
+		return sync
 	}
 	tracesRate := 0.1
 	if v := os.Getenv("SENTRY_TRACES_SAMPLE_RATE"); v != "" {
@@ -47,14 +51,40 @@ func Init(service string) func() {
 		BeforeSendTransaction: scrubSentryEventQuery,
 	})
 	if err != nil {
-		slog.Error("sentry init failed", "err", err)
-		return func() {}
+		zap.S().Errorw("sentry init failed", "err", err)
+		return sync
 	}
 	sentry.ConfigureScope(func(scope *sentry.Scope) {
 		scope.SetTag("service", service)
 	})
-	slog.Info("sentry enabled", "traces", tracesRate)
-	return func() { sentry.Flush(2 * time.Second) }
+	zap.S().Infow("sentry enabled", "traces", tracesRate)
+	return func() {
+		sentry.Flush(2 * time.Second)
+		sync()
+	}
+}
+
+// newZapCore builds the JSON core every process logs through. The field names
+// and encodings reproduce the slog JSONHandler output this replaced
+// (time/level/msg, RFC3339 nanoseconds, uppercase levels) so existing log
+// queries keep matching. Caller, logger name, and stacktrace keys are omitted:
+// nothing names a logger, and the fields already say where a line came from.
+// Info is the floor, as it was under slog.
+func newZapCore() zapcore.Core {
+	encoder := zapcore.EncoderConfig{
+		TimeKey:        "time",
+		LevelKey:       "level",
+		MessageKey:     "msg",
+		NameKey:        zapcore.OmitKey,
+		CallerKey:      zapcore.OmitKey,
+		FunctionKey:    zapcore.OmitKey,
+		StacktraceKey:  zapcore.OmitKey,
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeLevel:    zapcore.CapitalLevelEncoder,
+		EncodeTime:     zapcore.RFC3339NanoTimeEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+	}
+	return zapcore.NewCore(zapcore.NewJSONEncoder(encoder), zapcore.Lock(os.Stderr), zapcore.InfoLevel)
 }
 
 // scrubSentryEventQuery removes credentials and other query parameters from

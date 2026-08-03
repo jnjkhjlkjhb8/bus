@@ -6,6 +6,7 @@ import (
 
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // LiveSource is the seam between live-stream handlers and Redis. Two adapters
@@ -88,7 +89,12 @@ func StreamLive(ctx context.Context, src LiveSource, spec LiveStreamSpec, send f
 						return cause
 					}
 				}
-				log.Infof("[gRPC] action=live_stream event=source_closed channel=%s", spec.channel)
+				zap.S().Infow("source closed",
+					"component", "grpc",
+					"action", "live_stream",
+					"event", "source_closed",
+					"channel", spec.channel,
+				)
 				return errLiveSourceClosed
 			}
 			if !usable(val) {

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"go.uber.org/zap"
 )
 
 // ingestDB is the process-wide pool used by the raw_tdx landing path and by
@@ -206,7 +207,12 @@ func reportStalePartitions(ctx context.Context, db rawStateQuerier) int {
 		WHERE fetched_at < $1
 		ORDER BY fetched_at, table_name, partition_value`, time.Now().Add(-stalePartitionAfter))
 	if err != nil {
-		log.Errorf("[INGEST] action=landing_state event=stale_scan_error error=%v", err)
+		zap.S().Errorw("stale scan error",
+			"component", "ingest",
+			"action", "landing_state",
+			"event", "stale_scan_error",
+			"err", err,
+		)
 		return 0
 	}
 	defer rows.Close()
@@ -215,19 +221,41 @@ func reportStalePartitions(ctx context.Context, db rawStateQuerier) int {
 		var table, partition string
 		var fetchedAt time.Time
 		if err := rows.Scan(&table, &partition, &fetchedAt); err != nil {
-			log.Errorf("[INGEST] action=landing_state event=stale_scan_error error=%v", err)
+			zap.S().Errorw("stale scan error",
+				"component", "ingest",
+				"action", "landing_state",
+				"event", "stale_scan_error",
+				"err", err,
+			)
 			return stale
 		}
 		stale++
-		log.Warnf("[INGEST] action=landing_state event=stale_partition table=%s partition=%s fetched_at=%s",
-			table, partition, fetchedAt.Format(time.RFC3339))
+		zap.S().Warnw("stale partition",
+			"component", "ingest",
+			"action", "landing_state",
+			"event", "stale_partition",
+			"table", table,
+			"partition", partition,
+			"fetched_at", fetchedAt.Format(time.RFC3339),
+		)
 	}
 	if err := rows.Err(); err != nil {
-		log.Errorf("[INGEST] action=landing_state event=stale_scan_error error=%v", err)
+		zap.S().Errorw("stale scan error",
+			"component", "ingest",
+			"action", "landing_state",
+			"event", "stale_scan_error",
+			"err", err,
+		)
 		return stale
 	}
 	if stale > 0 {
-		log.Warnf("[INGEST] action=landing_state event=stale_summary count=%d older_than=%s", stale, stalePartitionAfter)
+		zap.S().Warnw("stale summary",
+			"component", "ingest",
+			"action", "landing_state",
+			"event", "stale_summary",
+			"count", stale,
+			"older_than", stalePartitionAfter,
+		)
 	}
 	return stale
 }
@@ -559,7 +587,7 @@ func landRawTDXWithDB(
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("%w: commit: %w", errRawDump, err)
 	}
-	log.Infof("[RAW_TDX] table=%s rows=%d event=success", table, rows)
+	zap.S().Infow("success", "component", "raw_tdx", "table", table, "rows", rows, "event", "success")
 	return nil
 }
 

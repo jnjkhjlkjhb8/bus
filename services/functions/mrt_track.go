@@ -13,6 +13,7 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -106,13 +107,13 @@ func registerMrtTrackCron(r *cron.Cron, rc *redis.Client, db *pgxpool.Pool, disp
 func (t *mrtTracker) tick(ctx context.Context, now time.Time) {
 	tracks, err := t.store.ActiveMrtTracks(ctx, now)
 	if err != nil {
-		log.Errorf("[MRT_TRACK] action=tick event=list_error error=%v", err)
+		zap.S().Errorw("list error", "component", "mrt_track", "action", "tick", "event", "list_error", "err", err)
 		return
 	}
 	if len(tracks) == 0 {
 		return
 	}
-	log.Infof("[MRT_TRACK] action=tick event=start sessions=%d", len(tracks))
+	zap.S().Infow("start", "component", "mrt_track", "action", "tick", "event", "start", "sessions", len(tracks))
 	for _, track := range tracks {
 		if ctx.Err() != nil {
 			return
@@ -131,17 +132,35 @@ func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackRe
 		// written). Drop a never-fired row so the active query stops returning it;
 		// a fired row ages out on expires_at (its status cannot move — CHECK).
 		if expireErr := t.store.ExpireMrtTrack(ctx, track.ID); expireErr != nil {
-			log.Warnf("[MRT_TRACK] action=advance event=expire_error track=%s error=%v", track.ID, expireErr)
+			zap.S().Warnw("expire error",
+				"component", "mrt_track",
+				"action", "advance",
+				"event", "expire_error",
+				"track", track.ID,
+				"err", expireErr,
+			)
 		}
 		return
 	}
 	if err != nil {
-		log.Warnf("[MRT_TRACK] action=advance event=state_read_error track=%s error=%v", track.ID, err)
+		zap.S().Warnw("state read error",
+			"component", "mrt_track",
+			"action", "advance",
+			"event", "state_read_error",
+			"track", track.ID,
+			"err", err,
+		)
 		return
 	}
 	var state models.MrtTrackState
 	if err := proto.Unmarshal(raw, &state); err != nil {
-		log.Warnf("[MRT_TRACK] action=advance event=state_decode_error track=%s error=%v", track.ID, err)
+		zap.S().Warnw("state decode error",
+			"component", "mrt_track",
+			"action", "advance",
+			"event", "state_decode_error",
+			"track", track.ID,
+			"err", err,
+		)
 		return
 	}
 	if mrtIsTerminal(state.Status) {
@@ -164,17 +183,42 @@ func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackRe
 			ReminderID: reminderID, Token: track.Token, TrackID: track.ID, AlightEvent: fire,
 		})
 		if fireErr != nil {
-			log.Warnf("[MRT_TRACK] action=advance event=vibrate_error track=%s error=%v", track.ID, fireErr)
+			zap.S().Warnw("vibrate error",
+				"component", "mrt_track",
+				"action", "advance",
+				"event", "vibrate_error",
+				"track", track.ID,
+				"err", fireErr,
+			)
 		} else if fired {
-			log.Infof("[MRT_TRACK] action=advance event=vibrate_fired track=%s buzz=%s remaining=%d", track.ID, fire, newState.RemainingStops)
+			zap.S().Infow("vibrate fired",
+				"component", "mrt_track",
+				"action", "advance",
+				"event", "vibrate_fired",
+				"track", track.ID,
+				"buzz", fire,
+				"remaining", newState.RemainingStops,
+			)
 		}
 	}
 
 	t.publishState(ctx, newState)
 	if mrtIsTerminal(newState.Status) {
-		log.Infof("[MRT_TRACK] action=advance event=ended track=%s status=%s", track.ID, newState.Status)
+		zap.S().Infow("ended",
+			"component", "mrt_track",
+			"action", "advance",
+			"event", "ended",
+			"track", track.ID,
+			"status", newState.Status,
+		)
 		if expireErr := t.store.ExpireMrtTrack(ctx, track.ID); expireErr != nil {
-			log.Warnf("[MRT_TRACK] action=advance event=expire_error track=%s error=%v", track.ID, expireErr)
+			zap.S().Warnw("expire error",
+				"component", "mrt_track",
+				"action", "advance",
+				"event", "expire_error",
+				"track", track.ID,
+				"err", expireErr,
+			)
 		}
 	}
 }
@@ -185,7 +229,13 @@ func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackRe
 func (t *mrtTracker) publishState(ctx context.Context, state *models.MrtTrackState) {
 	pb, err := proto.Marshal(state)
 	if err != nil {
-		log.Warnf("[MRT_TRACK] action=publish event=encode_error track=%s error=%v", state.TrackId, err)
+		zap.S().Warnw("encode error",
+			"component", "mrt_track",
+			"action", "publish",
+			"event", "encode_error",
+			"track", state.TrackId,
+			"err", err,
+		)
 		return
 	}
 	ttl := mrtTrackActiveTTL
@@ -194,11 +244,23 @@ func (t *mrtTracker) publishState(ctx context.Context, state *models.MrtTrackSta
 	}
 	rc := t.rc
 	if err := rc.Set(ctx, shared.MrtTrackKey(state.TrackId), pb, ttl).Err(); err != nil {
-		log.Warnf("[MRT_TRACK] action=publish event=set_error track=%s error=%v", state.TrackId, err)
+		zap.S().Warnw("set error",
+			"component", "mrt_track",
+			"action", "publish",
+			"event", "set_error",
+			"track", state.TrackId,
+			"err", err,
+		)
 		return
 	}
 	if err := rc.Publish(ctx, shared.MrtTrackChannel(state.TrackId), pb).Err(); err != nil {
-		log.Warnf("[MRT_TRACK] action=publish event=publish_error track=%s error=%v", state.TrackId, err)
+		zap.S().Warnw("publish error",
+			"component", "mrt_track",
+			"action", "publish",
+			"event", "publish_error",
+			"track", state.TrackId,
+			"err", err,
+		)
 	}
 }
 
@@ -209,7 +271,13 @@ func (t *mrtTracker) publishState(ctx context.Context, state *models.MrtTrackSta
 func (t *mrtTracker) readPosition(ctx context.Context, state *models.MrtTrackState) mrtReading {
 	info, ok, err := t.trtc.GetTrainInfo(ctx, state.CarId)
 	if err != nil {
-		log.Warnf("[MRT_TRACK] action=read event=traininfo_error track=%s error=%v", state.TrackId, err)
+		zap.S().Warnw("traininfo error",
+			"component", "mrt_track",
+			"action", "read",
+			"event", "traininfo_error",
+			"track", state.TrackId,
+			"err", err,
+		)
 		return mrtReading{}
 	}
 	if ok {
@@ -260,13 +328,25 @@ func (t *mrtTracker) fallbackFromLive(ctx context.Context, state *models.MrtTrac
 			// arrival for this terminal. Anything else is a real Redis fault and
 			// would otherwise vanish, since the fallback reports only found/not.
 			if !errors.Is(err, redis.Nil) {
-				log.Warnf("[MRT_TRACK] action=fallback_live event=redis_error station=%s error=%v", station, err)
+				zap.S().Warnw("redis error",
+					"component", "mrt_track",
+					"action", "fallback_live",
+					"event", "redis_error",
+					"station", station,
+					"err", err,
+				)
 			}
 			continue
 		}
 		var live models.MrtLive
 		if err := proto.Unmarshal(raw, &live); err != nil {
-			log.Warnf("[MRT_TRACK] action=fallback_live event=decode_error station=%s error=%v", station, err)
+			zap.S().Warnw("decode error",
+				"component", "mrt_track",
+				"action", "fallback_live",
+				"event", "decode_error",
+				"station", station,
+				"err", err,
+			)
 			continue
 		}
 		if live.TrainNumber == state.TripId {

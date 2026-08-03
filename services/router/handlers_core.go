@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -42,7 +44,7 @@ func (s *BusRouteserver) Eta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_Service_E
 // and the router does no normalization. Results are memoized in the in-process
 // cache for an hour; a missing row maps to NotFound via grpcStatusFor.
 func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.Resp_BusStatic, error) {
-	log.Infof("call bus_static %s", in.SubRouteUID)
+	zap.S().Infow(fmt.Sprintf("call bus_static %s", in.SubRouteUID))
 	route := in.SubRouteUID
 	if s.cache != nil {
 		if data, ok := s.cache.get("bus_static:" + route); ok {
@@ -55,7 +57,12 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 	}
 	data, err := BusStaticPayload(ctx, s.db, route)
 	if err != nil {
-		log.Errorf("[gRPC] action=bus_static event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "bus_static",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "route not found")
 	}
 	if s.cache != nil {
@@ -73,7 +80,7 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 // client sees state immediately, and forwards each published update until the
 // client disconnects. Payloads failing usableBusEtaPayload are skipped.
 func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_Service_EtaServer) error {
-	log.Infof("call Bus_route_eta %s", in.SubRouteUID)
+	zap.S().Infow(fmt.Sprintf("call Bus_route_eta %s", in.SubRouteUID))
 	key := shared.BusRouteEtaKey(in.SubRouteUID)
 	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
 		channel:  key,
@@ -96,7 +103,7 @@ func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_S
 // It lives as a free function over the query seam rather than as a method on
 // either bus server, so it carries no server state beyond db and rc.
 func streamBusStationEta(db CoreDB, live LiveSource, in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
-	log.Infof("call Bus_station_eta %s:%s", in.City, in.GroupUid)
+	zap.S().Infow(fmt.Sprintf("call Bus_station_eta %s:%s", in.City, in.GroupUid))
 	groupUID := in.GroupUid
 	if groupUID == "" {
 		return status.Error(codes.InvalidArgument, "station eta key must include group_uid")
@@ -129,11 +136,16 @@ func streamBusStationEta(db CoreDB, live LiveSource, in *pb.Bus_Ask_StationGroup
 // the 03:30 load (ADR-0006), so requests arrive already canonical. A missing key
 // maps to NotFound via grpcStatusFor.
 func (s *BusRouteserver) BusDailytable(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.Resp_BusDailyTimetable, error) {
-	log.Infof("call Bus_dailytable %s", in.SubRouteUID)
+	zap.S().Infow(fmt.Sprintf("call Bus_dailytable %s", in.SubRouteUID))
 	route := in.SubRouteUID
 	val, err := s.rc.Get(ctx, shared.BusDailyTimetableKey(route)).Result()
 	if err != nil {
-		log.Errorf("[gRPC] action=bus_dailytable event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "bus_dailytable",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "timetable not found")
 	}
 	tt, err := DecodePayload([]byte(val), &pb.Bus_DailyTimetables{})
@@ -159,7 +171,12 @@ func (s *BusStationserver) Group(ctx context.Context, in *pb.Bus_Ask_StationGrou
 	}
 	header, err := BusStationGroupHeader(ctx, s.db, groupUID)
 	if err != nil {
-		log.Errorf("[gRPC] action=bus_station_group event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "bus_station_group",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "station group not found")
 	}
 	members, err := BusStationGroupMembers(ctx, s.db, groupUID)
@@ -191,7 +208,7 @@ func (s *BikeServer) Eta(in *pb.BikeRequest, stream pb.Bike_Service_EtaServer) e
 // that fails to unmarshal is ignored and re-fetched. A missing station maps to
 // NotFound via grpcStatusFor.
 func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.BikeStatic, error) {
-	log.Infof("call bike_static %s", in.StationUID)
+	zap.S().Infow(fmt.Sprintf("call bike_static %s", in.StationUID))
 	if s.cache != nil {
 		if data, ok := s.cache.get("bike_static:" + in.StationUID); ok {
 			var resp pb.BikeStatic
@@ -202,7 +219,12 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 	}
 	row, err := BikeStaticData(ctx, s.db, in.StationUID)
 	if err != nil {
-		log.Errorf("[gRPC] action=bike_static event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "bike_static",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "bike station not found")
 	}
 	resp := &pb.BikeStatic{
@@ -231,7 +253,7 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 // forwards published updates until the client disconnects. Empty payloads are
 // skipped, so a client with no cached value receives no seed frame.
 func (s *BikeServer) bikeEta(in *pb.BikeRequest, stream pb.Bike_Service_EtaServer) error {
-	log.Infof("call bike_eta %s", in.StationUID)
+	zap.S().Infow(fmt.Sprintf("call bike_eta %s", in.StationUID))
 	key := shared.BikeAvailabilityKey(in.StationUID)
 	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
 		channel:  key,
@@ -263,7 +285,7 @@ func (s *MrtServer) Eta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 // ID would otherwise seed and subscribe to a keyspace nothing ever writes, and the
 // client would sit on an empty stream forever.
 func (s *MrtServer) MrtEta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
-	log.Infof("call Mrt_eta %s %s", in.System, in.StationID)
+	zap.S().Infow(fmt.Sprintf("call Mrt_eta %s %s", in.System, in.StationID))
 
 	// stream.Send is not safe for concurrent use, so the per-station streams
 	// serialize their sends through one mutex.
@@ -350,7 +372,7 @@ func (s *TraTimetableServer) Timetable(ctx context.Context, in *pb.AskRoute) (*p
 // published updates until the client disconnects. An empty cached value is
 // skipped rather than sent as a seed frame.
 func (s *TraTimetableServer) traDelay(stream pb.TRATimetableService_DelayServer) error {
-	log.Infof("call tra_delay")
+	zap.S().Infow("call tra_delay")
 	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
 		channel:  shared.TraDelayAllKey,
 		seedKeys: []string{shared.TraDelayAllKey},
@@ -388,7 +410,7 @@ func (s *TraDetainServer) Stops(ctx context.Context, in *pb.AskDetain) (*pb.TraS
 // cached value, then forwards published updates until the client disconnects. An
 // empty cached value is skipped rather than sent as a seed frame.
 func (s *TraDetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainService_DelayServer) error {
-	log.Infof("call tra_delay %s", in.Trainno)
+	zap.S().Infow(fmt.Sprintf("call tra_delay %s", in.Trainno))
 	// The realtime TRA job sets and publishes this key per train (traEta), so a
 	// train absent from the current delay feed simply has no cached value and
 	// the stream stays silent until one lands.
@@ -439,7 +461,7 @@ func (s *ThsrServer) Fare(ctx context.Context, in *pb.Ask_Thsr) (*pb.ThsaFares, 
 // plain SUBSCRIBE/PUBLISH match with no pattern semantics. in.Date is parsed and
 // reduced to a date so the seed and subscribe target the keys the job writes.
 func (s *ThsrServer) AvailableSeats(in *pb.Ask_Thsr, stream grpc.ServerStreamingServer[pb.RespThsrSeats]) error {
-	log.Infof("[gRPC] action=thsr_available_seats date=%s", in.Date)
+	zap.S().Infow("log", "component", "grpc", "action", "thsr_available_seats", "date", in.Date)
 	date := parseRailDate(in.Date).Format(time.DateOnly)
 	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
 		channel:  shared.ThsrSeatsPattern(date),
@@ -546,33 +568,43 @@ func (s *NearServer) FindNear(stream pb.Near_Station_Service_NearServer) error {
 		lon := in.PositionLon
 		lat := in.PositionLat
 		r := in.Radius
-		log.Infof("[gRPC] received location: lon=%f lat=%f radius=%d", lon, lat, r)
+		zap.S().Infow("received location:", "component", "grpc", "lon", lon, "lat", lat, "radius", r)
 		started := time.Now()
 		resp, err := s.discovery.Discover(ctx, NearbyQuery{
 			Origin: GeoPoint{Lon: lon, Lat: lat}, RadiusMeters: int(r),
 		})
 		// Server-side cost of one nearby query, so a slow first paint can be
 		// attributed to the router or ruled out without a second round of logs.
-		log.Infof("[NEAR] action=discover event=done elapsed_ms=%d", time.Since(started).Milliseconds())
+		zap.S().Infow("done",
+			"component", "near",
+			"action", "discover",
+			"event", "done",
+			"elapsed_ms", time.Since(started).Milliseconds(),
+		)
 		if err != nil {
 			// A rejected query is the caller's bug, not the router's: it logs at
 			// Warn so a stale client sending an out-of-range radius does not
 			// raise a server-side error issue. The client clamps before sending
 			// (kNearbyMaxRadiusMeters), so this only fires for old builds.
 			if errors.Is(err, ErrInvalidNearbyQuery) {
-				log.Warnf("[gRPC] action=nearby_discovery event=invalid error=%v", err)
+				zap.S().Warnw("invalid",
+					"component", "grpc",
+					"action", "nearby_discovery",
+					"event", "invalid",
+					"err", err,
+				)
 				return status.Error(codes.InvalidArgument, err.Error())
 			}
-			log.Errorf("[gRPC] action=nearby_discovery failed error=%v", err)
+			zap.S().Errorw("failed", "component", "grpc", "action", "nearby_discovery", "err", err)
 			if errors.Is(err, ErrNearbyUnavailable) {
 				return status.Error(codes.Unavailable, "nearby discovery unavailable")
 			}
 			return err
 		}
 		if err := stream.Send(resp); err != nil {
-			log.Errorf("[gRPC] action=send_newdata failed error=%v", err)
+			zap.S().Errorw("failed", "component", "grpc", "action", "send_newdata", "err", err)
 			return err
 		}
-		log.Infof("[gRPC] action=send_newdata event=success")
+		zap.S().Infow("success", "component", "grpc", "action", "send_newdata", "event", "success")
 	}
 }

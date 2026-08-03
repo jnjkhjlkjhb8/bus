@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // loadBus replaces one city only after all eight correlated landing partitions
@@ -15,7 +16,7 @@ import (
 // outside the target transaction; every target write and stale prune is inside
 // one transaction. Cache generation advances only after commit.
 func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Client, city string) error {
-	log.Infof("[LOAD] action=bus event=city_start city=%s", city)
+	zap.S().Infow("city start", "component", "load", "action", "bus", "event", "city_start", "city", city)
 	snapshot, err := readBusCitySnapshot(ctx, src, city)
 	if err != nil {
 		return fmt.Errorf("load bus city %s: snapshot: %w", city, err)
@@ -30,7 +31,13 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 		// daily retry repeats the idempotent write and repairs the generation.
 		return fmt.Errorf("load bus city %s: committed; invalidate cache: %w", city, err)
 	}
-	log.Infof("[LOAD] action=bus event=city_complete city=%s subroute_count=%d", city, len(snapshot.subroutes))
+	zap.S().Infow("city complete",
+		"component", "load",
+		"action", "bus",
+		"event", "city_complete",
+		"city", city,
+		"subroute_count", len(snapshot.subroutes),
+	)
 	return nil
 }
 

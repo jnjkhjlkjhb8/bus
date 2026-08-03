@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // haversine returns the great-circle distance in meters between two lat/lon
@@ -82,8 +85,8 @@ func saveBusEtaHistory(ctx context.Context, db archiveExecer, rows [][]any) {
 		return
 	}
 	if err := archiveInsert(ctx, db, "bus_eta_history", busEtaHistoryCols, rows); err != nil {
-		log.Errorf("[ETA_HISTORY] insert error: %v rows=%d", err, len(rows))
+		zap.S().Errorw("insert error", "component", "eta_history", "rows", len(rows), "err", err)
 		return
 	}
-	log.Infof("[ETA_HISTORY] inserted %d rows", len(rows))
+	zap.S().Infow(fmt.Sprintf("inserted %d rows", len(rows)), "component", "eta_history")
 }

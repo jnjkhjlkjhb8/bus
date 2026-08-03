@@ -19,6 +19,7 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/functions/notify"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -198,7 +199,7 @@ func busEta(
 	db *pgxpool.Pool,
 	dispatcher *notify.Dispatcher,
 ) error {
-	log.Infof("[BUS_ETA] action=Bus_eta event=start")
+	zap.S().Infow("start", "component", "bus_eta", "action", "Bus_eta", "event", "start")
 	job := busLiveJob{
 		fetch:    fetch,
 		sink:     sink,
@@ -207,7 +208,7 @@ func busEta(
 		snapshot: snapshotTick(time.Now()),
 	}
 	jobErr := runBusEtaCities(ctx, cities, &job, dispatcher)
-	log.Infof("[BUS_ETA] action=Bus_eta event=complete")
+	zap.S().Infow("complete", "component", "bus_eta", "action", "Bus_eta", "event", "complete")
 	return jobErr
 }
 
@@ -226,8 +227,14 @@ func (j busLiveJob) runCityGuarded(ctx context.Context, city string) (err error)
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
-			log.Errorf("[BUS_ETA] action=Bus_eta city=%s event=panic value=%v stack=%s",
-				city, r, debug.Stack())
+			zap.S().Errorw("panic",
+				"component", "bus_eta",
+				"action", "Bus_eta",
+				"city", city,
+				"event", "panic",
+				"value", r,
+				"stack", debug.Stack(),
+			)
 		}
 	}()
 	return j.runCity(ctx, city)
@@ -306,10 +313,16 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 	if _, skip := busEtaSkip[city]; skip {
 		return nil
 	}
-	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=city_start", city)
+	zap.S().Infow("city start", "component", "bus_eta", "action", "Bus_eta", "city", city, "event", "city_start")
 	prefix := citymap[city]
 	if prefix == "" {
-		log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_prefix", city)
+		zap.S().Warnw("skip empty",
+			"component", "bus_eta",
+			"action", "Bus_eta",
+			"city", city,
+			"event", "skip_empty",
+			"reason", "no_prefix",
+		)
 		return nil
 	}
 	generation, generationErr := j.sink.getString(ctx, shared.BusStaticGenerationKey(city))
@@ -328,13 +341,25 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 		if len(mp) == 0 {
 			// No static stops yet (a city the loader has not landed): nothing to
 			// resolve live ETA against, so skip the tick rather than fail it.
-			log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
+			zap.S().Warnw("skip empty",
+				"component", "bus_eta",
+				"action", "Bus_eta",
+				"city", city,
+				"event", "skip_empty",
+				"reason", "no_stations",
+			)
 			return nil
 		}
 		storeBusStaticMapIn(&busStaticMapCache, prefix, mp, generation, j.now())
 	}
 	if len(mp) == 0 {
-		log.Warnf("[BUS_ETA] action=Bus_eta city=%s event=skip_empty reason=no_stations", city)
+		zap.S().Warnw("skip empty",
+			"component", "bus_eta",
+			"action", "Bus_eta",
+			"city", city,
+			"event", "skip_empty",
+			"reason", "no_stations",
+		)
 		return nil
 	}
 	var etaURL string
@@ -709,7 +734,16 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 			city, len(stations), len(routes), len(eat), len(posit), err)
 	}
 	published = true
-	log.Infof("[BUS_ETA] action=Bus_eta city=%s event=redis_success station_count=%d route_count=%d eat_count=%d posit_count=%d", city, len(stations), len(routes), len(eat), len(posit))
+	zap.S().Infow("redis success",
+		"component", "bus_eta",
+		"action", "Bus_eta",
+		"city", city,
+		"event", "redis_success",
+		"station_count", len(stations),
+		"route_count", len(routes),
+		"eat_count", len(eat),
+		"posit_count", len(posit),
+	)
 	var ackErr error
 	if etaFetch.Modified {
 		ackErr = errors.Join(ackErr, acknowledgeTDXFetch(etaFetch))

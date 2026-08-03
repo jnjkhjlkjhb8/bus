@@ -8,6 +8,7 @@ import (
 
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -38,14 +39,19 @@ type rawThsrAvailableSeatStatus struct {
 // moving it here makes the router a pure reader (ADR-0005 amendment).
 func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) error {
 	date := time.Now().In(taipei).Format(time.DateOnly)
-	log.Infof("[THSR_SEATS] action=thsr_seats event=start date=%s", date)
+	zap.S().Infow("start", "component", "thsr_seats", "action", "thsr_seats", "event", "start", "date", date)
 	result, err := fetch(ctx, fmt.Sprintf("/v2/Rail/THSR/AvailableSeatStatus/Train/OD/TrainDate/%s", date), "thsr_availableseats")
 	if err != nil {
 		return fmt.Errorf("fetch THSR available seats for %s: %w", date, err)
 	}
 	if !result.Modified {
 		// A 304 has already re-armed the cached snapshots' TTL via boundFetch.
-		log.Warnf("[THSR_SEATS] action=thsr_seats event=skip reason=no_update")
+		zap.S().Warnw("skip",
+			"component", "thsr_seats",
+			"action", "thsr_seats",
+			"event", "skip",
+			"reason", "no_update",
+		)
 		return nil
 	}
 	err = commitTDXFetch(result, func(dec *json.Decoder) error {
@@ -85,7 +91,12 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 		if err := pipe.Exec(ctx); err != nil {
 			return err
 		}
-		log.Infof("[THSR_SEATS] action=thsr_seats event=complete train_count=%d", count)
+		zap.S().Infow("complete",
+			"component", "thsr_seats",
+			"action", "thsr_seats",
+			"event", "complete",
+			"train_count", count,
+		)
 		return nil
 	})
 	if err != nil {

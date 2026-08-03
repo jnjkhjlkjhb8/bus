@@ -14,6 +14,7 @@ import (
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
@@ -48,7 +49,7 @@ func StartMQTT(rc *redis.Client, dispatcher *Dispatcher) mqtt.Client {
 	username := os.Getenv("MQTT_USERNAME")
 	password := os.Getenv("MQTT_PASSWORD")
 	if clientID == "" || username == "" || password == "" {
-		log.Warn("[MQTT] credentials not set — skipping MQTT subscriber")
+		zap.S().Warnw("credentials not set \u2014 skipping MQTT subscriber", "component", "mqtt")
 		return nil
 	}
 	opts := mqtt.NewClientOptions().
@@ -62,17 +63,17 @@ func StartMQTT(rc *redis.Client, dispatcher *Dispatcher) mqtt.Client {
 		SetConnectRetryInterval(10 * time.Second).
 		SetTLSConfig(&tls.Config{}).
 		SetOnConnectHandler(func(c mqtt.Client) {
-			log.Infoln("[MQTT] connected")
+			zap.S().Infow("connected", "component", "mqtt")
 			mqttsubscribeall(c, rc, dispatcher)
 		}).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
-			log.Warnf("[MQTT] connection lost: %v", err)
+			zap.S().Warnw(fmt.Sprintf("connection lost: %v", err), "component", "mqtt")
 		})
 	c := mqtt.NewClient(opts)
 	tok := c.Connect()
 	tok.Wait()
 	if err := tok.Error(); err != nil {
-		log.Errorf("[MQTT] initial connect failed: %v — will auto-retry", err)
+		zap.S().Errorw(fmt.Sprintf("initial connect failed: %v \u2014 will auto-retry", err), "component", "mqtt")
 	}
 	return c
 }
@@ -89,9 +90,9 @@ func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *Dispatcher) {
 		})
 		tok.Wait()
 		if err := tok.Error(); err != nil {
-			log.Errorf("[MQTT] subscribe failed topic=%s err=%v", pattern, err)
+			zap.S().Errorw("subscribe failed", "component", "mqtt", "topic", pattern, "err", err)
 		} else {
-			log.Infof("[MQTT] subscribed topic=%s", pattern)
+			zap.S().Infow("subscribed", "component", "mqtt", "topic", pattern)
 		}
 	}
 }
@@ -112,23 +113,34 @@ func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatche
 	key := shared.MQTTChannel(msg.Topic())
 	items, ok := normalizeAlerts(msg.Topic(), msg.Payload())
 	if !ok {
-		log.Errorf("[MQTT] action=normalize event=unparseable topic=%s", msg.Topic())
+		zap.S().Errorw("unparseable",
+			"component", "mqtt",
+			"action", "normalize",
+			"event", "unparseable",
+			"topic", msg.Topic(),
+		)
 		return
 	}
 	payload, err := protojson.Marshal(&pb.Alert_Msg{Items: items})
 	if err != nil {
-		log.Errorf("[MQTT] action=normalize event=marshal_failed topic=%s error=%v", msg.Topic(), err)
+		zap.S().Errorw("marshal failed",
+			"component", "mqtt",
+			"action", "normalize",
+			"event", "marshal_failed",
+			"topic", msg.Topic(),
+			"err", err,
+		)
 		return
 	}
 	// A broker push is a top-level entry point: paho calls this on its own
 	// goroutine with no parent context to inherit, so the handler owns one.
 	ctx := context.Background()
 	if err := rc.Set(ctx, key, payload, ttl).Err(); err != nil {
-		log.Errorf("[MQTT] redis set failed key=%s err=%v", key, err)
+		zap.S().Errorw("redis set failed", "component", "mqtt", "key", key, "err", err)
 		return
 	}
 	if err := rc.Publish(ctx, key, payload).Err(); err != nil {
-		log.Errorf("[MQTT] redis publish failed key=%s err=%v", key, err)
+		zap.S().Errorw("redis publish failed", "component", "mqtt", "key", key, "err", err)
 	}
 	dispatchRouteAlerts(ctx, items, func(key string, ttl time.Duration) bool {
 		ok, err := rc.SetNX(ctx, "fcm:alert:"+key, "1", ttl).Result()

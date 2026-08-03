@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -447,7 +447,7 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 		if cerr := drainAndCloseResponse(resp); cerr != nil {
 			return nil, cerr
 		}
-		obs.Logf("[TDX] action=fetch event=not_modified name=%s", name)
+		zap.S().Infow("not modified", "component", "tdx", "action", "fetch", "event", "not_modified", "name", name)
 		return noopTDXFetch(func() error {
 			if err := c.store.Del(ctx, c.imsKey(name)); err != nil {
 				return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
@@ -537,7 +537,7 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(T
 		if cerr := drainAndCloseResponse(resp); cerr != nil {
 			return result, cerr
 		}
-		obs.Logf("[TDX] action=fetch event=not_modified name=%s", name)
+		zap.S().Infow("not modified", "component", "tdx", "action", "fetch", "event", "not_modified", "name", name)
 		return TDXIntoResult{Marker: marker, Invalidate: invalidate}, nil
 	}
 	if resp.StatusCode() >= http.StatusBadRequest {

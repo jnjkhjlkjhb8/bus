@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"firebase.google.com/go/v4/messaging"
+	"go.uber.org/zap"
 )
 
 // ArrivalEvent is one live vehicle arrival considered for reminder dispatch.
@@ -167,7 +168,14 @@ func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body s
 	}
 	tokens, err := d.store.subscribedTokens(ctx, routeType, routeKey)
 	if err != nil {
-		log.Errorf("[FCM] action=route_alert event=subscriptions_query_failed route_type=%s route_key=%s error=%v", routeType, routeKey, err)
+		zap.S().Errorw("subscriptions query failed",
+			"component", "fcm",
+			"action", "route_alert",
+			"event", "subscriptions_query_failed",
+			"route_type", routeType,
+			"route_key", routeKey,
+			"err", err,
+		)
 		return
 	}
 	seen := map[string]struct{}{}
@@ -180,7 +188,14 @@ func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body s
 		if isInvalidFCMToken(err) {
 			_ = d.store.invalidate(ctx, v.token)
 		} else if err != nil {
-			log.Warnf("[FCM] action=route_alert event=send_failed route_type=%s route_key=%s error=%v", routeType, routeKey, err)
+			zap.S().Warnw("send failed",
+				"component", "fcm",
+				"action", "route_alert",
+				"event", "send_failed",
+				"route_type", routeType,
+				"route_key", routeKey,
+				"err", err,
+			)
 		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	"go.uber.org/zap"
 )
 
 // rawSourcePool returns the pool the loader reads raw_tdx from. When
@@ -50,7 +51,12 @@ func rawSourcePool(ctx context.Context, db *pgxpool.Pool) (*pgxpool.Pool, func()
 		pool.Close()
 		return nil, nil, fmt.Errorf("ping configured RAW_DATABASE_URL: %w", err)
 	}
-	log.Infoln("[LOAD] action=raw_pool event=connected source=RAW_DATABASE_URL")
+	zap.S().Infow("connected",
+		"component", "load",
+		"action", "raw_pool",
+		"event", "connected",
+		"source", "RAW_DATABASE_URL",
+	)
 	return pool, pool.Close, nil
 }
 
@@ -71,32 +77,32 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 	// Both entry points share one runner, so the 03:30 tick and a LOAD_ON_BOOT
 	// run contend for the same advisory lock instead of overlapping.
 	_, _ = addStaticCron(r, "0 30 3 * * *", func() {
-		runLoadStage("[crontab] action=load", src, rawPool, db, rc, func(job func(context.Context) error) error {
+		runLoadStage("crontab", "load", src, rawPool, db, rc, func(job func(context.Context) error) error {
 			return runDailyWithRetry(context.Background(), loadTimeout, time.Minute, func(ctx context.Context) error {
 				return runner.Run(ctx, job)
 			})
 		})
 	})
 	if os.Getenv("LOAD_ON_BOOT") == "true" {
-		log.Infoln("[LOAD] action=boot event=enabled")
+		zap.S().Infow("enabled", "component", "load", "action", "boot", "event", "enabled")
 		trackBoot(boot, func() {
 			// Boot deliberately does not retry: a fresh deploy that cannot load
 			// should surface once and leave the 03:30 tick to redo it, rather than
 			// hold the advisory lock through three attempts while the service comes up.
-			runLoadStage("[LOAD] action=boot", src, rawPool, db, rc, func(job func(context.Context) error) error {
+			runLoadStage("load", "boot", src, rawPool, db, rc, func(job func(context.Context) error) error {
 				return runner.Run(context.Background(), job)
 			})
 		})
 	} else {
-		log.Warn("[LOAD] action=boot event=skipped")
+		zap.S().Warnw("skipped", "component", "load", "action", "boot", "event", "skipped")
 	}
 	registerBusDailyTimetableCron(r, rawPool, db, rc)
 }
 
 // runLoadStage runs one load and, when the run earns it, the whole downstream
 // chain that waits on the load marker. The 03:30 tick and the LOAD_ON_BOOT path
-// are the same pipeline with different attempt policies, so attempt is the only
-// thing they supply separately: it receives the load job and decides whether to
+// are the same pipeline with different attempt policies, so attempt and the
+// component/action log identity are the only things they supply separately: it receives the load job and decides whether to
 // wrap it in retries. Everything after the run — the failure log, the
 // markerEarned gate, the marker write, then vector refresh and GTFS export — is
 // owned here, so neither caller can publish a marker its run did not earn or
@@ -106,7 +112,7 @@ func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Clie
 // the service day the load was for, and a load that starts at 03:30 and finishes
 // after midnight would otherwise mark the wrong day.
 func runLoadStage(
-	label string,
+	component, action string,
 	src rawTDXSource,
 	rawPool, db *pgxpool.Pool,
 	rc *redis.Client,
@@ -120,7 +126,15 @@ func runLoadStage(
 		return runErr
 	})
 	if err != nil {
-		log.Errorf("%s event=failed ok=%d failed=%d skipped=%d error=%v", label, stats.ok, stats.failed, stats.skipped, err)
+		zap.S().Errorw("failed",
+			"component", component,
+			"action", action,
+			"event", "failed",
+			"ok", stats.ok,
+			"failed", stats.failed,
+			"skipped", stats.skipped,
+			"err", err,
+		)
 	}
 	if !markerEarned(stats, err) {
 		return
@@ -156,7 +170,7 @@ func runVectorRefresh(rawPool, db *pgxpool.Pool, rc *redis.Client, runDate time.
 		return runner.Run(ctx, job)
 	})
 	if err != nil {
-		log.Errorf("[crontab] action=changetovector event=failed error=%v", err)
+		zap.S().Errorw("failed", "component", "crontab", "action", "changetovector", "event", "failed", "err", err)
 		return
 	}
 	// Marker write is outside the job retry: a failed one-row upsert must not
@@ -179,11 +193,24 @@ func runVectorRefresh(rawPool, db *pgxpool.Pool, rc *redis.Client, runDate time.
 // current to a downstream stage, so the next run must redo it.
 func markerEarned(stats loadStats, err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		log.Errorf("[LOAD] action=marker event=withheld reason=run_truncated ok=%d", stats.ok)
+		zap.S().Errorw("withheld",
+			"component", "load",
+			"action", "marker",
+			"event", "withheld",
+			"reason", "run_truncated",
+			"ok", stats.ok,
+		)
 		return false
 	}
 	if stats.ok == 0 {
-		log.Errorf("[LOAD] action=marker event=withheld reason=no_partition_loaded failed=%d skipped=%d", stats.failed, stats.skipped)
+		zap.S().Errorw("withheld",
+			"component", "load",
+			"action", "marker",
+			"event", "withheld",
+			"reason", "no_partition_loaded",
+			"failed", stats.failed,
+			"skipped", stats.skipped,
+		)
 		return false
 	}
 	return true

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // ConnectRedis dials REDIS_ADDR with a fixed pool and verifies the connection
@@ -57,11 +57,11 @@ func ConnectRedis() *redis.Client {
 		var pong string
 		pong, err = client.Ping(ctx).Result()
 		if err == nil {
-			obs.Logf("[REDIS] action=connect event=success pong=%s", pong)
+			zap.S().Infow("connect success", "component", "redis", "action", "connect", "event", "success", "pong", pong)
 			return client
 		}
 		if i >= 9 {
-			obs.Logf("[REDIS] action=connect event=failed error=%v", err)
+			zap.S().Errorw("connect failed", "component", "redis", "action", "connect", "event", "failed", "err", err)
 			panic(err)
 		}
 		time.Sleep(time.Second)
@@ -76,7 +76,7 @@ func ConnectRedis() *redis.Client {
 func ConnectDB(maxConnsEnv string, maxConnsDefault int32) *pgxpool.Pool {
 	config, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
 	if err != nil {
-		obs.Logf("[DB] action=parse_config event=failed error=%v", err)
+		zap.S().Errorw("parse config failed", "component", "db", "action", "parse_config", "event", "failed", "err", err)
 		panic(err)
 	}
 	if s := os.Getenv("PG_SCHEMA"); s != "" {
@@ -91,14 +91,14 @@ func ConnectDB(maxConnsEnv string, maxConnsDefault int32) *pgxpool.Pool {
 	config.MaxConnIdleTime = 5 * time.Minute
 	conn, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
-		obs.Logf("[DB] action=connect event=failed error=%v", err)
+		zap.S().Errorw("connect failed", "component", "db", "action", "connect", "event", "failed", "err", err)
 		panic(err)
 	}
 	if err = conn.Ping(context.Background()); err != nil {
-		obs.Logf("[DB] action=ping event=failed error=%v", err)
+		zap.S().Errorw("ping failed", "component", "db", "action", "ping", "event", "failed", "err", err)
 		panic(err)
 	}
-	obs.Logf("[DB] action=connect event=success")
+	zap.S().Infow("connect success", "component", "db", "action", "connect", "event", "success")
 	return conn
 }
 
@@ -112,7 +112,7 @@ func EnvInt32(name string, fallback int32) int32 {
 	}
 	n, err := strconv.ParseInt(value, 10, 32)
 	if err != nil || n < 0 {
-		obs.Logf("[CONFIG] name=%s event=invalid value=%q fallback=%d", name, value, fallback)
+		zap.S().Warnw("invalid", "component", "config", "name", name, "event", "invalid", "value", value, "fallback", fallback)
 		return fallback
 	}
 	return int32(n)

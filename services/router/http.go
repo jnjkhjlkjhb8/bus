@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 const (
@@ -211,7 +212,7 @@ func prepareHTTPServer(
 	if err != nil {
 		return preparedHTTPServer{}, fmt.Errorf("prepare HTTP signing key: %w", err)
 	}
-	log.Infof("[HTTP] RS256 key ready")
+	zap.S().Infow("RS256 key ready", "component", "http")
 	gin.SetMode(gin.ReleaseMode)
 	handlers := newTrackedHTTPHandler(newHTTPRouter(db, live, key, config))
 	server := &http.Server{
@@ -469,7 +470,7 @@ func loadOrGenerateKeyAt(keyFile string) (*rsa.PrivateKey, error) {
 		if block != nil {
 			key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 			if err == nil {
-				log.Infof("[HTTP] loaded persisted RSA key from %s", keyFile)
+				zap.S().Infow(fmt.Sprintf("loaded persisted RSA key from %s", keyFile), "component", "http")
 				return key, nil
 			}
 		}
@@ -485,7 +486,7 @@ func loadOrGenerateKeyAt(keyFile string) (*rsa.PrivateKey, error) {
 	if err := persistKeyAtomically(keyFile, data); err != nil {
 		return nil, fmt.Errorf("persist RSA key: %w", err)
 	}
-	log.Infof("[HTTP] generated new RSA key and persisted to %s", keyFile)
+	zap.S().Infow(fmt.Sprintf("generated new RSA key and persisted to %s", keyFile), "component", "http")
 	return key, nil
 }
 

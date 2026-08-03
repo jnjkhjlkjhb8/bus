@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/robfig/cron/v3"
+	"go.uber.org/zap"
 )
 
 // rawFetcher is the context-aware, disk-spooled conditional-fetch surface used
@@ -128,16 +129,16 @@ func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool
 		})
 	})
 	if os.Getenv("INGEST_ON_BOOT") == "true" {
-		log.Infoln("[INGEST] INGEST_ON_BOOT=true — running once on boot")
+		zap.S().Infow("\u2014 running once on boot", "component", "ingest", "INGEST_ON_BOOT", "true")
 		trackBoot(boot, func() {
 			if err := runner.Run(context.Background(), func(ctx context.Context) error {
 				return ingestRaw(ctx, tdx)
 			}); err != nil {
-				log.Errorf("[INGEST] action=boot event=failed error=%v", err)
+				zap.S().Errorw("failed", "component", "ingest", "action", "boot", "event", "failed", "err", err)
 			}
 		})
 	} else {
-		log.Warn("[INGEST] INGEST_ON_BOOT not set — boot run skipped, daily cron only")
+		zap.S().Warnw("INGEST_ON_BOOT not set \u2014 boot run skipped, daily cron only", "component", "ingest")
 	}
 }
 
@@ -159,7 +160,7 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	// keeps staging/test (which run with empty creds against the shared Azure
 	// database) from storming TDX and from racing prod's raw_tdx writes.
 	if os.Getenv("TDX_CLIENT_ID") == "" || os.Getenv("TDX_CLIENT_SECRET") == "" {
-		log.Infoln("[INGEST] action=raw event=idle reason=no_credentials")
+		zap.S().Infow("idle", "component", "ingest", "action", "raw", "event", "idle", "reason", "no_credentials")
 		return nil
 	}
 
@@ -178,7 +179,13 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	// corrected within seven days (FDPL-37). Full runs only — the hourly
 	// bus_dailytimetable subset stays conditional.
 	fullReland := len(only) == 0 && time.Now().In(taipei).Weekday() == fullRelandWeekday
-	log.Infof("[INGEST] action=raw event=start scope=%s full_reland=%t", scope, fullReland)
+	zap.S().Infow("start",
+		"component", "ingest",
+		"action", "raw",
+		"event", "start",
+		"scope", scope,
+		"full_reland", fullReland,
+	)
 	landingCycle, err := newRawLandingCycle()
 	if err != nil {
 		return fmt.Errorf("start raw landing cycle: %w", err)
@@ -229,7 +236,7 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	if len(only) == 0 && ingestDB != nil {
 		reportStalePartitions(ctx, ingestDB)
 	}
-	log.Infof("[INGEST] action=raw event=end scope=%s", scope)
+	zap.S().Infow("end", "component", "ingest", "action", "raw", "event", "end", "scope", scope)
 	return errors.Join(joined...)
 }
 
@@ -265,9 +272,14 @@ func fetchRawWithVerifier(
 		})
 		if err != nil {
 			if errors.Is(err, errRawDump) {
-				log.Errorf("[INGEST] url=%s event=raw_dump_error error=%v", url, err)
+				zap.S().Errorw("raw dump error",
+					"component", "ingest",
+					"url", url,
+					"event", "raw_dump_error",
+					"err", err,
+				)
 			} else {
-				log.Errorf("[INGEST] url=%s event=fetch_error error=%v", url, err)
+				zap.S().Errorw("fetch error", "component", "ingest", "url", url, "event", "fetch_error", "err", err)
 			}
 			return fmt.Errorf("fetch raw %s: %w", url, err)
 		}
@@ -275,7 +287,7 @@ func fetchRawWithVerifier(
 			return nil
 		}
 		if !mapped {
-			log.Warnf("[INGEST] url=%s event=skip reason=not_modified", url)
+			zap.S().Warnw("skip", "component", "ingest", "url", url, "event", "skip", "reason", "not_modified")
 			return nil
 		}
 		// A weekly re-land wants the body, not the 304 it just got. Reuse the
@@ -291,13 +303,13 @@ func fetchRawWithVerifier(
 			if err := result.Invalidate(); err != nil {
 				return fmt.Errorf("force reland %s: %w", url, err)
 			}
-			log.Infof("[INGEST] url=%s event=refetch reason=full_reland", url)
+			zap.S().Infow("refetch", "component", "ingest", "url", url, "event", "refetch", "reason", "full_reland")
 			continue
 		}
 
 		err = verify(ctx, target, result.Marker, landingCycle)
 		if err == nil {
-			log.Warnf("[INGEST] url=%s event=skip reason=not_modified", url)
+			zap.S().Warnw("skip", "component", "ingest", "url", url, "event", "skip", "reason", "not_modified")
 			return nil
 		}
 		if !errors.Is(err, errRawLandingStateMismatch) {
@@ -312,7 +324,12 @@ func fetchRawWithVerifier(
 		if invalidateErr := result.Invalidate(); invalidateErr != nil {
 			return fmt.Errorf("verify raw %s: %w", url, errors.Join(err, invalidateErr))
 		}
-		log.Infof("[INGEST] url=%s event=refetch reason=landing_state_mismatch", url)
+		zap.S().Infow("refetch",
+			"component", "ingest",
+			"url", url,
+			"event", "refetch",
+			"reason", "landing_state_mismatch",
+		)
 	}
 	return nil
 }

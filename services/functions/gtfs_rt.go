@@ -15,6 +15,7 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -136,7 +137,7 @@ func registerGTFSRTCron(r *cron.Cron, db *pgxpool.Pool, rc *redis.Client) {
 		ctx, cancel := context.WithTimeout(context.Background(), gtfsRTBuildTimeout)
 		defer cancel()
 		if err := builder.run(ctx, time.Now().In(taipei)); err != nil {
-			log.Errorf("[GTFS_RT] action=build event=failed error=%v", err)
+			zap.S().Errorw("failed", "component", "gtfs_rt", "action", "build", "event", "failed", "err", err)
 		}
 	})
 }
@@ -164,9 +165,17 @@ func (b *gtfsRTBuilder) run(ctx context.Context, now time.Time) error {
 	if err := b.rc.Set(ctx, shared.GTFSRealtimeKey(), payload, gtfsRTSnapshotTTL).Err(); err != nil {
 		return fmt.Errorf("gtfs-rt: publish snapshot: %w", err)
 	}
-	log.Infof("[GTFS_RT] action=build event=success bytes=%d entities=%d routes_considered=%d routes_no_daily=%d routes_gate_failed=%d trips_active=%d",
-		len(payload), len(entities), stats.routesConsidered, stats.routesNoDaily,
-		stats.routesGateFailed, stats.tripsActive)
+	zap.S().Infow("success",
+		"component", "gtfs_rt",
+		"action", "build",
+		"event", "success",
+		"bytes", len(payload),
+		"entities", len(entities),
+		"routes_considered", stats.routesConsidered,
+		"routes_no_daily", stats.routesNoDaily,
+		"routes_gate_failed", stats.routesGateFailed,
+		"trips_active", stats.tripsActive,
+	)
 	return nil
 }
 
@@ -186,13 +195,25 @@ func (b *gtfsRTBuilder) refreshIndex(ctx context.Context, now time.Time) error {
 		// the two differ only by whatever TDX republished overnight, which is far
 		// less wrong than cancelling nothing at all for a day.
 		if b.index != nil {
-			log.Warnf("[GTFS_RT] action=index event=reload_failed keeping=%s error=%v", b.index.builtFor, err)
+			zap.S().Warnw("reload failed",
+				"component", "gtfs_rt",
+				"action", "index",
+				"event", "reload_failed",
+				"keeping", b.index.builtFor,
+				"err", err,
+			)
 			return nil
 		}
 		return err
 	}
 	b.index = index
-	log.Infof("[GTFS_RT] action=index event=loaded date=%s routes=%d", index.builtFor, len(index.trips))
+	zap.S().Infow("loaded",
+		"component", "gtfs_rt",
+		"action", "index",
+		"event", "loaded",
+		"date", index.builtFor,
+		"routes", len(index.trips),
+	)
 	return nil
 }
 
@@ -369,7 +390,7 @@ func buildGTFSRTCancellations(
 
 	daily, err := read(ctx, uids)
 	if err != nil {
-		log.Errorf("[GTFS_RT] action=daily event=read_failed error=%v", err)
+		zap.S().Errorw("read failed", "component", "gtfs_rt", "action", "daily", "event", "read_failed", "err", err)
 		return nil, stats
 	}
 
@@ -542,7 +563,13 @@ func (b *gtfsRTBuilder) readDailyTimetables(ctx context.Context, subRouteUIDs []
 				// A corrupt payload is dropped rather than failing the tick: it
 				// silences one subroute, which is the same outcome as a missing
 				// key and is already the designed degradation.
-				log.Warnf("[GTFS_RT] action=daily event=decode_failed subroute=%s error=%v", batch[index], err)
+				zap.S().Warnw("decode failed",
+					"component", "gtfs_rt",
+					"action", "daily",
+					"event", "decode_failed",
+					"subroute", batch[index],
+					"err", err,
+				)
 				continue
 			}
 			out[batch[index]] = timetable

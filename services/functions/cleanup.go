@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"go.uber.org/zap"
 )
 
 // retentionDB is the narrow Postgres exec seam the retention job needs.
@@ -62,6 +63,6 @@ func cleanupPredictionErrors(ctx context.Context, db retentionDB) error {
 		// deleted is the count from the batches that did land before the failure.
 		return obs.Transient(fmt.Errorf("cleanup prediction error after %d rows: %w", deleted, err))
 	}
-	log.Infof("[ETA_ERROR] cleanup deleted %d rows", deleted)
+	zap.S().Infow(fmt.Sprintf("cleanup deleted %d rows", deleted), "component", "eta_error")
 	return nil
 }

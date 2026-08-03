@@ -14,6 +14,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // resp is the metadata for one item being embedded, carried alongside its input
@@ -471,7 +472,12 @@ func processVectorDataset(
 // cutoff only after all queries, scans, embeddings, and batch writes succeed.
 func changeToVector(ctx context.Context, rc vectorRedis, db vectorDB, embedder embeddingClient) error {
 	if embedder == nil {
-		log.Warnf("[vector] action=vector event=skip reason=embedding_disabled")
+		zap.S().Warnw("skip",
+			"component", "vector",
+			"action", "vector",
+			"event", "skip",
+			"reason", "embedding_disabled",
+		)
 		return nil
 	}
 
@@ -493,7 +499,7 @@ func changeToVector(ctx context.Context, rc vectorRedis, db vectorDB, embedder e
 	if err := rc.Set(ctx, "LastTimeUpdate", watermark, 0).Err(); err != nil {
 		return fmt.Errorf("set vector watermark: %w", err)
 	}
-	log.Infof("[vector] action=vector event=complete cutoff=%s", watermark)
+	zap.S().Infow("complete", "component", "vector", "action", "vector", "event", "complete", "cutoff", watermark)
 	return nil
 }
 

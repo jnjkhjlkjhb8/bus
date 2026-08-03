@@ -8,6 +8,7 @@ import (
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -145,7 +146,7 @@ func railRead(
 		return nil, nil
 	}
 	if err := rc.Set(ctx, key, b, ttl).Err(); err != nil {
-		log.Errorf("[gRPC] action=%s event=cache_error error=%v", action, err)
+		zap.S().Errorw("cache error", "component", "grpc", "action", action, "event", "cache_error", "err", err)
 	}
 	return b, nil
 }
@@ -182,7 +183,13 @@ func (s *TraTimetableServer) traStationBoardDay(ctx context.Context, station str
 // answer. Every row carries its own TrainDate, so the app can tell the days
 // apart. An empty result is NotFound (ADR-0005); it never fetches from TDX.
 func (s *TraTimetableServer) StationBoard(ctx context.Context, in *pb.AskStationBoard) (*pb.TraStationBoard, error) {
-	log.Infof("[gRPC] action=tra_station_board event=call station=%s direction=%d", in.StationId, in.Direction)
+	zap.S().Infow("call",
+		"component", "grpc",
+		"action", "tra_station_board",
+		"event", "call",
+		"station", in.StationId,
+		"direction", in.Direction,
+	)
 	if in.StationId == "" {
 		return nil, status.Error(codes.InvalidArgument, "station is required")
 	}
@@ -193,14 +200,24 @@ func (s *TraTimetableServer) StationBoard(ctx context.Context, in *pb.AskStation
 	limit := stationBoardLimit(in.Limit)
 	today, err := s.traStationBoardDay(ctx, in.StationId, day, in.Direction)
 	if err != nil {
-		log.Errorf("[gRPC] action=tra_station_board event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "tra_station_board",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "station board not found")
 	}
 	items, topUpErr := stationBoardWindow(today, in.After, limit, func() ([]*pb.TraStationDeparture, error) {
 		return s.traStationBoardDay(ctx, in.StationId, day.AddDate(0, 0, 1), in.Direction)
 	})
 	if topUpErr != nil {
-		log.Errorf("[gRPC] action=tra_station_board event=topup_failed error=%v", topUpErr)
+		zap.S().Errorw("topup failed",
+			"component", "grpc",
+			"action", "tra_station_board",
+			"event", "topup_failed",
+			"err", topUpErr,
+		)
 	}
 	// NotFound means the day is not landed, not "no trains left": a landed day
 	// whose remaining departures have all gone is a real answer of zero, and
@@ -236,7 +253,13 @@ func (s *ThsrServer) thsrStationBoardDay(ctx context.Context, station string, da
 // StationBoard returns the next departures from one THSR station in one
 // direction, with the same next-day top-up as the TRA board.
 func (s *ThsrServer) StationBoard(ctx context.Context, in *pb.ThsrAskStationBoard) (*pb.ThsrStationBoard, error) {
-	log.Infof("[gRPC] action=thsr_station_board event=call station=%s direction=%d", in.StationId, in.Direction)
+	zap.S().Infow("call",
+		"component", "grpc",
+		"action", "thsr_station_board",
+		"event", "call",
+		"station", in.StationId,
+		"direction", in.Direction,
+	)
 	if in.StationId == "" {
 		return nil, status.Error(codes.InvalidArgument, "station is required")
 	}
@@ -247,14 +270,24 @@ func (s *ThsrServer) StationBoard(ctx context.Context, in *pb.ThsrAskStationBoar
 	limit := stationBoardLimit(in.Limit)
 	today, err := s.thsrStationBoardDay(ctx, in.StationId, day, in.Direction)
 	if err != nil {
-		log.Errorf("[gRPC] action=thsr_station_board event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "thsr_station_board",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "station board not found")
 	}
 	items, topUpErr := stationBoardWindow(today, in.After, limit, func() ([]*pb.ThsrStationDeparture, error) {
 		return s.thsrStationBoardDay(ctx, in.StationId, day.AddDate(0, 0, 1), in.Direction)
 	})
 	if topUpErr != nil {
-		log.Errorf("[gRPC] action=thsr_station_board event=topup_failed error=%v", topUpErr)
+		zap.S().Errorw("topup failed",
+			"component", "grpc",
+			"action", "thsr_station_board",
+			"event", "topup_failed",
+			"err", topUpErr,
+		)
 	}
 	// See the TRA board: NotFound is "not landed", an empty board is "the day
 	// is over".
@@ -269,7 +302,13 @@ func (s *ThsrServer) StationBoard(ctx context.Context, in *pb.ThsrAskStationBoar
 // tables have no rows for the request (e.g. a date beyond the landed window), it
 // returns codes.NotFound rather than triggering a fetch.
 func (s *TraTimetableServer) traFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
-	log.Infof("[gRPC] action=tra_fare event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
+	zap.S().Infow("call",
+		"component", "grpc",
+		"action", "tra_fare",
+		"event", "call",
+		"origin", in.OriginStationId,
+		"dest", in.DestinationStationId,
+	)
 	// Key version (:v2) bumped when the payload widened from adult-only to every
 	// 票種; without it the deploy would serve adult-only sets for a further 8h.
 	key := fmt.Sprintf("TRA_Fare:v2:%s:%s", railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
@@ -278,7 +317,7 @@ func (s *TraTimetableServer) traFare(ctx context.Context, in *pb.AskRoute) (*pb.
 		return payload, len(payload), err
 	})
 	if err != nil {
-		log.Errorf("[gRPC] action=tra_fare event=query_failed error=%v", err)
+		zap.S().Errorw("query failed", "component", "grpc", "action", "tra_fare", "event", "query_failed", "err", err)
 		return nil, grpcStatusFor(err, "fare not found")
 	}
 	if b == nil {
@@ -291,7 +330,13 @@ func (s *TraTimetableServer) traFare(ctx context.Context, in *pb.AskRoute) (*pb.
 // on a cache miss. Per ADR-0005 the router no longer fetches from TDX: an empty
 // result returns codes.NotFound.
 func (s *ThsrServer) thsrFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
-	log.Infof("[gRPC] action=thsr_fare event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
+	zap.S().Infow("call",
+		"component", "grpc",
+		"action", "thsr_fare",
+		"event", "call",
+		"origin", in.OriginStationId,
+		"dest", in.DestinationStationId,
+	)
 	// Key version (:v2) bumped for the same reason as TRA_Fare: the payload now
 	// carries every fare class and cabin class, not just the standard adult seat.
 	key := fmt.Sprintf("THSR_Fare:v2:%s:%s", railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
@@ -304,7 +349,12 @@ func (s *ThsrServer) thsrFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Da
 		return payload, len(items), err
 	})
 	if err != nil {
-		log.Errorf("[gRPC] action=thsr_fare event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "thsr_fare",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "fare not found")
 	}
 	if b == nil {
@@ -317,14 +367,25 @@ func (s *ThsrServer) thsrFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Da
 // to the loaded env schema on a cache miss. Per ADR-0005 the router no longer
 // fetches from TDX: an empty result returns codes.NotFound.
 func (s *TraTimetableServer) traTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
-	log.Infof("[gRPC] action=tra_timetable event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
+	zap.S().Infow("call",
+		"component", "grpc",
+		"action", "tra_timetable",
+		"event", "call",
+		"origin", in.OriginStationId,
+		"dest", in.DestinationStationId,
+	)
 	da := parseRailDate(in.Date)
 	key := fmt.Sprintf("TRA_timetable:%s:%s:%s", railCacheDate(in.Date), railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
 	b, err := railRead(ctx, s.rc, "tra_timetable", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		return TRATimetablePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId, da)
 	})
 	if err != nil {
-		log.Errorf("[gRPC] action=tra_timetable event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "tra_timetable",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "timetable not found")
 	}
 	if b == nil {
@@ -337,14 +398,25 @@ func (s *TraTimetableServer) traTimetable(ctx context.Context, in *pb.AskRoute) 
 // back to the loaded env schema on a cache miss. Per ADR-0005 the router no
 // longer fetches from TDX: an empty result returns codes.NotFound.
 func (s *ThsrServer) thsrTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Data, error) {
-	log.Infof("[gRPC] action=thsr_timetable event=call origin=%s dest=%s", in.OriginStationId, in.DestinationStationId)
+	zap.S().Infow("call",
+		"component", "grpc",
+		"action", "thsr_timetable",
+		"event", "call",
+		"origin", in.OriginStationId,
+		"dest", in.DestinationStationId,
+	)
 	da := parseRailDate(in.Date)
 	key := fmt.Sprintf("THSR_timetable:%s:%s:%s", railCacheDate(in.Date), railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
 	b, err := railRead(ctx, s.rc, "thsr_timetable", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		return THSRTimetablePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId, da)
 	})
 	if err != nil {
-		log.Errorf("[gRPC] action=thsr_timetable event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "thsr_timetable",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "timetable not found")
 	}
 	if b == nil {
@@ -357,14 +429,19 @@ func (s *ThsrServer) thsrTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Re
 // env schema on a cache miss. Per ADR-0005 the router no longer fetches from TDX:
 // an empty result returns codes.NotFound.
 func (s *TraDetainServer) traStops(ctx context.Context, in *pb.AskDetain) (*pb.Resp_Data, error) {
-	log.Infof("[gRPC] action=tra_stops event=call train=%s", in.Trainno)
+	zap.S().Infow("call", "component", "grpc", "action", "tra_stops", "event", "call", "train", in.Trainno)
 	date := railCacheDate(in.Date)
 	key := fmt.Sprintf("TRA_Stoptimes:%s:%s", date, in.Trainno)
 	b, err := railRead(ctx, s.rc, "tra_stops", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		return TRAStoptimesPayload(ctx, s.db, in.Trainno, date)
 	})
 	if err != nil {
-		log.Errorf("[gRPC] action=tra_stops event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "tra_stops",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "stops not found")
 	}
 	if b == nil {
@@ -377,14 +454,19 @@ func (s *TraDetainServer) traStops(ctx context.Context, in *pb.AskDetain) (*pb.R
 // loaded env schema on a cache miss. Per ADR-0005 the router no longer fetches
 // from TDX: an empty result returns codes.NotFound.
 func (s *ThsrDetainServer) thsrStops(ctx context.Context, in *pb.ThsrAskDetain) (*pb.Resp_Data, error) {
-	log.Infof("[gRPC] action=thsr_stops event=call train=%s", in.Trainno)
+	zap.S().Infow("call", "component", "grpc", "action", "thsr_stops", "event", "call", "train", in.Trainno)
 	date := railCacheDate(in.Date)
 	key := fmt.Sprintf("THSR_Stoptimes:%s:%s", date, in.Trainno)
 	b, err := railRead(ctx, s.rc, "thsr_stops", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		return THSRStoptimesPayload(ctx, s.db, in.Trainno, date)
 	})
 	if err != nil {
-		log.Errorf("[gRPC] action=thsr_stops event=query_failed error=%v", err)
+		zap.S().Errorw("query failed",
+			"component", "grpc",
+			"action", "thsr_stops",
+			"event", "query_failed",
+			"err", err,
+		)
 		return nil, grpcStatusFor(err, "stops not found")
 	}
 	if b == nil {

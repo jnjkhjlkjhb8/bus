@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // railShapeRow is one TDX Rail/Shape element (TRA, THSR, or metro): the raw
@@ -58,27 +60,67 @@ func loadRailShapePart(ctx context.Context, dec *json.Decoder, sink loadSink, mo
 	for i, shape := range shapes {
 		lineID := strings.TrimSpace(shape.LineID)
 		if lineID == "" {
-			log.Warnf("[LOAD] action=rail_shape event=skip reason=empty_line_id mode=%s system=%s index=%d", mode, system, i)
+			zap.S().Warnw("skip",
+				"component", "load",
+				"action", "rail_shape",
+				"event", "skip",
+				"reason", "empty_line_id",
+				"mode", mode,
+				"system", system,
+				"index", i,
+			)
 			continue
 		}
 		if !isValidRailShapeWKT(shape.Geometry) {
-			log.Warnf("[LOAD] action=rail_shape event=skip reason=invalid_geometry mode=%s system=%s line_id=%s index=%d", mode, system, lineID, i)
+			zap.S().Warnw("skip",
+				"component", "load",
+				"action", "rail_shape",
+				"event", "skip",
+				"reason", "invalid_geometry",
+				"mode", mode,
+				"system", system,
+				"line_id", lineID,
+				"index", i,
+			)
 			continue
 		}
 		nameJSON, err := json.Marshal(shape.LineName)
 		if err != nil {
-			log.Warnf("[LOAD] action=rail_shape event=skip reason=name_marshal_error mode=%s system=%s line_id=%s error=%v", mode, system, lineID, err)
+			zap.S().Warnw("skip",
+				"component", "load",
+				"action", "rail_shape",
+				"event", "skip",
+				"reason", "name_marshal_error",
+				"mode", mode,
+				"system", system,
+				"line_id", lineID,
+				"err", err,
+			)
 			continue
 		}
 		candidate := []any{mode, system, lineID, string(nameJSON), shape.Geometry, shape.UpdateTime}
 		key := mode + "/" + system + "/" + lineID
 		if err := appendUniqueLoadRow(&row, seen, key, "line_id", candidate); err != nil {
-			log.Warnf("[LOAD] action=rail_shape event=skip reason=%v mode=%s system=%s", err, mode, system)
+			zap.S().Warnw("skip",
+				"component", "load",
+				"action", "rail_shape",
+				"event", "skip",
+				"reason", err,
+				"mode", mode,
+				"system", system,
+			)
 			continue
 		}
 	}
 	if len(row) == 0 {
-		log.Infof("[LOAD] action=rail_shape event=complete mode=%s system=%s reason=no_data", mode, system)
+		zap.S().Infow("complete",
+			"component", "load",
+			"action", "rail_shape",
+			"event", "complete",
+			"mode", mode,
+			"system", system,
+			"reason", "no_data",
+		)
 		return nil
 	}
 	return sink.copyUpsert(ctx, copyUpsertSpec{

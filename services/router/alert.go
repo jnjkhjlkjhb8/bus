@@ -5,6 +5,8 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
+
+	"go.uber.org/zap"
 )
 
 // AlertServer streams service alerts that the functions/MQTT subscriber
@@ -65,7 +67,13 @@ func streamAlert(live LiveSource, key string, stream grpc.ServerStreamingServer[
 	}, func(data []byte) error {
 		var msg pb.Alert_Msg
 		if err := protojson.Unmarshal(data, &msg); err != nil {
-			log.Warnf("[alert] action=stream event=decode_failed channel=%s error=%v", key, err)
+			zap.S().Warnw("decode failed",
+				"component", "alert",
+				"action", "stream",
+				"event", "decode_failed",
+				"channel", key,
+				"err", err,
+			)
 			return nil
 		}
 		return stream.Send(&msg)

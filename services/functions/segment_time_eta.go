@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"go.uber.org/zap"
 )
 
 // Running time between consecutive stops, differenced within one observation
@@ -69,10 +70,10 @@ func computeSegmentTimesFromEstimates(ctx context.Context, db *pgxpool.Pool, his
 		return nil
 	}
 	if hist == nil {
-		log.Warnf("[SEGMENT_TIME_ETA] skipped reason=history_disabled")
+		zap.S().Warnw("skipped", "component", "segment_time_eta", "reason", "history_disabled")
 		return nil
 	}
-	log.Infof("[SEGMENT_TIME_ETA] start")
+	zap.S().Infow("start", "component", "segment_time_eta")
 	started := time.Now()
 	segs, err := hist.segmentsByEstimate(ctx, segmentDiffWindow)
 	if err != nil {
@@ -82,8 +83,11 @@ func computeSegmentTimesFromEstimates(ctx context.Context, db *pgxpool.Pool, his
 	if err != nil {
 		return obs.Transient(fmt.Errorf("rebuild bus segment times from estimates: %w", err))
 	}
-	log.Infof("[SEGMENT_TIME_ETA] complete segments=%d elapsed=%s",
-		n, time.Since(started).Round(time.Millisecond))
+	zap.S().Infow("complete",
+		"component", "segment_time_eta",
+		"segments", n,
+		"elapsed", time.Since(started).Round(time.Millisecond),
+	)
 	return nil
 }
 
@@ -111,7 +115,7 @@ func fillSegmentTimesFromDistance(ctx context.Context, db *pgxpool.Pool) error {
 	if db == nil {
 		return nil
 	}
-	log.Infof("[SEGMENT_TIME_FILL] start")
+	zap.S().Infow("start", "component", "segment_time_fill")
 	started := time.Now()
 	tag, err := db.Exec(ctx, `
 		WITH hop AS (
@@ -170,7 +174,10 @@ func fillSegmentTimesFromDistance(ctx context.Context, db *pgxpool.Pool) error {
 	if err != nil {
 		return obs.Transient(fmt.Errorf("fill bus segment times from distance: %w", err))
 	}
-	log.Infof("[SEGMENT_TIME_FILL] complete estimated=%d elapsed=%s",
-		tag.RowsAffected(), time.Since(started).Round(time.Millisecond))
+	zap.S().Infow("complete",
+		"component", "segment_time_fill",
+		"estimated", tag.RowsAffected(),
+		"elapsed", time.Since(started).Round(time.Millisecond),
+	)
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"go.uber.org/zap"
 )
 
 // predictionSource labels which prediction tier produced an ETA, so accuracy can
@@ -224,7 +225,7 @@ func writePredictionActuals(ctx context.Context, db *pgxpool.Pool, matched []mat
 // predictions open for a later run rather than failing the job.
 func fillPredictionActuals(ctx context.Context, db *pgxpool.Pool, hist historySource) (int64, error) {
 	if hist == nil {
-		log.Warnf("[ETA_ERROR] event=skipped_fill reason=history_disabled")
+		zap.S().Warnw("skipped fill", "component", "eta_error", "event", "skipped_fill", "reason", "history_disabled")
 		return 0, nil
 	}
 	preds, err := loadOpenPredictions(ctx, db)
@@ -252,7 +253,7 @@ func fillPredictionActuals(ctx context.Context, db *pgxpool.Pool, hist historySo
 // only — no dashboard, just numbers in the log. Query failures are wrapped
 // transient so runDaily retries.
 func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historySource) error {
-	log.Infof("[ETA_ERROR] start")
+	zap.S().Infow("start", "component", "eta_error")
 
 	// Fill actual arrivals for predictions still missing one, by matching each to
 	// the first estimate-zero crossing at its stop after the prediction was made.
@@ -263,7 +264,7 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historyS
 	if err != nil {
 		return err
 	}
-	log.Infof("[ETA_ERROR] filled %d actuals", filled)
+	zap.S().Infow(fmt.Sprintf("filled %d actuals", filled), "component", "eta_error")
 
 	rows, err := db.Query(ctx, `
 		SELECT sub_route_uid, source,
@@ -284,16 +285,22 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historyS
 		var mae float64
 		var samples int
 		if err := rows.Scan(&sub, &source, &mae, &samples); err != nil {
-			log.Errorf("[ETA_ERROR] scan error: %v", err)
+			zap.S().Errorw(fmt.Sprintf("scan error: %v", err), "component", "eta_error")
 			continue
 		}
-		log.Infof("[ETA_ERROR] sub_route=%s source=%s mae_seconds=%.1f samples=%d", sub, source, mae, samples)
+		zap.S().Infow("log",
+			"component", "eta_error",
+			"sub_route", sub,
+			"source", source,
+			"mae_seconds", mae,
+			"samples", samples,
+		)
 		count++
 	}
 	if err := rows.Err(); err != nil {
 		return obs.Transient(fmt.Errorf("aggregate prediction error rows: %w", err))
 	}
-	log.Infof("[ETA_ERROR] complete groups=%d", count)
+	zap.S().Infow("complete", "component", "eta_error", "groups", count)
 	return nil
 }
 
@@ -314,6 +321,6 @@ func recordPredictionErrors(ctx context.Context, db *pgxpool.Pool, preds []predi
 	cols := []string{"sub_route_uid", "direction", "stop_uid", "source", "predicted_at", "predicted_seconds"}
 	_, err := db.CopyFrom(ctx, pgx.Identifier{"bus_eta_prediction_error"}, cols, pgx.CopyFromRows(rows))
 	if err != nil {
-		log.Errorf("[ETA_ERROR] insert predictions error: %v rows=%d", err, len(rows))
+		zap.S().Errorw("insert predictions error", "component", "eta_error", "rows", len(rows), "err", err)
 	}
 }

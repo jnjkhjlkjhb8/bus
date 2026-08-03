@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 )
 
 type busEtaStore interface {
@@ -98,7 +99,14 @@ func (f *busEtaFlusher) submit(task busEtaFlush) {
 	select {
 	case f.queue <- task:
 	default:
-		log.Warnf("[BUS_ETA] action=flush event=dropped table=%s rows=%d reason=queue_full", task.table, task.rows)
+		zap.S().Warnw("dropped",
+			"component", "bus_eta",
+			"action", "flush",
+			"event", "dropped",
+			"table", task.table,
+			"rows", task.rows,
+			"reason", "queue_full",
+		)
 	}
 }
 

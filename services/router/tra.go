@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -294,7 +296,7 @@ func TRATimetablePayload(ctx context.Context, db railDB, start, end string, date
 		}
 		w, err := time.Parse(time.RFC3339, seed.Starting_Time)
 		if err != nil {
-			log.Errorf("parse time error: %v", err)
+			zap.S().Errorw(fmt.Sprintf("parse time error: %v", err))
 			continue
 		}
 		t := temp.Arrivaltime

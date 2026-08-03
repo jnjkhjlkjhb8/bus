@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/dmitryikh/leaves"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.uber.org/zap"
 )
 
 // routeDirKey identifies one subroute direction, used as a map key when batching
@@ -85,7 +87,7 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 		GROUP BY b.sub_route_uid, b.direction`,
 		uids, dirs, todTime, dayBit)
 	if err != nil {
-		log.Errorf("[MODEL] batchNextDepartures error: %v", err)
+		zap.S().Errorw(fmt.Sprintf("batchNextDepartures error: %v", err), "component", "model")
 		return out
 	}
 	defer rows.Close()
@@ -108,7 +110,7 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Errorf("[MODEL] batchNextDepartures rows error: %v", err)
+		zap.S().Errorw(fmt.Sprintf("batchNextDepartures rows error: %v", err), "component", "model")
 	}
 	for k, v := range best {
 		out[k] = v.dep
@@ -145,7 +147,7 @@ func batchStopOffsets(ctx context.Context, db *pgxpool.Pool, uids []string) map[
 		WHERE p.complete AND p.sub_route_uid = ANY($1::text[])`,
 		missing)
 	if err != nil {
-		log.Errorf("[MODEL] batchStopOffsets error: %v", err)
+		zap.S().Errorw(fmt.Sprintf("batchStopOffsets error: %v", err), "component", "model")
 		return out
 	}
 	defer rows.Close()
@@ -169,7 +171,7 @@ func batchStopOffsets(ctx context.Context, db *pgxpool.Pool, uids []string) map[
 	if err := rows.Err(); err != nil {
 		// A partial read is not cached: the uids it covered would look complete
 		// and stay that way for the whole TTL.
-		log.Errorf("[MODEL] batchStopOffsets rows error: %v", err)
+		zap.S().Errorw(fmt.Sprintf("batchStopOffsets rows error: %v", err), "component", "model")
 		return out
 	}
 	storeStopOffsets(&stopOffsetCache, fetched, time.Now())
@@ -200,18 +202,18 @@ func loadModel() {
 	}
 	m, err := leaves.XGEnsembleFromFile(path, true)
 	if err != nil {
-		log.Infof("[MODEL] not loaded (file: %s): %v", path, err)
+		zap.S().Infow(fmt.Sprintf("not loaded (file: %s): %v", path, err), "component", "model")
 		return
 	}
 	encPath := strings.TrimSuffix(path, ".json") + "_encoders.json"
 	encData, err := os.ReadFile(encPath)
 	if err != nil {
-		log.Infof("[MODEL] encoders not found at %s: %v", encPath, err)
+		zap.S().Infow(fmt.Sprintf("encoders not found at %s: %v", encPath, err), "component", "model")
 	} else if err := json.Unmarshal(encData, &modelEncoders); err != nil {
-		log.Infof("[MODEL] encoders parse failed at %s: %v", encPath, err)
+		zap.S().Infow(fmt.Sprintf("encoders parse failed at %s: %v", encPath, err), "component", "model")
 	}
 	etaModel = m
-	log.Infof("[MODEL] loaded from %s", path)
+	zap.S().Infow(fmt.Sprintf("loaded from %s", path), "component", "model")
 }
 
 // busStopCtx describes the stop being predicted: its subroute/direction, the

@@ -11,6 +11,7 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -149,7 +150,12 @@ func handleGBFSStationInformation(db *pgxpool.Pool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		stations, err := gbfsStations(c.Request.Context(), db)
 		if err != nil {
-			log.Errorf("[GBFS] action=station_information event=failed error=%v", err)
+			zap.S().Errorw("failed",
+				"component", "gbfs",
+				"action", "station_information",
+				"event", "failed",
+				"err", err,
+			)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "station information unavailable"})
 			return
 		}
@@ -179,7 +185,7 @@ func handleGBFSStationStatus(db *pgxpool.Pool, rc *redis.Client) gin.HandlerFunc
 		ctx := c.Request.Context()
 		stations, err := gbfsStations(ctx, db)
 		if err != nil {
-			log.Errorf("[GBFS] action=station_status event=failed error=%v", err)
+			zap.S().Errorw("failed", "component", "gbfs", "action", "station_status", "event", "failed", "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "station status unavailable"})
 			return
 		}
@@ -198,7 +204,12 @@ func handleGBFSStationStatus(db *pgxpool.Pool, rc *redis.Client) gin.HandlerFunc
 			}
 			values, err := rc.MGet(ctx, keys...).Result()
 			if err != nil {
-				log.Errorf("[GBFS] action=station_status event=mget_failed error=%v", err)
+				zap.S().Errorw("mget failed",
+					"component", "gbfs",
+					"action", "station_status",
+					"event", "mget_failed",
+					"err", err,
+				)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "station status unavailable"})
 				return
 			}
@@ -211,8 +222,13 @@ func handleGBFSStationStatus(db *pgxpool.Pool, rc *redis.Client) gin.HandlerFunc
 			}
 		}
 		if len(statuses) < len(stations) {
-			log.Infof("[GBFS] action=station_status event=partial stations=%d reported=%d",
-				len(stations), len(statuses))
+			zap.S().Infow("partial",
+				"component", "gbfs",
+				"action", "station_status",
+				"event", "partial",
+				"stations", len(stations),
+				"reported", len(statuses),
+			)
 		}
 		gbfsWrite(c, gbfsStatusTTL, gin.H{"stations": statuses})
 	}
@@ -231,7 +247,13 @@ func decodeBikeStatus(stationID string, value any, now int64) (gbfsStatus, bool)
 	}
 	var eta models.BikeEta
 	if err := proto.Unmarshal([]byte(raw), &eta); err != nil {
-		log.Warnf("[GBFS] action=station_status station=%s event=decode_failed error=%v", stationID, err)
+		zap.S().Warnw("decode failed",
+			"component", "gbfs",
+			"action", "station_status",
+			"station", stationID,
+			"event", "decode_failed",
+			"err", err,
+		)
 		return gbfsStatus{}, false
 	}
 	inService := eta.GetServiceStatus() == bikeServiceInService

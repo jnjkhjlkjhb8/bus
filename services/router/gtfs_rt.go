@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 // The GTFS-RT endpoint (ADR-0019).
@@ -99,7 +100,12 @@ func handleGTFSRT(rc *redis.Client) gin.HandlerFunc {
 			return
 		}
 		if err != nil {
-			log.Errorf("[GTFS_RT] action=serve event=read_failed error=%v", err)
+			zap.S().Errorw("read failed",
+				"component", "gtfs_rt",
+				"action", "serve",
+				"event", "read_failed",
+				"err", err,
+			)
 			c.AbortWithStatus(http.StatusServiceUnavailable)
 			return
 		}

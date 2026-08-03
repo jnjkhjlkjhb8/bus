@@ -6,6 +6,7 @@ import (
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -151,7 +152,14 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 	if err := s.writeTrackState(ctx, state, mrtTrackSessionTTL); err != nil {
 		return nil, status.Error(codes.Internal, "failed to seed metro session state")
 	}
-	log.Infof("[MRT_TRACK] action=create track=%s trip=%s car=%s target_index=%d", trackID, info.TripID, request.CarId, targetIndex)
+	zap.S().Infow("log",
+		"component", "mrt_track",
+		"action", "create",
+		"track", trackID,
+		"trip", info.TripID,
+		"car", request.CarId,
+		"target_index", targetIndex,
+	)
 	return state, nil
 }
 
@@ -198,7 +206,13 @@ func (s *MrtServer) CancelTrack(ctx context.Context, request *pb.CancelMrtTrackR
 	// database error is worth reporting, and not at the cost of a cancel that
 	// already succeeded on the row the session is named after.
 	if _, leadErr := s.store.CancelArrivalReminder(ctx, mrtLeadReminderID(request.TrackId), request.InstallId); leadErr != nil {
-		log.Warnf("[MRT_TRACK] action=cancel event=lead_row_error track=%s error=%v", request.TrackId, leadErr)
+		zap.S().Warnw("lead row error",
+			"component", "mrt_track",
+			"action", "cancel",
+			"event", "lead_row_error",
+			"track", request.TrackId,
+			"err", leadErr,
+		)
 	}
 	s.publishCancelledState(ctx, request.TrackId)
 	return &pb.MrtTrackAck{Ok: true}, nil
@@ -218,7 +232,13 @@ func (s *MrtServer) publishCancelledState(ctx context.Context, trackID string) {
 	state.Status = "cancelled"
 	state.NextPollAtUnix = 0
 	if err := s.writeTrackState(ctx, state, mrtTrackEndedStateTTL); err != nil {
-		log.Warnf("[MRT_TRACK] action=cancel event=publish_error track=%s error=%v", trackID, err)
+		zap.S().Warnw("publish error",
+			"component", "mrt_track",
+			"action", "cancel",
+			"event", "publish_error",
+			"track", trackID,
+			"err", err,
+		)
 	}
 }
 

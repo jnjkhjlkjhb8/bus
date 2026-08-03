@@ -313,13 +313,13 @@ func TestRedisMaasCacheCommandsEndBeforeContextErrorReturns(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		command   string
-		invoke    func(context.Context, *redisMaasCache) error
+		invoke    func(context.Context, *RedisMaasCache) error
 		newCtx    func() (context.Context, context.CancelFunc)
 		wantError error
 	}{
 		{
 			name: "Get deadline", command: "get",
-			invoke: func(ctx context.Context, cache *redisMaasCache) error {
+			invoke: func(ctx context.Context, cache *RedisMaasCache) error {
 				_, err := cache.Get(ctx, "blocked")
 				return err
 			},
@@ -330,7 +330,7 @@ func TestRedisMaasCacheCommandsEndBeforeContextErrorReturns(t *testing.T) {
 		},
 		{
 			name: "Set deadline", command: "set",
-			invoke: func(ctx context.Context, cache *redisMaasCache) error {
+			invoke: func(ctx context.Context, cache *RedisMaasCache) error {
 				return cache.Set(ctx, "blocked", []byte("value"), time.Minute)
 			},
 			newCtx: func() (context.Context, context.CancelFunc) {

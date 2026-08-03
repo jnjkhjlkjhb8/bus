@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -372,12 +373,24 @@ func newBusDailyOriginFilter(ctx context.Context, src loadSource, city string) *
 	}
 	body, _, err := src.datasetJSON(ctx, "bus_stopofroute", "city", city)
 	if err != nil {
-		log.Warnf("[LOAD] action=bus_dailytimetable event=origin_filter_unavailable city=%s error=%v", city, err)
+		zap.S().Warnw("origin filter unavailable",
+			"component", "load",
+			"action", "bus_dailytimetable",
+			"event", "origin_filter_unavailable",
+			"city", city,
+			"err", err,
+		)
 		return nil
 	}
 	var variants []rawStopofroute
 	if err := json.Unmarshal(body, &variants); err != nil {
-		log.Warnf("[LOAD] action=bus_dailytimetable event=origin_filter_unavailable city=%s error=%v", city, err)
+		zap.S().Warnw("origin filter unavailable",
+			"component", "load",
+			"action", "bus_dailytimetable",
+			"event", "origin_filter_unavailable",
+			"city", city,
+			"err", err,
+		)
 		return nil
 	}
 	f := &busDailyOriginFilter{
@@ -545,8 +558,14 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSourc
 		}
 	}
 	if misfiled > 0 {
-		log.Infof("[LOAD] action=bus_dailytimetable event=misfiled_direction_trips city=%s dropped=%d first=%s",
-			city, misfiled, logSafeDetail(misfiledSample))
+		zap.S().Infow("misfiled direction trips",
+			"component", "load",
+			"action", "bus_dailytimetable",
+			"event", "misfiled_direction_trips",
+			"city", city,
+			"dropped", misfiled,
+			"first", logSafeDetail(misfiledSample),
+		)
 	}
 	// Past the ratio the city's timetable fails instead of publishing a gutted
 	// one; the previous load's Redis payload stays in place.
@@ -599,7 +618,7 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSourc
 	if execErr != nil {
 		return fmt.Errorf("bus daily timetable %s Redis transaction: %w", city, execErr)
 	}
-	log.Infof("[BUS] action=bus_dailyroute event=complete city=%s", city)
+	zap.S().Infow("complete", "component", "bus", "action", "bus_dailyroute", "event", "complete", "city", city)
 	return nil
 }
 

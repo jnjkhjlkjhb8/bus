@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -243,7 +244,13 @@ func (d *NearbyDiscovery) findAll(ctx context.Context, query NearbyQuery) (map[N
 			if isContextError(result.queryError) {
 				return nil, result.queryError
 			}
-			log.Errorf("[NEAR] action=query mode=%d event=failed error=%v", result.mode, result.queryError)
+			zap.S().Errorw("failed",
+				"component", "near",
+				"action", "query",
+				"mode", result.mode,
+				"event", "failed",
+				"err", result.queryError,
+			)
 			cancel()
 			return nil, ErrNearbyUnavailable
 		}
@@ -273,7 +280,13 @@ func (d *NearbyDiscovery) enrich(ctx context.Context, origin GeoPoint, byMode ma
 		return nil, routeErr
 	}
 	if routeErr != nil {
-		log.Errorf("[NEAR] action=route event=failed count=%d error=%v", len(points), routeErr)
+		zap.S().Errorw("failed",
+			"component", "near",
+			"action", "route",
+			"event", "failed",
+			"count", len(points),
+			"err", routeErr,
+		)
 		metrics = nil
 	}
 
