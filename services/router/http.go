@@ -42,6 +42,9 @@ const (
 	// MOTIS polls its realtime endpoints once a minute by default, and the feed
 	// has exactly one authenticated consumer, so this is generous already.
 	httpGTFSRTRateLimit = 10
+	// One fetch per app launch, answered from a process-local cache, so this
+	// only has to survive a device relaunching in a loop.
+	httpStaticVersionRateLimit = 60
 
 	// Bound every phase of an HTTP request/connection so a slow or hostile
 	// client (or a stalled network path) cannot hold a connection open
@@ -251,6 +254,9 @@ func newHTTPRouter(db *pgxpool.Pool, live *LiveHub, key *rsa.PrivateKey, config 
 	r.GET("/api/search",
 		httpRateLimit(limiter, "GET /api/search", searchLimit, time.Second),
 		HandleSearch(db))
+	r.GET(StaticVersionPath,
+		httpRateLimit(limiter, "GET "+StaticVersionPath, httpStaticVersionRateLimit, time.Minute),
+		HandleStaticVersion(db))
 	r.GET("/api/booking/deeplink",
 		httpRateLimit(limiter, "GET /api/booking/deeplink", httpBookingRateLimit, time.Minute),
 		HandleBookingDeeplink(config.booking))

@@ -27,9 +27,11 @@ class BusRepository {
 
   /// Cache-first: a route the rider has already opened renders from Hive with
   /// no round-trip for a week. Stop order and shape only move with the 03:30
-  /// daily load, and nothing revalidates in the background — a route edited
-  /// upstream stays stale here until the entry ages out or the next release
-  /// truncates the box.
+  /// daily load, and that load is what expires this entry — `pruneStaticCache`
+  /// namespaces the box on the backend's static dataset version, so a route
+  /// edited upstream is gone from the cache on the first launch after the load
+  /// that republished it. The week is the ceiling for a device that never
+  /// reaches the version endpoint at all.
   Future<BusRouteViewModel> routeStatic(String subRouteUid) => offlineCached(
     key: 's:bus:static:$subRouteUid',
     maxAge: const Duration(days: 7),

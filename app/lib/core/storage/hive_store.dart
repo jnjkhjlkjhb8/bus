@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 
 import 'package:hive_ce_flutter/adapters.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:wheres_the_bus/core/http/static_version.dart';
 
 class HiveStore {
   HiveStore._();
@@ -84,27 +85,38 @@ class HiveStore {
   ///
   /// Two independent rules, cheapest first:
   ///
-  /// * The running build number is the cache epoch. Entries hold verbatim
-  ///   protobuf bytes (plus the write timestamp [getStaticFresh] reads), and a
-  ///   proto change ships app and backend together, so
-  ///   every wire-breaking change also changes the build number — a mismatch
-  ///   means the whole box may decode to garbage and is truncated.
+  /// * The cache epoch is the running build number paired with the backend's
+  ///   static dataset version. Entries hold verbatim protobuf bytes (plus the
+  ///   write timestamp [getStaticFresh] reads), and a proto change ships app
+  ///   and backend together, so every wire-breaking change also changes the
+  ///   build number — a mismatch means the whole box may decode to garbage and
+  ///   is truncated. The version half is what makes a cache-first entry
+  ///   (`routeStatic`) notice an upstream edit: it moves only when the nightly
+  ///   load republishes the static tables, so a rebuilt dataset expires the
+  ///   box on the next launch instead of the entry waiting out its `maxAge`.
+  ///   A version that cannot be fetched keeps the stored one — see
+  ///   [fetchStaticVersion].
   /// * `d:<yyyy-MM-dd>:` entries are service-date scoped. Past dates are
   ///   deleted; today and future dates are kept, because the rail query sheet
   ///   can legitimately look up a timetable days ahead and that entry must
   ///   survive the launches between caching it and travelling.
   ///
-  /// [now] and [buildNumber] are injectable for tests only.
+  /// [now], [buildNumber] and [staticVersion] are injectable for tests only.
   static Future<void> pruneStaticCache({
     DateTime? now,
     Future<String> Function()? buildNumber,
+    Future<String?> Function()? staticVersion,
   }) async {
     if (!staticCacheReady) return;
     final box = staticCache;
     final build = await (buildNumber ?? _currentBuildNumber)();
-    if (box.get(_cacheEpochKey) != build) {
+    final stored = box.get(_cacheEpochKey);
+    final version =
+        await (staticVersion ?? fetchStaticVersion)() ?? _versionOf(stored);
+    final epoch = '$build|$version';
+    if (stored != epoch) {
       await box.clear();
-      await box.put(_cacheEpochKey, build);
+      await box.put(_cacheEpochKey, epoch);
       return;
     }
     final today = dateStamp(now ?? DateTime.now());
@@ -116,6 +128,16 @@ class HiveStore {
         .where((k) => _isPastDateKey(k, today))
         .toList();
     if (stale.isNotEmpty) await box.deleteAll(stale);
+  }
+
+  /// The dataset-version half of a stored epoch, used as the fallback when the
+  /// backend cannot be reached. An epoch written before this pairing existed
+  /// has no separator and yields '', which reads as "unknown" and truncates
+  /// once — the same launch already changes the build half anyway.
+  static String _versionOf(Object? epoch) {
+    if (epoch is! String) return '';
+    final separator = epoch.indexOf('|');
+    return separator < 0 ? '' : epoch.substring(separator + 1);
   }
 
   static bool _isPastDateKey(String key, String today) {

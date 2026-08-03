@@ -319,23 +319,17 @@ class AppSheet extends StatefulWidget {
   State<AppSheet> createState() => _AppSheetState();
 }
 
-/// The arrival note a sheet plays when it lands on either end detent.
-///
-/// Both edges get the same tap. A rider who has felt the sheet arrive at the
-/// top knows the same feeling means "this is as far as it goes" at the bottom,
-/// which is the whole point of the two edges behaving alike.
+/// The arrival note a sheet plays when it lands on its minimum detent.
 class _SheetEdgeHaptics {
-  /// Null until the first notification: a sheet that opens *at* an end detent
+  /// Null until the first notification: a sheet that opens *at* its minimum
   /// (the home root opens at peek, which is its minimum) would otherwise buzz
   /// on the frame it first reports its position.
   bool? _atEdge;
 
   void observe(SheetMetrics metrics) {
-    // Half a pixel of slack: the settle animation lands on the end offsets by
+    // Half a pixel of slack: the settle animation lands on the end offset by
     // arbitrarily small increments and would otherwise never read as arrived.
-    final atEdge =
-        metrics.offset >= metrics.maxOffset - 0.5 ||
-        metrics.offset <= metrics.minOffset + 0.5;
+    final atEdge = metrics.offset <= metrics.minOffset + 0.5;
     if (_atEdge == false && atEdge) {
       unawaited(HapticService.instance.mediumTap());
     }

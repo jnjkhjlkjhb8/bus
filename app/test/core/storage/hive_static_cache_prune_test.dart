@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:hive_ce_flutter/adapters.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
 
-/// Guards the two sweep rules in [HiveStore.pruneStaticCache] (ADR-0017).
+/// Guards the sweep rules in [HiveStore.pruneStaticCache] (ADR-0017).
 /// Both fail silently in production if they are wrong — a too-greedy key match
 /// just looks like "the offline cache never works", which is the hardest
 /// possible symptom to trace back to here.
@@ -15,8 +15,15 @@ void main() {
 
   tearDown(() async => Hive.box<dynamic>('static_cache').close());
 
-  Future<void> prune({required String build, required DateTime now}) =>
-      HiveStore.pruneStaticCache(now: now, buildNumber: () async => build);
+  Future<void> prune({
+    required String build,
+    required DateTime now,
+    String? version = 'v1',
+  }) => HiveStore.pruneStaticCache(
+    now: now,
+    buildNumber: () async => build,
+    staticVersion: () async => version,
+  );
 
   test('a build-number change truncates the whole box', () async {
     await HiveStore.putStatic('s:bus:group:G1', const [1, 2, 3]);
@@ -30,6 +37,29 @@ void main() {
 
     await prune(build: '42', now: DateTime(2026, 7, 28));
     expect(HiveStore.getStatic('s:bus:group:G1'), isNull);
+  });
+
+  test('a new backend dataset version truncates the whole box', () async {
+    await prune(build: '42', now: DateTime(2026, 7, 28));
+    await HiveStore.putStatic('s:bus:static:R1', const [1, 2, 3]);
+
+    // Same load, nothing to do.
+    await prune(build: '42', now: DateTime(2026, 7, 28));
+    expect(HiveStore.getStatic('s:bus:static:R1'), const [1, 2, 3]);
+
+    // The nightly load republished the static tables.
+    await prune(build: '42', now: DateTime(2026, 7, 29), version: 'v2');
+    expect(HiveStore.getStatic('s:bus:static:R1'), isNull);
+  });
+
+  test('an unreachable backend keeps the cache instead of wiping it', () async {
+    await prune(build: '42', now: DateTime(2026, 7, 28));
+    await HiveStore.putStatic('s:bus:static:R1', const [1, 2, 3]);
+
+    // Offline launch: the version is unknown, which must never be read as
+    // "the data changed" — that would empty the cache exactly when it matters.
+    await prune(build: '42', now: DateTime(2026, 7, 28), version: null);
+    expect(HiveStore.getStatic('s:bus:static:R1'), const [1, 2, 3]);
   });
 
   test('past service dates are swept, today and future are kept', () async {

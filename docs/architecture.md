@@ -44,7 +44,7 @@ Redis 與 OSRM 僅對 localhost 開放，不對外暴露。
   - Redis pool：PoolSize=20，MinIdleConns=3，PoolTimeout=5s
 - `services/router`
   - gRPC 服務端（:50051），查詢 DB/Redis 並回傳 protobuf
-  - HTTP 服務端（:8080）：`/api/token/powersync`、`/api/.well-known/jwks.json`、`/api/embed`
+  - HTTP 服務端（:8080）：`/api/token/powersync`、`/api/.well-known/jwks.json`、`/api/embed`、`/api/static-version`（本環境靜態資料版本，App 離線快取的 epoch，ADR-0017）
   - 串流以 Redis Pub/Sub 實作（`sub.Channel()` channel-based，無 busy-loop）
   - pgxpool：MaxConns=20，MinConns=2，MaxConnLifetime=30m，MaxConnIdleTime=5m
   - Redis pool：PoolSize=20，MinIdleConns=3，PoolTimeout=5s

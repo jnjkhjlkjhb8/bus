@@ -198,42 +198,21 @@ void main() {
     expect(failed.loading, isFalse);
   });
 
-  test('paints the cached list while the first query is in flight', () async {
+  test('stays empty and loading until the first response arrives', () async {
     final repository = _FakeNearRepository([_vm('live', 100)])
       ..holdResponses = true;
-    final cache = _FakeNearCache([_vm('cached', 200)]);
-    final bloc = NearbyBloc(repository: repository, cache: cache);
+    final bloc = NearbyBloc(repository: repository);
     addTearDown(bloc.close);
 
     bloc.add(const NearbyRequested(radius: 800, lat: 25, lon: 121.5));
     await pumpEventQueue();
 
-    expect(bloc.state.stations.single.stationId, 'cached');
+    expect(bloc.state.stations, isEmpty);
     expect(bloc.state.loading, isTrue);
 
-    // The live answer replaces it and is what gets written back.
     repository.holdResponses = false;
     bloc.add(const NearbyRequested(radius: 800, lat: 25, lon: 121.5));
     await bloc.stream.firstWhere((s) => !s.loading);
-
-    expect(bloc.state.stations.single.stationId, 'live');
-    expect(cache.saved.single.$1, 25.0);
-    expect(cache.saved.single.$2, 121.5);
-    expect(cache.saved.single.$3, ['live']);
-  });
-
-  test('the cache never paints over stations already on screen', () async {
-    final repository = _FakeNearRepository([_vm('live', 100)]);
-    final cache = _FakeNearCache([_vm('cached', 200)]);
-    final bloc = NearbyBloc(repository: repository, cache: cache);
-    addTearDown(bloc.close);
-
-    bloc.add(const NearbyRequested(radius: 800, lat: 25, lon: 121.5));
-    await bloc.stream.firstWhere((s) => !s.loading && s.stations.isNotEmpty);
-
-    repository.holdResponses = true;
-    bloc.add(const NearbyRequested(radius: 800, lat: 25.001, lon: 121.5));
-    await pumpEventQueue();
 
     expect(bloc.state.stations.single.stationId, 'live');
   });
@@ -247,23 +226,6 @@ void main() {
 
     expect(bloc.state, const NearbyState());
   });
-}
-
-class _FakeNearCache implements NearCache {
-  _FakeNearCache(this.stored);
-
-  final List<NearStationViewModel> stored;
-  final saved = <(double, double, List<String>)>[];
-
-  @override
-  List<NearStationViewModel> load(double lat, double lon) => stored;
-
-  @override
-  Future<void> save(
-    double lat,
-    double lon,
-    List<NearStationViewModel> stations,
-  ) async => saved.add((lat, lon, stations.map((s) => s.stationId).toList()));
 }
 
 class _FakeNearRepository implements NearRepository {

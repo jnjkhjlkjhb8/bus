@@ -16,9 +16,8 @@ import 'package:wheres_the_bus/features/home/bloc/nearby_state.dart';
 /// by construction — there is no stale result to guard against on arrival, only
 /// a stale *enqueue* when a GPS fix resolves after a newer query was issued.
 class NearbyBloc extends Bloc<NearbyEvent, NearbyState> {
-  NearbyBloc({NearRepository? repository, NearCache? cache})
+  NearbyBloc({NearRepository? repository})
     : _repository = repository ?? NearRepository.instance,
-      _cache = cache ?? NearCache.instance,
       super(const NearbyState()) {
     on<NearbyRequested>(_onRequested);
     on<NearbyRetried>(_onRetried);
@@ -27,12 +26,6 @@ class NearbyBloc extends Bloc<NearbyEvent, NearbyState> {
   }
 
   final NearRepository _repository;
-  final NearCache _cache;
-
-  /// Coordinates the in-flight query actually went out with — the event's own
-  /// may be null (GPS-resolved), and the response stream is latest-wins, so
-  /// this is what the arriving answer is about.
-  ({double lat, double lon})? _lastOrigin;
 
   /// The most recently issued query, kept even on failure so [NearbyRetried]
   /// replays the same dragged viewport instead of falling back to GPS.
@@ -80,10 +73,6 @@ class NearbyBloc extends Bloc<NearbyEvent, NearbyState> {
     final stations = [...event.stations]
       ..sort((a, b) => a.distanceMeters.compareTo(b.distanceMeters));
     emit(state.copyWith(stations: stations, loading: false, clearError: true));
-    final origin = _lastOrigin;
-    if (origin != null) {
-      unawaited(_cache.save(origin.lat, origin.lon, stations));
-    }
   }
 
   void _onStreamFailed(NearbyStreamFailed event, Emitter<NearbyState> emit) {
@@ -128,15 +117,6 @@ class NearbyBloc extends Bloc<NearbyEvent, NearbyState> {
     } else {
       lat = event.lat!;
       lon = event.lon!;
-    }
-    _lastOrigin = (lat: lat, lon: lon);
-    // Cold start only: paint the last answer for this spot while the query is
-    // in flight, so the first screen isn't empty for a round trip. Never once
-    // stations are up — a pan must not flash the previous session's list over
-    // what the rider is already looking at.
-    if (state.stations.isEmpty) {
-      final cached = _cache.load(lat, lon);
-      if (cached.isNotEmpty) emit(state.copyWith(stations: cached));
     }
     _attachStream();
     _queries?.add(NearQuery(lat: lat, lon: lon, radius: event.radius));
