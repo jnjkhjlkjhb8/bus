@@ -129,6 +129,62 @@ void main() {
     await sub.cancel();
   });
 
+  test('the network coming back skips the rest of the backoff', () async {
+    final online = ValueNotifier<bool>(true);
+    addTearDown(online.dispose);
+    var subscribeCount = 0;
+    final sub = ResilientSubscription<int>(
+      source: () {
+        subscribeCount++;
+        return Stream<int>.error(const GrpcError.unavailable());
+      },
+      onData: (_) {},
+      onFailure: (_) {},
+      // Long enough that the retry could only have come from the edge.
+      baseDelay: const Duration(seconds: 30),
+      reportError: (_, _) {},
+      online: online,
+    );
+
+    await eventually(() => subscribeCount == 1);
+    online
+      ..value = false
+      ..value = true;
+
+    await eventually(() => subscribeCount == 2);
+    await sub.cancel();
+  });
+
+  test('a live subscription is left alone when the network flips', () async {
+    final online = ValueNotifier<bool>(true);
+    addTearDown(online.dispose);
+    var subscribeCount = 0;
+    final controllers = <StreamController<int>>[];
+    final sub = ResilientSubscription<int>(
+      source: () {
+        subscribeCount++;
+        final controller = StreamController<int>();
+        controllers.add(controller);
+        return controller.stream;
+      },
+      onData: (_) {},
+      onFailure: (_) {},
+      reportError: (_, _) {},
+      online: online,
+    );
+
+    online
+      ..value = false
+      ..value = true;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(subscribeCount, 1);
+    await sub.cancel();
+    for (final controller in controllers) {
+      await controller.close();
+    }
+  });
+
   test('cancel stops retrying', () async {
     var subscribeCount = 0;
     final sub = ResilientSubscription<int>(

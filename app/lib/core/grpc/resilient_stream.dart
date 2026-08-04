@@ -6,6 +6,7 @@ import 'package:grpc/grpc.dart';
 import 'package:wheres_the_bus/core/errors/app_error.dart';
 import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_bus/core/lifecycle/app_foreground.dart';
+import 'package:wheres_the_bus/core/lifecycle/app_network.dart';
 
 typedef RetryDelay = Duration Function(Duration delay);
 
@@ -22,6 +23,7 @@ class ResilientSubscription<T> {
     void Function(Object, StackTrace)? reportError,
     RetryDelay? retryDelay,
     ValueListenable<bool>? foreground,
+    ValueListenable<bool>? online,
   }) : _source = source,
        _onData = onData,
        _onFailure = onFailure,
@@ -32,8 +34,10 @@ class ResilientSubscription<T> {
        _recoveryGrace = recoveryGrace,
        _reportError = reportError ?? CrashReporter.record,
        _retryDelay = retryDelay ?? _jitteredDelay,
-       _foreground = foreground ?? AppForeground.value {
+       _foreground = foreground ?? AppForeground.value,
+       _online = online ?? AppNetwork.online {
     _foreground.addListener(_onForegroundChanged);
+    _online.addListener(_onOnlineChanged);
     if (_foreground.value) _listen();
   }
 
@@ -48,6 +52,7 @@ class ResilientSubscription<T> {
   final void Function(Object, StackTrace) _reportError;
   final RetryDelay _retryDelay;
   final ValueListenable<bool> _foreground;
+  final ValueListenable<bool> _online;
 
   StreamSubscription<T>? _sub;
   Timer? _timer;
@@ -83,6 +88,19 @@ class ResilientSubscription<T> {
     _timer = null;
     _failures = 0;
     _cleanCloses = 0;
+    _listen();
+  }
+
+  /// The device got an interface back. Whatever backoff is pending was sized
+  /// for a server problem, not for airplane mode, so skip it and dial now
+  /// (FDPL-55). Only a scheduled retry is short-circuited: a live subscription
+  /// is left alone, and a stream stopped by a terminal error stays stopped
+  /// until the next resume.
+  void _onOnlineChanged() {
+    if (_closed || !_online.value || !_foreground.value) return;
+    if (_sub != null || _timer == null) return;
+    _timer!.cancel();
+    _timer = null;
     _listen();
   }
 
@@ -188,6 +206,7 @@ class ResilientSubscription<T> {
   Future<void> cancel() async {
     _closed = true;
     _foreground.removeListener(_onForegroundChanged);
+    _online.removeListener(_onOnlineChanged);
     _timer?.cancel();
     _graceTimer?.cancel();
     await _sub?.cancel();

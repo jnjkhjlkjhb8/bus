@@ -8,6 +8,7 @@ import 'package:wheres_the_bus/app/router/app_router.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/bootstrap/app_bootstrap.dart';
 import 'package:wheres_the_bus/core/lifecycle/app_foreground.dart';
+import 'package:wheres_the_bus/core/lifecycle/app_network.dart';
 import 'package:wheres_the_bus/core/live_activity/alight_track.dart';
 import 'package:wheres_the_bus/core/live_activity/alight_track_cancel_channel.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
@@ -61,6 +62,7 @@ class _AppState extends State<App> {
   void initState() {
     super.initState();
     AppForeground.start();
+    AppNetwork.start();
     widget.bootstrap.addListener(_syncInitialized);
     _syncInitialized();
   }
