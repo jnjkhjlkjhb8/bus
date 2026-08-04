@@ -11,8 +11,8 @@ class AlertRepository {
 
   static final AlertRepository instance = AlertRepository();
 
-  Alert_ServiceClient? _client;
-  Alert_ServiceClient get _grpc => _client ??= GrpcClient.instance.alert;
+  final Alert_ServiceClient? _client;
+  Alert_ServiceClient get _grpc => _client ?? GrpcClient.instance.alert;
 
   final SettingsRepository _settings;
 

@@ -15,8 +15,8 @@ class MrtTrackRepository {
 
   static const _system = 'TRTC';
 
-  Mrt_ServiceClient? _client;
-  Mrt_ServiceClient get _grpc => _client ??= GrpcClient.instance.mrt;
+  final Mrt_ServiceClient? _client;
+  Mrt_ServiceClient get _grpc => _client ?? GrpcClient.instance.mrt;
 
   /// Opens a session. Propagates gRPC status errors unchanged so the caller
   /// can distinguish InvalidArgument (train does not reach the target) from

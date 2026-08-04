@@ -26,8 +26,8 @@ class FirebaseRepository {
 
   static final instance = FirebaseRepository();
 
-  Firebase_ServiceClient? _client;
-  Firebase_ServiceClient get _grpc => _client ??= GrpcClient.instance.firebase;
+  final Firebase_ServiceClient? _client;
+  Firebase_ServiceClient get _grpc => _client ?? GrpcClient.instance.firebase;
 
   final SettingsRepository _settings;
 

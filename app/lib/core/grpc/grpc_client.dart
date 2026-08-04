@@ -115,7 +115,26 @@ class GrpcClient {
     return true;
   }
 
-  late final ClientChannel _channel = () {
+  ClientChannel? _channelInstance;
+
+  /// Built on demand rather than bound once. A channel that has been shut down
+  /// is terminally shut down — every later RPC on it throws
+  /// `Channel shutting down.` — so a single [shutdown], or a resume-time
+  /// reconnect, used to brick every client for the rest of the process
+  /// (FDPL-51). The service clients below are getters for the same reason:
+  /// each RPC binds to whatever channel is current.
+  ClientChannel get _channel => _channelInstance ??= _buildChannel();
+
+  /// Drops the current channel so the next RPC builds a fresh one. In-flight
+  /// calls are terminated rather than drained: this runs when the transport
+  /// underneath is already known to be gone.
+  void recycle() {
+    final old = _channelInstance;
+    _channelInstance = null;
+    old?.terminate().ignore();
+  }
+
+  ClientChannel _buildChannel() {
     if (_tls && _caBytes == null) {
       throw StateError(
         'GrpcClient.init() must complete successfully before the channel '
@@ -159,7 +178,7 @@ class GrpcClient {
         ),
       ),
     );
-  }();
+  }
 
   static final List<ClientInterceptor> _interceptors = [
     GrpcCompressionInterceptor(),
@@ -167,56 +186,36 @@ class GrpcClient {
     GrpcErrorInterceptor(),
   ];
 
-  late final Bus_Route_ServiceClient busRoute = Bus_Route_ServiceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final Bus_Station_ServiceClient busStation = Bus_Station_ServiceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final Bike_ServiceClient bike = Bike_ServiceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final Mrt_ServiceClient mrt = Mrt_ServiceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final TRA_timetable_serviceClient traTimetable =
+  Bus_Route_ServiceClient get busRoute =>
+      Bus_Route_ServiceClient(_channel, interceptors: _interceptors);
+  Bus_Station_ServiceClient get busStation =>
+      Bus_Station_ServiceClient(_channel, interceptors: _interceptors);
+  Bike_ServiceClient get bike =>
+      Bike_ServiceClient(_channel, interceptors: _interceptors);
+  Mrt_ServiceClient get mrt =>
+      Mrt_ServiceClient(_channel, interceptors: _interceptors);
+  TRA_timetable_serviceClient get traTimetable =>
       TRA_timetable_serviceClient(_channel, interceptors: _interceptors);
-  late final TRA_Detain_serviceClient traDetain = TRA_Detain_serviceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final Thsr_timetable_serviceClient thsr = Thsr_timetable_serviceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final Thsr_Detain_serviceClient thsrDetain = Thsr_Detain_serviceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final Alert_ServiceClient alert = Alert_ServiceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final Near_Station_ServiceClient near = Near_Station_ServiceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final MaasServiceClient maas = MaasServiceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final Firebase_ServiceClient firebase = Firebase_ServiceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
-  late final Feedback_ServiceClient feedback = Feedback_ServiceClient(
-    _channel,
-    interceptors: _interceptors,
-  );
+  TRA_Detain_serviceClient get traDetain =>
+      TRA_Detain_serviceClient(_channel, interceptors: _interceptors);
+  Thsr_timetable_serviceClient get thsr =>
+      Thsr_timetable_serviceClient(_channel, interceptors: _interceptors);
+  Thsr_Detain_serviceClient get thsrDetain =>
+      Thsr_Detain_serviceClient(_channel, interceptors: _interceptors);
+  Alert_ServiceClient get alert =>
+      Alert_ServiceClient(_channel, interceptors: _interceptors);
+  Near_Station_ServiceClient get near =>
+      Near_Station_ServiceClient(_channel, interceptors: _interceptors);
+  MaasServiceClient get maas =>
+      MaasServiceClient(_channel, interceptors: _interceptors);
+  Firebase_ServiceClient get firebase =>
+      Firebase_ServiceClient(_channel, interceptors: _interceptors);
+  Feedback_ServiceClient get feedback =>
+      Feedback_ServiceClient(_channel, interceptors: _interceptors);
 
-  Future<void> shutdown() => _channel.shutdown();
+  Future<void> shutdown() async {
+    final old = _channelInstance;
+    _channelInstance = null;
+    await old?.shutdown();
+  }
 }

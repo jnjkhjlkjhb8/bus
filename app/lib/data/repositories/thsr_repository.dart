@@ -14,13 +14,13 @@ class ThsrRepository {
 
   static final ThsrRepository instance = ThsrRepository();
 
-  Thsr_timetable_serviceClient? _timetableClient;
+  final Thsr_timetable_serviceClient? _timetableClient;
   Thsr_timetable_serviceClient get _grpc =>
-      _timetableClient ??= GrpcClient.instance.thsr;
+      _timetableClient ?? GrpcClient.instance.thsr;
 
-  Thsr_Detain_serviceClient? _detainClient;
+  final Thsr_Detain_serviceClient? _detainClient;
   Thsr_Detain_serviceClient get _detain =>
-      _detainClient ??= GrpcClient.instance.thsrDetain;
+      _detainClient ?? GrpcClient.instance.thsrDetain;
 
   /// Every fare the pair prices, across fare class and cabin class. The caller
   /// picks one with [thsrFareFor]; the router no longer decides which fare is

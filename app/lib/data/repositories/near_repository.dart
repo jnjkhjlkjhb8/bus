@@ -15,8 +15,8 @@ class NearRepository {
 
   static final NearRepository instance = NearRepository();
 
-  Near_Station_ServiceClient? _client;
-  Near_Station_ServiceClient get _grpc => _client ??= GrpcClient.instance.near;
+  final Near_Station_ServiceClient? _client;
+  Near_Station_ServiceClient get _grpc => _client ?? GrpcClient.instance.near;
 
   /// Bidirectional-streaming query. Callers control the request stream and
   /// receive decoded station lists in the order the router answers them.

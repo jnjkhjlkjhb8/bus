@@ -14,13 +14,13 @@ class TraRepository {
 
   static final TraRepository instance = TraRepository();
 
-  TRA_timetable_serviceClient? _timetableClient;
+  final TRA_timetable_serviceClient? _timetableClient;
   TRA_timetable_serviceClient get _timetable =>
-      _timetableClient ??= GrpcClient.instance.traTimetable;
+      _timetableClient ?? GrpcClient.instance.traTimetable;
 
-  TRA_Detain_serviceClient? _detainClient;
+  final TRA_Detain_serviceClient? _detainClient;
   TRA_Detain_serviceClient get _detain =>
-      _detainClient ??= GrpcClient.instance.traDetain;
+      _detainClient ?? GrpcClient.instance.traDetain;
 
   Future<List<TraTimetableItem>> timetable(
     String date,

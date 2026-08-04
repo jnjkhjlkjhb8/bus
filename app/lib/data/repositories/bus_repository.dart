@@ -15,15 +15,16 @@ class BusRepository {
 
   static final BusRepository instance = BusRepository();
 
-  // Resolved lazily so a test can inject one stub without the default for the
-  // other touching the real gRPC channel.
-  Bus_Route_ServiceClient? _routeClient;
+  // Resolved per call so a test can inject one stub without the default for
+  // the other touching the real gRPC channel, and so a recycled channel
+  // (FDPL-51) is picked up instead of a client bound to the dead one.
+  final Bus_Route_ServiceClient? _routeClient;
   Bus_Route_ServiceClient get _route =>
-      _routeClient ??= GrpcClient.instance.busRoute;
+      _routeClient ?? GrpcClient.instance.busRoute;
 
-  Bus_Station_ServiceClient? _stationClient;
+  final Bus_Station_ServiceClient? _stationClient;
   Bus_Station_ServiceClient get _station =>
-      _stationClient ??= GrpcClient.instance.busStation;
+      _stationClient ?? GrpcClient.instance.busStation;
 
   /// Cache-first: a route the rider has already opened renders from Hive with
   /// no round-trip for a week. Stop order and shape only move with the 03:30

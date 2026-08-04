@@ -18,8 +18,8 @@ class MrtRepository {
   LocalDb? _localDb;
   LocalDb get _db => _localDb ??= PowerSyncService.instance;
 
-  Mrt_ServiceClient? _client;
-  Mrt_ServiceClient get _grpc => _client ??= GrpcClient.instance.mrt;
+  final Mrt_ServiceClient? _client;
+  Mrt_ServiceClient get _grpc => _client ?? GrpcClient.instance.mrt;
 
   /// Server-streaming: emits decoded MRT arrival estimates until cancelled.
   ///

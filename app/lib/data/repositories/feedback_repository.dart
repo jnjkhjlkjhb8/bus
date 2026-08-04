@@ -24,9 +24,9 @@ class FeedbackRepository {
 
   static final FeedbackRepository instance = FeedbackRepository();
 
-  pb.Feedback_ServiceClient? _client;
+  final pb.Feedback_ServiceClient? _client;
   pb.Feedback_ServiceClient get _grpc =>
-      _client ??= GrpcClient.instance.feedback;
+      _client ?? GrpcClient.instance.feedback;
 
   final Future<PackageInfo> Function() _packageInfoLoader;
   final String Function() _osVersionOf;

@@ -7,8 +7,8 @@ class BikeRepository {
 
   static final BikeRepository instance = BikeRepository();
 
-  Bike_ServiceClient? _client;
-  Bike_ServiceClient get _grpc => _client ??= GrpcClient.instance.bike;
+  final Bike_ServiceClient? _client;
+  Bike_ServiceClient get _grpc => _client ?? GrpcClient.instance.bike;
 
   // Station name/capacity/position only change with the 03:30 daily load, so a
   // process-lifetime memo is safe and makes a re-visit render with no

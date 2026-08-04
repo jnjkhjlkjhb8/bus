@@ -38,8 +38,8 @@ class MaasRepository {
 
   static final MaasRepository instance = MaasRepository();
 
-  MaasServiceClient? _client;
-  MaasServiceClient get _grpc => _client ??= GrpcClient.instance.maas;
+  final MaasServiceClient? _client;
+  MaasServiceClient get _grpc => _client ?? GrpcClient.instance.maas;
 
   /// Streams the plan in stages — routes first, map geometry second — so the
   /// results list can appear without waiting for the OSRM walk paths.
