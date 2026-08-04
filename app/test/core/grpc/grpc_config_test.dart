@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_bus/core/grpc/grpc_client.dart';
+import 'package:wheres_the_bus/core/lifecycle/app_foreground.dart';
 
 void main() {
   group('GrpcClient.validateConfig', () {
@@ -115,6 +116,46 @@ void main() {
         ),
         returnsNormally,
       );
+    });
+  });
+
+  group('channel lifecycle', () {
+    // Reading any service client is what forces the channel into existence.
+    void openChannel() => GrpcClient.instance.busRoute;
+    int generation() => GrpcClient.instance.channelGeneration;
+
+    test('recycle drops the channel and the next use builds a new one', () {
+      openChannel();
+      final built = generation();
+
+      GrpcClient.instance.recycle();
+      openChannel();
+
+      expect(generation(), built + 1);
+    });
+
+    test('coming back to the foreground recycles the channel', () {
+      openChannel();
+      final built = generation();
+
+      GrpcClient.handleForeground();
+
+      expect(
+        generation(),
+        built + 1,
+        reason: 'warmConnection must dial a fresh channel, not the dead one',
+      );
+    });
+
+    test('going to the background leaves the channel alone', () {
+      openChannel();
+      final built = generation();
+
+      AppForeground.value.value = false;
+      addTearDown(() => AppForeground.value.value = true);
+      GrpcClient.handleForeground();
+
+      expect(generation(), built);
     });
   });
 }

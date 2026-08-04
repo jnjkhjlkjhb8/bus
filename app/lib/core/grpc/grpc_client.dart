@@ -2,11 +2,13 @@ import 'dart:convert' show base64;
 import 'dart:io' show X509Certificate;
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:grpc/grpc.dart';
 import 'package:wheres_the_bus/core/grpc/grpc_compression_interceptor.dart';
 import 'package:wheres_the_bus/core/grpc/grpc_deadline_interceptor.dart';
 import 'package:wheres_the_bus/core/grpc/grpc_error_interceptor.dart';
+import 'package:wheres_the_bus/core/lifecycle/app_foreground.dart';
 import 'package:wheres_the_bus/data/generated/alert.pbgrpc.dart';
 import 'package:wheres_the_bus/data/generated/bike.pbgrpc.dart';
 import 'package:wheres_the_bus/data/generated/bus.pbgrpc.dart';
@@ -71,12 +73,40 @@ class GrpcClient {
   /// The `_channel` getter below fails closed.
   static Future<void> init() async {
     validateConfig(appEnv: _appEnv, host: _host, tls: _tls);
+    _observeForeground();
     if (!_tls) {
       warmConnection();
       return;
     }
     _caBytes = (await rootBundle.load('assets/grpc.crt')).buffer.asUint8List();
     _pinnedDer = _pemToDer(_caBytes!);
+    warmConnection();
+  }
+
+  static bool _observingForeground = false;
+
+  static void _observeForeground() {
+    if (_observingForeground) return;
+    _observingForeground = true;
+    AppForeground.value.addListener(handleForeground);
+  }
+
+  /// Recycles the channel the moment the app comes back on screen.
+  ///
+  /// A suspended app's transport is usually dead but still looks `ready`, and
+  /// keepalive (FDPL-49) only proves that a ping interval later — a whole
+  /// screen of stale content in the meantime. Resuming is the one instant when
+  /// nothing is subscribed (live feeds are foreground-gated) and the rider is
+  /// about to look, so dropping the connection and dialing again costs a
+  /// handshake and buys a fresh frame (FDPL-50).
+  ///
+  /// Registered before any `ResilientSubscription` — `init` runs during
+  /// bootstrap, blocs come later — so the channel is already replaced by the
+  /// time the feeds re-listen against it.
+  @visibleForTesting
+  static void handleForeground() {
+    if (!AppForeground.value.value) return;
+    instance.recycle();
     warmConnection();
   }
 
@@ -134,7 +164,13 @@ class GrpcClient {
     old?.terminate().ignore();
   }
 
+  /// How many channels this client has built. Lets a test tell a recycle from
+  /// a channel that was merely reused.
+  @visibleForTesting
+  int channelGeneration = 0;
+
   ClientChannel _buildChannel() {
+    channelGeneration++;
     if (_tls && _caBytes == null) {
       throw StateError(
         'GrpcClient.init() must complete successfully before the channel '
