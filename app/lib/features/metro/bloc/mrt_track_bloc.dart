@@ -61,6 +61,8 @@ class MrtTrackBloc extends Bloc<MrtTrackEvent, MrtTrackBlocState> {
     on<MrtTrackRequested>(_onRequested);
     on<MrtTrackUpdated>(_onUpdated);
     on<MrtTrackWatchFailed>(_onWatchFailed);
+    on<MrtTrackWatchRecovered>(_onWatchRecovered);
+    on<MrtTrackWatchLost>(_onWatchLost);
     on<MrtTrackCancelled>(_onCancelled);
     on<MrtTrackRestored>(_onRestored);
     on<MrtBoardEtaTicked>(_onBoardEta);
@@ -201,11 +203,35 @@ class MrtTrackBloc extends Bloc<MrtTrackEvent, MrtTrackBlocState> {
     _pushActivity(session);
   }
 
+  /// How long the watch stream may stay down before the ride is called off.
+  /// A metro rider spends most of the trip underground, and the subscription
+  /// keeps reconnecting the whole time, so a reported failure is a tunnel far
+  /// more often than an ending (FDPL-54).
+  static const _watchLostAfter = Duration(minutes: 2);
+
+  Timer? _watchLostTimer;
+
   void _onWatchFailed(MrtTrackWatchFailed e, Emitter<MrtTrackBlocState> emit) {
-    // The resilient subscription exhausted its reconnects (a terminal gRPC
-    // status such as unauthenticated). Nothing more will arrive on this
-    // stream, so end the session rather than leaving a stale bell lit — and
-    // show it as 追蹤失效 on the system surface, never a silent disappearance.
+    if (state.session == null) return;
+    _watchLostTimer?.cancel();
+    _watchLostTimer = Timer(
+      _watchLostAfter,
+      () => add(const MrtTrackWatchLost()),
+    );
+  }
+
+  void _onWatchRecovered(
+    MrtTrackWatchRecovered e,
+    Emitter<MrtTrackBlocState> emit,
+  ) {
+    _watchLostTimer?.cancel();
+    _watchLostTimer = null;
+  }
+
+  void _onWatchLost(MrtTrackWatchLost e, Emitter<MrtTrackBlocState> emit) {
+    // The stream stayed down for the whole window. End the session rather than
+    // leaving a stale bell lit — and show it as 追蹤失效 on the system surface,
+    // never a silent disappearance.
     final session = state.session;
     if (session == null) return;
     emit(state.copyWith(clearSession: true));
@@ -281,6 +307,7 @@ class MrtTrackBloc extends Bloc<MrtTrackEvent, MrtTrackBlocState> {
       source: () => _repository.watch(trackId),
       onData: (session) => add(MrtTrackUpdated(session)),
       onFailure: (_) => add(const MrtTrackWatchFailed()),
+      onRecovered: () => add(const MrtTrackWatchRecovered()),
     );
   }
 
@@ -321,6 +348,8 @@ class MrtTrackBloc extends Bloc<MrtTrackEvent, MrtTrackBlocState> {
   }
 
   Future<void> _teardown({required bool clearPersisted}) async {
+    _watchLostTimer?.cancel();
+    _watchLostTimer = null;
     await _watch?.cancel();
     _watch = null;
     await _boardSub?.cancel();

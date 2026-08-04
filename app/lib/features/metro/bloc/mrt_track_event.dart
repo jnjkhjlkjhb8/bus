@@ -101,9 +101,20 @@ class MrtTrackUpdated extends MrtTrackEvent {
   List<Object?> get props => [session];
 }
 
-/// The resilient watch stream gave up (exhausted reconnects).
+/// The resilient watch stream reported a failure. It keeps reconnecting, so
+/// this arms the grace window rather than ending the session.
 class MrtTrackWatchFailed extends MrtTrackEvent {
   const MrtTrackWatchFailed();
+}
+
+/// The watch stream came back before the grace window ran out.
+class MrtTrackWatchRecovered extends MrtTrackEvent {
+  const MrtTrackWatchRecovered();
+}
+
+/// The grace window ran out with the stream still down — the session is over.
+class MrtTrackWatchLost extends MrtTrackEvent {
+  const MrtTrackWatchLost();
 }
 
 /// Cancels the active session — the bell toggle-off, or the Android

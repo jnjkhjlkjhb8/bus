@@ -345,6 +345,57 @@ void main() {
       await board.close();
     },
   );
+
+  test('a watch failure does not end the ride while it can still recover '
+      '(a tunnel is not an ending)', () async {
+    final repo = _FakeRepo()..createResult = _session();
+    final bloc = build(repo);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const MrtTrackRequested(
+        carId: '1163',
+        boardStationId: 'BL12',
+        destStationId: 'BL23',
+        targetStationId: 'BL18',
+        leadStops: 1,
+      ),
+    );
+    await bloc.stream.firstWhere((s) => s.session != null);
+
+    bloc
+      ..add(const MrtTrackWatchFailed())
+      ..add(const MrtTrackWatchRecovered());
+    await Future<void>.delayed(Duration.zero);
+
+    expect(bloc.state.session, isNotNull);
+  });
+
+  test(
+    'a watch failure that never recovers ends the session as 追蹤失效',
+    () async {
+      final repo = _FakeRepo()..createResult = _session();
+      final bloc = build(repo);
+      addTearDown(bloc.close);
+
+      bloc.add(
+        const MrtTrackRequested(
+          carId: '1163',
+          boardStationId: 'BL12',
+          destStationId: 'BL23',
+          targetStationId: 'BL18',
+          leadStops: 1,
+        ),
+      );
+      await bloc.stream.firstWhere((s) => s.session != null);
+
+      // Fired directly rather than waiting out the two-minute grace window.
+      bloc.add(const MrtTrackWatchLost());
+      await bloc.stream.firstWhere((s) => s.session == null);
+
+      expect(bloc.state.session, isNull);
+    },
+  );
 }
 
 class _FakeChannel extends AlightTrackChannel {
