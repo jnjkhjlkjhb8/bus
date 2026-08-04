@@ -56,15 +56,19 @@ class ResilientSubscription<T> {
   int _cleanCloses = 0;
   bool _notified = false;
   bool _closed = false;
-  bool _terminal = false;
 
   /// Backgrounding drops the open stream — see [AppForeground]. Resuming
   /// re-listens with the backoff reset, because coming back on screen is not a
-  /// failure and the user is waiting for a fresh frame. A terminal error
-  /// (unauthenticated, permission denied, unimplemented) stays terminal: those
-  /// never fix themselves, so a resume must not re-hammer the endpoint.
+  /// failure and the user is waiting for a fresh frame.
+  ///
+  /// A terminal error (unauthenticated, permission denied, unimplemented) stops
+  /// the retry loop, but only until the next resume (FDPL-52): a router mid-
+  /// restart and an expired token both produce one, and neither is a permanent
+  /// fact about the endpoint. Retrying once per resume is far from re-hammering
+  /// it, and without that the feed — and the notice it raised — stayed dead for
+  /// the rest of the process.
   void _onForegroundChanged() {
-    if (_closed || _terminal) return;
+    if (_closed) return;
     if (!_foreground.value) {
       _timer?.cancel();
       _timer = null;
@@ -152,7 +156,8 @@ class ResilientSubscription<T> {
       _onFailure(AppError.from(e));
     }
     if (terminal) {
-      _terminal = true;
+      // No retry is scheduled, so the loop stops here — until the next resume
+      // re-listens (see [_onForegroundChanged]).
       unawaited(_sub?.cancel() ?? Future<void>.value());
       _sub = null;
       return;

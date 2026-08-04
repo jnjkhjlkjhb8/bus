@@ -314,7 +314,8 @@ void main() {
     }
   });
 
-  test('a terminal error stays terminal across a resume', () async {
+  test('a terminal error stops retrying but is re-tried once per resume '
+      '(a restarting router and an expired token both produce one)', () async {
     final foreground = ValueNotifier<bool>(true);
     addTearDown(foreground.dispose);
     var subscribeCount = 0;
@@ -330,12 +331,45 @@ void main() {
     );
 
     await eventually(() => subscribeCount == 1);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(subscribeCount, 1, reason: 'no retry loop while it stays terminal');
+
     foreground
       ..value = false
       ..value = true;
-    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await eventually(() => subscribeCount == 2);
 
-    expect(subscribeCount, 1);
+    expect(subscribeCount, 2);
+    await sub.cancel();
+  });
+
+  test('a terminal error recovers when the endpoint comes back', () async {
+    final foreground = ValueNotifier<bool>(true);
+    addTearDown(foreground.dispose);
+    var recovered = 0;
+    var attempt = 0;
+    final sub = ResilientSubscription<int>(
+      source: () {
+        attempt++;
+        if (attempt == 1) {
+          return Stream<int>.error(const GrpcError.unimplemented());
+        }
+        return Stream<int>.value(7);
+      },
+      onData: (_) {},
+      onFailure: (_) {},
+      onRecovered: () => recovered++,
+      reportError: (_, _) {},
+      foreground: foreground,
+    );
+
+    await eventually(() => attempt == 1);
+    foreground
+      ..value = false
+      ..value = true;
+    await eventually(() => recovered == 1);
+
+    expect(recovered, 1);
     await sub.cancel();
   });
 }
