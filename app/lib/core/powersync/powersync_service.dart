@@ -9,6 +9,7 @@ import 'package:powersync/powersync.dart';
 import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_bus/core/firebase/install_identity.dart';
 import 'package:wheres_the_bus/core/http/http_client.dart';
+import 'package:wheres_the_bus/core/lifecycle/app_foreground.dart';
 import 'package:wheres_the_bus/core/powersync/local_db.dart';
 import 'package:wheres_the_bus/core/powersync/powersync_health.dart';
 
@@ -119,22 +120,39 @@ class PowerSyncService implements LocalDb {
     await db.initialize();
     _health.listen(db.statusStream);
     _db = db;
-    if (_envPowersyncUrl.isNotEmpty) {
-      try {
-        final connector = CachedPowerSyncConnector();
-        final creds = await connector.fetchCredentials();
-        if (creds != null) {
-          await db.connect(connector: connector);
-        }
-      } on Object catch (e, s) {
-        CrashReporter.record(e, s);
-        if (kDebugMode) {
-          debugPrint(
-            '[PowerSync] Init: failed to fetch credentials, running offline',
-          );
-        }
+    AppForeground.value.addListener(_handleForeground);
+    await _connect(db);
+  }
+
+  /// Opens the sync connection, if it isn't open already. Doing nothing on a
+  /// failed credential fetch is the offline case, and is why this has to be
+  /// retryable rather than a one-shot step of [_doInit].
+  Future<void> _connect(PowerSyncDatabase db) async {
+    if (_envPowersyncUrl.isEmpty || db.connected) return;
+    try {
+      final connector = CachedPowerSyncConnector();
+      final creds = await connector.fetchCredentials();
+      if (creds != null) {
+        await db.connect(connector: connector);
+      }
+    } on Object catch (e, s) {
+      CrashReporter.record(e, s);
+      if (kDebugMode) {
+        debugPrint(
+          '[PowerSync] Connect: failed to fetch credentials, running offline',
+        );
       }
     }
+  }
+
+  /// Launching with no network left the database initialized but never
+  /// connected, and nothing ever retried it — the local copy then stayed
+  /// frozen at whatever the last online launch had synced, for the whole
+  /// process (FDPL-53). Every return to the foreground is another chance.
+  void _handleForeground() {
+    if (!AppForeground.value.value) return;
+    final db = _db;
+    if (db != null) unawaited(_connect(db));
   }
 
   /// Resolves once initialization has completed, then returns [db]. Prefer
@@ -167,6 +185,7 @@ class PowerSyncService implements LocalDb {
   }
 
   Future<void> close() async {
+    AppForeground.value.removeListener(_handleForeground);
     await _health.cancel();
     final db = _db;
     if (db != null) {
