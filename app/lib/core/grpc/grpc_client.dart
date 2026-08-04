@@ -132,6 +132,24 @@ class GrpcClient {
                 onBadCertificate: _pinnedCertOnly,
               )
             : const ChannelCredentials.insecure(),
+        // Without pings, grpc-dart never notices a transport the OS killed
+        // under a suspended app: the HTTP/2 connection stays `ready` and a
+        // stream opened on it hangs forever, because only unary calls carry a
+        // deadline (see [GrpcDeadlineInterceptor]). The stream then produces
+        // neither data nor error, so [ResilientSubscription] has nothing to
+        // reconnect on and the whole live chain goes silent (FDPL-49). A ping
+        // that goes unanswered tears the transport down instead, which surfaces
+        // as the stream error the retry path is built for.
+        //
+        // `permitWithoutCalls` stays false: streams are dropped while
+        // backgrounded, and pinging an idle channel would be pure radio cost.
+        keepAlive: const ClientKeepAliveOptions(
+          pingInterval: Duration(seconds: 20),
+          timeout: Duration(seconds: 10),
+        ),
+        // A connect attempt against an unreachable host must fail on a
+        // human timescale rather than sit on the OS default.
+        connectTimeout: const Duration(seconds: 10),
         // Advertises `grpc-accept-encoding: gzip,identity` and decodes gzipped
         // responses. Identity stays listed so a router without the compressor
         // registered still answers. [GrpcCompressionInterceptor] is the other
