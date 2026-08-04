@@ -2,13 +2,16 @@ import 'dart:async';
 
 import 'package:protobuf/protobuf.dart';
 import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/lifecycle/app_network.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
 
 /// Runs [fetch], caches the verbatim response bytes, and falls back to the
 /// last cached response when the network is unreachable (ADR-0017).
 ///
-/// Network-first unless [maxAge] is given: without it the cache is only
-/// consulted from the `catch`, so online behaviour is exactly what it was
+/// Network-first while a network exists. Two things short-circuit it: a
+/// device with no interface up at all (see [AppNetwork]), and [maxAge].
+/// Without [maxAge] the cache is otherwise only consulted from the `catch`, so
+/// online behaviour is exactly what it was
 /// before any call site adopted this. With it, an entry younger than [maxAge]
 /// is returned without a round-trip at all — only for data the daily load can
 /// be trusted not to move underneath, since nothing revalidates in the
@@ -34,6 +37,22 @@ Future<T> offlineCached<M extends GeneratedMessage, T>({
         // Bytes an older build wrote in a shape this one cannot read. Drop
         // them and fall through to the network — unlike the offline branch
         // below there is a live request available, so nothing is lost.
+        unawaited(HiveStore.deleteStatic(key));
+      }
+    }
+  }
+  // With no interface up, the request is going to spend its whole 10-second
+  // deadline before failing into the `catch` below — ten seconds per query,
+  // on every screen, for an answer already on disk (FDPL-56). Only the
+  // "definitely offline" direction of the signal is trusted, so this can
+  // never mask a reachable server. Falls through when nothing is cached: the
+  // caller still needs the real error.
+  if (!AppNetwork.online.value) {
+    final bytes = HiveStore.getStatic(key);
+    if (bytes != null) {
+      try {
+        return decode(parse(bytes));
+      } on Object {
         unawaited(HiveStore.deleteStatic(key));
       }
     }

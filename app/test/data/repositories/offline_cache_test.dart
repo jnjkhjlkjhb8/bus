@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:grpc/grpc.dart';
 import 'package:hive_ce_flutter/adapters.dart';
+import 'package:wheres_the_bus/core/lifecycle/app_network.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
 import 'package:wheres_the_bus/data/generated/bus.pbgrpc.dart';
 import 'package:wheres_the_bus/data/repositories/bus_repository.dart';
@@ -44,6 +45,35 @@ void main() {
     ).stationGroup('G1');
 
     expect(members.single.stationName, '台北車站');
+  });
+
+  test('a known-offline device is served from cache without an RPC', () async {
+    final online = _FakeBusStationClient(group: group);
+    await BusRepository(stationClient: online).stationGroup('G1');
+
+    AppNetwork.online.value = false;
+    addTearDown(AppNetwork.reset);
+    // Would take the full unary deadline to fail if it were ever called.
+    final offline = _FakeBusStationClient(error: const GrpcError.unavailable());
+    final members = await BusRepository(
+      stationClient: offline,
+    ).stationGroup('G1');
+
+    expect(members.single.stationName, '台北車站');
+    expect(offline.calls, 0, reason: 'no doomed round-trip');
+  });
+
+  test('a known-offline device with nothing cached still hits the '
+      'network for the real error', () async {
+    AppNetwork.online.value = false;
+    addTearDown(AppNetwork.reset);
+    final offline = _FakeBusStationClient(error: const GrpcError.unavailable());
+
+    await expectLater(
+      BusRepository(stationClient: offline).stationGroup('G1'),
+      throwsA(isA<GrpcError>()),
+    );
+    expect(offline.calls, 1);
   });
 
   test('a cache miss rethrows the network error', () async {
@@ -146,12 +176,14 @@ class _FakeBusStationClient implements Bus_Station_ServiceClient {
 
   final Bus_StationGroup _group;
   final GrpcError? error;
+  int calls = 0;
 
   @override
   ResponseFuture<Bus_StationGroup> group(
     Bus_Ask_StationGroup request, {
     CallOptions? options,
   }) {
+    calls++;
     final err = error;
     return FakeResponseFuture(
       err != null ? Future.error(err) : Future.value(_group),
