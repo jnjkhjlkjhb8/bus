@@ -307,7 +307,7 @@ class _MetroArrivalsSkeleton extends StatelessWidget {
                     if (car > 0) const SizedBox(width: 3),
                     _CongestionCar(
                       color: cs.surfaceContainerHighest,
-                      head: car == 5,
+                      head: car == 0,
                     ),
                   ],
                   const SizedBox(width: 8),
@@ -330,7 +330,7 @@ class _MetroArrivalsSkeleton extends StatelessWidget {
 }
 
 /// Per-car congestion silhouette: a train of rounded cars, head car (travel
-/// direction, rightmost) with a rounded nose, each car tinted by its crowding
+/// direction, leftmost) with a rounded nose, each car tinted by its crowding
 /// level through the existing semantic status tokens. No reading — the levels
 /// are a felt glance. Absent data renders muted cars with a 暫無資料 label.
 class _MetroCongestionStrip extends StatelessWidget {
@@ -364,9 +364,9 @@ class _MetroCongestionStrip extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              for (final (i, color) in cars.indexed) ...[
+              for (final (i, color) in cars.reversed.indexed) ...[
                 if (i > 0) const SizedBox(width: 3),
-                _CongestionCar(color: color, head: i == cars.length - 1),
+                _CongestionCar(color: color, head: i == 0),
               ],
             ],
           ),
