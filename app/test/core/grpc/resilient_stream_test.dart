@@ -80,6 +80,55 @@ void main() {
     await sub.cancel();
   });
 
+  test('a silent reconnect recovers once the grace window passes', () async {
+    final failures = <AppError>[];
+    var recovered = 0;
+    var attempt = 0;
+    final sub = ResilientSubscription<int>(
+      source: () {
+        attempt++;
+        // Fails until the threshold, then reconnects to a stream that never
+        // emits — exactly what an alert feed does when nothing is wrong.
+        if (attempt <= 2) {
+          return Stream<int>.error(const GrpcError.unavailable());
+        }
+        return StreamController<int>().stream;
+      },
+      onData: (_) {},
+      onFailure: failures.add,
+      onRecovered: () => recovered++,
+      maxFailures: 2,
+      baseDelay: const Duration(milliseconds: 1),
+      recoveryGrace: const Duration(milliseconds: 10),
+      reportError: (_, _) {},
+    );
+
+    await eventually(() => failures.isNotEmpty);
+    await eventually(() => recovered == 1);
+    expect(recovered, 1, reason: 'no frame ever arrived');
+    await sub.cancel();
+  });
+
+  test('a reconnect that fails again inside the grace window does not '
+      'report recovery', () async {
+    var recovered = 0;
+    final sub = ResilientSubscription<int>(
+      source: () => Stream<int>.error(const GrpcError.unavailable()),
+      onData: (_) {},
+      onFailure: (_) {},
+      onRecovered: () => recovered++,
+      maxFailures: 1,
+      baseDelay: const Duration(milliseconds: 1),
+      maxDelay: const Duration(milliseconds: 1),
+      recoveryGrace: const Duration(milliseconds: 50),
+      reportError: (_, _) {},
+    );
+
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    expect(recovered, 0);
+    await sub.cancel();
+  });
+
   test('cancel stops retrying', () async {
     var subscribeCount = 0;
     final sub = ResilientSubscription<int>(

@@ -18,6 +18,7 @@ class ResilientSubscription<T> {
     int maxFailures = 5,
     Duration baseDelay = const Duration(seconds: 2),
     Duration maxDelay = const Duration(seconds: 30),
+    Duration recoveryGrace = const Duration(seconds: 5),
     void Function(Object, StackTrace)? reportError,
     RetryDelay? retryDelay,
     ValueListenable<bool>? foreground,
@@ -28,6 +29,7 @@ class ResilientSubscription<T> {
        _maxFailures = maxFailures,
        _baseDelay = baseDelay,
        _maxDelay = maxDelay,
+       _recoveryGrace = recoveryGrace,
        _reportError = reportError ?? CrashReporter.record,
        _retryDelay = retryDelay ?? _jitteredDelay,
        _foreground = foreground ?? AppForeground.value {
@@ -42,12 +44,14 @@ class ResilientSubscription<T> {
   final int _maxFailures;
   final Duration _baseDelay;
   final Duration _maxDelay;
+  final Duration _recoveryGrace;
   final void Function(Object, StackTrace) _reportError;
   final RetryDelay _retryDelay;
   final ValueListenable<bool> _foreground;
 
   StreamSubscription<T>? _sub;
   Timer? _timer;
+  Timer? _graceTimer;
   int _failures = 0;
   int _cleanCloses = 0;
   bool _notified = false;
@@ -64,6 +68,8 @@ class ResilientSubscription<T> {
     if (!_foreground.value) {
       _timer?.cancel();
       _timer = null;
+      _graceTimer?.cancel();
+      _graceTimer = null;
       unawaited(_sub?.cancel() ?? Future<void>.value());
       _sub = null;
       return;
@@ -92,11 +98,7 @@ class ResilientSubscription<T> {
     }
     _sub = stream.listen(
       (data) {
-        if (_failures > 0 || _notified) {
-          _failures = 0;
-          _notified = false;
-          _onRecovered?.call();
-        }
+        _markRecovered();
         _cleanCloses = 0;
         _onData(data);
       },
@@ -104,6 +106,10 @@ class ResilientSubscription<T> {
       onDone: () {
         if (_closed) return;
         _sub = null;
+        // A clean close only happens on a connection that was actually
+        // established, so it proves the endpoint is reachable just as a frame
+        // would.
+        _markRecovered();
         // A clean close is normal (server-side stream rotation), but a server
         // that closes immediately on every connect must not become a hot
         // reconnect loop: back off like errors do, capped at [_maxDelay], and
@@ -114,9 +120,30 @@ class ResilientSubscription<T> {
         _timer = Timer(_retryDelay(delay), _listen);
       },
     );
+    // Nothing but time proves a reconnect worked on a quiet stream: alerts sit
+    // silent for hours, so waiting for a frame to declare recovery leaves the
+    // offline notice up forever after the network comes back (FDPL-48).
+    // Surviving [_recoveryGrace] without an error is the proof instead.
+    if (_failures > 0 || _notified) {
+      _graceTimer?.cancel();
+      _graceTimer = Timer(_recoveryGrace, _markRecovered);
+    }
+  }
+
+  /// Clears the failure state and tells the caller, once, that the feed is
+  /// healthy again. A no-op when nothing had failed.
+  void _markRecovered() {
+    _graceTimer?.cancel();
+    _graceTimer = null;
+    if (_failures == 0 && !_notified) return;
+    _failures = 0;
+    _notified = false;
+    _onRecovered?.call();
   }
 
   void _handleError(Object e, StackTrace s) {
+    _graceTimer?.cancel();
+    _graceTimer = null;
     _reportError(e, s);
     final terminal = _isTerminal(e);
     _failures = terminal ? _maxFailures : _failures + 1;
@@ -157,6 +184,7 @@ class ResilientSubscription<T> {
     _closed = true;
     _foreground.removeListener(_onForegroundChanged);
     _timer?.cancel();
+    _graceTimer?.cancel();
     await _sub?.cancel();
   }
 
