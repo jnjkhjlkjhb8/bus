@@ -49,11 +49,19 @@ class MainActivity : FlutterActivity() {
         notificationPermissionCoordinator.onPermissionResult(granted)
     }
 
+    private var liveActivityPlugin: LiveActivityPlugin? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         ensureFcmChannel()
-        LiveActivityPlugin(this, notificationPermissionCoordinator)
-            .register(flutterEngine.dartExecutor.binaryMessenger)
+        liveActivityPlugin = LiveActivityPlugin(this, notificationPermissionCoordinator)
+            .also { it.register(flutterEngine.dartExecutor.binaryMessenger) }
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        liveActivityPlugin?.dispose()
+        liveActivityPlugin = null
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     private fun ensureFcmChannel() {

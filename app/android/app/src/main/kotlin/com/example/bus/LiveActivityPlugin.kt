@@ -54,6 +54,8 @@ class LiveActivityPlugin(
 
     private var channel: MethodChannel? = null
 
+    private var receiverRegistered = false
+
     // The 取消追蹤 action lives in the notification while the app process is
     // alive (background push updates are a later phase), so a plain
     // context-registered receiver that pings Dart over the channel suffices.
@@ -62,6 +64,10 @@ class LiveActivityPlugin(
             channel?.invokeMethod("onCancelTrack", null)
         }
     }
+
+    @androidx.annotation.VisibleForTesting
+    internal val cancelReceiverForTest: BroadcastReceiver
+        get() = cancelReceiver
 
     fun register(messenger: BinaryMessenger) {
         channel = MethodChannel(messenger, CHANNEL_NAME)
@@ -77,6 +83,7 @@ class LiveActivityPlugin(
             IntentFilter(CANCEL_ACTION),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
+        receiverRegistered = true
         channel!!.setMethodCallHandler { call, result ->
             @Suppress("UNCHECKED_CAST")
             val data = call.arguments as? Map<String, Any?> ?: emptyMap()
@@ -110,6 +117,22 @@ class LiveActivityPlugin(
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /**
+     * Undoes [register]. The receiver holds the Activity context and the
+     * channel handler holds this plugin, so both outlive the engine that
+     * created them unless they are released with it — one process serving two
+     * engines in sequence would otherwise stack a receiver per engine, each
+     * pushing onCancelTrack at a dead Dart isolate.
+     */
+    fun dispose() {
+        if (receiverRegistered) {
+            context.unregisterReceiver(cancelReceiver)
+            receiverRegistered = false
+        }
+        channel?.setMethodCallHandler(null)
+        channel = null
     }
 
     @androidx.annotation.VisibleForTesting
