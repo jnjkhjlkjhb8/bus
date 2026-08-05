@@ -56,4 +56,28 @@ void main() {
       ['waiting', 'riding', 'approaching', 'arrived', 'lost'],
     );
   });
+
+  test('toArgs carries the session id, and declares it when there is none', () {
+    // Android's 取消追蹤 needs it to end the session from a process with no Dart
+    // alive (FDPL-65). A bus ride has no server session, and the key must still
+    // be present: the platform side reads a missing key and a null one the same
+    // way, but a payload that silently drops fields is how the two sides drift.
+    const metro = AlightTrackContent(
+      mode: AlightTrackMode.metro,
+      phase: AlightTrackPhase.riding,
+      vehicleLabel: '板南線',
+      boardStation: 'A',
+      targetStation: 'C',
+      nextStation: 'B',
+      hopCount: 6,
+      currentIndex: 2,
+      remainingStops: 4,
+      leadStops: 2,
+      trackId: '3f2a1c7e-9b4d-4a2f-8e1c-5d6b7a8c9e0f',
+    );
+
+    expect(metro.toArgs()['trackId'], '3f2a1c7e-9b4d-4a2f-8e1c-5d6b7a8c9e0f');
+    expect(base.toArgs().containsKey('trackId'), isTrue);
+    expect(base.toArgs()['trackId'], isNull);
+  });
 }

@@ -48,6 +48,30 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Redraws the tracking card from a server push (ADR-0018). A receiver
+             rather than a FirebaseMessagingService: firebase_messaging already
+             declares that service and only one may win, and taking it would
+             break the Dart background handler the 下車提醒 vibration rides on.
+             Receivers do not compete, and a broadcast can start a process the
+             system has already killed. -->
+        <receiver
+            android:name=".TrackPushReceiver"
+            android:exported="true"
+            android:permission="com.google.android.c2dm.permission.SEND">
+            <intent-filter>
+                <action android:name="com.google.android.c2dm.intent.RECEIVE" />
+            </intent-filter>
+        </receiver>
+        <!-- 取消追蹤 on a card whose process is gone. The plugin's own dynamic
+             receiver ends the session properly while Dart is alive; this one
+             guarantees the button always at least takes the card down. -->
+        <receiver
+            android:name=".TrackCancelReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.wheres.bus.action.CANCEL_TRACK" />
+            </intent-filter>
+        </receiver>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

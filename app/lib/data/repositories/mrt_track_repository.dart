@@ -27,6 +27,9 @@ class MrtTrackRepository {
     required String destStationId,
     required String targetStationId,
     required int leadStops,
+    String vehicleLabel = '',
+    String lineCode = '',
+    String lineColorHex = '',
   }) async {
     final installId = await InstallIdentity.getOrCreate();
     final state = await _grpc.createTrack(
@@ -38,6 +41,13 @@ class MrtTrackRepository {
         targetStationId: targetStationId,
         leadStops: leadStops,
         system: _system,
+        // How the card names this ride. The server cannot derive either —
+        // one is a localized line name, the other a colour from a table that
+        // lives here — so they are handed up once and echoed back on every
+        // pushed refresh (ADR-0018).
+        vehicleLabel: vehicleLabel,
+        lineCode: lineCode,
+        lineColorHex: lineColorHex,
       ),
       options: await FirebaseCallOptions.build(),
     );
@@ -48,6 +58,25 @@ class MrtTrackRepository {
   /// resilient stream seam by the bloc; this stays a bare passthrough.
   Stream<MrtTrackSession> watch(String trackId) =>
       _grpc.watchTrack(WatchMrtTrackRequest(trackId: trackId)).map(_decode);
+
+  /// Hands up the iOS Live Activity push token so the server can refresh this
+  /// session's card while the app is suspended (ADR-0018). An empty token
+  /// clears it, which is what ending a session sends.
+  ///
+  /// Best-effort by design: a card that never gets a token simply degrades to
+  /// the local-update behaviour it had before, so a failure here must not take
+  /// the tracking session down with it.
+  Future<void> setPushToken(String trackId, String token) async {
+    final installId = await InstallIdentity.getOrCreate();
+    await _grpc.setTrackPushToken(
+      SetMrtTrackPushTokenRequest(
+        installId: installId,
+        trackId: trackId,
+        pushToken: token,
+      ),
+      options: await FirebaseCallOptions.build(),
+    );
+  }
 
   Future<void> cancel(String trackId) async {
     final installId = await InstallIdentity.getOrCreate();

@@ -547,6 +547,14 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		return fmt.Errorf("init Firebase sender: %w", err)
 	}
 	dispatcher := notify.NewDispatcher(notify.NewStore(db), sender)
+	// The card-refresh transports (ADR-0018). Absent APNs credentials disable the
+	// iOS leg only; a malformed key is a boot failure rather than a silent
+	// downgrade, because credentials that are present but unusable are a mistake.
+	apns, err := notify.NewAPNSSender()
+	if err != nil {
+		return fmt.Errorf("init APNs sender: %w", err)
+	}
+	pusher := notify.NewTrackPusher(sender, apns)
 	bootLoadRunner := newStaticPipelineRunner(rawPool, loadTimeout)
 	if err := runBootBusDailyTimetable(
 		context.Background(), bootLoadRunner, rawTDXSource{pool: rawPool}, db, rc,
@@ -589,7 +597,7 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	// Metro alight-reminder tracker (ADR-0015): a 15s cron that advances active
 	// car-bound sessions from GetTrainInfo (event-driven, one call per hop). Not a
 	// liveSpec — it never touches TDX. Nil-safe dispatcher when push is disabled.
-	registerMrtTrackCron(r, rc, db, dispatcher)
+	registerMrtTrackCron(r, rc, db, dispatcher, pusher)
 	_, _ = addStaticCron(r, "@every 10m", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
 		defer cancel()

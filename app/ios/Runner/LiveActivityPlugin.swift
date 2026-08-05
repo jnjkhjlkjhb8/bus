@@ -31,6 +31,11 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
     /// per station for the rest of the ride.
     private var lastRemainingStops: Int?
 
+    /// Streams this card's ActivityKit push token to Dart. Held so it can be
+    /// cancelled with the card: the token dies with the activity, and a stream
+    /// left running would outlive the session it belongs to.
+    private var pushTokenTask: Task<Void, Never>?
+
     init(channel: FlutterMethodChannel) {
         self.channel = channel
         super.init()
@@ -47,6 +52,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
     @objc private func cardCancelled() {
         activityID = nil
         lastPhase = nil
+        stopObservingPushToken()
         DispatchQueue.main.async { [channel] in
             channel.invokeMethod("onCancelTrack", arguments: nil)
         }
@@ -74,12 +80,18 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
             targetStation: args["targetStation"] as? String ?? ""
         )
         do {
+            // .token asks ActivityKit for a push token so the server can refresh
+            // this card while the app is suspended (ADR-0018). The token arrives
+            // asynchronously — and is reissued at the system's discretion — so
+            // the app forwards each one to Dart as it lands rather than reading
+            // `activity.pushToken` once here.
             let activity = try Activity.request(
                 attributes: attributes,
                 content: content(state, mode: attributes.mode),
-                pushType: nil
+                pushType: .token
             )
             activityID = activity.id
+            observePushToken(of: activity)
             lastPhase = state.phase
             // Seeds the crossing baseline, so a session that opens already
             // inside a threshold does not alert for a crossing that happened
@@ -109,6 +121,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
         // for Dart to dismiss on a timer: an ending has to be seen, and a timer
         // in the app cannot fire once iOS has suspended it.
         if !state.phase.isLive {
+            stopObservingPushToken()
             Task {
                 await activity.end(
                     content(state, mode: activity.attributes.mode),
@@ -133,10 +146,33 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
         guard let activity = current() else { result(nil); return }
         activityID = nil
         lastPhase = nil
+        stopObservingPushToken()
         Task {
             await activity.end(nil, dismissalPolicy: .immediate)
             result(nil)
         }
+    }
+
+    /// Forwards every push token this activity is issued to Dart, which hands it
+    /// to the server (ADR-0018). It is a stream, not a one-shot read: the system
+    /// reissues tokens at its own discretion, and a card refreshed against a
+    /// superseded token silently stops updating.
+    @available(iOS 16.2, *)
+    private func observePushToken(of activity: Activity<AlightTrackAttributes>) {
+        pushTokenTask?.cancel()
+        pushTokenTask = Task { [channel] in
+            for await data in activity.pushTokenUpdates {
+                let token = data.map { String(format: "%02x", $0) }.joined()
+                await MainActor.run { channel.invokeMethod("onPushToken", arguments: token) }
+            }
+        }
+    }
+
+    /// Ends the token stream. Called wherever the card ends, so no session is
+    /// left with a live stream and no card.
+    private func stopObservingPushToken() {
+        pushTokenTask?.cancel()
+        pushTokenTask = nil
     }
 
     @available(iOS 16.2, *)
@@ -182,7 +218,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
         case .metro: window = 6 * 60
         case .tra, .thsr: window = 20 * 60
         }
-        return state.asOf.addingTimeInterval(window)
+        return state.asOfDate.addingTimeInterval(window)
     }
 
     /// The two 下車提醒 alerts, each on the one update that crosses into it.
@@ -223,8 +259,8 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
 
     /// Dart's `AlightTrackContent.toArgs()`, one field at a time.
     private func contentState(from args: [String: Any]) -> AlightTrackAttributes.ContentState {
-        let etaDate = (args["etaMs"] as? Int).flatMap { ms in
-            ms > 0 ? Date(timeIntervalSince1970: Double(ms) / 1000) : nil
+        let etaUnix = (args["etaMs"] as? Int).flatMap { ms in
+            ms > 0 ? ms / 1000 : nil
         }
         return AlightTrackAttributes.ContentState(
             phase: AlightTrackAttributes.Phase(rawValue: args["phase"] as? String ?? "") ?? .riding,
@@ -235,7 +271,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
             currentIndex: args["currentIndex"] as? Int ?? 0,
             remainingStops: max(0, args["remainingStops"] as? Int ?? 0),
             leadStops: max(0, args["leadStops"] as? Int ?? 0),
-            etaDate: etaDate,
+            etaUnix: etaUnix,
             etaMinutes: args["etaMinutes"] as? Int,
             walkMinutes: args["walkMinutes"] as? Int ?? 0,
             lineCode: args["lineCode"] as? String,
@@ -244,7 +280,7 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
             // when data arrives, so the moment the command lands *is* "as of
             // when", and a field travelling over the channel could only be a
             // less accurate copy of it.
-            asOf: Date()
+            asOfUnix: Int(Date().timeIntervalSince1970)
         )
     }
 }

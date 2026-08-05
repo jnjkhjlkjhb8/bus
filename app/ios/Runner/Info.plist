@@ -38,6 +38,8 @@
 	<string>我公車呢使用你的位置來尋找附近的公車站、捷運站與 YouBike 站，並在地圖上顯示你目前的所在位置。</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

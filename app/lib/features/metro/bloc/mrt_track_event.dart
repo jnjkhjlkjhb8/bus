@@ -128,6 +128,18 @@ class MrtTrackRestored extends MrtTrackEvent {
   const MrtTrackRestored();
 }
 
+/// An ActivityKit push token for the card showing this session (iOS only).
+/// Handing it to the server is what lets the card keep counting while the app
+/// is suspended (ADR-0018).
+class MrtTrackPushTokenReceived extends MrtTrackEvent {
+  const MrtTrackPushTokenReceived(this.token);
+
+  final String token;
+
+  @override
+  List<Object?> get props => [token];
+}
+
 /// Internal: a fresh boarding-station ETA for the tracked train.
 ///
 /// Only meaningful before the train pulls in; once it has, the WatchTrack

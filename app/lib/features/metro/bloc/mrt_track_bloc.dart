@@ -65,6 +65,7 @@ class MrtTrackBloc extends Bloc<MrtTrackEvent, MrtTrackBlocState> {
     on<MrtTrackWatchLost>(_onWatchLost);
     on<MrtTrackCancelled>(_onCancelled);
     on<MrtTrackRestored>(_onRestored);
+    on<MrtTrackPushTokenReceived>(_onPushToken);
     on<MrtBoardEtaTicked>(_onBoardEta);
   }
 
@@ -97,6 +98,10 @@ class MrtTrackBloc extends Bloc<MrtTrackEvent, MrtTrackBlocState> {
     'Y': '#FFDB00',
   };
 
+  /// Stand-in for a station code whose line letters match nothing known, so the
+  /// roundel is still drawn rather than left blank.
+  static const _defaultLineColor = '#0070BD';
+
   Future<void> _onRequested(
     MrtTrackRequested e,
     Emitter<MrtTrackBlocState> emit,
@@ -105,12 +110,19 @@ class MrtTrackBloc extends Bloc<MrtTrackEvent, MrtTrackBlocState> {
       state.copyWith(creating: true, createError: MrtTrackCreateError.none),
     );
     try {
+      // Handed up once so a server-pushed refresh can name the line the way
+      // the rider reads it (ADR-0018): the backend knows the trip, not that
+      // it is 板南線 or which blue that is.
+      final line = mrtLineOfStation(e.boardStationId);
       final session = await _repository.createTrack(
         carId: e.carId,
         boardStationId: e.boardStationId,
         destStationId: e.destStationId,
         targetStationId: e.targetStationId,
         leadStops: e.leadStops,
+        vehicleLabel: metroLineName(_i18n, line),
+        lineCode: line,
+        lineColorHex: _lineColors[line] ?? _defaultLineColor,
       );
       // Seeded from the arrival the rider tapped so the card opens on the
       // right reading rather than briefly claiming they are already riding.
@@ -311,6 +323,27 @@ class MrtTrackBloc extends Bloc<MrtTrackEvent, MrtTrackBlocState> {
     );
   }
 
+  /// Hands an ActivityKit push token to the server, which is what lets this
+  /// session's card keep counting while the app is suspended (ADR-0018).
+  ///
+  /// A token that arrives for no session is dropped: iOS issues it against the
+  /// card, and a card with no session behind it is already on its way out.
+  /// Failures are swallowed — the card then simply degrades to local updates,
+  /// which is what it did before push existed, and a tracking session must
+  /// never fall over because a refresh channel could not be set up.
+  Future<void> _onPushToken(
+    MrtTrackPushTokenReceived e,
+    Emitter<MrtTrackBlocState> emit,
+  ) async {
+    final trackId = state.session?.trackId;
+    if (trackId == null || trackId.isEmpty) return;
+    try {
+      await _repository.setPushToken(trackId, e.token);
+    } on Object catch (err, s) {
+      CrashReporter.record(err, s);
+    }
+  }
+
   Future<int?> _startActivity(MrtTrackSession session) async {
     if (!_liveActivityEnabled()) return null;
     return _channel?.start(_content(session));
@@ -396,7 +429,8 @@ class MrtTrackBloc extends Bloc<MrtTrackEvent, MrtTrackBlocState> {
       remainingStops: remaining,
       leadStops: s.leadStops,
       lineCode: s.line,
-      lineColorHex: _lineColors[s.line] ?? '#0070BD',
+      lineColorHex: _lineColors[s.line] ?? _defaultLineColor,
+      trackId: s.trackId,
       // Printed as the feed reported it — nothing counts down locally between
       // the ~15 s frames.
       etaMinutes: waiting ? max(1, (state.boardEtaSeconds! / 60).ceil()) : null,

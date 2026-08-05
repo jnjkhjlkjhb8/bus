@@ -273,3 +273,106 @@ func TestMrtAdjacencyRows(t *testing.T) {
 		}
 	}
 }
+
+func TestMrtCardMoved(t *testing.T) {
+	previous := mrtTestState(2, 5, 1, mrtStatusTracking)
+	previous.NextStationName = "c"
+
+	same := mrtTestState(2, 5, 1, mrtStatusTracking)
+	same.NextStationName = "c"
+	// The poll schedule moving is not a change the rider can see, and pushing on
+	// it would spend the Live Activity budget on a card that says the same thing.
+	same.NextPollAtUnix = previous.NextPollAtUnix + 30
+	if mrtCardMoved(previous, same) {
+		t.Error("mrtCardMoved() = true for a reschedule with no new reading")
+	}
+
+	hopped := mrtTestState(3, 5, 1, mrtStatusTracking)
+	hopped.NextStationName = "d"
+	if !mrtCardMoved(previous, hopped) {
+		t.Error("mrtCardMoved() = false across a station hop")
+	}
+
+	ended := mrtTestState(2, 5, 1, mrtStatusArrived)
+	ended.NextStationName = "c"
+	if !mrtCardMoved(previous, ended) {
+		t.Error("mrtCardMoved() = false for an ending, which is the one reading that must land")
+	}
+}
+
+func TestMrtCardPhase(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    string
+		remaining int32
+		lead      int32
+		want      string
+	}{
+		{"far out", mrtStatusTracking, 6, 2, "riding"},
+		// The warm threshold is the rider's own 提前站數 plus the last stop: the
+		// same boundary the bar colours on and the vibration fires on.
+		{"inside the lead", mrtStatusTracking, 3, 2, "approaching"},
+		{"no lead, last stop", mrtStatusTracking, 1, 0, "approaching"},
+		{"arrived", mrtStatusArrived, 0, 2, "arrived"},
+		{"binding lost", mrtStatusLost, 4, 2, "lost"},
+		// A stale session is a lost binding the tracker could not classify; the
+		// card has one word for both, because the rider's move is the same.
+		{"stale", mrtStatusStale, 4, 2, "lost"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mrtCardPhase(tc.status, tc.remaining, tc.lead); got != tc.want {
+				t.Errorf("mrtCardPhase() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMrtCardCarriesTheDisplayFieldsTheServerCannotDerive(t *testing.T) {
+	state := mrtTestState(1, 4, 1, mrtStatusTracking)
+	state.RemainingStops = 3
+	state.NextStationName = "c"
+	state.VehicleLabel = "板南線"
+	state.LineCode = "BL"
+	state.LineColorHex = "#0070BD"
+	now := time.Unix(1_700_000_000, 0)
+
+	card := mrtCard(state, now)
+
+	if card.VehicleLabel != "板南線" || card.LineCode != "BL" || card.LineColorHex != "#0070BD" {
+		t.Errorf("card lost the app's own vocabulary: %+v", card)
+	}
+	if card.BoardStation != "a" || card.TargetStation != "e" {
+		t.Errorf("board/target = %q/%q, want the path's own names", card.BoardStation, card.TargetStation)
+	}
+	if card.Mode != "metro" || card.Phase != "riding" {
+		t.Errorf("mode/phase = %q/%q", card.Mode, card.Phase)
+	}
+	if card.AsOf != now || card.StaleAfter != mrtCardStaleAfter {
+		t.Errorf("as-of/stale = %v/%v", card.AsOf, card.StaleAfter)
+	}
+}
+
+func TestMrtCardSurvivesAShortPath(t *testing.T) {
+	// A path that does not reach the target index is a broken session, but a
+	// missing string is not a reason to drop the refresh a rider is reading.
+	state := mrtTestState(1, 9, 1, mrtStatusTracking)
+	card := mrtCard(state, time.Unix(1_700_000_000, 0))
+	if card.TargetStation != "" {
+		t.Errorf("TargetStation = %q, want empty rather than a panic", card.TargetStation)
+	}
+}
+
+func TestMrtCardAlertOnlyOnACrossing(t *testing.T) {
+	card := mrtCard(mrtTestState(3, 4, 1, mrtStatusTracking), time.Unix(1_700_000_000, 0))
+
+	if alert := mrtCardAlert("", card); alert != nil {
+		t.Errorf("mrtCardAlert() = %v for no crossing, want nil", alert)
+	}
+	if alert := mrtCardAlert(mrtAlightEventAlight, card); alert == nil || alert.Title != "Get Set" {
+		t.Errorf("mrtCardAlert() = %v for the 下車站 crossing", alert)
+	}
+	if alert := mrtCardAlert(mrtAlightEventLead, card); alert == nil || alert.Title != "Ready" {
+		t.Errorf("mrtCardAlert() = %v for the 提前提醒站 crossing", alert)
+	}
+}

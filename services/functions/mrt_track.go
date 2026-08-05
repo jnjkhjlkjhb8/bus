@@ -77,23 +77,31 @@ type mrtVibrator interface {
 	FireMrtVibrate(ctx context.Context, event notify.MrtVibrateEvent) (bool, error)
 }
 
+// mrtCardPusher refreshes the rider's tracking card over push, satisfied by
+// *notify.TrackPusher (nil-safe when neither transport is configured).
+type mrtCardPusher interface {
+	PushCard(ctx context.Context, card notify.AlightCard, target notify.CardTarget, alert *notify.CardAlert) error
+}
+
 // mrtTracker holds the tracker's dependencies for one deployment.
 type mrtTracker struct {
 	trtc     trainInfoClient
 	rc       *redis.Client
 	store    mrtTrackStore
 	vibrator mrtVibrator
+	pusher   mrtCardPusher
 }
 
 // registerMrtTrackCron schedules the 15s tracker. Empty TRTC credentials make
 // GetTrainInfo a no-op, and no session can be created without it, so a
 // credential-less environment simply has nothing to advance.
-func registerMrtTrackCron(r *cron.Cron, rc *redis.Client, db *pgxpool.Pool, dispatcher *notify.Dispatcher) {
+func registerMrtTrackCron(r *cron.Cron, rc *redis.Client, db *pgxpool.Pool, dispatcher *notify.Dispatcher, pusher *notify.TrackPusher) {
 	tracker := &mrtTracker{
 		trtc:     shared.NewTRTCTrainInfoClient(os.Getenv("TRTC_USERNAME"), os.Getenv("TRTC_PASSWORD")),
 		rc:       rc,
 		store:    notify.NewStore(db),
 		vibrator: dispatcher,
+		pusher:   pusher,
 	}
 	_, _ = addStaticCron(r, "@every 15s", func() {
 		withTimeout(mrtTrackTickTimeout, func(ctx context.Context) {
@@ -203,6 +211,7 @@ func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackRe
 	}
 
 	t.publishState(ctx, newState)
+	t.pushCard(ctx, &state, newState, track, fire, now)
 	if mrtIsTerminal(newState.Status) {
 		zap.S().Infow("ended",
 			"component", "mrt_track",
@@ -221,6 +230,149 @@ func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackRe
 			)
 		}
 	}
+}
+
+// mrtCardStaleAfter is how long one metro reading stays true without another.
+// A metro card moves once per station hop, so this is a few hops' worth — long
+// enough that a normal inter-station run never reads as stale, short enough that
+// a suspended app's frozen card admits it before the rider trusts a wrong count.
+// It matches the window the local iOS path already uses for this mode.
+const mrtCardStaleAfter = 6 * time.Minute
+
+// pushCard refreshes the rider's tracking card after the session advanced, so a
+// backgrounded app's card keeps counting (ADR-0018). It is additive: the app's
+// own MethodChannel updates remain the foreground path, and a device with no
+// push at all keeps exactly today's degrade-to-stale behaviour.
+//
+// Only a reading that moved is pushed. The card's numbers may not change without
+// data behind them, and a push per tick rather than per hop would also spend the
+// Live Activity budget on nothing.
+func (t *mrtTracker) pushCard(
+	ctx context.Context,
+	previous, next *models.MrtTrackState,
+	track notify.MrtTrackReminder,
+	fire string,
+	now time.Time,
+) {
+	if t.pusher == nil || !mrtCardMoved(previous, next) {
+		return
+	}
+	target := notify.CardTarget{FCMToken: track.Token}
+	// Absent on Android, and on an iOS app that never got a card: the key is
+	// written only once ActivityKit hands the app a token for a live activity.
+	if token, err := t.rc.Get(ctx, shared.MrtTrackPushTokenKey(track.ID)).Result(); err == nil {
+		target.ActivityToken = token
+	} else if !errors.Is(err, redis.Nil) {
+		zap.S().Warnw("push token read error",
+			"component", "mrt_track",
+			"action", "push",
+			"event", "push_token_read_error",
+			"track", track.ID,
+			"err", err,
+		)
+	}
+	if target.FCMToken == "" && target.ActivityToken == "" {
+		return
+	}
+
+	card := mrtCard(next, now)
+	alert := mrtCardAlert(fire, card)
+	if err := t.pusher.PushCard(ctx, card, target, alert); err != nil {
+		zap.S().Warnw("push error",
+			"component", "mrt_track",
+			"action", "push",
+			"event", "push_error",
+			"track", track.ID,
+			"err", err,
+		)
+		return
+	}
+	zap.S().Infow("pushed",
+		"component", "mrt_track",
+		"action", "push",
+		"event", "pushed",
+		"track", track.ID,
+		"phase", card.Phase,
+		"remaining", card.RemainingStops,
+	)
+}
+
+// mrtCardMoved reports whether anything the card shows actually changed. The
+// poll schedule moving is not a change the rider can see.
+func mrtCardMoved(previous, next *models.MrtTrackState) bool {
+	return previous.CurrentIndex != next.CurrentIndex ||
+		previous.RemainingStops != next.RemainingStops ||
+		previous.Status != next.Status ||
+		previous.NextStationName != next.NextStationName
+}
+
+// mrtCard renders one session state as the card both native surfaces draw.
+//
+// The waiting phase is deliberately unreachable here: whether the rider has
+// boarded is the app's own reading, and a waiting card already carries a
+// countdown to a fixed arrival time, so it stays true without any refresh.
+func mrtCard(state *models.MrtTrackState, now time.Time) notify.AlightCard {
+	hopCount := max(state.TargetIndex, 1)
+	remaining := min(max(state.RemainingStops, 0), hopCount)
+	return notify.AlightCard{
+		TrackID: state.TrackId,
+		Mode:    "metro",
+		Phase:   mrtCardPhase(state.Status, remaining, state.LeadStops),
+		// The rider knows which line they are on, not which trip id they are on,
+		// so the app hands these up at CreateTrack and they ride back out here.
+		VehicleLabel:   state.VehicleLabel,
+		VehicleID:      state.CarId,
+		BoardStation:   mrtPathName(state, 0),
+		TargetStation:  mrtPathName(state, state.TargetIndex),
+		NextStation:    state.NextStationName,
+		HopCount:       hopCount,
+		CurrentIndex:   min(max(state.CurrentIndex, 0), hopCount),
+		RemainingStops: remaining,
+		LeadStops:      state.LeadStops,
+		LineCode:       state.LineCode,
+		LineColorHex:   state.LineColorHex,
+		AsOf:           now,
+		StaleAfter:     mrtCardStaleAfter,
+	}
+}
+
+// mrtCardPhase maps a session status onto the card's phase vocabulary. The
+// approaching threshold is the rider's own 提前站數 plus the last stop, the same
+// boundary the app colours the bar on and the vibration fires on.
+func mrtCardPhase(status string, remaining, lead int32) string {
+	switch status {
+	case mrtStatusArrived:
+		return "arrived"
+	case mrtStatusLost, mrtStatusStale, mrtStatusCancelled:
+		return "lost"
+	}
+	if remaining <= lead+1 {
+		return "approaching"
+	}
+	return "riding"
+}
+
+// mrtCardAlert turns a crossing into the words the iOS card alerts with. Nothing
+// crossed means no alert: the card still refreshes, it just does so quietly.
+func mrtCardAlert(fire string, card notify.AlightCard) *notify.CardAlert {
+	switch fire {
+	case mrtAlightEventAlight:
+		alert := notify.AlightAlert(card.TargetStation)
+		return &alert
+	case mrtAlightEventLead:
+		alert := notify.LeadAlert(card.RemainingStops, card.TargetStation)
+		return &alert
+	}
+	return nil
+}
+
+// mrtPathName reads a path station's display name, tolerating a path shorter
+// than the index asks for rather than failing a push over a missing string.
+func mrtPathName(state *models.MrtTrackState, index int32) string {
+	if index < 0 || int(index) >= len(state.PathStationNames) {
+		return ""
+	}
+	return state.PathStationNames[index]
 }
 
 // publishState writes the session state to its Redis key (short TTL once

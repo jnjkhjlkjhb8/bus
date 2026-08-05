@@ -1,5 +1,12 @@
 import 'package:equatable/equatable.dart';
 
+/// Line letters of a TRTC station code (`BL12` → `BL`), which is how the app
+/// names the line a session runs on. Also read before a session exists — the
+/// card's line name and colour are handed to the server at CreateTrack so a
+/// pushed refresh can carry them (ADR-0018).
+String mrtLineOfStation(String stationId) =>
+    RegExp('^([A-Za-z]+)').firstMatch(stationId)?.group(1) ?? '';
+
 /// The lifecycle status of a metro 追蹤 session, mirroring MrtTrackState.status
 /// on the wire. `tracking`/`leadFired` are live; the rest are terminal.
 enum MrtTrackStatus {
@@ -96,10 +103,7 @@ class MrtTrackSession extends Equatable {
       : '';
 
   /// Line letters of the tracked train, from the board station code.
-  String get line {
-    final match = RegExp('^([A-Za-z]+)').firstMatch(boardStationId);
-    return match?.group(1) ?? '';
-  }
+  String get line => mrtLineOfStation(boardStationId);
 
   Map<String, dynamic> toJson() => {
     'trackId': trackId,

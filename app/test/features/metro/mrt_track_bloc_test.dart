@@ -41,6 +41,92 @@ void main() {
     vibrate: (id, event) async => vibrated?.add('$id:${event.name}'),
   );
 
+  test('CreateTrack hands up the strings the server cannot derive', () async {
+    final repo = _FakeRepo()..createResult = _session();
+    final bloc = build(repo);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const MrtTrackRequested(
+        carId: '1163',
+        boardStationId: 'BL12',
+        destStationId: 'BL23',
+        targetStationId: 'BL18',
+        leadStops: 1,
+      ),
+    );
+    await bloc.stream.firstWhere((s) => s.session != null);
+
+    // The backend knows the trip, not that it is 板南線 or which blue that is,
+    // so a card it pushes while the app sleeps can only say so if these
+    // travelled up at create time (ADR-0018).
+    expect(repo.createdCards.single[1], 'BL');
+    expect(repo.createdCards.single[0], isNotEmpty);
+    expect(repo.createdCards.single[2], '#0070BD');
+  });
+
+  test('a push token reaches the server against the live session', () async {
+    final repo = _FakeRepo()..createResult = _session();
+    final bloc = build(repo);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const MrtTrackRequested(
+        carId: '1163',
+        boardStationId: 'BL12',
+        destStationId: 'BL23',
+        targetStationId: 'BL18',
+        leadStops: 1,
+      ),
+    );
+    await bloc.stream.firstWhere((s) => s.session != null);
+
+    bloc.add(const MrtTrackPushTokenReceived('deadbeef'));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(repo.pushTokens, const [('t1', 'deadbeef')]);
+  });
+
+  test('a push token with no session behind it is dropped', () async {
+    final repo = _FakeRepo();
+    final bloc = build(repo);
+    addTearDown(bloc.close);
+
+    // iOS issues the token against the card, and a card with no session behind
+    // it is already on its way out.
+    bloc.add(const MrtTrackPushTokenReceived('deadbeef'));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(repo.pushTokens, isEmpty);
+  });
+
+  test('a failed push token upload leaves the session running', () async {
+    final repo = _FakeRepo()
+      ..createResult = _session()
+      ..pushTokenError = const GrpcError.unavailable('down');
+    final bloc = build(repo);
+    addTearDown(bloc.close);
+
+    bloc.add(
+      const MrtTrackRequested(
+        carId: '1163',
+        boardStationId: 'BL12',
+        destStationId: 'BL23',
+        targetStationId: 'BL18',
+        leadStops: 1,
+      ),
+    );
+    await bloc.stream.firstWhere((s) => s.session != null);
+
+    bloc.add(const MrtTrackPushTokenReceived('deadbeef'));
+    await Future<void>.delayed(Duration.zero);
+
+    // The card simply degrades to local updates, which is what it did before
+    // push existed. Tracking must not fall over because a refresh channel
+    // could not be set up.
+    expect(bloc.state.session, isNotNull);
+  });
+
   test('CreateTrack success adopts the session and clears creating', () async {
     final repo = _FakeRepo()..createResult = _session();
     final bloc = build(repo);
@@ -428,6 +514,9 @@ class _FakeRepo extends MrtTrackRepository {
   MrtTrackSession? createResult;
   Object? createError;
   final cancelled = <String>[];
+  final createdCards = <List<String>>[];
+  final pushTokens = <(String, String)>[];
+  Object? pushTokenError;
 
   @override
   Future<MrtTrackSession> createTrack({
@@ -436,11 +525,23 @@ class _FakeRepo extends MrtTrackRepository {
     required String destStationId,
     required String targetStationId,
     required int leadStops,
+    String vehicleLabel = '',
+    String lineCode = '',
+    String lineColorHex = '',
   }) async {
+    createdCards.add([vehicleLabel, lineCode, lineColorHex]);
     final err = createError;
     // ignore: only_throw_errors — mirrors the gRPC errors the seam surfaces.
     if (err != null) throw err;
     return createResult!;
+  }
+
+  @override
+  Future<void> setPushToken(String trackId, String token) async {
+    final err = pushTokenError;
+    // ignore: only_throw_errors — mirrors the gRPC errors the seam surfaces.
+    if (err != null) throw err;
+    pushTokens.add((trackId, token));
   }
 
   @override

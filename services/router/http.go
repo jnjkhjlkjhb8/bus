@@ -261,6 +261,13 @@ func newHTTPRouter(db *pgxpool.Pool, live *LiveHub, key *rsa.PrivateKey, config 
 	r.GET("/api/booking/deeplink",
 		httpRateLimit(limiter, "GET /api/booking/deeplink", httpBookingRateLimit, time.Minute),
 		HandleBookingDeeplink(config.booking))
+	// Mounted only with a Redis client: cancelling has to publish the session's
+	// ending, and a cancel a watching app never hears about is half a cancel.
+	if config.redis != nil {
+		r.POST(TrackCancelPath,
+			httpRateLimit(limiter, "POST "+TrackCancelPath, httpTrackCancelRateLimit, time.Minute),
+			HandleTrackCancel(trackCancelStoreFor(db), config.redis))
+	}
 	// GBFS is mounted only with a Redis client: station_status is the point of
 	// the feed, and it cannot be answered without one.
 	if config.redis != nil {

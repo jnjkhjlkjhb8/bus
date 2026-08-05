@@ -112,6 +112,14 @@ func MrtTrackChannel(trackID string) string {
 	return "mrt_track:events:" + trackID
 }
 
+// MrtTrackPushTokenKey holds the iOS ActivityKit push token of the card showing
+// one session, so the tracker can refresh that card while the app is suspended
+// (ADR-0018). Session-scoped rather than device-scoped: the token is issued per
+// activity and dies with the card, so it expires with the session it belongs to.
+func MrtTrackPushTokenKey(trackID string) string {
+	return "mrt_track:push_token:" + trackID
+}
+
 // TraDelayHashKey is the hash of per-train delay minutes, keyed by train
 // number.
 const TraDelayHashKey = "tra:delay"

@@ -129,6 +129,11 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         resValue("string", "google_maps_api_key", dartEnvironmentVariables.GOOGLE_MAPS_API_KEY)
+        // Bridged the same way as the Maps key, for the same reason: 取消追蹤 on
+        // a card whose process is gone is handled in Kotlin (FDPL-65), and a
+        // bare BroadcastReceiver cannot read a dart-define. Blank is safe — the
+        // receiver then only takes the card down, which is the old behaviour.
+        resValue("string", "api_base_url", dartEnvironmentVariables.API_BASE_URL ?: "")
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     kotlinOptions {
@@ -182,6 +187,11 @@ dependencies {
     // line that builds against compileSdk 36 and still carries ProgressStyle
     // (added in 1.16.0).
     implementation "androidx.core:core-ktx:1.17.0"
+    // Already in the APK, dragged in by firebase_messaging — declared here only
+    // so TrackPushReceiver can compile against RemoteMessage. Unversioned: the
+    // Firebase BoM the plugin applies picks the version, so this cannot drift
+    // away from the copy actually shipping.
+    implementation "com.google.firebase:firebase-messaging"
     testImplementation "junit:junit:4.13.2"
     // The tracking card can only be judged on a real Android 16+ device: the
     // promotion decision (hasPromotableCharacteristics) lives in the platform,

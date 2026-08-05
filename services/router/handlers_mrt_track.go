@@ -6,6 +6,7 @@ import (
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -67,6 +68,13 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 	// actually produces, simply is not written at 0.
 	if request.LeadStops < 0 || request.LeadStops > 120 {
 		return nil, status.Error(codes.InvalidArgument, "lead_stops must be between 0 and 120")
+	}
+	// Card display strings are stored verbatim and later rendered on a system
+	// notification, so they are bounded here rather than trusted. Empty is legal
+	// throughout: an app that predates ADR-0018 sends none, which leaves the
+	// server unable to push a card — exactly today's behaviour.
+	if len(request.VehicleLabel) > 64 || len(request.LineCode) > 8 || !validHexColor(request.LineColorHex) {
+		return nil, status.Error(codes.InvalidArgument, "invalid card display fields")
 	}
 	if err := s.authorizeInstall(ctx, request.InstallId); err != nil {
 		return nil, err
@@ -148,6 +156,12 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 		// Seed the stale clock at creation: a session whose binding never advances
 		// at all must still end after the stale window, not poll until expires_at.
 		LastProgressAtUnix: now.Unix(),
+		// Display invariants the tracker echoes into every pushed card refresh
+		// (ADR-0018). Stored, never interpreted: a localized line name and a
+		// colour are the app's vocabulary, not the server's.
+		VehicleLabel: request.VehicleLabel,
+		LineCode:     request.LineCode,
+		LineColorHex: request.LineColorHex,
 	}
 	if err := s.writeTrackState(ctx, state, mrtTrackSessionTTL); err != nil {
 		return nil, status.Error(codes.Internal, "failed to seed metro session state")
@@ -218,20 +232,94 @@ func (s *MrtServer) CancelTrack(ctx context.Context, request *pb.CancelMrtTrackR
 	return &pb.MrtTrackAck{Ok: true}, nil
 }
 
+// SetTrackPushToken stores the ActivityKit push token of the card showing a
+// caller-owned session, so the functions tracker can refresh that card while the
+// app is suspended (ADR-0018). An empty token clears the key — the app sends
+// that when tracking ends, and an absent key simply means "no iOS card to push".
+//
+// The token lives beside the session state rather than on the device row
+// because it is per-activity: it dies with the card, so tying its lifetime to
+// the session's TTL leaves nothing to clean up.
+func (s *MrtServer) SetTrackPushToken(ctx context.Context, request *pb.SetMrtTrackPushTokenRequest) (*pb.MrtTrackAck, error) {
+	if !ValidText(request.GetInstallId(), 128) || !ValidText(request.GetTrackId(), 64) {
+		return nil, status.Error(codes.InvalidArgument, "install_id and track_id are required")
+	}
+	// APNs tokens are lowercase hex; anything else never reaches Apple, so it is
+	// rejected at the door rather than stored and retried every station hop.
+	if !validPushToken(request.GetPushToken()) {
+		return nil, status.Error(codes.InvalidArgument, "push_token must be hex")
+	}
+	if err := s.authorizeInstall(ctx, request.InstallId); err != nil {
+		return nil, err
+	}
+	key := shared.MrtTrackPushTokenKey(request.TrackId)
+	var err error
+	if request.PushToken == "" {
+		err = s.rc.Del(ctx, key).Err()
+	} else {
+		err = s.rc.Set(ctx, key, request.PushToken, mrtTrackSessionTTL).Err()
+	}
+	if err != nil {
+		return nil, status.Error(codes.Internal, "failed to store push token")
+	}
+	return &pb.MrtTrackAck{Ok: true}, nil
+}
+
+// validHexColor accepts an empty value or `#RRGGBB`, the form the app's line
+// colour table produces.
+func validHexColor(value string) bool {
+	if value == "" {
+		return true
+	}
+	if len(value) != 7 || value[0] != '#' {
+		return false
+	}
+	for _, r := range value[1:] {
+		if !isHexDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// validPushToken accepts an empty value (the clear) or a bounded hex string.
+func validPushToken(value string) bool {
+	if len(value) > 256 {
+		return false
+	}
+	for _, r := range value {
+		if !isHexDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexDigit(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
 // publishCancelledState marks the current session state cancelled (or builds a
 // minimal one if the key is already gone) and re-publishes it with a short TTL.
 // A Redis failure here is logged, not fatal: the reminder row is already
 // cancelled, so the tracker will not advance the session regardless.
 func (s *MrtServer) publishCancelledState(ctx context.Context, trackID string) {
+	publishCancelledTrackState(ctx, s.rc, trackID)
+}
+
+// publishCancelledTrackState is the same ending written by whichever path
+// cancelled the session — the gRPC CancelTrack, or the card's own 取消追蹤 over
+// HTTP when no engine is alive to make that call (FDPL-65).
+func publishCancelledTrackState(ctx context.Context, rc *redis.Client, trackID string) {
 	state := &pb.MrtTrackState{TrackId: trackID, System: "TRTC"}
-	if raw, err := s.rc.Get(ctx, shared.MrtTrackKey(trackID)).Bytes(); err == nil {
+	if raw, err := rc.Get(ctx, shared.MrtTrackKey(trackID)).Bytes(); err == nil {
 		if decoded, decodeErr := DecodePayload(raw, &pb.MrtTrackState{}); decodeErr == nil {
 			state = decoded
 		}
 	}
 	state.Status = "cancelled"
 	state.NextPollAtUnix = 0
-	if err := s.writeTrackState(ctx, state, mrtTrackEndedStateTTL); err != nil {
+	if err := writeTrackState(ctx, rc, state, mrtTrackEndedStateTTL); err != nil {
 		zap.S().Warnw("publish error",
 			"component", "mrt_track",
 			"action", "cancel",
@@ -242,14 +330,17 @@ func (s *MrtServer) publishCancelledState(ctx context.Context, trackID string) {
 	}
 }
 
+func (s *MrtServer) writeTrackState(ctx context.Context, state *pb.MrtTrackState, ttl time.Duration) error {
+	return writeTrackState(ctx, s.rc, state, ttl)
+}
+
 // writeTrackState marshals a state, stores it under MrtTrackKey with ttl, and
 // publishes it on MrtTrackChannel so any established watcher receives it.
-func (s *MrtServer) writeTrackState(ctx context.Context, state *pb.MrtTrackState, ttl time.Duration) error {
+func writeTrackState(ctx context.Context, rc *redis.Client, state *pb.MrtTrackState, ttl time.Duration) error {
 	payload, err := proto.Marshal(state)
 	if err != nil {
 		return err
 	}
-	rc := s.rc
 	if err := rc.Set(ctx, shared.MrtTrackKey(state.TrackId), payload, ttl).Err(); err != nil {
 		return err
 	}

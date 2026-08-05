@@ -147,6 +147,20 @@ func (s *firebaseStore) CancelArrivalReminder(ctx context.Context, reminderID, i
 	return result.RowsAffected() == 1, err
 }
 
+// CancelArrivalReminderByID cancels a pending row by id alone, with no install
+// binding. Only the card's own 取消追蹤 reaches this (FDPL-65), where the caller
+// is a broadcast receiver that has no access to the install credential; the
+// reminder id it carries is a server-minted UUIDv4 that never left the owning
+// device, so holding one is the proof of ownership the install id would have
+// been. Every other cancel path goes through CancelArrivalReminder.
+func (s *firebaseStore) CancelArrivalReminderByID(ctx context.Context, reminderID string) (bool, error) {
+	result, err := s.db.Exec(ctx, `
+		UPDATE firebase_arrival_reminder
+		SET status = 'cancelled', updated_at = NOW()
+		WHERE reminder_id = $1 AND status = 'pending'`, reminderID)
+	return result.RowsAffected() == 1, err
+}
+
 // ListDeviceState loads a device's platform, version, and preference flags. It
 // returns errFirebaseNotFound (which the service layer maps to gRPC NotFound)
 // when no row exists.

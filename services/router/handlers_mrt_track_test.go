@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
@@ -92,6 +93,14 @@ func TestCreateTrackValidation(t *testing.T) {
 		{"non-TRTC system", clone(func(r *pb.CreateMrtTrackRequest) { r.System = "KRTC" }), codes.FailedPrecondition},
 		{"lead too low", clone(func(r *pb.CreateMrtTrackRequest) { r.LeadStops = -1 }), codes.InvalidArgument},
 		{"lead too high", clone(func(r *pb.CreateMrtTrackRequest) { r.LeadStops = 121 }), codes.InvalidArgument},
+		// The card's display strings are rendered on a system notification, so
+		// they are bounded here rather than trusted.
+		{"line label too long", clone(func(r *pb.CreateMrtTrackRequest) {
+			r.VehicleLabel = strings.Repeat("線", 65)
+		}), codes.InvalidArgument},
+		{"colour not hex", clone(func(r *pb.CreateMrtTrackRequest) {
+			r.LineColorHex = "rgb(0,112,189)"
+		}), codes.InvalidArgument},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -113,4 +122,56 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+func TestValidHexColor(t *testing.T) {
+	// Empty is legal: an app that predates ADR-0018 sends no colour, which
+	// leaves the server unable to push a card — exactly the old behaviour.
+	for _, ok := range []string{"", "#0070BD", "#ffdb00"} {
+		if !validHexColor(ok) {
+			t.Errorf("validHexColor(%q) = false", ok)
+		}
+	}
+	for _, bad := range []string{"0070BD", "#0070B", "#0070BDD", "#00-0BD", "rgb(0,1,2)"} {
+		if validHexColor(bad) {
+			t.Errorf("validHexColor(%q) = true", bad)
+		}
+	}
+}
+
+func TestValidPushToken(t *testing.T) {
+	// Empty is the clear. Anything non-hex never reaches Apple, so it is
+	// rejected at the door rather than stored and retried every station hop.
+	for _, ok := range []string{"", "deadBEEF00", strings.Repeat("a", 256)} {
+		if !validPushToken(ok) {
+			t.Errorf("validPushToken(%q…) = false", ok[:min(len(ok), 12)])
+		}
+	}
+	for _, bad := range []string{"not-a-token", "zz", strings.Repeat("a", 257)} {
+		if validPushToken(bad) {
+			t.Errorf("validPushToken(%q…) = true", bad[:min(len(bad), 12)])
+		}
+	}
+}
+
+func TestSetTrackPushTokenValidation(t *testing.T) {
+	server := &MrtServer{}
+	cases := []struct {
+		name string
+		req  *pb.SetMrtTrackPushTokenRequest
+	}{
+		{"missing install", &pb.SetMrtTrackPushTokenRequest{TrackId: "t1", PushToken: "ab"}},
+		{"missing track", &pb.SetMrtTrackPushTokenRequest{InstallId: "install-1", PushToken: "ab"}},
+		{"token not hex", &pb.SetMrtTrackPushTokenRequest{InstallId: "install-1", TrackId: "t1", PushToken: "nope!"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Rejected before any store or Redis call, which is what lets this
+			// run against a zero-value server.
+			_, err := server.SetTrackPushToken(context.Background(), c.req)
+			if status.Code(err) != codes.InvalidArgument {
+				t.Errorf("SetTrackPushToken() code = %v want InvalidArgument (err=%v)", status.Code(err), err)
+			}
+		})
+	}
 }

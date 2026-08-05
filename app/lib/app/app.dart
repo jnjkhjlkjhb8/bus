@@ -10,7 +10,7 @@ import 'package:wheres_the_bus/core/bootstrap/app_bootstrap.dart';
 import 'package:wheres_the_bus/core/lifecycle/app_foreground.dart';
 import 'package:wheres_the_bus/core/lifecycle/app_network.dart';
 import 'package:wheres_the_bus/core/live_activity/alight_track.dart';
-import 'package:wheres_the_bus/core/live_activity/alight_track_cancel_channel.dart';
+import 'package:wheres_the_bus/core/live_activity/alight_track_inbound_channel.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
 import 'package:wheres_the_bus/core/update/update_gate.dart';
@@ -242,7 +242,7 @@ class _AppShell extends StatelessWidget {
             // exists at a time, so "am I running a session" is the whole
             // routing rule, and it beats teaching the platform side which bloc
             // to talk to.
-            AlightTrackCancelChannel.bind(() {
+            AlightTrackInboundChannel.bind(() {
               if (bloc.state.phase == JourneyPhase.idle) return;
               bloc.add(const JourneyCancelled());
             });
@@ -270,10 +270,18 @@ class _AppShell extends StatelessWidget {
             )..add(const MrtTrackRestored());
             // Tracking card 取消追蹤 action → CancelTrack, but only while this
             // bloc is the one holding the card (see the journey binding above).
-            AlightTrackCancelChannel.bind(() {
+            AlightTrackInboundChannel.bind(() {
               if (bloc.state.session == null) return;
               bloc.add(const MrtTrackCancelled());
             });
+            // iOS hands up a push token for the card it just opened; the server
+            // needs it to refresh that card while the app is suspended
+            // (ADR-0018). Metro is the only mode the server can push today, so
+            // this binds here alone — the journey bloc has nothing to do with a
+            // token it could not use.
+            AlightTrackInboundChannel.bindPushToken(
+              (token) => bloc.add(MrtTrackPushTokenReceived(token)),
+            );
             return bloc;
           },
         ),

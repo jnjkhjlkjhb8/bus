@@ -54,6 +54,7 @@ class AlightTrackContent {
     this.delayMinutes = 0,
     this.lineCode,
     this.lineColorHex,
+    this.trackId,
   });
 
   final AlightTrackMode mode;
@@ -123,6 +124,12 @@ class AlightTrackContent {
   final String? lineCode;
   final String? lineColorHex;
 
+  /// The server session this card belongs to, so Android's 取消追蹤 can end it
+  /// even from a process with no Dart left alive (FDPL-65). Null off the metro:
+  /// a bus or rail ride's session exists only on this device, and there is
+  /// nothing to cancel anywhere else.
+  final String? trackId;
+
   Map<String, Object?> toArgs() => {
     'mode': mode.name,
     'phase': phase.name,
@@ -142,6 +149,7 @@ class AlightTrackContent {
     'delayMinutes': delayMinutes,
     'lineCode': lineCode,
     'lineColorHex': lineColorHex,
+    'trackId': trackId,
   };
 }
 
