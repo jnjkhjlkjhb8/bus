@@ -150,4 +150,42 @@ void main() {
       expect(transform(), before);
     },
   );
+
+  testWidgets(
+    'a width-bucket change evicts the bitmap rasterised for the old width '
+    'instead of stranding its ~20MB texture for the life of the process',
+    (tester) async {
+      // 1080 logical px at dpr 1 buckets to a 2160px-wide bitmap; 540 at dpr 1
+      // buckets to the 1080px floor. Same asset, two different widths — the
+      // case a same-asset check lets through.
+      tester.view.physicalSize = const Size(1080, 1920);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MetroSvgMap(animate: false, onStationTap: (_) {}),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(MetroSvgMap.rasterCacheSize, 1);
+
+      tester.view.physicalSize = const Size(540, 960);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MetroSvgMap(animate: false, onStationTap: (_) {}),
+          ),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 400));
+
+      // The old bucket has no mounted holder left, so it goes: one live
+      // bitmap, not one per width the app has ever been laid out at.
+      expect(MetroSvgMap.rasterCacheSize, 1);
+    },
+  );
 }

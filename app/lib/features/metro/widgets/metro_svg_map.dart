@@ -106,6 +106,11 @@ class MetroSvgMap extends StatefulWidget {
     );
   }
 
+  /// Live entries in the rasterised-bitmap cache. Each one is a ~20-30MB
+  /// GPU texture, so the count is the assertion that eviction still works.
+  @visibleForTesting
+  static int get rasterCacheSize => _RasterSvgState.cacheSize;
+
   @override
   State<MetroSvgMap> createState() => _MetroSvgMapState();
 }
@@ -407,44 +412,50 @@ class _RasterSvg extends StatefulWidget {
 
 class _RasterSvgState extends State<_RasterSvg> {
   // Each entry is a GPU-resident texture, ~20-30MB (one per theme × width
-  // bucket). Unbounded, this leaks a new entry every time the device's
-  // effective width bucket changes (e.g. rotation, split-view, or a
-  // precache() call from a screen with a different MediaQuery). Eviction
-  // below keeps the cache from growing without bound while staying safe for
-  // the common case — quick light/dark toggling at a stable width, which
-  // this app never actually triggers mid-session, but precache() does
-  // populate ahead of the live entry.
+  // bucket). A new bucket appears every time the effective width changes —
+  // rotation, split-view, or a precache() from a screen with a different
+  // MediaQuery — so an entry that is no longer painted anywhere has to be
+  // disposed rather than left for the GC finaliser.
   //
-  // An entry is only evicted when the newly inserted key differs from it in
-  // *both* asset and width — i.e. a fully unrelated theme+size combination.
-  // That deliberately spares (a) the other theme at the same width, so a
-  // theme switch never re-rasterizes, and (b) the same theme at a different
-  // width. The residual risk: if some in-flight widget is still displaying
-  // an image whose key differs in both dimensions from the newly requested
-  // one (e.g. a stale precache from a since-resized window), eviction
-  // disposes a texture a live RawImage may still reference. In practice
-  // _RasterSvg only ever requests targetWidthFor(context) for the theme
-  // actually on screen, and old build's widgets are unmounted before a new
-  // width bucket is requested, so this shouldn't be reachable in normal
-  // navigation — flagging it as the one unverified edge.
+  // Eviction is by liveness, not by key shape: the rasterised image is handed
+  // straight to a RawImage, so disposing one a mounted _RasterSvg still holds
+  // would paint a released texture. [_holders] counts those mounted holders
+  // per key, and only an unheld entry that isn't the one just requested can
+  // go. That keeps a theme toggle at a stable width free (the outgoing state
+  // is still mounted mid-transition, so its entry survives the incoming
+  // ensure) without letting old width buckets accumulate.
   static final Map<String, Future<ui.Image>> _cache = {};
+  static final Map<String, int> _holders = {};
 
-  static void _evictStale(String keepAsset, int keepWidth) {
-    final staleKeys = _cache.keys.where((key) {
-      final at = key.lastIndexOf('@');
-      final asset = key.substring(0, at);
-      final width = int.parse(key.substring(at + 1));
-      return asset != keepAsset && width != keepWidth;
-    }).toList();
-    for (final key in staleKeys) {
+  /// The key [ensure] was last asked for. Exempt from eviction even while
+  /// unheld: precache() populates it precisely before any widget holds it.
+  static String? _liveKey;
+
+  static String _keyFor(String asset, int targetW) => '$asset@$targetW';
+
+  @visibleForTesting
+  static int get cacheSize => _cache.length;
+
+  static void _evictUnheld() {
+    for (final key in _cache.keys.toList()) {
+      if (key == _liveKey) continue;
+      if ((_holders[key] ?? 0) > 0) continue;
       final stale = _cache.remove(key);
-      if (stale != null) {
-        unawaited(stale.then((image) => image.dispose()));
-      }
+      // A rasterization that failed has nothing to dispose, and its error
+      // was already surfaced to whoever awaited it — swallowing it here
+      // keeps eviction from re-raising it into the zone.
+      unawaited(
+        stale!
+            .then((image) => image.dispose())
+            .catchError((Object _, StackTrace _) {}),
+      );
     }
   }
 
   ui.Image? _image;
+
+  /// The cache key this state is counted against in [_holders], if any.
+  String? _heldKey;
 
   @override
   void didChangeDependencies() {
@@ -461,6 +472,25 @@ class _RasterSvgState extends State<_RasterSvg> {
     }
   }
 
+  @override
+  void dispose() {
+    _release();
+    _evictUnheld();
+    super.dispose();
+  }
+
+  void _release() {
+    final key = _heldKey;
+    if (key == null) return;
+    _heldKey = null;
+    final remaining = (_holders[key] ?? 1) - 1;
+    if (remaining > 0) {
+      _holders[key] = remaining;
+    } else {
+      _holders.remove(key);
+    }
+  }
+
   /// 2× the on-screen physical width keeps labels sharp up to ~2× zoom;
   /// height (map is 1080×1920) stays within the common 4096px texture cap.
   static int targetWidthFor(BuildContext context) =>
@@ -471,20 +501,29 @@ class _RasterSvgState extends State<_RasterSvg> {
           .clamp(1080, 2304);
 
   static Future<ui.Image> ensure(String asset, int targetW) {
-    final key = '$asset@$targetW';
+    final key = _keyFor(asset, targetW);
+    _liveKey = key;
     final cached = _cache[key];
-    if (cached != null) return cached;
+    if (cached != null) {
+      _evictUnheld();
+      return cached;
+    }
     final future = _rasterize(asset, targetW);
     _cache[key] = future;
-    _evictStale(asset, targetW);
+    _evictUnheld();
     return future;
   }
 
   void _load() {
     final asset = widget.asset;
+    final key = _keyFor(asset, targetWidthFor(context));
+    if (key == _heldKey) return;
+    _holders.update(key, (n) => n + 1, ifAbsent: () => 1);
+    _release();
+    _heldKey = key;
     unawaited(
       ensure(asset, targetWidthFor(context)).then((img) {
-        if (mounted && widget.asset == asset) {
+        if (mounted && _heldKey == key) {
           setState(() => _image = img);
         }
       }),
