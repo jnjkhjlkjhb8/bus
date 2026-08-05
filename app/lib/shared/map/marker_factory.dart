@@ -712,7 +712,16 @@ class MapMarkers {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     draw(canvas);
-    return recorder.endRecording().toImage(w, h);
+    // The recorded picture holds native memory of its own, separate from the
+    // image rasterised out of it, and is dead the moment toImage resolves.
+    // Leaving it to the GC finaliser strands that memory on every cache miss —
+    // and every marker in the app is built through here.
+    final picture = recorder.endRecording();
+    try {
+      return await picture.toImage(w, h);
+    } finally {
+      picture.dispose();
+    }
   }
 
   static Future<BitmapDescriptor> _toBitmap(ui.Image image) async {
