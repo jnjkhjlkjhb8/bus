@@ -1,8 +1,8 @@
 {
-  "API_BASE_URL": "https://staging.example.com",
-  "POWERSYNC_URL": "https://staging.example.com/powersync",
-  "GRPC_HOST": "staging.example.com",
-  "GRPC_PORT": 51051,
+  "API_BASE_URL": "https://api-stg.example.com",
+  "POWERSYNC_URL": "https://sync-stg.example.com",
+  "GRPC_HOST": "grpc-stg.example.com",
+  "GRPC_PORT": 443,
   "GRPC_TLS": true,
   "FIREBASE_ENABLED": false,
   "GOOGLE_MAPS_API_KEY": "",

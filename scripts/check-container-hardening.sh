@@ -173,8 +173,8 @@ else
     exit 1
   fi
 
-  services="router functions ingestor loader redis powersync osrm osrm-fetch osrm-init ollama"
-  long_running="router functions ingestor loader redis powersync osrm ollama"
+  services="router functions ingestor loader redis powersync cloudflared osrm osrm-fetch osrm-init ollama"
+  long_running="router functions ingestor loader redis powersync cloudflared osrm ollama"
 
   service_block() {
     # service_block <name> <file> — prints the YAML block for one service.

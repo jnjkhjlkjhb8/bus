@@ -377,6 +377,30 @@ func TestAlertLevelGrading(t *testing.T) {
 	}
 }
 
+// TestAlertTimeParsesEveryTDXLayout covers the three UpdateTime/PublishTime
+// shapes TDX publishes across feeds, plus the fallback to 0 when neither field
+// parses. All three timestamps name the same instant, so they must agree.
+func TestAlertTimeParsesEveryTDXLayout(t *testing.T) {
+	const want = 1785029400 // 2026-07-26T09:30:00+08:00
+	tests := []struct {
+		payload string
+		want    int64
+	}{
+		{`{"Description":"x","UpdateTime":"2026-07-26T09:30:00+08:00"}`, want},
+		{`{"Description":"x","UpdateTime":"2026-07-26T09:30:00"}`, want},
+		{`{"Description":"x","UpdateTime":"2026-07-26 09:30:00"}`, want},
+		{`{"Description":"x","PublishTime":"2026-07-26T09:30:00+08:00"}`, want},
+		{`{"Description":"x","UpdateTime":"not a time"}`, 0},
+		{`{"Description":"x"}`, 0},
+	}
+	for _, tt := range tests {
+		got, _ := normalizeAlerts("v3/Rail/TRA/Alert", []byte(tt.payload))
+		if len(got) != 1 || got[0].TimeUnix != tt.want {
+			t.Fatalf("%s time = %+v, want %d", tt.payload, got, tt.want)
+		}
+	}
+}
+
 // TestNormalizeAlertsFoldsRepeatedBodies covers the TDX Bus/Alert shape where
 // the affected routes live in Scope.SubRoutes / Scope.Routes rather than at the
 // top level: one disruption collects every route it scopes into one alert.

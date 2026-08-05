@@ -334,6 +334,64 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+  cloudflared:
+    image: cloudflare/cloudflared:2026.7.3@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
+    # Publishes router (gRPC + HTTP) and powersync to rabbitsayhello.me over
+    # an outbound-only tunnel, so no port on this host faces the internet and
+    # the origin address never appears in DNS.
+    #
+    # --config makes this a locally-managed tunnel: ingress comes from the
+    # mounted YAML rather than the dashboard. The config and credentials
+    # files are mounted per environment in docker-compose.{staging,prod}.yaml,
+    # because each stack runs its own tunnel with its own id, credentials,
+    # and hostnames.
+    #
+    # --metrics fixes the diagnostics port (it is otherwise bound to a random
+    # free port), which is what makes the `tunnel ready` healthcheck below
+    # addressable. It stays on loopback inside the container's namespace.
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --metrics
+      - 127.0.0.1:2000
+      - --config
+      - /etc/cloudflared/config.yml
+      - --protocol
+      - http2
+      - run
+    # No env_file, and deliberately off the ENV_FILE_<SERVICE> render
+    # pipeline: this container's only secret is the credentials file mounted
+    # below, so nothing it needs has to travel through render-env.sh, five
+    # allowlists, and three Makefile variables.
+    environment:
+      TZ: Asia/Taipei
+    # frontend reaches both origins: router (gRPC 50051 + HTTP 8080) and
+    # powersync. It has no reason to see redis, the DB, or osrm.
+    networks:
+      - frontend
+    mem_limit: 128m
+    pids_limit: 64
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    depends_on:
+      router:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # cloudflared's own metrics endpoint; /ready is 200 only while at least
+      # one edge connection is registered, which is exactly the condition
+      # that matters here (the process staying alive proves nothing).
+      # --metrics is a flag of the `tunnel` subcommand, not a global one, so it
+      # has to sit after `tunnel` here exactly as it does in command: above.
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:2000", "ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
   osrm-fetch:
     image: alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
     volumes:

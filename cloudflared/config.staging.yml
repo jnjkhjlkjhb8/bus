@@ -1,0 +1,17 @@
+tunnel: idk
+credentials-file: /etc/cloudflared/creds.json
+
+ingress:
+  - hostname: api.stag.rabbitsayhello.me
+    service: http://router:8080
+
+  - hostname: sync.stag.rabbitsayhello.me
+    service: http://powersync:8080
+
+  - hostname: grpc.stag.rabbitsayhello.me
+    service: https://router:50051
+    originRequest:
+      http2Origin: true
+      noTLSVerify: true
+
+  - service: http_status:404

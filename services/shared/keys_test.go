@@ -10,3 +10,9 @@ func TestBusRawFeedKeysAreNamespacedPerCity(t *testing.T) {
 		t.Fatalf("BusPositionRawKey = %q", got)
 	}
 }
+
+func TestMQTTChannelFlattensTopicSeparators(t *testing.T) {
+	if got := MQTTChannel("v2/Bus/Alert/City/Taipei"); got != "mqtt:v2:Bus:Alert:City:Taipei" {
+		t.Fatalf("MQTTChannel = %q", got)
+	}
+}

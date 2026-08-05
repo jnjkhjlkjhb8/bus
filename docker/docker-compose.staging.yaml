@@ -34,3 +34,14 @@ services:
     environment:
       APP_ENV: staging
       PG_SCHEMA: staging
+
+  # Its own tunnel, credentials, and hostnames, separate from prod's -- see
+  # cloudflared/config.prod.yml for why sharing one is a trap. Both paths are
+  # relative to the repo root, not this file: every compose invocation here
+  # passes --project-directory . (Makefile, both check scripts,
+  # deploy-transaction.sh), which is also why secrets/ and powersync/ sit at
+  # the root rather than beside the compose files.
+  cloudflared:
+    volumes:
+      - ./cloudflared/config.staging.yml:/etc/cloudflared/config.yml:ro
+      - ./secrets/cloudflared.staging.json:/etc/cloudflared/creds.json:ro

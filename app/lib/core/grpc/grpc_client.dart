@@ -1,9 +1,4 @@
-import 'dart:convert' show base64;
-import 'dart:io' show X509Certificate;
-import 'dart:typed_data';
-
 import 'package:flutter/foundation.dart' show visibleForTesting;
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:grpc/grpc.dart';
 import 'package:wheres_the_bus/core/grpc/grpc_compression_interceptor.dart';
 import 'package:wheres_the_bus/core/grpc/grpc_deadline_interceptor.dart';
@@ -32,9 +27,7 @@ class GrpcClient {
   // No defaultValue on purpose: an unset APP_ENV must land in the strict
   // branch of validateConfig below, not silently masquerade as 'dev'.
   static const _appEnv = String.fromEnvironment('APP_ENV');
-  static Uint8List? _caBytes;
-  // DER form of the pinned cert, used by _pinnedCertOnly below.
-  static Uint8List? _pinnedDer;
+  static bool _configValidated = false;
 
   /// Rejects a channel config that would silently fall back to loopback or
   /// unencrypted transport in a deployed environment (F43). Strict unless
@@ -61,25 +54,17 @@ class GrpcClient {
     }
   }
 
-  /// Validates the compiled channel config, then — when TLS is required —
-  /// loads the pinned self-signed CA. Must complete before the channel is
-  /// first built. The cert must carry the target IP in its SAN, or the TLS
-  /// handshake fails on hostname check.
+  /// Validates the compiled channel config. Must complete before the channel
+  /// is first built.
   ///
-  /// A failure here (bad config, or the CA asset failing to load) must
-  /// surface to the caller rather than be swallowed (F58): swallowing it
-  /// leaves `_caBytes` null, and `ChannelCredentials.secure` would then
-  /// silently fall back to the system trust store instead of the pinned CA.
-  /// The `_channel` getter below fails closed.
+  /// A failure here must surface to the caller rather than be swallowed
+  /// (F58): a swallowed validation failure would leave a build that never
+  /// checked its own host/TLS config free to open a channel anyway. The
+  /// `_buildChannel` guard below fails closed on that.
   static Future<void> init() async {
     validateConfig(appEnv: _appEnv, host: _host, tls: _tls);
+    _configValidated = true;
     _observeForeground();
-    if (!_tls) {
-      warmConnection();
-      return;
-    }
-    _caBytes = (await rootBundle.load('assets/grpc.crt')).buffer.asUint8List();
-    _pinnedDer = _pemToDer(_caBytes!);
     warmConnection();
   }
 
@@ -121,30 +106,6 @@ class GrpcClient {
     instance._channel.getConnection().ignore();
   }
 
-  static Uint8List _pemToDer(Uint8List pem) {
-    final body = String.fromCharCodes(pem)
-        .replaceAll('-----BEGIN CERTIFICATE-----', '')
-        .replaceAll('-----END CERTIFICATE-----', '')
-        .replaceAll(RegExp(r'\s'), '');
-    return base64.decode(body);
-  }
-
-  /// dart:io only matches DNS-type SANs against the connection host, never
-  /// IP-address SANs. Reaching the router by raw IP therefore always fails
-  /// the default hostname check and lands here. Accept only when the presented
-  /// leaf is byte-identical to the pinned cert — this is full certificate
-  /// pinning, so man-in-the-middle protection is preserved, not weakened.
-  static bool _pinnedCertOnly(X509Certificate cert, String host) {
-    final pinned = _pinnedDer;
-    if (pinned == null) return false;
-    final der = cert.der;
-    if (der.length != pinned.length) return false;
-    for (var i = 0; i < der.length; i++) {
-      if (der[i] != pinned[i]) return false;
-    }
-    return true;
-  }
-
   ClientChannel? _channelInstance;
 
   /// Built on demand rather than bound once. A channel that has been shut down
@@ -171,7 +132,7 @@ class GrpcClient {
 
   ClientChannel _buildChannel() {
     channelGeneration++;
-    if (_tls && _caBytes == null) {
+    if (_tls && !_configValidated) {
       throw StateError(
         'GrpcClient.init() must complete successfully before the channel '
         'is used when GRPC_TLS is enabled',
@@ -181,11 +142,14 @@ class GrpcClient {
       _host,
       port: _port,
       options: ChannelOptions(
+        // The router is reached through a Cloudflare Tunnel hostname, so the
+        // presented chain is a publicly trusted one that rotates on
+        // Cloudflare's schedule. Certificate pinning against the router's own
+        // self-signed leaf (which cloudflared still terminates on the origin
+        // hop) would break at the first rotation, so trust resolution is left
+        // to the platform store and the default hostname check.
         credentials: _tls
-            ? ChannelCredentials.secure(
-                certificates: _caBytes,
-                onBadCertificate: _pinnedCertOnly,
-              )
+            ? const ChannelCredentials.secure()
             : const ChannelCredentials.insecure(),
         // Without pings, grpc-dart never notices a transport the OS killed
         // under a suspended app: the HTTP/2 connection stays `ready` and a
