@@ -209,15 +209,24 @@ class _DockRack extends StatelessWidget {
               ? AppMotion.instant
               : AppMotion.medium,
           curve: AppMotion.easeInOut,
-          builder: (context, value, _) => CustomPaint(
-            size: Size(width, _height),
-            painter: _RackPainter(
-              slots: slots,
-              fraction: value,
-              gap: slots == 1 ? 0 : _gap,
-              radius: slots == 1 ? AppTheme.radiusStadium : AppTheme.radiusSlot,
-              emptyColor: cs.outlineVariant,
-              filledColor: AppTheme.statusArriving,
+          // The tween rebuilds this CustomPaint every frame of the fill
+          // animation. Without a boundary of its own it dirties whatever layer
+          // it was composited into — a bike station card, which repaints for
+          // the gauge and nothing else. The gauge is the only thing moving, so
+          // it is the only thing that should repaint.
+          builder: (context, value, _) => RepaintBoundary(
+            child: CustomPaint(
+              size: Size(width, _height),
+              painter: _RackPainter(
+                slots: slots,
+                fraction: value,
+                gap: slots == 1 ? 0 : _gap,
+                radius: slots == 1
+                    ? AppTheme.radiusStadium
+                    : AppTheme.radiusSlot,
+                emptyColor: cs.outlineVariant,
+                filledColor: AppTheme.statusArriving,
+              ),
             ),
           ),
         );
