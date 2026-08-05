@@ -22,169 +22,148 @@ class _StationDetailSheet extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     final lines = _lines();
 
-    // TEMP DIAGNOSTIC (bottom-sheet drag-down bug) — remove after capture.
-    return NotificationListener<SheetNotification>(
-      onNotification: (n) {
-        final m = n.metrics;
-        final sc = PrimaryScrollController.maybeOf(context);
-        final hasPos = sc != null && sc.positions.isNotEmpty;
-        final pos = hasPos ? sc.positions.first : null;
-        debugPrint(
-          'WTC-SHEETDIAG ${n.runtimeType} '
-          'off=${m.offset.toStringAsFixed(1)} '
-          'min=${m.minOffset.toStringAsFixed(1)} '
-          'max=${m.maxOffset.toStringAsFixed(1)} '
-          'scrollPx=${pos != null ? pos.pixels.toStringAsFixed(1) : "n/a"} '
-          'scrollMin='
-          '${pos != null ? pos.minScrollExtent.toStringAsFixed(1) : "n/a"} '
-          'scrollMax='
-          '${pos != null ? pos.maxScrollExtent.toStringAsFixed(1) : "n/a"}',
-        );
-        return false;
+    return RefreshIndicator(
+      onRefresh: () async {
+        context.read<MetroEtaBloc>().add(LoadMetroEta(system, station.id));
       },
-      child: RefreshIndicator(
-        onRefresh: () async {
-          context.read<MetroEtaBloc>().add(LoadMetroEta(system, station.id));
-        },
-        child: ListView(
-          // Sizes to the rows it has (capped at the viewport, where it starts
-          // scrolling), so the sheet's snap grid can stop at the end of the
-          // card instead of dragging blank surface up behind a short one.
-          shrinkWrap: true,
-          physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 56),
-          children: [
-            Row(
-              children: [
-                if (onClose == null)
-                  Pressable(
-                    onTap: () => Navigator.of(context).maybePop(),
-                    semanticLabel: AppI18n.of(context).commonBack,
-                    child: SizedBox(
-                      width: 40,
-                      height: 40,
-                      child: Icon(
-                        Icons.arrow_back_ios_new_rounded,
-                        size: 18,
-                        color: cs.onSurface,
-                      ),
+      child: ListView(
+        // Sizes to the rows it has (capped at the viewport, where it starts
+        // scrolling), so the sheet's snap grid can stop at the end of the
+        // card instead of dragging blank surface up behind a short one.
+        shrinkWrap: true,
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 56),
+        children: [
+          Row(
+            children: [
+              if (onClose == null)
+                Pressable(
+                  onTap: () => Navigator.of(context).maybePop(),
+                  semanticLabel: AppI18n.of(context).commonBack,
+                  child: SizedBox(
+                    width: 40,
+                    height: 40,
+                    child: Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      size: 18,
+                      color: cs.onSurface,
                     ),
                   ),
-                for (final code in station.id.split('_'))
-                  Padding(
-                    padding: const EdgeInsets.only(right: 6),
-                    child: _MetroRoundel(code: code),
-                  ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Semantics(
-                        header: true,
-                        child: Text(
-                          station.name,
-                          style: AppTextStyles.heading1,
-                        ),
-                      ),
-                      Text(
-                        _stationLineLabel(AppI18n.of(context), station.id),
-                        style: AppTextStyles.bodySmall.copyWith(
-                          color: cs.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
                 ),
-                FavoriteToggleButton(
-                  favorite: _metroFavorite(AppI18n.of(context), station),
+              for (final code in station.id.split('_'))
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: _MetroRoundel(code: code),
                 ),
-                if (onClose != null)
-                  Pressable(
-                    onTap: onClose,
-                    semanticLabel: AppI18n.of(context).commonClose,
-                    child: Padding(
-                      padding: const EdgeInsets.all(11),
-                      child: Icon(
-                        Icons.close_rounded,
-                        size: 22,
-                        color: cs.onSurface,
+              const SizedBox(width: 6),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Semantics(
+                      header: true,
+                      child: Text(
+                        station.name,
+                        style: AppTextStyles.heading1,
                       ),
                     ),
-                  ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            BlocBuilder<MetroEtaBloc, MetroEtaState>(
-              builder: (context, state) {
-                final arrivals = state.arrivals
-                    .where((a) => lines.contains(a.line))
-                    .toList();
-                if (state.loading && arrivals.isEmpty) {
-                  return const _MetroArrivalsSkeleton();
-                }
-                // The feed keeps showing the last-known list even after its
-                // ResilientSubscription gives up (state.error set) — that list
-                // can go stale, so the banner is what tells the difference from
-                // a genuinely current one instead of presenting it silently
-                // (F28).
-                final staleBanner = state.error != null
-                    ? Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: _MetroLiveErrorNotice(error: state.error!),
-                      )
-                    : null;
-                if (arrivals.isEmpty) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ?staleBanner,
-                      MetroArrivalsEmpty(
-                        schedule: state.schedule,
-                        onRetry: () => context.read<MetroEtaBloc>().add(
-                          LoadMetroEta(system, station.id),
-                        ),
+                    Text(
+                      _stationLineLabel(AppI18n.of(context), station.id),
+                      style: AppTextStyles.bodySmall.copyWith(
+                        color: cs.onSurfaceVariant,
                       ),
-                    ],
-                  );
-                }
+                    ),
+                  ],
+                ),
+              ),
+              FavoriteToggleButton(
+                favorite: _metroFavorite(AppI18n.of(context), station),
+              ),
+              if (onClose != null)
+                Pressable(
+                  onTap: onClose,
+                  semanticLabel: AppI18n.of(context).commonClose,
+                  child: Padding(
+                    padding: const EdgeInsets.all(11),
+                    child: Icon(
+                      Icons.close_rounded,
+                      size: 22,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          BlocBuilder<MetroEtaBloc, MetroEtaState>(
+            builder: (context, state) {
+              final arrivals = state.arrivals
+                  .where((a) => lines.contains(a.line))
+                  .toList();
+              if (state.loading && arrivals.isEmpty) {
+                return const _MetroArrivalsSkeleton();
+              }
+              // The feed keeps showing the last-known list even after its
+              // ResilientSubscription gives up (state.error set) — that list
+              // can go stale, so the banner is what tells the difference from
+              // a genuinely current one instead of presenting it silently
+              // (F28).
+              final staleBanner = state.error != null
+                  ? Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _MetroLiveErrorNotice(error: state.error!),
+                    )
+                  : null;
+              if (arrivals.isEmpty) {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     ?staleBanner,
-                    for (final a in arrivals) ...[
-                      MetroArrivalTile(
-                        key: ValueKey('${a.line}:${a.destination}'),
-                        arrival: a,
+                    MetroArrivalsEmpty(
+                      schedule: state.schedule,
+                      onRetry: () => context.read<MetroEtaBloc>().add(
+                        LoadMetroEta(system, station.id),
                       ),
-                      Divider(
-                        height: 20,
-                        color: cs.outlineVariant.withValues(alpha: 0.5),
-                      ),
-                    ],
+                    ),
                   ],
                 );
-              },
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ?staleBanner,
+                  for (final a in arrivals) ...[
+                    MetroArrivalTile(
+                      key: ValueKey('${a.line}:${a.destination}'),
+                      arrival: a,
+                    ),
+                    Divider(
+                      height: 20,
+                      color: cs.outlineVariant.withValues(alpha: 0.5),
+                    ),
+                  ],
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 8),
+          BlocBuilder<MetroEtaBloc, MetroEtaState>(
+            // First/last-train data is loaded once and never changes per arrival
+            // frame; rebuild only when the schedule itself (or its shimmer
+            // condition) changes, not on every live ETA push.
+            buildWhen: (p, n) =>
+                p.schedule != n.schedule ||
+                (p.loading && p.schedule.isEmpty) !=
+                    (n.loading && n.schedule.isEmpty),
+            builder: (context, state) => MetroScheduleSection(
+              schedule: state.schedule,
+              loading: state.loading,
             ),
-            const SizedBox(height: 8),
-            BlocBuilder<MetroEtaBloc, MetroEtaState>(
-              // First/last-train data is loaded once and never changes per arrival
-              // frame; rebuild only when the schedule itself (or its shimmer
-              // condition) changes, not on every live ETA push.
-              buildWhen: (p, n) =>
-                  p.schedule != n.schedule ||
-                  (p.loading && p.schedule.isEmpty) !=
-                      (n.loading && n.schedule.isEmpty),
-              builder: (context, state) => MetroScheduleSection(
-                schedule: state.schedule,
-                loading: state.loading,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
