@@ -29,6 +29,7 @@ environment:
 # versions available, run `flutter pub outdated`.
 dependencies:
   animations: ^2.2.0
+  bloc_concurrency: ^0.3.0
   collection: any
   connectivity_plus: ^7.3.1
   cupertino_icons: ^1.0.8
