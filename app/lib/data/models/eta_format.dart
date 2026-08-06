@@ -37,6 +37,11 @@ enum BusStopDisplayStatus {
   unknown,
 }
 
+/// Past this, a status-1 (not-yet-departed) predicted estimate stops reading
+/// as a countdown and falls back to its scheduled clock time -- a schedule
+/// guess an hour or more out ("200分") is not a claim worth counting down.
+const int busStopScheduledCountdownCap = 60 * 60;
+
 /// The one status-code mapping. stopStatus codes are TDX StopStatus values:
 /// 0 = normal, 1 = not yet departed, 2 = traffic control, 3 = last bus passed,
 /// 4 = not operating today.
@@ -44,8 +49,8 @@ BusStopDisplayStatus busStopDisplayStatus({
   required int estimateSeconds,
   required int stopStatus,
 }) {
-  // A positive estimate always reads as a countdown, whatever the status code:
-  // the backend fills status-1 gaps with a predicted NextBusTime and derives
+  // A positive estimate reads as a countdown, whatever the status code: the
+  // backend fills status-1 gaps with a predicted NextBusTime and derives
   // arrivalUnix from it precisely so the app can count down (bus_eta.go). Only
   // a live bus (status 0) may read as arriving when the countdown hits zero;
   // a predicted status-1 estimate that decays to zero falls back to its
@@ -55,6 +60,9 @@ BusStopDisplayStatus busStopDisplayStatus({
   }
   if (estimateSeconds > 0 && estimateSeconds < 60) {
     return BusStopDisplayStatus.departingSoon;
+  }
+  if (stopStatus == 1 && estimateSeconds > busStopScheduledCountdownCap) {
+    return BusStopDisplayStatus.notDeparted;
   }
   if (estimateSeconds > 0) return BusStopDisplayStatus.minutes;
   return switch (stopStatus) {

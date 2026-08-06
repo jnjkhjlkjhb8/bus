@@ -69,6 +69,42 @@ class TrackNotification(private val context: Context) {
         @Volatile
         private var showingStops: Int = Int.MAX_VALUE
 
+        /**
+         * The session the card on screen belongs to, so a cancel that carries no
+         * id — Dart's `stop`, which has no arguments — can still tombstone the
+         * right one. Null after a process death, where the only cancel that can
+         * happen is the receiver's, and that one names its session explicitly.
+         */
+        @Volatile
+        private var lastTrackId: String? = null
+
+        // Where the cancelled-session tombstone lives. Disk, not a static: the
+        // process that cancels a card may not be the one a push in flight wakes
+        // up, and a tombstone lost to a process death is a tombstone that does
+        // not do its job.
+        private const val PREFS = "track_card"
+        private const val KEY_CANCELLED_TRACK = "cancelled_track_id"
+        private const val KEY_CANCELLED_AT = "cancelled_at_ms"
+
+        /**
+         * How long a cancelled session stays refused.
+         *
+         * Cancelling ends the session server-side, so no *new* refresh is sent —
+         * but one already in flight can still land, and it would repost a card
+         * the rider just dismissed. The window only has to outlive that flight,
+         * and staying short means a session id can never wedge a later ride.
+         */
+        private const val TOMBSTONE_MS = 2 * 60 * 1000L
+
+        /**
+         * How long a terminal card (已到站 / 追蹤失效) stays on screen before the
+         * platform takes it down on its own. An ending has to be seen — a card
+         * that just vanishes reads as "still tracking" — but one nobody ever
+         * dismisses is litter. Longer than Dart's own linger, so the app keeps
+         * ownership of the dismissal whenever it is alive.
+         */
+        private const val ENDED_LINGER_MS = 8 * 1000L
+
         /** Reads a value that arrives as a number over the channel and as a string over FCM. */
         internal fun intOf(data: Map<String, Any?>, key: String): Int? = when (val value = data[key]) {
             is Number -> value.toInt()
@@ -86,6 +122,7 @@ class TrackNotification(private val context: Context) {
     /** Opens a session: the next reading is accepted whatever it says. */
     fun beginSession() {
         showingStops = Int.MAX_VALUE
+        clearTombstone()
     }
 
     /**
@@ -99,16 +136,55 @@ class TrackNotification(private val context: Context) {
         val phase = data["phase"] as? String ?: "riding"
         val remaining = max(0, intOf(data, "remainingStops") ?: 0)
         val ended = phase == "arrived" || phase == "lost"
+        if (isCancelled(data["trackId"] as? String)) return false
         if (!ended && remaining > showingStops) return false
         showingStops = if (ended) Int.MAX_VALUE else remaining
+        lastTrackId = data["trackId"] as? String
         ensureChannel()
         NotificationManagerCompat.from(context).notify(NOTIF_ID, buildTrack(data))
         return true
     }
 
-    fun cancel() {
+    /**
+     * Takes the card down, and refuses [trackId] for a short while afterwards.
+     *
+     * Cancelling ends the session, so nothing new is pushed — but a refresh
+     * already in flight can land a moment later, and reposting a card the rider
+     * just dismissed is worse than never having pushed it. The tombstone is what
+     * makes the dismissal stick through that window.
+     */
+    fun cancel(trackId: String? = null) {
         showingStops = Int.MAX_VALUE
+        val session = trackId?.takeIf { it.isNotEmpty() } ?: lastTrackId
+        lastTrackId = null
+        if (!session.isNullOrEmpty()) writeTombstone(session)
         NotificationManagerCompat.from(context).cancel(NOTIF_ID)
+    }
+
+    /** Whether this session was cancelled recently enough to still be refused. */
+    private fun isCancelled(trackId: String?): Boolean {
+        if (trackId.isNullOrEmpty()) return false
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.getString(KEY_CANCELLED_TRACK, null) != trackId) return false
+        val age = System.currentTimeMillis() - prefs.getLong(KEY_CANCELLED_AT, 0)
+        // A negative age means the device clock moved backwards under us. Treat
+        // it as inside the window: refusing one late refresh costs a card that
+        // was already dismissed, while trusting it reposts one.
+        return age < TOMBSTONE_MS
+    }
+
+    private fun writeTombstone(trackId: String) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(KEY_CANCELLED_TRACK, trackId)
+            .putLong(KEY_CANCELLED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun clearTombstone() {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .remove(KEY_CANCELLED_TRACK)
+            .remove(KEY_CANCELLED_AT)
+            .apply()
     }
 
     @androidx.annotation.VisibleForTesting
@@ -262,9 +338,15 @@ class TrackNotification(private val context: Context) {
         // long enough that no live session can be cut off (every mode re-posts
         // at least once a minute while the app runs), short enough that a dead
         // process is cleaned up in minutes rather than sitting there until the
-        // next launch. A terminal card gets no timeout: Dart dismisses it
-        // after its own linger.
-        if (live) builder.setTimeoutAfter(staleWindowMs(mode))
+        // next launch.
+        //
+        // A terminal card gets the short one instead. Dart dismisses it after
+        // its own linger, but a card pushed to a process that is gone has no
+        // Dart to do that, and 已到站 would then sit in the shade until the
+        // rider swiped it away. This is the same job iOS's `dismissal-date`
+        // does, and it is deliberately longer than Dart's linger so the app
+        // still owns the dismissal whenever it is alive to.
+        builder.setTimeoutAfter(if (live) staleWindowMs(mode) else ENDED_LINGER_MS)
 
         // Below Android 16 there is no chip, so the reading has to live in the
         // notification itself. On 16+ this would only duplicate the chip.

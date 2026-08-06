@@ -670,20 +670,7 @@ func readBusCitySnapshot(ctx context.Context, src loadSource, city string) (*bus
 			q.drop("routefare", "routefare_dangling", uid)
 			continue
 		}
-		candidates := fareCandidates[uid]
-		for _, candidate := range candidates[1:] {
-			if !proto.Equal(candidates[0], candidate) {
-				// TDX prices one canonical subroute several ways (segment fares,
-				// per-operator variants) and Bus_Fare holds one offer. First wins:
-				// the payload order is stable, so the pick is deterministic, and a
-				// route priced two ways beats a city frozen at its last snapshot.
-				// one fare per subroute — repeated field in the wire model if the
-				// app ever has to show every offer.
-				q.drop("routefare", "routefare_divergent", uid)
-				break
-			}
-		}
-		sub.Fare = cloneBusFare(candidates[0])
+		sub.Fare = mergeBusFares(fareCandidates[uid])
 	}
 
 	// Quarantining a tail keeps the city current; quarantining a third of it

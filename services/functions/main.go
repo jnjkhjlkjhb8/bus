@@ -101,6 +101,11 @@ func run() error {
 		}
 	}
 	defer closeRawPool()
+	tdx := shared.NewTDXClient(shared.TDXConfig{
+		Store:         shared.RedisTDXStore{RC: rc},
+		IMSKey:        imsCacheKey,
+		SinceFallback: sinceFallback,
+	})
 	// One-shot manual trigger: `functions run <job>` runs the job once and exits,
 	// bypassing cron so an operator can refresh embeddings on demand. Needs the
 	// same env (DATABASE_URL, REDIS_ADDR, EMBED_URL) as the scheduled run.
@@ -112,16 +117,36 @@ func run() error {
 			if err := runner.Run(context.Background(), job); err != nil {
 				return fmt.Errorf("changetovector failed: %w", err)
 			}
+		case "gtfs":
+			// Same builder the loader runs after a load, on demand: a feed can be
+			// republished without waiting for 03:30 or forcing a reload.
+			runGTFSExport(rawPool, time.Now().In(taipei))
+		case "gtfs-rt":
+			// The snapshot the router serves, built once. The daily timetables the
+			// diff reads are loaded into Redis first: on a cron they arrive from the
+			// hourly loader, and a one-shot run has no such producer behind it.
+			ctx, cancel := context.WithTimeout(context.Background(), gtfsRTIndexTimeout)
+			defer cancel()
+			daily := map[string]string{}
+			if err := loadChangedBusDailyTimetables(ctx, rawPool, rawTDXSource{pool: rawPool}, db, rc, daily); err != nil {
+				return fmt.Errorf("bus daily timetable load failed: %w", err)
+			}
+			builder := &gtfsRTBuilder{db: rawPool, rc: rc}
+			if err := builder.run(ctx, time.Now().In(taipei)); err != nil {
+				return fmt.Errorf("gtfs-rt failed: %w", err)
+			}
+		case "bikeeta":
+			// Refreshes the bike availability the GBFS station_status feed reads.
+			// The nil pool is deliberate: a manual run publishes to Redis without
+			// sampling into bike history, which only the scheduled cadence owns.
+			ctx, cancel := context.WithTimeout(context.Background(), manualBackfillTimeout)
+			defer cancel()
+			runLive(ctx, restLiveSource{tdx: tdx}, redisLiveSink{rc: rc}, liveRegistry(nil, nil), []string{"bike"})
 		default:
 			return fmt.Errorf("unknown job: %s", os.Args[2])
 		}
 		return nil
 	}
-	tdx := shared.NewTDXClient(shared.TDXConfig{
-		Store:         shared.RedisTDXStore{RC: rc},
-		IMSKey:        imsCacheKey,
-		SinceFallback: sinceFallback,
-	})
 
 	switch mode {
 	case modeIngestor:

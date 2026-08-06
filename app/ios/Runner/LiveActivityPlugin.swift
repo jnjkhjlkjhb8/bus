@@ -16,6 +16,34 @@ class LiveActivityPlugin: NSObject, FlutterPlugin {
             binaryMessenger: registrar.messenger()
         )
         registrar.addMethodCallDelegate(LiveActivityPlugin(channel: channel), channel: channel)
+        endOrphanedActivities()
+    }
+
+    /// Ends any card already on screen at registration time.
+    ///
+    /// It cannot belong to this engine — no Dart has run yet — so it is a
+    /// leftover: a session the app was killed in the middle of, or, after an
+    /// update that changed `ContentState`, a card whose stored state the new
+    /// build can no longer decode. Neither will ever be updated again, and the
+    /// second cannot even be recognised: `Activity.activities` only lists what
+    /// decodes, so an orphan of that kind would sit there frozen with nothing
+    /// able to reach it.
+    ///
+    /// Android has cleared its leftover card at registration since the promoted
+    /// notification landed; this is the same rule, arrived at the same way. The
+    /// session the app restores posts its own card immediately after.
+    private static func endOrphanedActivities() {
+        guard #available(iOS 16.2, *) else { return }
+        // Snapshotted here, synchronously, rather than inside the Task: a
+        // restored session starts its own card within moments, and a list read
+        // after that would sweep away the live one it just opened.
+        let orphans = Activity<AlightTrackAttributes>.activities
+        guard !orphans.isEmpty else { return }
+        Task {
+            for activity in orphans {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
     }
 
     private let channel: FlutterMethodChannel

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 )
 
 type busSnapshotSource struct {
@@ -410,7 +411,7 @@ func TestReadBusCitySnapshotDeduplicatesIdenticalStopsAndTakesFirstOnDivergence(
 	}
 }
 
-func TestReadBusCitySnapshotMapsNativeFareAndRejectsDivergentCanonicalOffers(t *testing.T) {
+func TestReadBusCitySnapshotMapsNativeFareAndMergesCanonicalOffers(t *testing.T) {
 	const city = "InterCity"
 	src := validBusSnapshotSource(city)
 	src.bodies["bus_route|"+city] = []byte(`[{"RouteUID":"THB0968","RouteName":{"Zh_tw":"0968"},"SubRoutes":[{"SubRouteUID":"THB096801","SubRouteID":"096801","SubRouteName":{"Zh_tw":"0968"},"Direction":0}]}]`)
@@ -425,9 +426,9 @@ func TestReadBusCitySnapshotMapsNativeFareAndRejectsDivergentCanonicalOffers(t *
 		t.Fatal("canonical subroute did not receive native SubRouteID fare")
 	}
 
-	// Two offers for one canonical subroute: the wire model holds one, so the
-	// first wins and the city still loads. One divergent offer out of two is 50%
-	// of this fixture; the ratio gate is covered by TestLoadQuarantineRatioGate.
+	// Two offers for one canonical subroute (e.g. a route-wide fare seen via both
+	// of its native SubRouteIDs, FDPL-67): the scalar fields come from the first
+	// offer, and the city still loads.
 	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "1")
 	src.bodies["bus_routefare|"+city] = []byte(`[
 		{"RouteID":"0968","SubRouteID":"096801","FarePricingType":1,"IsForAllSubRoutes":1},
@@ -435,10 +436,49 @@ func TestReadBusCitySnapshotMapsNativeFareAndRejectsDivergentCanonicalOffers(t *
 	]`)
 	snapshot, err = readBusCitySnapshot(context.Background(), src, city)
 	if err != nil {
-		t.Fatalf("divergent fare: %v, want the city to load with the first offer", err)
+		t.Fatalf("merged fare: %v, want the city to load with the first offer's scalars", err)
 	}
 	if got := snapshot.subroutes["THB0968"].Fare; got.GetFarePricingType() != 1 {
 		t.Fatalf("fare = %+v, want the first offer (FarePricingType 1)", got)
+	}
+}
+
+// TestMergeBusFares covers FDPL-67: InterCity (公路客運) prices each direction
+// of a subroute separately, so a canonical subroute's two native SubRouteIDs
+// (e.g. 208801/208802) never carry identical Stage/OD fares — each entry
+// carries its own Direction plus an origin and destination. The merge must
+// union those entries rather than discard one side, or a two-direction
+// InterCity route silently ends up with no fare at all.
+func TestMergeBusFares(t *testing.T) {
+	dir0 := &models.Bus_Fare{
+		FarePricingType: 1, IsFreeBus: false,
+		StageFaresJson: []byte(`[{"Direction":0,"OriginStage":{"StopID":"S1"},"DestinationStage":{"StopID":"S2"},"Fares":[{"FareClass":1,"TicketType":1,"Price":30}]}]`),
+	}
+	dir1 := &models.Bus_Fare{
+		FarePricingType: 2, IsFreeBus: false,
+		StageFaresJson: []byte(`[{"Direction":1,"OriginStage":{"StopID":"S2"},"DestinationStage":{"StopID":"S1"},"Fares":[{"FareClass":1,"TicketType":1,"Price":30}]}]`),
+	}
+
+	merged := mergeBusFares([]*models.Bus_Fare{dir0, dir1})
+	if merged.GetFarePricingType() != 1 {
+		t.Fatalf("FarePricingType = %d, want the first candidate's (1)", merged.GetFarePricingType())
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(merged.GetStageFaresJson(), &entries); err != nil {
+		t.Fatalf("decode merged StageFaresJson: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("merged StageFares entries = %d, want 2 (one per direction, FDPL-67)", len(entries))
+	}
+
+	// Identical entries across candidates (e.g. the same route-wide offer seen
+	// through two native SubRouteIDs) must not be duplicated in the merge.
+	dup := mergeBusFares([]*models.Bus_Fare{dir0, dir0})
+	if err := json.Unmarshal(dup.GetStageFaresJson(), &entries); err != nil {
+		t.Fatalf("decode deduped StageFaresJson: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("deduped StageFares entries = %d, want 1", len(entries))
 	}
 }
 

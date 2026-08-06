@@ -104,6 +104,26 @@ void main() {
         BusStopDisplayStatus.notDeparted,
       );
     });
+    // A status-1 prediction beyond the cap (bus_eta.go's schedule+running-time
+    // guess for a bus that hasn't left yet) reads as an absurd countdown
+    // ("200分") rather than useful data, so it falls back to notDeparted --
+    // the caller then renders the scheduled clock time instead.
+    test('status 1 beyond the countdown cap falls back to notDeparted', () {
+      expect(
+        busStopDisplayStatus(
+          estimateSeconds: busStopScheduledCountdownCap + 1,
+          stopStatus: 1,
+        ),
+        BusStopDisplayStatus.notDeparted,
+      );
+      expect(
+        busStopDisplayStatus(
+          estimateSeconds: busStopScheduledCountdownCap,
+          stopStatus: 1,
+        ),
+        BusStopDisplayStatus.minutes,
+      );
+    });
     test('status codes map exhaustively', () {
       expect(
         busStopDisplayStatus(estimateSeconds: -1, stopStatus: 1),

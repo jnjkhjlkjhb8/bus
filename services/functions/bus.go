@@ -707,3 +707,75 @@ func cloneBusFare(f *models.Bus_Fare) *models.Bus_Fare {
 	}
 	return proto.Clone(f).(*models.Bus_Fare)
 }
+
+// mergeBusFares combines a canonical InterCity subroute's per-direction
+// RouteFare candidates (e.g. 208801 and 208802, merged onto one UID by
+// CanonicalSubroute/ADR-0006) into one Bus_Fare. TDX prices each direction
+// separately — every Section/Stage/OD entry carries its own Direction plus an
+// origin and destination — so two direction candidates never describe the
+// same leg and can simply be unioned (FDPL-67). FarePricingType/IsFreeBus are
+// route-level flags rather than per-leg data, so the first candidate's values
+// are kept.
+func mergeBusFares(candidates []*models.Bus_Fare) *models.Bus_Fare {
+	if len(candidates) == 1 {
+		return cloneBusFare(candidates[0])
+	}
+	sections := make([][]byte, 0, len(candidates))
+	stages := make([][]byte, 0, len(candidates))
+	ods := make([][]byte, 0, len(candidates))
+	for _, c := range candidates {
+		sections = append(sections, c.SectionFaresJson)
+		stages = append(stages, c.StageFaresJson)
+		ods = append(ods, c.OdFaresJson)
+	}
+	return &models.Bus_Fare{
+		FarePricingType:  candidates[0].FarePricingType,
+		IsFreeBus:        candidates[0].IsFreeBus,
+		SectionFaresJson: mergeFareJSONArrays(sections...),
+		StageFaresJson:   mergeFareJSONArrays(stages...),
+		OdFaresJson:      mergeFareJSONArrays(ods...),
+	}
+}
+
+// mergeFareJSONArrays unions the fare-entry arrays of several RouteFare
+// candidates, deduplicating entries that are byte-for-byte the same offer
+// under different key ordering. Each entry is re-marshaled (encoding/json
+// sorts map keys, at every nesting depth) purely to derive a stable dedup
+// key; the original bytes are kept in the output so formatting is untouched.
+// A malformed candidate payload is skipped rather than failing the merge.
+func mergeFareJSONArrays(payloads ...[]byte) []byte {
+	seen := make(map[string]struct{})
+	var merged []json.RawMessage
+	for _, payload := range payloads {
+		if len(payload) == 0 {
+			continue
+		}
+		var entries []json.RawMessage
+		if err := json.Unmarshal(payload, &entries); err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			var canon map[string]any
+			if err := json.Unmarshal(entry, &canon); err != nil {
+				continue
+			}
+			key, err := json.Marshal(canon)
+			if err != nil {
+				continue
+			}
+			if _, dup := seen[string(key)]; dup {
+				continue
+			}
+			seen[string(key)] = struct{}{}
+			merged = append(merged, entry)
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return nil
+	}
+	return out
+}

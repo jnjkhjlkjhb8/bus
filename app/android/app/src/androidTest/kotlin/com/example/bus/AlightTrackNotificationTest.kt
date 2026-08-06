@@ -67,7 +67,9 @@ class AlightTrackNotificationTest {
         remainingStops: Int = 4,
         leadStops: Int = 2,
         etaMinutes: Int? = null,
+        trackId: String? = null,
     ) = mapOf<String, Any?>(
+        "trackId" to trackId,
         "mode" to mode,
         "phase" to phase,
         "vehicleLabel" to vehicleLabel,
@@ -318,6 +320,54 @@ class AlightTrackNotificationTest {
             numbers.extras.getCharSequence(Notification.EXTRA_SHORT_CRITICAL_TEXT),
             strings.extras.getCharSequence(Notification.EXTRA_SHORT_CRITICAL_TEXT),
         )
+    }
+
+    /**
+     * A cancel has to stick through the refresh already in flight behind it.
+     * Ending the session stops new pushes, but one in the air still lands, and
+     * reposting a card the rider just dismissed is worse than never having
+     * pushed at all.
+     */
+    @Test
+    fun refusesARefreshForASessionJustCancelled() {
+        card.beginSession()
+        assertTrue(card.post(payload(trackId = "ride-1")))
+
+        card.cancel("ride-1")
+
+        assertFalse(
+            "a refresh in flight reposted a card the rider had just cancelled",
+            card.post(payload(trackId = "ride-1", remainingStops = 3)),
+        )
+        // Scoped to the session, not to the card: the next ride must not
+        // inherit the last one's dismissal.
+        assertTrue(card.post(payload(trackId = "ride-2", remainingStops = 3)))
+
+        card.cancel("ride-2")
+        // And starting a session clears it outright, so re-tracking the same
+        // ride right after cancelling it still works.
+        card.beginSession()
+        assertTrue(card.post(payload(trackId = "ride-2", remainingStops = 3)))
+        card.cancel()
+    }
+
+    /**
+     * Dart dismisses a terminal card after its own linger, but a card pushed to
+     * a process that is gone has no Dart to do it, and 已到站 would sit in the
+     * shade until someone swiped it. This is iOS's `dismissal-date`, Android
+     * side.
+     */
+    @Test
+    fun aTerminalCardRetiresItselfWithoutAnApp() {
+        val arrived = card.buildTrack(payload(phase = "arrived", remainingStops = 0))
+        val lost = card.buildTrack(payload(phase = "lost"))
+
+        for (n in listOf(arrived, lost)) {
+            assertTrue("a terminal card was left with no timeout", n.timeoutAfter > 0)
+            // Longer than Dart's own linger, so the app still owns the
+            // dismissal whenever it is alive to do it.
+            assertTrue(n.timeoutAfter in 6_000..30_000)
+        }
     }
 
     /**

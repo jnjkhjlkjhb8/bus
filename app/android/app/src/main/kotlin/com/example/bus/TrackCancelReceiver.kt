@@ -38,16 +38,18 @@ class TrackCancelReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context?, intent: Intent?) {
         val app = context?.applicationContext ?: return
+        val trackId = intent?.getStringExtra(TrackNotification.EXTRA_TRACK_ID).orEmpty()
         // Taking the card down comes first and never depends on the network:
-        // the button must always at least do the thing it says.
-        TrackNotification(app).cancel()
+        // the button must always at least do the thing it says. Naming the
+        // session also refuses a refresh already in flight, so the card cannot
+        // repost itself a second after the rider dismissed it.
+        TrackNotification(app).cancel(trackId)
 
         // Dart's CancelTrack is the authoritative path whenever there is a Dart:
         // it is install-bound and it tears the session down in the app too. This
         // fallback only runs when nobody is listening for the same broadcast.
         if (LiveActivityPlugin.dartIsListening) return
 
-        val trackId = intent?.getStringExtra(TrackNotification.EXTRA_TRACK_ID).orEmpty()
         if (trackId.isEmpty()) return
         val baseUrl = app.getString(R.string.api_base_url)
         if (baseUrl.isEmpty()) return
