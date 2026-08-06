@@ -135,6 +135,9 @@ message Bus_RouteEstimate{
   int32 StopSequence = 8;
   int64 arrival_unix = 9;
   string plate_numb = 10;
+  // Crowding of the vehicle this estimate describes, resolved server-side from
+  // plate_numb so the client never has to join Buses itself.
+  BusCrowdLevel crowd_level = 11;
 }
 message Bus_StopEstimate{
   string stop_uid = 1;
@@ -148,6 +151,17 @@ message Bus_StopEstimate{
   repeated Bus_position Buses = 9;
   int64 arrival_unix = 10;
   string destination = 11;
+  BusCrowdLevel crowd_level = 12;
+}
+// 車上擁擠度. UNKNOWN is the zero value because most vehicles have no reading:
+// only Data.taipei publishes crowding for buses, and only for Taipei, so every
+// other city leaves this unset and the app must render nothing rather than
+// "comfortable".
+enum BusCrowdLevel {
+  BUS_CROWD_UNKNOWN = 0;
+  BUS_CROWD_COMFORTABLE = 1;
+  BUS_CROWD_NORMAL = 2;
+  BUS_CROWD_CROWDED = 3;
 }
 message Bus_position{
   reserved 6, 7, 8;
@@ -160,6 +174,7 @@ message Bus_position{
   int32 duty_status = 9;
   int32 bus_status = 10;
   int64 gps_time_unix = 11;
+  BusCrowdLevel crowd_level = 12;
 }
 message Bus_Schedule {
   bool is_timetable = 1;

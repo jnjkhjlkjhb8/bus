@@ -85,12 +85,12 @@ func busDailyLandingMarkers(ctx context.Context, q rawMarkerQuerier) (map[string
 
 // busDailyPendingCities returns the cities to transform this tick, sorted: those
 // whose landing marker differs from the one they were last loaded from, minus
-// the cities TDX serves no daily timetable for. An empty loaded map (fresh
+// the cities with no landed partition at all. An empty loaded map (fresh
 // process) yields every landed city, which is the intended first pass.
 func busDailyPendingCities(markers, loaded map[string]string) []string {
 	pending := make([]string, 0, len(markers))
 	for city, marker := range markers {
-		if busDailyTimetableSkip(city) || loaded[city] == marker {
+		if busDailyTimetableLoadSkip(city) || loaded[city] == marker {
 			continue
 		}
 		pending = append(pending, city)

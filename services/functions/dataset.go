@@ -122,6 +122,12 @@ func bikeCities() []string {
 	return out
 }
 
+// dailyTimetableLoadCities is the landing set plus the cities whose partition is
+// landed from somewhere other than TDX — Taipei, from Data.taipei.
+func dailyTimetableLoadCities() []string {
+	return append(dailyTimetableCities(), dataTaipeiCity)
+}
+
 func dailyTimetableCities() []string {
 	var out []string
 	for _, c := range cities {
@@ -204,7 +210,7 @@ func datasetRegistry() []datasetSpec {
 		// empty payload) for the cities in busDailyTimetableSkip, so landing them
 		// only produced a nightly ingest failure for data no loader would read.
 		{rawTable: "bus_dailytimetable", partCol: "city", partitions: dailyTimetableCities,
-			loadParts: dailyTimetableCities, family: familyBusCity, apiSeg: "DailyTimeTable",
+			loadParts: dailyTimetableLoadCities, family: familyBusCity, apiSeg: "DailyTimeTable",
 			name: busName("DailyTimeTable"), loadKey: "bus_dailytimetable"},
 		// Bus/Stop is intentionally absent from the fetch and reverse maps: it is
 		// never fetched and never loaded. The whitelist/DDL entry is kept because

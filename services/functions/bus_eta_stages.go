@@ -263,6 +263,72 @@ func nearestBus(lat, lon float64, buses []*models.BusPosition) (plate *string, s
 	return &pn, &spd, &di
 }
 
+// busAtStopKey identifies the stop one vehicle is standing at, on the same
+// canonical subroute/direction axis as the rest of the ETA job.
+type busAtStopKey struct {
+	subRouteUID string
+	direction   uint8
+	stopUID     string
+}
+
+// buildBusAtStopMap indexes the vehicles a feed places at a named stop. Only
+// Data.taipei fills StopUID (datataipei.go); TDX positions leave it empty and
+// produce an empty map, which is what keeps every other city on nearestBus.
+//
+// Last writer wins on the rare double: two vehicles of one subroute direction
+// reported at the same stop are both legitimately there, and neither is a
+// better answer than the other.
+func buildBusAtStopMap(city string, positions []rawBusPosition) map[busAtStopKey]rawBusPosition {
+	out := make(map[busAtStopKey]rawBusPosition, len(positions))
+	for _, p := range positions {
+		if p.StopUID == "" {
+			continue
+		}
+		uid, direction := shared.CanonicalSubroute(city, p.SubRouteUID, p.Direction)
+		out[busAtStopKey{uid, direction, p.StopUID}] = p
+	}
+	return out
+}
+
+// busAtStop resolves the vehicle standing at one stop into the plate, speed and
+// distance triple the emit loop carries. Distance is zero by definition: the
+// feed reported this bus as having entered this stop, so there is nothing to
+// estimate. Absent an entry it reports false and the caller keeps whatever
+// nearestBus guessed.
+func busAtStop(index map[busAtStopKey]rawBusPosition, key busAtStopKey) (*string, *int16, *int, bool) {
+	p, ok := index[key]
+	if !ok {
+		return nil, nil, nil, false
+	}
+	plate := normalizeArrivalPlate(p.PlateNumb)
+	if plate == "" {
+		return nil, nil, nil, false
+	}
+	speed := int16(p.Speed)
+	dist := 0
+	return &plate, &speed, &dist, true
+}
+
+// crowdForPlate resolves the crowding of the one vehicle an estimate describes.
+// The pairing is done here rather than on the client because the server is
+// where the plate and the vehicle list already sit together (the same reason
+// TRTC congestion is paired onto arrivals at ingest, CONTEXT.md).
+//
+// No plate, no match, or a vehicle with no reading all yield UNKNOWN, which the
+// app renders as nothing at all — an unlabelled bus must never read as an empty
+// one.
+func crowdForPlate(buses []*models.BusPosition, plate *string) models.BusCrowdLevel {
+	if plate == nil || *plate == "" {
+		return models.BusCrowdLevel_BUS_CROWD_UNKNOWN
+	}
+	for _, bus := range buses {
+		if normalizeArrivalPlate(bus.PlateNumb) == *plate {
+			return bus.CrowdLevel
+		}
+	}
+	return models.BusCrowdLevel_BUS_CROWD_UNKNOWN
+}
+
 // computeArrivalUnix resolves the absolute arrival instant the app decays locally
 // between server pushes. Status 0 with a positive live estimate derives it from
 // now+est; status 1 uses the (predicted or TDX) NextBusTime when it parses as

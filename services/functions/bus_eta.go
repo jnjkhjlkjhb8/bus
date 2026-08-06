@@ -57,6 +57,9 @@ func buildDirectionAwareBusPositionMap(city string, positions []rawBusPosition) 
 			DutyStatus:  int32(position.DutyStatus),
 			BusStatus:   int32(position.BusStatus),
 			GpsTimeUnix: parseGPSTimeUnix(position.GPSTime),
+			// Unset for every feed but Data.taipei's, which is what the wire enum's
+			// zero value means (models/bus.proto).
+			CrowdLevel: position.CrowdLevel,
 		})
 	}
 	return byIdentity
@@ -101,11 +104,20 @@ var busEtaSkip = map[string]struct{}{
 	"LienchiangCounty": {},
 }
 
+// vehicleSource is a live vehicle feed richer than TDX's, layered over the TDX
+// positions for the cities it covers. Nil means no such feed is configured and
+// every city stays on TDX alone — which is what the tests run with, so none of
+// them reach the network for it.
+type vehicleSource interface {
+	positions(context.Context) ([]rawBusPosition, error)
+}
+
 type busLiveJob struct {
 	fetch    boundFetch
 	sink     liveSink
 	store    busEtaStore
 	notifier busArrivalNotifier
+	vehicles vehicleSource
 	now      func() time.Time
 	// snapshot is fixed for the whole run so every city lands on the same side
 	// of the history sampling clock (see snapshotTick).
@@ -204,6 +216,7 @@ func busEta(
 		fetch:    fetch,
 		sink:     sink,
 		store:    pgBusEtaStore{db: db},
+		vehicles: newDataTaipeiFeed(),
 		now:      time.Now,
 		snapshot: snapshotTick(time.Now()),
 	}
@@ -479,7 +492,13 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 	// Assemble-inputs stage: collapse the raw TDX ETA array, group live positions,
 	// and count route lengths, all keyed on canonical subroute/direction (ADR-0006).
 	etamap := buildBusEtaMap(city, eat, mp)
+	// Taipei's vehicles come from Data.taipei instead, which unlike TDX names the
+	// subroute and the plate of each one (datataipei.go). Applied after the cache
+	// branch above so the TDX rows it layers over are still the ones a 304 tick
+	// restored, and a no-op for every other city.
+	posit = j.overlayVehicles(ctx, city, posit)
 	busmap := buildDirectionAwareBusPositionMap(city, posit)
+	atStopMap := buildBusAtStopMap(city, posit)
 	totalStops := buildTotalStops(mp)
 	var weather *weatherData
 	if wjson, wErr := j.sink.getString(ctx, shared.WeatherKey(city)); wErr == nil {
@@ -551,6 +570,14 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 			var busSpeed *int16
 			var busDist *int
 			plateNumb, busSpeed, busDist = nearestBus(b.Lat, b.Lon, busmap[positionKey])
+			// A feed that says which stop a vehicle entered names the bus outright,
+			// so it displaces the proximity guess wherever it speaks (FDPL-66
+			// Phase 2). Only Data.taipei does, and only for the stop each bus is
+			// standing at right now — every stop further down the route still has
+			// nothing better than nearest-GPS.
+			if plate, speed, dist, ok := busAtStop(atStopMap, busAtStopKey{uid, dir, b.StopUID}); ok {
+				plateNumb, busSpeed, busDist = plate, speed, dist
+			}
 			// The plate is the vehicle identity segment derivation groups a run by,
 			// so it has to name the bus this estimate describes. Take TDX's own
 			// PlateNumb from the selected ETA row, the same one dispatch uses; the
@@ -683,6 +710,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 			SrcUpdateTime: stime,
 			Buses:         busmap[positionKey],
 			ArrivalUnix:   arrivalUnix,
+			CrowdLevel:    crowdForPlate(busmap[positionKey], plateNumb),
 		})
 		if shouldDispatchBusArrival(ok, status, est) {
 			arrivalEvents = append(arrivalEvents, notify.ArrivalEvent{
@@ -708,6 +736,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 			StopSequence:  int32(b.StopSequence),
 			ArrivalUnix:   arrivalUnix,
 			PlateNumb:     normalizeArrivalPlate(eta.PlateNumb),
+			CrowdLevel:    crowdForPlate(busmap[positionKey], plateNumb),
 		})
 	}
 	for groupUID, pb := range stations {

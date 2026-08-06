@@ -124,7 +124,19 @@ func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool
 	_, _ = addStaticCron(r, "0 0 * * * *", func() {
 		runDaily("ingest_bus_dailytimetable", busDailyIngestTimeout, func(ctx context.Context) error {
 			return hourly.Run(ctx, func(ctx context.Context) error {
-				return ingestRaw(ctx, tdx, "bus_dailytimetable")
+				// Taipei's partition of the same table, from Data.taipei rather than
+				// TDX (FDPL-66 Phase 3). It rides this entry so both writers to
+				// bus_dailytimetable stay under one static-pipeline lock, and it is
+				// gated on TDX credentials for the reason ingestRaw is: raw_tdx is
+				// shared across environments, and only the environment holding the
+				// credentials owns writes to it. Its failure is joined rather than
+				// returned early — one thin city must not cost the other sixteen
+				// their hourly refresh.
+				var taipeiErr error
+				if hasTDXCredentials() {
+					taipeiErr = landDataTaipeiDailyTimetable(ctx, newDataTaipeiFeed(), time.Now)
+				}
+				return errors.Join(ingestRaw(ctx, tdx, "bus_dailytimetable"), taipeiErr)
 			})
 		})
 	})
@@ -152,6 +164,14 @@ func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool
 // hourly bus_dailytimetable landing is the one caller that lands a subset. An
 // unknown table name lands nothing rather than silently falling back to the
 // full run.
+// hasTDXCredentials reports whether this environment is the one that owns
+// raw_tdx. Every environment runs an ingestor against the same shared schema, so
+// the credentials double as the writer election: without them a landing would
+// race the environment that has them.
+func hasTDXCredentials() bool {
+	return os.Getenv("TDX_CLIENT_ID") != "" && os.Getenv("TDX_CLIENT_SECRET") != ""
+}
+
 func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	// Without TDX credentials every fetch would 401, so the ingestor would fire
 	// ~300+ unauthenticated requests (each retried) daily to no effect. Gate the
@@ -159,7 +179,7 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	// no-op, emitting exactly one line and issuing zero requests. This is what
 	// keeps staging/test (which run with empty creds against the shared Azure
 	// database) from storming TDX and from racing prod's raw_tdx writes.
-	if os.Getenv("TDX_CLIENT_ID") == "" || os.Getenv("TDX_CLIENT_SECRET") == "" {
+	if !hasTDXCredentials() {
 		zap.S().Infow("idle", "component", "ingest", "action", "raw", "event", "idle", "reason", "no_credentials")
 		return nil
 	}

@@ -3,9 +3,11 @@ import 'package:flutter/widget_previews.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/data/models/arrival_display.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/models/eta_status.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
+import 'package:wheres_the_bus/shared/widgets/crowd_meter.dart';
 
 export 'package:wheres_the_bus/data/models/eta_status.dart';
 
@@ -59,6 +61,7 @@ class EtaListTile extends StatelessWidget {
     this.leading,
     this.destinationStyle,
     this.bare = false,
+    this.crowdLevel = CrowdLevel.unknown,
   });
 
   /// Builds a tile straight from the shared [ArrivalDisplay] contract. The
@@ -94,6 +97,7 @@ class EtaListTile extends StatelessWidget {
     leading: leading,
     destinationStyle: destinationStyle,
     bare: bare,
+    crowdLevel: display.crowdLevel,
   );
 
   final String routeNo;
@@ -118,6 +122,10 @@ class EtaListTile extends StatelessWidget {
   /// When true, renders only the row (no Pressable, highlight, min-height, or
   /// padding), letting the caller own the surrounding list chrome.
   final bool bare;
+
+  /// How full the vehicle this row describes is. Only Taipei buses carry a
+  /// reading; everything else stays UNKNOWN and nothing is drawn.
+  final CrowdLevel crowdLevel;
 
   @override
   Widget build(BuildContext context) {
@@ -165,7 +173,22 @@ class EtaListTile extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 12),
-        EtaValue(status: status, muted: muted),
+        // The meter sits under the time, not beside it: the time is the row's
+        // one job, and a second object on its baseline would compete for the
+        // glance. Muted rows (末班已過 / 今日未營運) drop it — there is no bus to
+        // be full. The column collapses to the time alone when there is no
+        // reading, so untracked rows keep their exact previous layout.
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            EtaValue(status: status, muted: muted),
+            if (!muted && CrowdMeter.filledFor(crowdLevel) > 0) ...[
+              const SizedBox(height: 4),
+              CrowdMeter(level: crowdLevel),
+            ],
+          ],
+        ),
       ],
     );
 

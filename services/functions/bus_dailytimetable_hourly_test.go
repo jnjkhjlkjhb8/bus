@@ -51,7 +51,8 @@ func TestBusDailyPendingCities(t *testing.T) {
 		"Taoyuan":     "v2",
 		"Taichung":    "v1",
 		"Kaohsiung":   "v3",
-		"Taipei":      "v9", // TDX serves no daily timetable for Taipei
+		"Taipei":      "v9", // landed from Data.taipei, not TDX, but still loaded
+		"NewTaipei":   "v9", // nothing lands this partition at all
 		"HsinchuCity": "v1",
 	}
 	tests := []struct {
@@ -62,19 +63,21 @@ func TestBusDailyPendingCities(t *testing.T) {
 		{
 			name:   "fresh process loads every served city",
 			loaded: map[string]string{},
-			want:   []string{"HsinchuCity", "Kaohsiung", "Taichung", "Taoyuan"},
+			want:   []string{"HsinchuCity", "Kaohsiung", "Taichung", "Taipei", "Taoyuan"},
 		},
 		{
 			name: "only the cities whose marker moved",
 			loaded: map[string]string{
-				"Taoyuan": "v1", "Taichung": "v1", "Kaohsiung": "v3", "HsinchuCity": "v1",
+				"Taoyuan": "v1", "Taichung": "v1", "Kaohsiung": "v3",
+				"HsinchuCity": "v1", "Taipei": "v9",
 			},
 			want: []string{"Taoyuan"},
 		},
 		{
 			name: "quiet hour transforms nothing",
 			loaded: map[string]string{
-				"Taoyuan": "v2", "Taichung": "v1", "Kaohsiung": "v3", "HsinchuCity": "v1",
+				"Taoyuan": "v2", "Taichung": "v1", "Kaohsiung": "v3",
+				"HsinchuCity": "v1", "Taipei": "v9",
 			},
 			want: []string{},
 		},

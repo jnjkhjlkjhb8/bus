@@ -23,6 +23,7 @@ class ArrivalDisplay {
     required this.destination,
     required this.status,
     required this.rank,
+    this.crowdLevel = CrowdLevel.unknown,
   });
 
   /// Maps a bus stop arrival to its display, reproducing the one status/rank
@@ -57,6 +58,7 @@ class ArrivalDisplay {
       destination: a.destination,
       status: status,
       rank: rank,
+      crowdLevel: a.crowdLevel,
     );
   }
 
@@ -81,6 +83,11 @@ class ArrivalDisplay {
   final String destination;
   final EtaStatus status;
   final int rank;
+
+  /// How full the vehicle this arrival describes is, resolved server-side from
+  /// its plate. Only Taipei buses report it; metro and every other city leave
+  /// it UNKNOWN, and nothing is drawn.
+  final CrowdLevel crowdLevel;
 
   /// Whether this arrival is eligible for the coming-soon highlight: only the
   /// soonest ranked row (rank <= 3) qualifies. The caller pairs this with the

@@ -153,10 +153,20 @@ class BusStationMember {
   final double lon;
 }
 
+/// How full a vehicle is, in the app's own vocabulary. The wire enum is a
+/// generated proto type and stops at the data layer (see the architecture test
+/// in test/architecture); widgets take this.
+///
+/// [unknown] is the default because most vehicles have no reading: only
+/// Data.taipei publishes bus crowding, and only for Taipei. It must render as
+/// nothing rather than as an empty bus.
+enum CrowdLevel { unknown, comfortable, normal, crowded }
+
 /// One route's arrival at a member stop of a station group. The countdown and
 /// every display label derive from [estimateSeconds] + [stopStatus] through the
 /// one shared mapping in eta_format.dart; [decayed] re-derives the estimate
 /// from [arrivalUnix] locally so the countdown stays accurate between frames.
+
 class BusStopArrival extends Equatable {
   const BusStopArrival({
     required this.stationId,
@@ -167,6 +177,7 @@ class BusStopArrival extends Equatable {
     this.nextBusTime = '',
     this.stopStatus = 0,
     this.arrivalUnix = 0,
+    this.crowdLevel = CrowdLevel.unknown,
   });
 
   final String stationId;
@@ -182,6 +193,11 @@ class BusStopArrival extends Equatable {
 
   /// Absolute arrival instant (Unix seconds), or 0 when the server sent none.
   final int arrivalUnix;
+
+  /// How full the arriving vehicle is. [CrowdLevel.unknown] whenever the server
+  /// could not pair a reading to this estimate's plate, which is every city but
+  /// Taipei.
+  final CrowdLevel crowdLevel;
 
   /// Remaining whole minutes (ceil), or null when no positive estimate exists.
   int? get minutes {

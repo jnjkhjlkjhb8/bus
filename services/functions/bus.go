@@ -281,6 +281,10 @@ type rawBusPosition struct {
 	DutyStatus uint8   `json:"DutyStatus"`
 	BusStatus  uint8   `json:"BusStatus"`
 	GPSTime    string  `json:"GPSTime"`
+	// CrowdLevel is not a TDX field: no bus feed TDX serves carries crowding.
+	// It rides here because Data.taipei publishes it per vehicle and this is the
+	// per-vehicle record the ETA job already threads through (datataipei.go).
+	CrowdLevel models.BusCrowdLevel `json:"CrowdLevel,omitempty"`
 }
 
 // busStationmap is one stop of one subroute joined to its station group and
@@ -343,12 +347,18 @@ func sanitizeOperatorPhone(s string) string {
 }
 
 // busDailyTimetableSkip lists cities whose daily-timetable feed TDX does not
-// serve; both the landing partitions and the loader path
-// (loadBusDailyTimetable partitions) skip them so landed and loaded partitions
-// agree.
+// serve, so the TDX landing partitions skip them.
 func busDailyTimetableSkip(city string) bool {
 	return city == "Taipei" || city == "NewTaipei" || city == "Tainan" ||
 		city == "KinmenCounty" || city == "LienchiangCounty"
+}
+
+// busDailyTimetableLoadSkip lists cities with no bus_dailytimetable partition to
+// load. It is busDailyTimetableSkip minus the cities landed from a source other
+// than TDX: Taipei's partition comes from Data.taipei (datataipei_static.go), so
+// TDX serving nothing for it no longer means there is nothing to load.
+func busDailyTimetableLoadSkip(city string) bool {
+	return busDailyTimetableSkip(city) && city != dataTaipeiCity
 }
 
 // busDailyOriginFilter indexes each subroute direction's origin stop from the

@@ -30,7 +30,14 @@ func TestDatasetRegistryConsistency(t *testing.T) {
 	}
 
 	// Every standalone loader reads a fetched table (loaders never load unlanded
-	// data), and its load partitions are a subset of what is landed.
+	// data), and its load partitions are a subset of what is landed. The
+	// invariant is "someone lands it", not "the TDX ingestor lands it": a
+	// partition written by another landing path is listed here rather than
+	// weakening the check for every dataset.
+	externallyLanded := map[string]bool{
+		// Data.taipei 特殊班表, landed by landDataTaipeiDailyTimetable (FDPL-66).
+		"bus_dailytimetable/Taipei": true,
+	}
 	for _, d := range reg {
 		if d.loadKey == "" {
 			continue
@@ -43,7 +50,7 @@ func TestDatasetRegistryConsistency(t *testing.T) {
 			land[p] = true
 		}
 		for _, p := range d.loadPartitions() {
-			if !land[p] {
+			if !land[p] && !externallyLanded[d.rawTable+"/"+p] {
 				t.Errorf("dataset %q loads partition %q that is not landed", d.rawTable, p)
 			}
 		}

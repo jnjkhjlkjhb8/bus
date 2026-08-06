@@ -76,6 +76,7 @@ class BusDecoder {
         nextBusTime: r.nextBusTime,
         stopStatus: r.stopStatus,
         arrivalUnix: arrivalUnix,
+        crowdLevel: crowdLevelOf(r.crowdLevel),
       );
     }).toList();
   }
@@ -183,3 +184,13 @@ class BusDecoder {
     );
   }
 }
+
+/// Maps the wire crowding enum onto the app's own. An unrecognised value is
+/// [CrowdLevel.unknown]: a level this build does not know is not a reading it
+/// can show.
+CrowdLevel crowdLevelOf(BusCrowdLevel wire) => switch (wire) {
+  BusCrowdLevel.BUS_CROWD_COMFORTABLE => CrowdLevel.comfortable,
+  BusCrowdLevel.BUS_CROWD_NORMAL => CrowdLevel.normal,
+  BusCrowdLevel.BUS_CROWD_CROWDED => CrowdLevel.crowded,
+  _ => CrowdLevel.unknown,
+};
