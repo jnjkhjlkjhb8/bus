@@ -73,7 +73,7 @@ class _SeeMoreButton extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Pressable(
       onTap: () {
-        unawaited(context.push('/favorites'));
+        unawaited(context.push(AppRoutes.favorites));
       },
       semanticLabel: AppI18n.of(context).homeSeeAllFavorites,
       child: Container(
@@ -121,7 +121,7 @@ class _FavoritesEmpty extends StatelessWidget {
       body: AppI18n.of(context).homeNoPinnedBody,
       actionLabel: AppI18n.of(context).homeGoToFavorites,
       onAction: () {
-        unawaited(context.push('/favorites'));
+        unawaited(context.push(AppRoutes.favorites));
       },
     );
   }

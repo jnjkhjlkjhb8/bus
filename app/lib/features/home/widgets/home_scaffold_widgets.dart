@@ -138,7 +138,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
             child: SafeArea(
               child: Pressable(
                 onTap: () {
-                  unawaited(context.push('/settings'));
+                  unawaited(context.push(AppRoutes.settings));
                 },
                 semanticLabel: AppI18n.of(context).commonSettings,
                 child: Container(
@@ -206,7 +206,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
                   ),
                   Pressable(
                     onTap: () {
-                      unawaited(context.push('/metro'));
+                      unawaited(context.push(AppRoutes.metro));
                     },
                     semanticLabel: AppI18n.of(context).modeMetro,
                     child: Container(
@@ -224,7 +224,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
                     ),
                   ),
                   Pressable(
-                    onTap: _openRailQuerySheet,
+                    onTap: _onRailQueryTap,
                     semanticLabel: AppI18n.of(context).modeRailPair,
                     child: Container(
                       width: 44,
@@ -318,7 +318,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
                   ),
                   Pressable(
                     onTap: () {
-                      unawaited(context.push('/go'));
+                      unawaited(context.push(AppRoutes.go));
                     },
                     semanticLabel: AppI18n.of(context).homePlanRoute,
                     child: Container(
@@ -372,7 +372,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
               Expanded(
                 child: _SearchBar(
                   onTap: () {
-                    unawaited(context.push('/search'));
+                    unawaited(context.push(AppRoutes.search));
                   },
                 ),
               ),
@@ -394,7 +394,7 @@ extension _HomeScreenScaffold on _HomeScreenState {
             children: [
               const _FavoritesTab(),
               _NearbyStationsTab(
-                onStationTap: _openStationDetail,
+                onStationTap: _onStationTap,
                 sheetController: _sheetController,
                 sheetTicks: _rootSheetTicks,
               ),

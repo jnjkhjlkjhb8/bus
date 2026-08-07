@@ -2,7 +2,9 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/errors/app_error.dart';
@@ -12,6 +14,7 @@ import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_station_board_bloc.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_station_board_event.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_station_board_state.dart';
+import 'package:wheres_the_bus/features/rail/rail_system_labels.dart';
 import 'package:wheres_the_bus/features/rail/view/home_rail_query_sheet.dart';
 import 'package:wheres_the_bus/features/rail/view/rail_train_screen.dart';
 import 'package:wheres_the_bus/features/rail/widgets/rail_query_sheet.dart';
@@ -124,6 +127,10 @@ class _StationBoard extends StatelessWidget {
             type: FavoriteType.railStation,
             refId: stationId,
             title: name,
+            // Which rail system, so opening the 收藏 reaches the right
+            // timetable. Stored as the label it displays — see
+            // [railSystemLabel] — because `subtitle` is shown on the tile.
+            subtitle: railSystemLabel(system),
           ),
         ),
         Padding(

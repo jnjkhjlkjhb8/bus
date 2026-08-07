@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
@@ -28,9 +29,14 @@ import (
 // allocation this process makes.
 
 const (
-	// gtfsExportTimeout bounds one build. It is generous because the cost is
-	// dominated by one full scan of bus_stopofroute's nested stop arrays.
-	gtfsExportTimeout = 15 * time.Minute
+	// gtfsExportTimeout bounds one build.
+	//
+	// 15 minutes was not enough and the export had been failing on it: measured
+	// against prod on 2026-08-06, stop_times.txt alone streams for ten of them
+	// and shapes.txt for two more. The budget is the whole nightly window, not a
+	// request, so this is set well clear of the ~20 minutes a build takes rather
+	// than close to it — a slow night must not cost the feed.
+	gtfsExportTimeout = 45 * time.Minute
 	// gtfsOutputDirEnv overrides where feeds are written. The default is a path
 	// a volume can be mounted at, since the consumer of these files is another
 	// container.
@@ -51,6 +57,52 @@ type gtfsFile struct {
 	sql  string
 }
 
+// gtfsTempTable is a derived set materialized once and read by name afterwards.
+//
+// Two separate problems make this necessary, both measured against the Azure
+// B1ms on 2026-08-06.
+//
+// The planner has no statistics for a lateral expansion of JSONB, so it costs
+// one at a hundred rows whatever it really returns. Fed a fare source it thinks
+// is small, it chose a plan that had not finished counting the 1.75M bus fare
+// legs after 15 minutes — while the same legs, joined out of two analyzed temp
+// tables, count in 26 seconds. The materialize is not a cache here, it is what
+// gives the planner the row counts it is choosing on.
+//
+// And the fare files re-derive the same sets: gtfsFarePricedSQL is read by all
+// four of them, the section zones by all four, and the emitted stop set by those
+// plus stops.txt and pathways.txt. Inline, each of those is a fresh execution.
+//
+// indexOn is a column list to build an index over before ANALYZE, for the sets
+// something joins to per-row rather than scans.
+type gtfsTempTable struct {
+	name    string
+	sql     string
+	indexOn string
+}
+
+// gtfsTempTables lists the materialized sets in dependency order: each may read
+// the ones before it.
+func gtfsTempTables() []gtfsTempTable {
+	return []gtfsTempTable{
+		// The calls come first because both of the sets after them are defined by
+		// what is in here: trips.txt is restricted to the trips that have calls
+		// (gtfsStopTimesSQL drops the ones whose times it cannot state), and
+		// stops.txt to the stops those calls name.
+		{name: gtfsStopTimeTable, sql: gtfsStopTimesSQL, indexOn: "trip_id"},
+		// stop_areas.txt looks a stop up per fare area, so this one is indexed
+		// even though every other reader of it scans.
+		{name: gtfsStopTable, sql: gtfsStopsSQL, indexOn: "stop_id"},
+		{name: gtfsFareSrcTable, sql: busFareSourceSQL, indexOn: "city, routeid"},
+		{name: gtfsStopUIDTable, sql: busStopUIDSQL, indexOn: "city, stop_id"},
+		{name: gtfsStopSeqTable, sql: busStopSeqSQL, indexOn: "subrouteuid, direction, stop_id"},
+		{name: gtfsFarePairTable, sql: busFarePairSQL, indexOn: "routeuid, from_uid, to_uid"},
+		{name: gtfsFareLegTable, sql: busFareLegSQL},
+		{name: gtfsFarePricedTable, sql: gtfsFarePricedSQL},
+		{name: gtfsFareZoneTable, sql: gtfsFareZoneSQL},
+	}
+}
+
 // gtfsFiles is the feed's contents.
 //
 // The file set is complete for bus, metro and rail. What is missing is service,
@@ -60,11 +112,13 @@ type gtfsFile struct {
 func gtfsFiles(version string) []gtfsFile {
 	return []gtfsFile{
 		{"agency.txt", gtfsAgencySQL},
-		{"stops.txt", gtfsStopsSQL},
+		// stops.txt is the materialized set itself, not a second evaluation of
+		// the query behind it: the fare files filter against these exact ids.
+		{"stops.txt", "SELECT * FROM " + gtfsStopTable},
 		{"routes.txt", gtfsRoutesSQL},
 		{"calendar_dates.txt", gtfsCalendarDatesSQL},
 		{"trips.txt", gtfsTripsSQL},
-		{"stop_times.txt", gtfsStopTimesSQL},
+		{"stop_times.txt", "SELECT * FROM " + gtfsStopTimeTable},
 		{"frequencies.txt", gtfsFrequenciesSQL},
 		{"transfers.txt", gtfsTransfersSQL},
 		{"pathways.txt", gtfsPathwaysSQL},
@@ -175,8 +229,16 @@ func writeGTFSArchive(ctx context.Context, db *pgxpool.Pool, w io.Writer, versio
 		return 0, fmt.Errorf("gtfs export: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"); err != nil {
+	// REPEATABLE READ is what makes the files agree with each other. READ ONLY
+	// used to be asserted beside it and cannot be: PostgreSQL refuses CREATE
+	// TABLE AS in a read-only transaction, and the export now materializes its
+	// shared sets into temp tables. Nothing here writes anything else — every
+	// file is a COPY of a SELECT.
+	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
 		return 0, fmt.Errorf("gtfs export: set snapshot: %w", err)
+	}
+	if err := createGTFSTempTables(ctx, tx, true /* withData */); err != nil {
+		return 0, err
 	}
 
 	zw := zip.NewWriter(w)
@@ -204,6 +266,48 @@ func writeGTFSArchive(ctx context.Context, db *pgxpool.Pool, w io.Writer, versio
 		return 0, fmt.Errorf("gtfs export: finish archive: %w", err)
 	}
 	return total, nil
+}
+
+// createGTFSTempTables materializes every derived set the files read by name.
+//
+// ON COMMIT DROP ties their lifetime to the export transaction, so a build that
+// fails partway leaves nothing behind for the next one to collide with.
+//
+// withData false creates them empty (WITH NO DATA). The columns and types are
+// still declared, which is all a statement needs to plan, so a test can check
+// that every file resolves without paying for the sets it resolves against.
+func createGTFSTempTables(ctx context.Context, tx pgx.Tx, withData bool) error {
+	for _, table := range gtfsTempTables() {
+		started := time.Now()
+		create := "CREATE TEMP TABLE " + table.name + " ON COMMIT DROP AS " + table.sql
+		if !withData {
+			if _, err := tx.Exec(ctx, create+" WITH NO DATA"); err != nil {
+				return fmt.Errorf("gtfs export: declare %s: %w", table.name, err)
+			}
+			continue
+		}
+		if _, err := tx.Exec(ctx, create); err != nil {
+			return fmt.Errorf("gtfs export: materialize %s: %w", table.name, err)
+		}
+		if table.indexOn != "" {
+			if _, err := tx.Exec(ctx, "CREATE INDEX ON "+table.name+" ("+table.indexOn+")"); err != nil {
+				return fmt.Errorf("gtfs export: index %s: %w", table.name, err)
+			}
+		}
+		// Without this the temp table is as opaque to the planner as the
+		// expansion it replaced, and the whole point is lost.
+		if _, err := tx.Exec(ctx, "ANALYZE "+table.name); err != nil {
+			return fmt.Errorf("gtfs export: analyze %s: %w", table.name, err)
+		}
+		zap.S().Infow("materialized",
+			"component", "gtfs",
+			"action", "export",
+			"table", table.name,
+			"elapsed", time.Since(started).Round(time.Millisecond),
+			"event", "materialized",
+		)
+	}
+	return nil
 }
 
 // linkLatestGTFS repoints the stable name. The symlink is created under a

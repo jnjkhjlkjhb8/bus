@@ -24,11 +24,21 @@ class BookmarkButton extends StatelessWidget {
   /// See [FavoriteToggleButton.onPlate].
   final bool onPlate;
 
-  Favorite get _favorite => Favorite(
-    type: routeType == 'bus' ? FavoriteType.busRoute : FavoriteType.railTrain,
-    refId: routeKey,
-    title: routeLabel,
-  );
+  Favorite get _favorite => routeType == 'bus'
+      ? Favorite(
+          type: FavoriteType.busRoute,
+          refId: routeKey,
+          title: routeLabel,
+        )
+      : Favorite(
+          type: FavoriteType.railTrain,
+          refId: routeKey,
+          title: routeLabel,
+          // [routeType] is already the rail system's rider-facing label, which
+          // is exactly what the 收藏 needs to record so opening it reaches the
+          // right system — see [railSystemFromLabel].
+          subtitle: routeType,
+        );
 
   @override
   Widget build(BuildContext context) =>

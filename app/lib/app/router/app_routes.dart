@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:wheres_the_bus/data/models/metro_map_models.dart';
+import 'package:wheres_the_bus/data/models/near_models.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
 /// Single source for route paths and location construction.
@@ -34,7 +37,7 @@ class AppRoutes {
   /// a cold deep link like every other route here.
   static String feedbackLocation({String? from}) => from == null || from.isEmpty
       ? feedback
-      : Uri(path: feedback, queryParameters: {'from': from}).toString();
+      : _location(feedback, {'from': from});
 
   /// Route pattern for the bus route detail screen; use [busRoute] to build a
   /// concrete location.
@@ -52,16 +55,16 @@ class AppRoutes {
     String? city,
     double? lat,
     double? lon,
-  }) => Uri(
-    path: busStop,
-    queryParameters: {
+  }) => _location(
+    busStop,
+    {
       'name': stopName,
       'id': ?stopId,
       'city': ?city,
       'lat': ?lat?.toString(),
       'lon': ?lon?.toString(),
     },
-  ).toString();
+  );
 
   /// [name]/[lat]/[lon] are optional first-paint hints — see
   /// [busStopLocation]. They seed the sheet title and camera target so neither
@@ -71,15 +74,162 @@ class AppRoutes {
     String? name,
     double? lat,
     double? lon,
-  }) => Uri(
-    path: bikeStation,
-    queryParameters: {
+  }) => _location(
+    bikeStation,
+    {
       'uid': stationUid,
       'name': ?name,
       'lat': ?lat?.toString(),
       'lon': ?lon?.toString(),
     },
+  );
+
+  /// Route pattern for the home sheet's station detail layer.
+  ///
+  /// Reads as a sub-location of [home] and behaves like one — the map stays
+  /// underneath, focused on the same station — but it is declared as a sibling
+  /// route rendering the same keyed page, because the sheet is home's own
+  /// navigator rather than the router's. See `app_router.dart`.
+  static const nearStationPattern = '/near/:type/:id';
+
+  /// [name]/[lat]/[lon] let the sheet title and the camera land before the
+  /// nearby query answers — and, for a station outside the current viewport,
+  /// they are the only thing that can put the map on it at all.
+  ///
+  /// [back] is where closing the sheet returns to, when that is not the bare
+  /// map. It exists because this page cannot be *stacked* on its caller: it
+  /// renders the home screen, which is already the bottom of the stack, so a
+  /// caller sitting above home (search) would otherwise be dropped with no way
+  /// back. Naming the return location says in the URL what a stack entry would
+  /// have said implicitly.
+  static String nearStation({
+    required NearStationType type,
+    required String id,
+    String? name,
+    double? lat,
+    double? lon,
+    String? back,
+  }) => _location(
+    '/near/${type.name}/${Uri.encodeComponent(id)}',
+    {
+      'back': ?back,
+      'name': ?name,
+      'lat': ?lat?.toString(),
+      'lon': ?lon?.toString(),
+    },
+  );
+
+  /// True for every location the home screen renders — the bare map and both
+  /// of the sheet's second layers, which sit on the same live screen rather
+  /// than replacing it. Callers asking "is the rider on home" must use this
+  /// and not compare against [home] alone.
+  static bool isHomeLocation(Uri uri) =>
+      uri.path == home ||
+      uri.path == railQueryPattern ||
+      NearStationRouteArgs.fromUri(uri) != null;
+
+  /// The rail query form as the home sheet's second layer — a sub-location of
+  /// [home] on the same terms as [nearStationPattern].
+  static const railQueryPattern = '/rail-query';
+
+  static String railQuery({
+    RailSystem system = RailSystem.tra,
+    String? originName,
+    String? originId,
+  }) => _location(
+    railQueryPattern,
+    {
+      'sys': system.name,
+      'from': ?originName,
+      'fromId': ?originId,
+    },
+  );
+
+  /// Route pattern for a metro station on the line map.
+  ///
+  /// Declared top-level rather than as a child of [metro] on purpose: the
+  /// station detail is a sheet *inside* [metro]'s own screen, not a page above
+  /// it, so nesting the route would stack two line maps on a cold deep link.
+  static const metroStationPattern = '/metro/station/:id';
+
+  /// [id] is a Taipei Metro (TDX) station code — the same id that keys ETA
+  /// lookups and metro favorites, e.g. `BL15_BR10`.
+  static String metroStation(String id, {MetroMapMode? mode}) => _location(
+    '/metro/station/${Uri.encodeComponent(id)}',
+    {'mode': ?mode?.name},
+  );
+
+  static String metroLocation({MetroMapMode? mode}) =>
+      _location(metro, {'mode': ?mode?.name});
+
+  /// The rail timetable, with as much of the query as the caller knows.
+  ///
+  /// [submit] runs the search on open; without it the form is only pre-filled,
+  /// which is what a station preset wants.
+  static String railLocation({
+    required RailSystem system,
+    String? originName,
+    String? originId,
+    String? destName,
+    String? destId,
+    DateTime? date,
+    bool isDeparture = true,
+    bool submit = false,
+  }) => _location(
+    rail,
+    {
+      'sys': system.name,
+      'from': ?originName,
+      'fromId': ?originId,
+      'to': ?destName,
+      'toId': ?destId,
+      'date': ?(date == null ? null : _minuteIso(date)),
+      if (!isDeparture) 'dep': '0',
+      if (submit) 'submit': '1',
+    },
+  );
+
+  /// Route pattern for one train's stop list. Top-level and outside the shell:
+  /// it is a full-screen page reached from the home sheet, the rail screen and
+  /// search alike, so it must not stack a rail screen underneath.
+  static const railTrainPattern = '/rail/train/:trainNo';
+
+  /// [date] defaults to today at the screen, which is what every caller that
+  /// has no particular day in mind wants.
+  static String railTrain(
+    String trainNo, {
+    required RailSystem system,
+    DateTime? date,
+  }) => _location(
+    '/rail/train/${Uri.encodeComponent(trainNo)}',
+    {
+      'sys': system.name,
+      'date': ?(date == null ? null : _dateIso(date)),
+    },
+  );
+
+  /// [query] pre-fills the search field; absent, the screen opens empty.
+  static String searchLocation({String? query}) =>
+      _location(search, {'q': ?query});
+
+  /// Builds a location, dropping the query string entirely when nothing goes
+  /// in it. `Uri` otherwise emits a bare `?`, which makes two spellings of the
+  /// same place — and the one with the `?` is not what any route constant says.
+  static String _location(String path, Map<String, String> params) => Uri(
+    path: path,
+    queryParameters: params.isEmpty ? null : params,
   ).toString();
+
+  static String _dateIso(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
+  /// Minute precision: the rail query's time-of-day bounds the results, and
+  /// seconds would only make two identical queries look different.
+  static String _minuteIso(DateTime d) =>
+      '${_dateIso(d)}T${d.hour.toString().padLeft(2, '0')}:'
+      '${d.minute.toString().padLeft(2, '0')}';
 
   /// The planner opened with its destination already filled in, so a station
   /// detail can hand off to it without the user re-typing where they are
@@ -88,14 +238,14 @@ class AppRoutes {
     required String name,
     required double lat,
     required double lon,
-  }) => Uri(
-    path: go,
-    queryParameters: {
+  }) => _location(
+    go,
+    {
       'destName': name,
       'destLat': lat.toString(),
       'destLon': lon.toString(),
     },
-  ).toString();
+  );
 }
 
 /// Destination seed for [AppRoutes.go]. Absent or malformed parameters mean
@@ -216,6 +366,184 @@ class BikeStationRouteArgs {
     }
     return null;
   }
+}
+
+/// Parameters of the home sheet's station detail page.
+///
+/// [name]/[lat]/[lon] are optional because the nearby response carries them
+/// too; supplying them is what lets a station outside the current viewport —
+/// a search result in another city — put the map on itself.
+class NearStationRouteArgs {
+  const NearStationRouteArgs({
+    required this.type,
+    required this.id,
+    this.name,
+    this.lat,
+    this.lon,
+    this.back,
+  });
+
+  final NearStationType type;
+  final String id;
+  final String? name;
+  final double? lat;
+  final double? lon;
+
+  /// Where closing the sheet goes, or null for the bare map — see
+  /// [AppRoutes.nearStation].
+  final String? back;
+
+  /// Reads the whole location rather than go_router's path parameters,
+  /// because both readers need it: the route that renders home, and home
+  /// itself, which sits above the match that would carry them.
+  ///
+  /// Returns null for any location that is not `/near/<known type>/<id>` —
+  /// including `/` — so a caller can use the result directly as "is a station
+  /// open".
+  static NearStationRouteArgs? fromUri(Uri uri) {
+    final segments = uri.pathSegments;
+    if (segments.length != 3 || segments.first != 'near') return null;
+    final id = segments[2];
+    if (id.isEmpty) return null;
+    for (final type in NearStationType.values) {
+      if (type.name != segments[1]) continue;
+      final query = uri.queryParameters;
+      return NearStationRouteArgs(
+        type: type,
+        id: id,
+        name: query['name'],
+        lat: double.tryParse(query['lat'] ?? ''),
+        lon: double.tryParse(query['lon'] ?? ''),
+        back: query['back'],
+      );
+    }
+    return null;
+  }
+}
+
+/// Parameters of `/metro` and `/metro/station/:id`.
+class MetroRouteArgs {
+  const MetroRouteArgs({required this.mode, this.stationId});
+
+  /// Nothing here can fail the route: an unreadable `mode` falls back to the
+  /// map's default, and an absent station id simply means the bare map.
+  factory MetroRouteArgs.from(
+    Map<String, String> path,
+    Map<String, String> query,
+  ) {
+    final id = path['id'];
+    return MetroRouteArgs(
+      stationId: id == null || id.isEmpty ? null : id,
+      mode: MetroMapMode.fromName(query['mode']),
+    );
+  }
+
+  /// TDX station code to pre-select, or null for the bare line map.
+  final String? stationId;
+  final MetroMapMode mode;
+}
+
+/// Parameters of `/rail`, the timetable screen.
+///
+/// Every field is optional: a bare `/rail` opens the empty form, exactly as
+/// the nav entry point does. [submit] is what separates a pre-filled form from
+/// a query that runs on open.
+class RailRouteArgs {
+  const RailRouteArgs({
+    required this.system,
+    required this.originName,
+    required this.originId,
+    required this.destName,
+    required this.destId,
+    required this.date,
+    required this.isDeparture,
+    required this.submit,
+  });
+
+  factory RailRouteArgs.from(Map<String, String> query) => RailRouteArgs(
+    system: railSystemFromName(query['sys']),
+    originName: query['from'] ?? '',
+    originId: query['fromId'] ?? '',
+    destName: query['to'] ?? '',
+    destId: query['toId'] ?? '',
+    date: DateTime.tryParse(query['date'] ?? ''),
+    // Departure is the common query, so only its opposite is spelled out.
+    isDeparture: query['dep'] != '0',
+    submit: query['submit'] == '1',
+  );
+
+  final RailSystem system;
+  final String originName;
+  final String originId;
+  final String destName;
+  final String destId;
+
+  /// Carries the time of day as well as the day: with [isDeparture] it bounds
+  /// the results (depart at/after vs arrive at/before). Null means "now",
+  /// resolved at the screen so a restored location is not stuck in the past.
+  final DateTime? date;
+  final bool isDeparture;
+  final bool submit;
+}
+
+/// Parameters of `/rail/train/:trainNo`.
+class RailTrainRouteArgs {
+  const RailTrainRouteArgs({
+    required this.trainNo,
+    required this.system,
+    this.date,
+  });
+
+  final String trainNo;
+  final RailSystem system;
+
+  /// Null means today, resolved at the screen.
+  final DateTime? date;
+
+  /// Returns null without a train number — the one parameter the screen
+  /// cannot invent.
+  static RailTrainRouteArgs? from(
+    Map<String, String> path,
+    Map<String, String> query,
+  ) {
+    final trainNo = path['trainNo'];
+    if (trainNo == null || trainNo.isEmpty) return null;
+    return RailTrainRouteArgs(
+      trainNo: trainNo,
+      system: railSystemFromName(query['sys']),
+      date: DateTime.tryParse(query['date'] ?? ''),
+    );
+  }
+}
+
+/// Parameters of `/rail-query`, the rail form in the home sheet.
+class RailQueryRouteArgs {
+  const RailQueryRouteArgs({
+    required this.system,
+    this.originName,
+    this.originId,
+  });
+
+  factory RailQueryRouteArgs.from(Map<String, String> query) =>
+      RailQueryRouteArgs(
+        system: railSystemFromName(query['sys']),
+        originName: query['from'],
+        originId: query['fromId'],
+      );
+
+  final RailSystem system;
+  final String? originName;
+  final String? originId;
+}
+
+/// Falls back to [RailSystem.tra] for an absent or unknown value: TRA is the
+/// larger network, and a location that names no system is a caller that has
+/// no opinion rather than one asking for high speed rail.
+RailSystem railSystemFromName(String? name) {
+  for (final system in RailSystem.values) {
+    if (system.name == name) return system;
+  }
+  return RailSystem.tra;
 }
 
 /// Typed destination for unmatched locations and malformed route parameters,

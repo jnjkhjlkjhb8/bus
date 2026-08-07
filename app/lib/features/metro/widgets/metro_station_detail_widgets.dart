@@ -414,7 +414,10 @@ class _MetroAlightBellState extends State<_MetroAlightBell> {
     // Already on the map: the pick state alone is enough, and navigating would
     // throw away the rider's current pan and zoom.
     if (context.findAncestorWidgetOfExactType<MetroScreen>() != null) return;
-    context.go(AppRoutes.metro, extra: widget.arrival.stationId);
+    // Pushed, not `go`: the rider is picking where to get off from a station
+    // detail they opened somewhere else, and `go` would clear the stack they
+    // still expect to come back to.
+    unawaited(context.push(AppRoutes.metroStation(widget.arrival.stationId)));
   }
 
   @override

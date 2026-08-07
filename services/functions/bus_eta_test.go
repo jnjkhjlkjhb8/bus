@@ -2,9 +2,37 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
+
+// busEtaFastCities and busEtaSlowCities must partition cities exactly: every
+// city in exactly one list, nothing invented or dropped. A future edit to
+// either that silently loses a city would otherwise surface only as that
+// city's ETA cron simply never running.
+func TestBusEtaCityListsPartitionCities(t *testing.T) {
+	seen := make(map[string]int, len(cities))
+	for _, city := range busEtaFastCities {
+		seen[city]++
+	}
+	for _, city := range busEtaSlowCities {
+		seen[city]++
+	}
+	if len(seen) != len(cities) {
+		t.Fatalf("fast+slow cover %d distinct cities, want %d", len(seen), len(cities))
+	}
+	for _, city := range cities {
+		if seen[city] != 1 {
+			t.Errorf("city %q appears %d times across fast+slow, want exactly 1", city, seen[city])
+		}
+	}
+	for city := range dataTaipeiDynamicCities {
+		if !slices.Contains(busEtaFastCities, city) {
+			t.Errorf("dataTaipeiDynamicCities city %q missing from busEtaFastCities", city)
+		}
+	}
+}
 
 func TestDecodeBusEtaArray(t *testing.T) {
 	tests := []struct {

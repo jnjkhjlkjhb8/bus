@@ -44,6 +44,7 @@ class _Cols {
 class _TrainRow extends StatelessWidget {
   const _TrainRow({
     required this.row,
+    required this.system,
     required this.date,
     required this.origin,
     required this.destination,
@@ -52,6 +53,7 @@ class _TrainRow extends StatelessWidget {
   });
 
   final _RailRow row;
+  final RailSystem system;
   final String date;
   final String origin;
   final String destination;
@@ -76,26 +78,28 @@ class _TrainRow extends StatelessWidget {
     return Pressable(
       onTap: () {
         unawaited(
-          Navigator.push(
-            context,
-            MaterialPageRoute<void>(
-              builder: (_) => RailTrainScreen(
-                type: row.type,
-                trainNo: row.number,
-                date: date,
-                // Carry the searched O/D through so the detail screen prices
-                // and highlights the segment this row quoted, rather than the
-                // train's full run — the two screens must not disagree.
-                userOrigin: origin,
-                userDest: destination,
-                // 追蹤 lives in the detail screen's app bar; it needs the live
-                // delay to offset the countdown, and only this list holds it.
-                delayMinutes: row.delay,
-                // Neither travels on the stop-times RPC the detail screen
-                // calls, so they ride along from the timetable that has them.
-                marks: row.marks,
-                remark: row.remark,
-              ),
+          context.push(
+            AppRoutes.railTrain(
+              row.number,
+              system: system,
+              date: DateTime.tryParse(date),
+            ),
+            // The location names the train; everything below is context only
+            // this list holds, so it rides warm and a cold link goes without.
+            extra: RailTrainExtra(
+              typeLabel: row.type,
+              // Carry the searched O/D through so the detail screen prices
+              // and highlights the segment this row quoted, rather than the
+              // train's full run — the two screens must not disagree.
+              userOrigin: origin,
+              userDest: destination,
+              // 追蹤 lives in the detail screen's app bar; it needs the live
+              // delay to offset the countdown, and only this list holds it.
+              delayMinutes: row.delay,
+              // Neither travels on the stop-times RPC the detail screen
+              // calls, so they ride along from the timetable that has them.
+              marks: row.marks,
+              remark: row.remark,
             ),
           ),
         );

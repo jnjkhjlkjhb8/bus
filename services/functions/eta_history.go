@@ -33,8 +33,17 @@ var busEtaHistoryCols = []string{
 	"plate_numb", "bus_speed", "bus_distance_m", "recorded_at",
 }
 
-// historySnapshotInterval is how often a full ETA snapshot is recorded, and
-// busEtaTickInterval is the bus ETA cron's own cadence (live.go, "@every 30s").
+// historySnapshotInterval is how often a full ETA snapshot is recorded.
+// busEtaTickInterval is the shared-TDX-cadence bus cron's own tick (live.go,
+// "@every 30s"); busEtaFastTickInterval is Taipei and New Taipei's own faster
+// cron (live.go, "@every 20s" — FDPL-66 Phase 4, no longer TDX-bound). 20s
+// matches Data.taipei's own blob refresh rate (datataipei.go) rather than
+// mrt's 15s: polling faster than the source itself turns over would not read
+// fresher data, and 15s would also put this job in mrt's cadence group,
+// sharing its tick deadline instead of getting its own. Each caller of
+// snapshotTick passes its own cadence, since the sampling window has to be
+// exactly one tick wide (eta_history_test.go) regardless of which cron is
+// asking.
 //
 // The bulk rows have one reader, segmentsByEstimate, and it differences adjacent
 // stops inside a single snapshot: it needs whole snapshots, not a dense series of
@@ -50,16 +59,18 @@ var busEtaHistoryCols = []string{
 const (
 	historySnapshotInterval = 10 * time.Minute
 	busEtaTickInterval      = 30 * time.Second
+	busEtaFastTickInterval  = 20 * time.Second
 )
 
-// snapshotTick reports whether the tick starting at now records a full snapshot.
+// snapshotTick reports whether the tick starting at now records a full
+// snapshot, for a cron running on the given tickInterval.
 //
 // It is evaluated once per job run rather than per city: cities run
 // concurrently and each would otherwise read its own clock, so a tick firing
 // near the boundary would record some cities and not others, and
 // segmentsByEstimate would difference a snapshot that never existed whole.
-func snapshotTick(now time.Time) bool {
-	return now.Unix()%int64(historySnapshotInterval.Seconds()) < int64(busEtaTickInterval.Seconds())
+func snapshotTick(now time.Time, tickInterval time.Duration) bool {
+	return now.Unix()%int64(historySnapshotInterval.Seconds()) < int64(tickInterval.Seconds())
 }
 
 // recordsHistory reports whether one stop's reading belongs in bus_eta_history.

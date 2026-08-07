@@ -1,3 +1,35 @@
+/// What the line map labels every station with, relative to the selected one.
+///
+/// Public and in the model layer because it travels in the `/metro` location:
+/// the label set is the map's whole reading, so a shared link that drops it
+/// arrives showing something else.
+enum MetroMapMode {
+  time,
+  fare;
+
+  /// Falls back to [time] — the map's default — for an absent or unknown
+  /// value, so a hand-typed location degrades instead of failing.
+  static MetroMapMode fromName(String? name) {
+    for (final mode in values) {
+      if (mode.name == name) return mode;
+    }
+    return time;
+  }
+}
+
+/// The line map's station id for a display [name], or null when no station
+/// carries it.
+///
+/// Search results and the line map use different code schemes, so an entry
+/// point that only knows the rider-facing name resolves it here rather than
+/// putting a name in a location that is specified to hold a TDX id.
+String? metroStationIdForName(String name) {
+  for (final station in metroMapStations) {
+    if (station.name == name) return station.id;
+  }
+  return null;
+}
+
 class MetroMapStation {
   const MetroMapStation({
     required this.id,

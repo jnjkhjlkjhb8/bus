@@ -16,7 +16,6 @@ import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
-import 'package:wheres_the_bus/core/diagnostics/report_screen.dart';
 import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
@@ -80,7 +79,19 @@ const _ScanRing _kScanRingIdle = (
 );
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.station, this.showRailQuery = false});
+
+  /// The station the sheet's second layer is showing, from
+  /// `/near/:type/:id`. Null puts the sheet on its nearby list.
+  ///
+  /// The location leads and the sheet follows — a tap writes the location and
+  /// [_HomeScreenState._syncSheetToLocation] opens the page — so arriving on a
+  /// link and tapping a marker take exactly the same path in.
+  final NearStationRouteArgs? station;
+
+  /// Whether `/rail-query` is showing the rail form as the sheet's second
+  /// layer.
+  final bool showRailQuery;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -181,6 +192,22 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   /// marker rebuild never races the listener that populated it.
   List<NearStationViewModel> _stations = const [];
 
+  /// What the sheet's second layer currently shows, as the `type:id` key the
+  /// location carries — null while the sheet is on the nearby list. Compared
+  /// against the location to decide whether the sheet has to move at all.
+  String? _shownStationKey;
+
+  /// Where closing the open station detail goes — the caller that could not
+  /// stay under it, or null for the bare map. See [AppRoutes.nearStation].
+  String? _shownStationBack;
+  bool _railQueryShown = false;
+
+  /// The nearby model behind the location being navigated to, when it came
+  /// from a tap that already had it. A location carries only what a link can;
+  /// rebuilding a model from it would throw away the walking time and the
+  /// group's own coordinates for no reason.
+  NearStationViewModel? _tappedStation;
+
   /// True while a manual "locate me" tap is acquiring the GPS fix — drives the
   /// recenter FAB's spinner so the button never reads as doing nothing.
   bool _locating = false;
@@ -241,7 +268,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               // sheet the tap pushes, giving one action two answers, one of
               // them not ours.
               onTap: () {
-                _openStationDetail(s);
+                _onStationTap(s);
               },
             );
           }),
@@ -251,7 +278,89 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _markers.value = markers.toSet();
   }
 
-  void _openStationDetail(NearStationViewModel station) {
+  /// Opens a station by putting it in the location, not by touching the sheet.
+  ///
+  /// The detour through the router is the whole point: it makes the open page
+  /// somewhere the app can be sent — by a search result, a favorite, or a
+  /// restored session — and not just somewhere a finger can reach.
+  void _onStationTap(NearStationViewModel station) {
+    _tappedStation = station;
+    context.go(
+      AppRoutes.nearStation(
+        type: station.type,
+        id: station.stationId,
+        name: station.stationName,
+        lat: station.lat,
+        lon: station.lon,
+      ),
+    );
+  }
+
+  /// Brings the sheet's second layer in line with the location.
+  ///
+  /// Called on the first frame and on every location change. Both directions
+  /// are guarded by [_shownStationKey]/[_railQueryShown] so the pop this
+  /// method causes cannot bounce back through the router into another sync.
+  void _syncSheetToLocation() {
+    if (!mounted) return;
+    final args = widget.station;
+    final key = args == null ? null : '${args.type.name}:${args.id}';
+    if (key != _shownStationKey) {
+      _shownStationKey = key;
+      _shownStationBack = args?.back;
+      if (args == null) {
+        _popSheetToRoot();
+      } else {
+        _showStationDetail(_resolveStation(args));
+      }
+    }
+    if (widget.showRailQuery != _railQueryShown) {
+      _railQueryShown = widget.showRailQuery;
+      if (widget.showRailQuery) {
+        _showRailQuerySheet();
+      } else if (_shownStationKey == null) {
+        _popSheetToRoot();
+      }
+    }
+  }
+
+  /// The full model for a location's station: the one that was tapped, else
+  /// the one the nearby list already holds, else what the location itself
+  /// says. The last case is a rider who arrived on a link — the detail view
+  /// fetches the rest by id regardless.
+  NearStationViewModel _resolveStation(NearStationRouteArgs args) {
+    final tapped = _tappedStation;
+    _tappedStation = null;
+    if (tapped != null &&
+        tapped.type == args.type &&
+        tapped.stationId == args.id) {
+      return tapped;
+    }
+    for (final station in _stations) {
+      if (station.type == args.type && station.stationId == args.id) {
+        return station;
+      }
+    }
+    return NearStationViewModel(
+      type: args.type,
+      stationId: args.id,
+      stationName: args.name ?? '',
+      // A location with no coordinates cannot move the camera anywhere
+      // meaningful, so it leaves it where the rider already is.
+      lat: args.lat ?? _center.latitude,
+      lon: args.lon ?? _center.longitude,
+      walkingMinutes: 0,
+      distanceMeters: 0,
+    );
+  }
+
+  void _popSheetToRoot() {
+    final navigator = _sheetNavigatorKey.currentState;
+    if (navigator == null || !navigator.canPop()) return;
+    navigator.popUntil((route) => route.isFirst);
+  }
+
+  void _showStationDetail(NearStationViewModel station) {
     // Only bus stations are groups of poles; everything else is one place and
     // keeps the plain highlight.
     final grouped = station.type == NearStationType.bus;
@@ -266,13 +375,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final navigator = _sheetNavigatorKey.currentState;
     if (navigator == null) return;
     final token = ++_detailToken;
-    // The route stays `/` while this page is up, so a shake report would
-    // otherwise name the home screen and not the station it is about.
-    ReportScreen.hold(
-      route: AppRoutes.home,
-      detail:
-          '${station.type.name}:${station.stationId} ${station.stationName}',
-    );
     unawaited(
       navigator
           // Station detail always sits directly on the root page: tapping a
@@ -298,15 +400,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             (route) => route.isFirst,
           )
           .then((_) {
-            // A newer detail page has already replaced this one's label; only
-            // the page that is still current may clear it.
+            // A newer detail page has already replaced this one; only the page
+            // still on screen may clear the map state it set up.
             if (token != _detailToken) return;
-            ReportScreen.release();
             _highlightedKey = null;
             // The collapse gives the group's pin back to the nearby set itself
             // when the poles have landed on it, so the rebuild waits for it
             // rather than racing it.
             _collapseSpread();
+            // A back gesture pops the page without telling the router, which
+            // would leave the location naming a station that is no longer
+            // open. Put it back where the caller came from — the bare map,
+            // unless the location named somewhere this page had to replace.
+            if (!mounted || _shownStationKey == null) return;
+            _shownStationKey = null;
+            final back = _shownStationBack;
+            _shownStationBack = null;
+            context.go(back ?? AppRoutes.home);
           }),
     );
   }
@@ -445,18 +555,35 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  void _openRailQuerySheet() {
+  /// Opens the rail form the same way a station opens — through the location,
+  /// so `/rail-query` is a place and not just a gesture.
+  void _onRailQueryTap() => context.go(AppRoutes.railQuery());
+
+  void _showRailQuerySheet() {
     final navigator = _sheetNavigatorKey.currentState;
     if (navigator == null) return;
     unawaited(
-      navigator.push(
-        PagedSheetRoute<void>(
-          scrollConfiguration: const SheetScrollConfiguration(),
-          initialOffset: AppSheetSnap.half,
-          snapGrid: AppSheetSnap.grid,
-          builder: (_) => const SheetPageTopInset(child: HomeRailQuerySheet()),
-        ),
-      ),
+      navigator
+          // On the root page, never on a station detail: the form is a
+          // top-level entry point, so one back gesture returns to the nearby
+          // list rather than to whatever was open before it.
+          .pushAndRemoveUntil(
+            PagedSheetRoute<void>(
+              scrollConfiguration: const SheetScrollConfiguration(),
+              initialOffset: AppSheetSnap.half,
+              snapGrid: AppSheetSnap.grid,
+              builder: (_) =>
+                  const SheetPageTopInset(child: HomeRailQuerySheet()),
+            ),
+            (route) => route.isFirst,
+          )
+          .then((_) {
+            // As in [_showStationDetail]: a back gesture the router never saw
+            // would otherwise leave the location on a form that is gone.
+            if (!mounted || !_railQueryShown) return;
+            _railQueryShown = false;
+            context.go(AppRoutes.home);
+          }),
     );
   }
 
@@ -724,7 +851,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _metroPrecacheTimer = Timer(const Duration(seconds: 4), () {
         if (mounted) MetroSvgMap.precache(context);
       });
+      // After the first frame, because the sheet's navigator has to exist
+      // before a page can be put on it. This is what opens a cold deep link
+      // into `/near/...` or `/rail-query`.
+      _syncSheetToLocation();
     });
+  }
+
+  @override
+  void didUpdateWidget(HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The page is keyed the same across `/`, `/near/...` and `/rail-query`, so
+    // a location change updates this widget in place rather than rebuilding
+    // the screen — which is what keeps the map alive across the change.
+    _syncSheetToLocation();
   }
 
   int _initialTabIndex() =>

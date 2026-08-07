@@ -64,7 +64,14 @@ made by claude
 - `tra:delay`
   - key：`train_no`
   - value：`delay`（**分鐘**，TDX `LiveTrainDelay.DelayTime` 的原值；App 以
-    `Duration(minutes:)` 讀取。任何以秒為單位的下游都必須自行換算）
+    `Duration(minutes:)` 讀取。任何以秒為單位的下游都必須自行換算——GTFS-RT
+    的 `delay` 是秒，`gtfs_rt_delay.go` 乘 60）
+- `tra:delay:station`
+  - key：`train_no`
+  - value：`StationID`（該筆誤點是在哪一站量到的）
+  - 與 `tra:delay` 同一個 pipeline 寫入、同 TTL。分成兩個 hash 而不是把值變複雜，
+    是因為 App 把 `tra:delay` 的值當純數字讀；只有 GTFS-RT 需要知道觀測地點，
+    用來把誤點掛在某一站而不是整列車上
 
 ## MQTT 快取 key
 - `mqtt:v2:Bus:News:City:{city}`
@@ -87,7 +94,8 @@ made by claude
   - `mrt_track:state:*`：進行中 3 小時（對齊 reminder 的 `expires_at`），結束（arrived/lost/stale/cancelled）後縮為 60 秒讓已連線的 watcher 收到最終狀態後過期
 - TRA Delay
   - `tra:delay:all`：180 秒  ← Pub/Sub channel（A5 已修正 _all → :all）
-  - `tra:delay`：180 秒（hash，trainNo → delay 秒數）
+  - `tra:delay`：180 秒（hash，trainNo → delay **分鐘**）
+  - `tra:delay:station`：180 秒（hash，trainNo → 觀測站 StationID）
 - Bus DailyTimetable
   - `bus_daily_timetable:*`：23.5 小時
 - GTFS-RT

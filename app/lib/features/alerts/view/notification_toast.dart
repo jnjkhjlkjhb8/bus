@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:wheres_the_bus/app/router/app_router.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
@@ -52,8 +53,9 @@ class _NotificationToastHostState extends State<NotificationToastHost>
   /// Home presents arriving disruptions itself, in the map capsule that sits
   /// between its floating controls. Toasting the same notice on top of it
   /// would announce one event twice and cover the capsule doing it.
-  bool get _homeOwnsInterrupt =>
-      AppRouter.router.routerDelegate.currentConfiguration.uri.path == '/';
+  bool get _homeOwnsInterrupt => AppRoutes.isHomeLocation(
+    AppRouter.router.routerDelegate.currentConfiguration.uri,
+  );
 
   void _present(AlertViewModel alert) {
     _timer?.cancel();

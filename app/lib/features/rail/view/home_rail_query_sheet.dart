@@ -2,18 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:intl/intl.dart';
-import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
-import 'package:wheres_the_bus/features/rail/rail_navigation_request.dart';
-import 'package:wheres_the_bus/features/rail/view/rail_train_screen.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/features/rail/widgets/rail_query_sheet.dart';
 
-final _dateFormat = DateFormat('yyyy-MM-dd');
-
 /// The rail query form as hosted inside the home sheet. Unlike the rail screen,
-/// which shows results inline, this hands an O/D query off to `/rail` (via
-/// [RailNavigationRequest], auto-submitting) and pushes a train query onto the
-/// root navigator.
+/// which shows results inline, this hands an O/D query off to `/rail` as an
+/// auto-submitting location, and a train query to `/rail/train/...`.
 class HomeRailQuerySheet extends StatelessWidget {
   const HomeRailQuerySheet({this.preset, super.key});
 
@@ -22,28 +16,27 @@ class HomeRailQuerySheet extends StatelessWidget {
   void _onSubmit(BuildContext context, RailQuerySubmission submission) {
     switch (submission) {
       case RailOdQuerySubmission():
-        RailNavigationRequest.set(
-          RailQueryRequest(
-            system: submission.system,
-            originName: submission.originName,
-            originId: submission.originId,
-            destName: submission.destName,
-            destId: submission.destId,
-            date: submission.date,
-            isDeparture: submission.isDeparture,
-            autoSubmit: true,
+        unawaited(
+          context.push(
+            AppRoutes.railLocation(
+              system: submission.system,
+              originName: submission.originName,
+              originId: submission.originId,
+              destName: submission.destName,
+              destId: submission.destId,
+              date: submission.date,
+              isDeparture: submission.isDeparture,
+              submit: true,
+            ),
           ),
         );
-        unawaited(context.push('/rail'));
       case RailTrainQuerySubmission():
         unawaited(
-          Navigator.of(context, rootNavigator: true).push(
-            MaterialPageRoute<void>(
-              builder: (_) => RailTrainScreen(
-                type: submission.system == RailSystem.thsr ? '高鐵' : '台鐵',
-                trainNo: submission.trainNo,
-                date: _dateFormat.format(submission.date),
-              ),
+          context.push(
+            AppRoutes.railTrain(
+              submission.trainNo,
+              system: submission.system,
+              date: submission.date,
             ),
           ),
         );

@@ -186,21 +186,16 @@ WITH served AS (
   -- subroute, including those with no service on the landed day — and a stop no
   -- vehicle serves is not merely a validator warning: it enlarges the planner's
   -- spatial index and offers first-mile walks that lead nowhere.
-  -- Read through the trip sources, not the landing table: a stop served only by
-  -- a trip this feed rejects is still a stop with no service in it.
-  SELECT DISTINCT c->>'StopUID' AS ref FROM (` + busScheduleSource + `) w
-  CROSS JOIN LATERAL jsonb_array_elements(w.stop_times) c
-  WHERE COALESCE(c->>'StopUID', '') <> ''
-  UNION
-  SELECT ref FROM (` + busPatternStopRefsSQL + `) bpr
-  UNION
-  SELECT DISTINCT r.operator || ':' || (c->>'StationID')
-  FROM (` + railTripSource + `) r
-  CROSS JOIN LATERAL jsonb_array_elements(r.stoptimes) c
-  WHERE jsonb_typeof(r.stoptimes) = 'array' AND COALESCE(c->>'StationID', '') <> ''
-  UNION
-  SELECT DISTINCT p.system || ':' || p.station_id
-  FROM (` + metroPatternSQL + `) p WHERE p.complete
+  --
+  -- Read out of the published calls, not the trip sources: a stop served only by
+  -- a trip this feed rejects is still a stop with no service in it, and
+  -- gtfsStopTimesSQL is where a trip is rejected. Reading the sources instead
+  -- left 752 stops in the feed that nothing called at.
+  --
+  -- Rail and metro calls name a platform; a station is what is served. Bus stop
+  -- ids carry no suffix and pass through untouched.
+  SELECT DISTINCT regexp_replace(stop_id, ':platform$', '') AS ref
+  FROM ` + gtfsStopTimeTable + `
 ), rail_station AS (
   SELECT system AS sys, stationid AS sid, stationname->>'` + lang + `' AS nm,
          (stationposition->>'PositionLat')::double precision AS lat,
@@ -472,7 +467,7 @@ ORDER BY 1, 2, 5`
 // match nothing here; they fall through to the walkway branch, which is the
 // right answer for them anyway.
 var gtfsPathwaysSQL = `
-WITH stop AS (` + gtfsStopsSQL + `), entrance AS (
+WITH stop AS (SELECT * FROM ` + gtfsStopTable + `), entrance AS (
   SELECT stop_id, parent_station FROM stop WHERE location_type = 2
 ), flag AS (
   SELECT system || ':' || stationid || ':exit:' || TRIM(exitid) AS stop_id,

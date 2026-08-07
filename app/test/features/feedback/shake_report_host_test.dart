@@ -5,7 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:wheres_the_bus/app/router/app_routes.dart';
-import 'package:wheres_the_bus/core/diagnostics/report_screen.dart';
 import 'package:wheres_the_bus/features/feedback/view/shake_report_host.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 
@@ -104,34 +103,28 @@ void main() {
     expect(openedFrom, isEmpty);
   });
 
-  // A station opened inside the home sheet is not a route, so without the held
-  // detail every report from one would name `/bus/stop` and no station.
-  testWidgets('a held detail names the station the route cannot', (
+  // The station used to be invisible to a report: it lived in the home sheet's
+  // own navigator, so the location said only `/`. Now that every station is a
+  // location, the report names it with no side channel.
+  testWidgets('the report names the whole location, query and all', (
     tester,
   ) async {
-    ReportScreen.hold(route: AppRoutes.busStop, detail: 'bus:1234 台北車站');
-    addTearDown(ReportScreen.release);
-    await _pump(tester, samples, openedFrom: openedFrom);
+    final location = AppRoutes.busStopLocation(
+      stopName: '台北車站',
+      stopId: '1234',
+    );
+    await _pump(
+      tester,
+      samples,
+      openedFrom: openedFrom,
+      initialLocation: location,
+    );
     await _shake(tester, samples);
 
     await tester.tap(find.text('回報問題'));
     await tester.pumpAndSettle();
 
-    expect(openedFrom, ['${AppRoutes.busStop} · bus:1234 台北車站']);
-  });
-
-  testWidgets('a detail held for another screen is left behind', (
-    tester,
-  ) async {
-    ReportScreen.hold(route: AppRoutes.home, detail: 'bus:1234 台北車站');
-    addTearDown(ReportScreen.release);
-    await _pump(tester, samples, openedFrom: openedFrom);
-    await _shake(tester, samples);
-
-    await tester.tap(find.text('回報問題'));
-    await tester.pumpAndSettle();
-
-    expect(openedFrom, [AppRoutes.busStop]);
+    expect(openedFrom, [location]);
   });
 
   // Answering "report a problem" with the form the rider is already looking at

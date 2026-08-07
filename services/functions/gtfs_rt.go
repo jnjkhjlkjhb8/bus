@@ -90,6 +90,14 @@ type gtfsRTIndex struct {
 	// time. A different date past gtfsRTIndexReadyHour triggers a reload.
 	builtFor string
 	trips    map[gtfsRTRouteKey][]gtfsRTTrip
+	// rail is today's TRA trains by train number, for the delay producer. It
+	// shares this index's lifetime because it goes stale for the same reason:
+	// train numbers are reused, so yesterday's entry names yesterday's trip.
+	rail map[string]railDelayTrip
+	// offsets is each bus stop's running time from its route direction's origin,
+	// which is what turns a live arrival back into the departure a vehicle is
+	// running. It moves when bus_segment_time is recomputed, which is nightly.
+	offsets map[gtfsRTRouteKey]map[string]int64
 }
 
 // gtfsRTDailyReader returns one canonical subroute's daily timetable, or nil
@@ -112,10 +120,17 @@ type gtfsRTStats struct {
 //
 // It reads the same two sources gtfs_files.go builds trips.txt from, so the
 // trip_ids here are the trip_ids in the published feed by construction rather
-// than by a second definition that could drift. The subroute and departure are
-// recovered from the trip_id instead of being selected again, which is the same
-// thing gtfsShapesSQL already does (split_part(trip_id, ':', 1)) and keeps this
-// query from having to reach back into the sources' own SELECT lists.
+// than by a second definition that could drift. The second branch is
+// busPatternTripsSQL and not the busOriginTripSource beneath it, because an
+// origin departure only becomes a trip once its route direction has a complete
+// pattern: reading the ungated source named departures trips.txt never emitted,
+// and nigiri drops a TripUpdate whose trip_id is not in the static feed, so
+// those cancellations were counted and then thrown away.
+//
+// The subroute and departure are recovered from the trip_id instead of being
+// selected again, which is the same thing gtfsShapesSQL already does
+// (split_part(trip_id, ':', 1)) and keeps this query from having to reach back
+// into the sources' own SELECT lists.
 //
 // city comes along because canonicalisation needs it: InterCity encodes
 // direction in the UID suffix and everything else does not.
@@ -124,7 +139,7 @@ SELECT DISTINCT trip_id, direction_id, service_id
 FROM (
   SELECT trip_id, direction_id, service_id FROM (` + busScheduleSource + `) s
   UNION ALL
-  SELECT trip_id, direction_id, service_id FROM (` + busOriginTripSource + `) o
+  SELECT trip_id, direction_id, service_id FROM (` + busPatternTripsSQL + `) o
 ) t
 WHERE trip_id <> '' AND service_id LIKE 'W:%'`
 
@@ -157,7 +172,25 @@ func (b *gtfsRTBuilder) run(ctx context.Context, now time.Time) error {
 	if b.index == nil || len(b.index.trips) == 0 {
 		return errors.New("gtfs-rt: static trip index is empty")
 	}
-	entities, stats := buildGTFSRTCancellations(ctx, b.index, now, b.readDailyTimetables)
+	entities, running, stats := buildGTFSRTCancellations(ctx, b.index, now, b.readDailyTimetables)
+	// The three producers cover different modes and fail independently, so a read
+	// that errors costs its own entities and nothing else's.
+	minutes, stations, err := readRailDelays(ctx, b.rc)
+	if err != nil {
+		zap.S().Warnw("failed", "component", "gtfs_rt", "action", "delay", "event", "failed", "err", err)
+	} else {
+		delays, delayStats := buildGTFSRTRailDelays(b.index.rail, minutes, stations, now)
+		logGTFSRTRailDelayStats(delayStats)
+		entities = append(entities, delays...)
+	}
+	arrivals, err := b.readBusArrivals(ctx)
+	if err != nil {
+		zap.S().Warnw("failed", "component", "gtfs_rt", "action", "bus_delay", "event", "failed", "err", err)
+	} else {
+		busDelays, busStats := buildGTFSRTBusDelays(running, arrivals, b.index.offsets, now)
+		logGTFSRTBusStats(busStats)
+		entities = append(entities, busDelays...)
+	}
 	payload, err := marshalGTFSRTFeed(entities, now)
 	if err != nil {
 		return err
@@ -213,6 +246,8 @@ func (b *gtfsRTBuilder) refreshIndex(ctx context.Context, now time.Time) error {
 		"event", "loaded",
 		"date", index.builtFor,
 		"routes", len(index.trips),
+		"rail_trains", len(index.rail),
+		"pattern_directions", len(index.offsets),
 	)
 	return nil
 }
@@ -241,6 +276,16 @@ func loadGTFSRTIndex(ctx context.Context, db *pgxpool.Pool, today string) (*gtfs
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("gtfs-rt: load trip index: rows: %w", err)
 	}
+	rail, err := loadRailDelayIndex(ctx, db, today)
+	if err != nil {
+		return nil, err
+	}
+	index.rail = rail
+	offsets, err := loadBusPatternOffsets(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	index.offsets = offsets
 	return index, nil
 }
 
@@ -355,12 +400,18 @@ func parseGTFSRTWeekMask(serviceID string) ([7]bool, bool) {
 // every scheduled trip sharing it: bus_dailytimetable carries no ServiceDay, so
 // two weekday masks that both cover today put two trip_ids behind one
 // observation, and consuming it against only one of them would cancel the rest.
+// It also returns the trips still running today — active minus whatever it just
+// cancelled — because that is the candidate set the vehicle matcher must draw
+// from. ADR-0019: a ghost departure left in the candidates attracts a real
+// vehicle, and under an order-preserving assignment one bad match shifts every
+// vehicle behind it. Removing them here makes the two entity sets disjoint by
+// construction rather than by a reconciliation pass afterwards.
 func buildGTFSRTCancellations(
 	ctx context.Context,
 	index *gtfsRTIndex,
 	now time.Time,
 	read gtfsRTDailyReader,
-) ([]*gtfs.FeedEntity, gtfsRTStats) {
+) ([]*gtfs.FeedEntity, map[gtfsRTRouteKey][]gtfsRTTrip, gtfsRTStats) {
 	var stats gtfsRTStats
 	weekday := int(now.Weekday())
 	serviceDate := now.Format("20060102")
@@ -391,7 +442,7 @@ func buildGTFSRTCancellations(
 	daily, err := read(ctx, uids)
 	if err != nil {
 		zap.S().Errorw("read failed", "component", "gtfs_rt", "action", "daily", "event", "read_failed", "err", err)
-		return nil, stats
+		return nil, nil, stats
 	}
 
 	keys := make([]gtfsRTRouteKey, 0, len(active))
@@ -406,6 +457,9 @@ func buildGTFSRTCancellations(
 	})
 
 	entities := make([]*gtfs.FeedEntity, 0, 512)
+	// Every trip that survives is a candidate the matcher may assign a vehicle
+	// to; a cancelled one never reaches this map.
+	running := make(map[gtfsRTRouteKey][]gtfsRTTrip, len(active))
 	for _, key := range keys {
 		observed, ok := observedDepartures(daily[key.subRouteUID], key.direction)
 		if !ok {
@@ -413,7 +467,12 @@ func buildGTFSRTCancellations(
 			// Taipei, Tainan, Kinmen and Lienchiang TDX serves none at all, so
 			// absence carries no information anywhere and can never mean
 			// withdrawn.
+			//
+			// Every trip stays a candidate: nothing here is known to be
+			// cancelled, and a vehicle running one of them can still be matched.
+			// This is what leaves those cities delay-only rather than silent.
 			stats.routesNoDaily++
+			running[key] = active[key]
 			continue
 		}
 		scheduled := make(map[int][]string, len(active[key]))
@@ -421,8 +480,17 @@ func buildGTFSRTCancellations(
 			scheduled[trip.departure] = append(scheduled[trip.departure], trip.tripID)
 		}
 		if !gtfsRTGatePasses(observed, scheduled) {
+			// The two sources disagree about how this subroute names a departure,
+			// so no cancellation can be proven — but neither is any trip proven
+			// gone, so they all stay matchable.
 			stats.routesGateFailed++
+			running[key] = active[key]
 			continue
+		}
+		for _, trip := range active[key] {
+			if _, ran := observed[trip.departure]; ran {
+				running[key] = append(running[key], trip)
+			}
 		}
 		departures := make([]int, 0, len(scheduled))
 		for departure := range scheduled {
@@ -439,7 +507,7 @@ func buildGTFSRTCancellations(
 			}
 		}
 	}
-	return entities, stats
+	return entities, running, stats
 }
 
 // gtfsRTGatePasses reports whether every observed departure is one the schedule

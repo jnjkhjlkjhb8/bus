@@ -34,7 +34,11 @@ func TestBusScheduleServiceID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	defer pool.Close()
+	// t.Cleanup, not defer: the fixture below holds a connection out of this pool
+	// until its own cleanup runs, and cleanups run last-registered-first. A
+	// deferred Close would run first and block forever waiting for a connection
+	// that is only released after it returns.
+	t.Cleanup(pool.Close)
 	ctx := context.Background()
 
 	var provisioned bool
@@ -47,11 +51,21 @@ func TestBusScheduleServiceID(t *testing.T) {
 	}
 
 	const city = "ZZ_GTFS_SVC_TEST"
-	cleanup := func() {
-		_, _ = pool.Exec(ctx, "DELETE FROM raw_tdx.bus_schedule WHERE city=$1", city)
+	// The fixture lives in a transaction that is never committed. DATABASE_URL is
+	// a shared raw_tdx — the same one the nightly export reads — and a DELETE on
+	// cleanup only covers the runs that reach it: a killed test leaves the row
+	// behind, and a leftover ZZR1 is published as a real route. It had been. A
+	// rollback needs no run to reach it, because the server does it either way.
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
 	}
-	cleanup()
-	t.Cleanup(cleanup)
+	t.Cleanup(conn.Release)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
 
 	// Two distinct stops with parseable times on both, so the entry survives
 	// busScheduleSource's own filters; the times themselves are not under test.
@@ -70,7 +84,7 @@ func TestBusScheduleServiceID(t *testing.T) {
 	// alone and nothing else, so it is busOriginTripSource's.
 	weekday := day(true, true, true, true, true, false, false)
 	weekend := day(false, false, false, false, false, true, true)
-	if _, err := pool.Exec(ctx, `
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO raw_tdx.bus_schedule
 		  (city, routeuid, subrouteuid, direction, subroutename, timetables)
 		VALUES ($1, 'ZZR', 'ZZR1', 0, '{"Zh_tw":"test"}'::jsonb, $2::jsonb)`,
@@ -86,7 +100,7 @@ func TestBusScheduleServiceID(t *testing.T) {
 
 	read := func(label, source string) map[string]string {
 		t.Helper()
-		rows, err := pool.Query(ctx, `
+		rows, err := tx.Query(ctx, `
 			SELECT trip_id, service_id FROM (`+source+`) s
 			WHERE s.routeuid = 'ZZR' ORDER BY trip_id`)
 		if err != nil {

@@ -9,7 +9,6 @@ import 'package:smooth_sheets/smooth_sheets.dart' show SheetOffset;
 import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
-import 'package:wheres_the_bus/core/diagnostics/report_screen.dart';
 import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/core/sensors/shake_recognizer.dart';
 import 'package:wheres_the_bus/core/storage/hive_store.dart';
@@ -145,12 +144,9 @@ class _ShakeReportHostState extends State<ShakeReportHost> {
     if (router.state.fullPath == AppRoutes.feedback) return;
 
     // The concrete location, not the pattern: `/bus/route/:subRouteUid` names
-    // no route and `/` names no station, and "which one" is what a report about
-    // a stop is for. The detail covers what the URL still cannot say — a
-    // station opened inside the home sheet is not a route at all.
-    final location = router.state.uri.toString();
-    final detail = ReportScreen.detailFor(location);
-    final screen = detail == null ? location : '$location · $detail';
+    // no route and `/near/bus/:id` names the stop, and "which one" is what a
+    // report about a stop is for.
+    final screen = router.state.uri.toString();
 
     _asking = true;
     // Before the sheet, not with it: the tap is the app saying it felt the

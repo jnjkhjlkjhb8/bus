@@ -135,13 +135,25 @@ func run() error {
 			if err := builder.run(ctx, time.Now().In(taipei)); err != nil {
 				return fmt.Errorf("gtfs-rt failed: %w", err)
 			}
-		case "bikeeta":
-			// Refreshes the bike availability the GBFS station_status feed reads.
-			// The nil pool is deliberate: a manual run publishes to Redis without
-			// sampling into bike history, which only the scheduled cadence owns.
+		case "bikeeta", "traeta", "buseta":
+			// Refreshes what the published feeds read out of Redis: bike
+			// availability for GBFS station_status, TRA delays and bus arrivals
+			// for the GTFS-RT delay producers.
+			//
+			// The dispatcher is always nil, so a manual run sends no push
+			// notifications. The pool is only given to bus, which cannot resolve a
+			// stop without it; bike and tra run without one so that a manual
+			// refresh writes no history rows. Bus does record its prediction
+			// errors — that is not separable from the job, and it is the same
+			// observation the scheduled run would have made.
 			ctx, cancel := context.WithTimeout(context.Background(), manualBackfillTimeout)
 			defer cancel()
-			runLive(ctx, restLiveSource{tdx: tdx}, redisLiveSink{rc: rc}, liveRegistry(nil, nil), []string{"bike"})
+			job := map[string]string{"bikeeta": "bike", "traeta": "tra", "buseta": "bus"}[os.Args[2]]
+			var pool *pgxpool.Pool
+			if job == "bus" {
+				pool = db
+			}
+			runLive(ctx, restLiveSource{tdx: tdx}, redisLiveSink{rc: rc}, liveRegistry(pool, nil), []string{job})
 		default:
 			return fmt.Errorf("unknown job: %s", os.Args[2])
 		}

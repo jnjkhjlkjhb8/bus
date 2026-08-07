@@ -802,6 +802,13 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 			delay := int32(temp.DelayTime)
 			data.Delay[temp.TrainNo] = delay
 			pipe.HSet(shared.TraDelayHashKey, temp.TrainNo, temp.DelayTime)
+			// Where the delay was observed. The GTFS-RT feed places the delay on
+			// that stop rather than on the train as a whole, so that a consumer
+			// propagates it forward from there instead of applying it to calls the
+			// train has already made on time.
+			if temp.StationID != "" {
+				pipe.HSet(shared.TraDelayStationKey, temp.TrainNo, temp.StationID)
+			}
 			trainBytes, err := proto.Marshal(&models.TraDelays{Delay: map[string]int32{temp.TrainNo: delay}})
 			if err != nil {
 				return fmt.Errorf("marshal TRA delay for train %s: %w", temp.TrainNo, err)
@@ -820,6 +827,7 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 		pipe.Set(shared.TraDelayAllKey, bytes, traLiveTTL)
 		pipe.Publish(shared.TraDelayAllKey, string(bytes))
 		pipe.Expire(shared.TraDelayHashKey, traLiveTTL)
+		pipe.Expire(shared.TraDelayStationKey, traLiveTTL)
 		if err := pipe.Exec(ctx); err != nil {
 			return fmt.Errorf("publish TRA delay snapshot: %w", err)
 		}

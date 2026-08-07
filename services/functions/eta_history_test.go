@@ -16,7 +16,7 @@ func TestSnapshotTickCoversExactlyOneTickPerInterval(t *testing.T) {
 	base := time.Unix(1754110800-1754110800%interval, 0)
 	var recorded int
 	for at := int64(0); at < interval; at += tick {
-		if snapshotTick(base.Add(time.Duration(at) * time.Second)) {
+		if snapshotTick(base.Add(time.Duration(at)*time.Second), busEtaTickInterval) {
 			recorded++
 		}
 	}
@@ -25,8 +25,25 @@ func TestSnapshotTickCoversExactlyOneTickPerInterval(t *testing.T) {
 	}
 	// Location must not move the boundary: runCity reads the tick instant in
 	// Taipei time and Unix seconds are the same instant either way.
-	if snapshotTick(base) != snapshotTick(base.In(time.UTC)) {
+	if snapshotTick(base, busEtaTickInterval) != snapshotTick(base.In(time.UTC), busEtaTickInterval) {
 		t.Error("snapshotTick disagrees with itself across zones")
+	}
+}
+
+// The fast cron (Taipei/NewTaipei, busEtaFastTickInterval) needs the same
+// one-snapshot-per-interval property at its own, narrower tick width.
+func TestSnapshotTickCoversExactlyOneTickPerIntervalAtFastCadence(t *testing.T) {
+	interval := int64(historySnapshotInterval.Seconds())
+	tick := int64(busEtaFastTickInterval.Seconds())
+	base := time.Unix(1754110800-1754110800%interval, 0)
+	var recorded int
+	for at := int64(0); at < interval; at += tick {
+		if snapshotTick(base.Add(time.Duration(at)*time.Second), busEtaFastTickInterval) {
+			recorded++
+		}
+	}
+	if recorded != 1 {
+		t.Errorf("snapshots per %v = %d, want 1", historySnapshotInterval, recorded)
 	}
 }
 

@@ -354,6 +354,10 @@ class _AppShellViewState extends State<_AppShellView> {
         localizationsDelegates: AppI18n.localizationsDelegates,
         supportedLocales: AppI18n.supportedLocales,
         routerConfig: widget.router ?? AppRouter.router,
+        // Pairs with the router's own scope id: together they let Android
+        // rebuild the navigation stack after killing the process, instead of
+        // returning a rider who switched apps mid-journey to the home screen.
+        restorationScopeId: 'app',
         debugShowCheckedModeBanner: false,
         builder: (context, child) {
           final base = child!;

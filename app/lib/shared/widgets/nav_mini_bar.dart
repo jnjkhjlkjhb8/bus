@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
@@ -71,8 +72,8 @@ class _MiniBar extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
         child: Pressable(
           onTap: () {
-            if (GoRouterState.of(context).uri.path == '/go') return;
-            unawaited(context.push('/go'));
+            if (GoRouterState.of(context).uri.path == AppRoutes.go) return;
+            unawaited(context.push(AppRoutes.go));
           },
           semanticLabel: AppI18n.of(context).navBackSemantics(dest),
           child: Container(

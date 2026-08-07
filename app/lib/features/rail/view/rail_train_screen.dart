@@ -88,6 +88,34 @@ String _formatDateDisplay(AppI18n i18n, String isoDate) {
   return '$mm/$dd (${_weekdayLabels(i18n)[date.weekday]})';
 }
 
+/// Warm-navigation payload for `/rail/train/:trainNo`.
+///
+/// These are things the *caller* happens to know, not properties of the train
+/// number the location names: a live delay, the segment the rider searched,
+/// and marks that never travel on the stop-times RPC this screen calls. They
+/// ride in `state.extra` rather than the URL so the location stays shareable
+/// and restorable; a cold deep link simply arrives without them and shows the
+/// train's full run, exactly as the 車次查詢 path already does.
+class RailTrainExtra {
+  const RailTrainExtra({
+    this.typeLabel,
+    this.userOrigin,
+    this.userDest,
+    this.delayMinutes = 0,
+    this.marks = const [],
+    this.remark = '',
+  });
+
+  /// Train type as the caller displayed it (e.g. `自強`). Null falls back to
+  /// the system's own label.
+  final String? typeLabel;
+  final String? userOrigin;
+  final String? userDest;
+  final int delayMinutes;
+  final List<RailServiceMark> marks;
+  final String remark;
+}
+
 class RailTrainScreen extends StatefulWidget {
   const RailTrainScreen({
     required this.type,

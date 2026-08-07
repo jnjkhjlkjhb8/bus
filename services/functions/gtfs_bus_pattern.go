@@ -14,10 +14,12 @@ package main
 // trip: anchor on the departure, accumulate the hops.
 //
 // These are kept separate from gtfs_files.go so the feed's own file list stays
-// one session's to edit. The wiring is four UNION ALL branches over there: trips,
-// stop_times, the stop reference list and shapes. busScheduleServiceSQL already
-// emits the service ids, as it reads every schedule entry regardless of how many
-// calls it carries.
+// one session's to edit. The wiring is three UNION ALL branches over there:
+// trips, stop_times and shapes. These trips need no stop reference list of their
+// own — stops.txt is read out of the calls (gtfsStopsSQLFor), so declaring the
+// stops they name is not a separate step. busScheduleServiceSQL already emits
+// the service ids, as it reads every schedule entry regardless of how many calls
+// it carries.
 
 // busPatternSQL is the ordered stop list of every bus route direction, each stop
 // carrying its cumulative seconds from the origin.
@@ -168,15 +170,3 @@ var busPatternStopTimesSQL = `
   JOIN (` + busPatternSQL + `) p
     ON p.sub_route_uid = b.subrouteuid AND p.direction = b.direction_id
   WHERE p.complete`
-
-// busPatternStopRefsSQL is the stop reference list these trips add to stops.txt.
-// Without it stop_times would name stops the feed never declares, which is an
-// invalid feed rather than a merely incomplete one.
-var busPatternStopRefsSQL = `
-  SELECT DISTINCT p.stop_uid AS ref
-  FROM (` + busPatternSQL + `) p
-  WHERE p.complete
-    AND EXISTS (
-      SELECT 1 FROM (` + busOriginTripSource + `) b
-      WHERE b.subrouteuid = p.sub_route_uid AND b.direction_id = p.direction
-    )`

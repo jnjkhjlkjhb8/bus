@@ -270,9 +270,6 @@ func datasetRegistry() []datasetSpec {
 		metroExport("Line", "metro_line", "metro_line_", func() []string { return metroSystemsAll }),
 		metroExport("Frequency", "metro_frequency", "metro_freq_", func() []string { return ingestMetroFrequency }),
 		metroExport("StationExit", "metro_stationexit", "metro_exit_", func() []string { return ingestMetroExit }),
-		metroExport("StationTimeTable", "metro_stationtimetable", "metro_stt_", func() []string { return ingestMetroTimetable }),
-		railSingleExport("TRA/Line", "tra_line", "tra_line"),
-		railSingleExport("TRA/StationOfLine", "tra_stationofline", "tra_stationofline"),
 		railSingleExport("THSR/StationExit", "thsr_stationexit", "thsr_stationexit"),
 		railSingleExport("Operator", "rail_operator", "rail_operator"),
 	}

@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
@@ -109,40 +111,73 @@ Widget metroDetailPreview() {
 }
 
 class MetroScreen extends StatefulWidget {
-  const MetroScreen({super.key, this.initialStation});
+  const MetroScreen({super.key, this.stationId, this.mode = MetroMapMode.time});
 
-  /// Station to pre-select on open (matched by map id or display name), so
-  /// entry points that already know the station — e.g. a search result —
-  /// land on it instead of the bare map.
-  final String? initialStation;
+  /// The selected station's TDX code, from `/metro/station/:id`; null is the
+  /// bare map.
+  ///
+  /// The location leads and the selection follows: a tap replaces the location
+  /// and [_MetroScreenState.didUpdateWidget] moves the selection. Both routes
+  /// render one keyed page, so the replace updates this screen in place rather
+  /// than rebuilding it — which is what keeps the rider's pan and zoom.
+  final String? stationId;
+
+  /// What the map labels stations with, from `?mode=`.
+  final MetroMapMode mode;
 
   @override
   State<MetroScreen> createState() => _MetroScreenState();
 }
 
-enum _MapMode { time, fare }
-
 class _MetroScreenState extends State<MetroScreen> {
   MetroMapStation? _selected;
   MetroMapStation? _prevSelected;
-  _MapMode _mode = _MapMode.time;
+  late MetroMapMode _mode = widget.mode;
   final _metroBloc = MetroBloc();
   final _sheetController = SheetController();
 
   @override
   void initState() {
     super.initState();
-    final query = widget.initialStation;
-    if (query == null || query.isEmpty) return;
-    for (final s in metroMapStations) {
-      if (s.id == query || s.name == query) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _selectStation(s);
-        });
-        break;
-      }
+    final station = _stationFor(widget.stationId);
+    if (station == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _selectStation(station);
+    });
+  }
+
+  @override
+  void didUpdateWidget(MetroScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.mode != _mode) setState(() => _mode = widget.mode);
+    if (widget.stationId == _selected?.id) return;
+    final station = _stationFor(widget.stationId);
+    if (station == null) {
+      _clearSelection();
+    } else {
+      _selectStation(station);
     }
   }
+
+  static MetroMapStation? _stationFor(String? id) {
+    if (id == null || id.isEmpty) return null;
+    for (final station in metroMapStations) {
+      if (station.id == id) return station;
+    }
+    return null;
+  }
+
+  /// Writes a selection to the location; the sheet and the labels follow in
+  /// [didUpdateWidget]. `replace` rather than `push`: picking another station
+  /// is the same page showing something else, not a place to come back to.
+  void _goToStation(MetroMapStation station) =>
+      context.replace(AppRoutes.metroStation(station.id, mode: _mode));
+
+  void _goToMode(MetroMapMode mode) => context.replace(
+    _selected == null
+        ? AppRoutes.metroLocation(mode: mode)
+        : AppRoutes.metroStation(_selected!.id, mode: mode),
+  );
 
   @override
   void dispose() {
@@ -171,10 +206,14 @@ class _MetroScreenState extends State<MetroScreen> {
       track.add(MrtAlightTargetPicked(station.id));
       return;
     }
-    _selectStation(station);
+    _goToStation(station);
   }
 
-  void _dismiss() {
+  /// Closing the detail is a location change too, so the URL never claims a
+  /// station the sheet has stopped showing.
+  void _dismiss() => context.replace(AppRoutes.metroLocation(mode: _mode));
+
+  void _clearSelection() {
     _metroBloc.add(const MetroStationDismissed());
     setState(() {
       _prevSelected = null;
@@ -209,7 +248,7 @@ class _MetroScreenState extends State<MetroScreen> {
       for (final s in all)
         if (s.id != _selected!.id)
           if (_journeyFor(matrix, s.id) case final info?)
-            s.id: _mode == _MapMode.time
+            s.id: _mode == MetroMapMode.time
                 ? (info.travelTimeMin > 0 ? '${info.travelTimeMin}' : '—')
                 : '${info.fareNt}',
     };
@@ -301,7 +340,7 @@ class _MetroScreenState extends State<MetroScreen> {
                       )
                     : _MetroPlaceholderSheet(
                         key: const ValueKey('placeholder'),
-                        onStationSelect: _selectStation,
+                        onStationSelect: _goToStation,
                         sheetController: _sheetController,
                       ),
               ),
@@ -390,7 +429,7 @@ class _MetroScreenState extends State<MetroScreen> {
                         ? _MapModeChip(
                             key: const ValueKey('map-mode-chip'),
                             mode: _mode,
-                            onChanged: (m) => setState(() => _mode = m),
+                            onChanged: _goToMode,
                           )
                         : const SizedBox.shrink(),
                   ),

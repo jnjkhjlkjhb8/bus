@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 )
 
 func TestDataTaipeiRawPositions(t *testing.T) {
@@ -33,7 +37,7 @@ func TestDataTaipeiRawPositions(t *testing.T) {
 		{BusID: "730-FW", Level: nil},
 	}
 
-	got := dataTaipeiRawPositions(buses, events, seats)
+	got := dataTaipeiRawPositions("TPE", buses, events, seats)
 
 	if len(got) != 1 {
 		t.Fatalf("positions = %d rows, want 1: %+v", len(got), got)
@@ -127,6 +131,133 @@ func TestMergeDataTaipeiPositionsEmptyKeepsTDX(t *testing.T) {
 	}
 }
 
+func TestDataTaipeiStopStatus(t *testing.T) {
+	tests := []struct {
+		name         string
+		estimateTime string
+		wantStatus   uint8
+		wantSeconds  int32
+		wantOk       bool
+	}{
+		{"live countdown", "180", 0, 180, true},
+		{"not yet departed", "-1", 1, 0, true},
+		{"traffic control", "-2", 2, 0, true},
+		{"last bus passed", "-3", 3, 0, true},
+		{"not operating today", "-4", 4, 0, true},
+		{"undocumented sentinel", "-5", 0, 0, false},
+		{"unparseable", "N/A", 0, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, seconds, ok := dataTaipeiStopStatus(tt.estimateTime)
+			if status != tt.wantStatus || seconds != tt.wantSeconds || ok != tt.wantOk {
+				t.Errorf("dataTaipeiStopStatus(%q) = %d, %d, %v; want %d, %d, %v",
+					tt.estimateTime, status, seconds, ok, tt.wantStatus, tt.wantSeconds, tt.wantOk)
+			}
+		})
+	}
+}
+
+func TestDataTaipeiEstimateDirection(t *testing.T) {
+	tests := []struct {
+		goBack string
+		want   uint8
+	}{
+		{"0", 0},
+		{"1", 1},
+		{"2", busEtaDirectionUnknown},
+		{"3", busEtaDirectionUnknown},
+	}
+	for _, tt := range tests {
+		if got := dataTaipeiEstimateDirection(tt.goBack); got != tt.want {
+			t.Errorf("dataTaipeiEstimateDirection(%q) = %d, want %d", tt.goBack, got, tt.want)
+		}
+	}
+}
+
+func TestDataTaipeiRawEstimates(t *testing.T) {
+	rows := []dataTaipeiEstimate{
+		{RouteID: 11202, StopID: 18620, EstimateTime: "180", GoBack: "1"},
+		{RouteID: 11202, StopID: 18621, EstimateTime: "-1", GoBack: "2"},
+		// Not one of the documented sentinels: dropped rather than guessed at.
+		{RouteID: 11202, StopID: 18622, EstimateTime: "bogus", GoBack: "0"},
+	}
+
+	got := dataTaipeiRawEstimates("TPE", rows)
+
+	if len(got) != 2 {
+		t.Fatalf("estimates = %d rows, want 2: %+v", len(got), got)
+	}
+	live := got[0]
+	if live.RouteUID != "TPE11202" || live.StopUID != "TPE18620" {
+		t.Errorf("RouteUID/StopUID = %q/%q, want TPE11202/TPE18620", live.RouteUID, live.StopUID)
+	}
+	if live.SubRouteUID != "" {
+		t.Errorf("SubRouteUID = %q, want empty (route-level only)", live.SubRouteUID)
+	}
+	if live.Direction != 1 || live.StopStatus != 0 || live.EstimatedTime != 180 {
+		t.Errorf("live entry = direction %d status %d est %d, want 1/0/180",
+			live.Direction, live.StopStatus, live.EstimatedTime)
+	}
+	notDeparted := got[1]
+	if notDeparted.Direction != busEtaDirectionUnknown || notDeparted.StopStatus != 1 {
+		t.Errorf("not-departed entry = direction %d status %d, want %d/1",
+			notDeparted.Direction, notDeparted.StopStatus, busEtaDirectionUnknown)
+	}
+}
+
+// stubEtaSource stands in for the blob feed so the ETA override can be
+// exercised without a network call.
+type stubEtaSource struct {
+	rows []rawBusEsimated
+	err  error
+}
+
+func (s stubEtaSource) estimates(context.Context) ([]rawBusEsimated, error) {
+	return s.rows, s.err
+}
+
+func TestRunCityUsesEtaSourceInsteadOfTDX(t *testing.T) {
+	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, taipei)
+	prefix := citymap["Taipei"]
+	busStaticMapCache.Delete(prefix)
+	storeBusStaticMapIn(&busStaticMapCache, prefix, []busStationmap{{
+		StationUID: "STATION1", StationName: "站牌一", GroupUID: "GROUP1", GroupName: "群組一",
+		RouteUID: prefix + "1", SubRouteUID: prefix + "1", SubRouteName: "一路",
+		Direction: 0, StopUID: "STOP1", StopSequence: 1,
+	}}, "", now)
+	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+
+	// A city listed in j.eta must never reach TDX for its ETA: the position
+	// fetch is the only TDX call this test expects.
+	fetch := func(_ context.Context, _ string, name string) (*shared.TDXFetch, error) {
+		if name == "bus_EstimatedTimeOfArrivalTaipei" {
+			t.Fatal("TDX ETA fetch called for a city configured with an etaSource")
+		}
+		return &shared.TDXFetch{
+			Decoder: json.NewDecoder(bytes.NewReader([]byte(`[]`))), Modified: true,
+			Ack: func() error { return nil }, Close: func() error { return nil },
+			Invalidate: func() error { return nil },
+		}, nil
+	}
+	target := &captureBusArrivalNotifier{}
+	job := busLiveJob{
+		fetch: fetch, sink: &captureLiveSink{}, store: &fakeBusEtaStore{},
+		eta: map[string]etaSource{"Taipei": stubEtaSource{rows: []rawBusEsimated{{
+			RouteUID: "TPE1", StopUID: "STOP1", Direction: 0, StopStatus: 0, EstimatedTime: 90,
+		}}}},
+		now: func() time.Time { return now },
+	}
+
+	if err := runBusEtaCities(context.Background(), []string{"Taipei"}, &job, target); err != nil {
+		t.Fatalf("runBusEtaCities() error = %v", err)
+	}
+	if target.batches != 1 || len(target.calls) != 1 || target.calls[0].seconds != 90 {
+		t.Fatalf("notification batches/calls = %d/%+v, want one arrival at 90s from the eta source",
+			target.batches, target.calls)
+	}
+}
+
 func TestGunzipIfCompressed(t *testing.T) {
 	plain := []byte(`{"BusInfo":[]}`)
 	got, err := gunzipIfCompressed(plain)
@@ -188,18 +319,24 @@ func TestOverlayVehicles(t *testing.T) {
 	}{
 		{
 			name:      "covered city takes the richer feed",
-			job:       busLiveJob{vehicles: stubVehicleSource{rows: fresh}},
+			job:       busLiveJob{vehicles: map[string]vehicleSource{dataTaipeiCity: stubVehicleSource{rows: fresh}}},
 			city:      dataTaipeiCity,
 			wantPlate: "757-FW",
 		},
 		{
+			name:      "a second covered city also takes the richer feed",
+			job:       busLiveJob{vehicles: map[string]vehicleSource{"NewTaipei": stubVehicleSource{rows: fresh}}},
+			city:      "NewTaipei",
+			wantPlate: "757-FW",
+		},
+		{
 			name: "other cities are untouched",
-			job:  busLiveJob{vehicles: stubVehicleSource{rows: fresh}},
+			job:  busLiveJob{vehicles: map[string]vehicleSource{dataTaipeiCity: stubVehicleSource{rows: fresh}}},
 			city: "Taichung",
 		},
 		{
 			name: "a failing feed falls back to TDX",
-			job:  busLiveJob{vehicles: stubVehicleSource{err: errors.New("blob unreachable")}},
+			job:  busLiveJob{vehicles: map[string]vehicleSource{dataTaipeiCity: stubVehicleSource{err: errors.New("blob unreachable")}}},
 			city: dataTaipeiCity,
 		},
 		{

@@ -2,13 +2,14 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
+import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_bloc.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_bus/features/rail/bloc/rail_state.dart';
-import 'package:wheres_the_bus/features/rail/rail_navigation_request.dart';
 import 'package:wheres_the_bus/features/rail/view/rail_train_screen.dart';
 import 'package:wheres_the_bus/features/rail/widgets/rail_query_sheet.dart';
 import 'package:wheres_the_bus/features/rail/widgets/rail_service_marks.dart';
@@ -92,7 +93,11 @@ String _computeDuration(AppI18n i18n, String depart, String arrive) {
 }
 
 class RailScreen extends StatefulWidget {
-  const RailScreen({super.key});
+  const RailScreen({super.key, this.args});
+
+  /// The query carried by `/rail` — see [RailRouteArgs]. Null, or one with no
+  /// origin, opens the empty form exactly as the nav entry point does.
+  final RailRouteArgs? args;
 
   @override
   State<RailScreen> createState() => _RailScreenState();
@@ -115,7 +120,6 @@ class _RailScreenState extends State<RailScreen> {
   // or (arrive mode) arrive at/before it — not the first train of the day.
   DateTime _selectedDate = DateTime.now();
   bool _isDeparture = true;
-  bool _initialized = false;
   bool _hasSubmittedQuery = false;
   RailQueryPreset? _preset;
 
@@ -131,60 +135,62 @@ class _RailScreenState extends State<RailScreen> {
     _ticker = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
+    _applyRouteArgs();
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // One-shot: the hand-off request clears on read, so guard against the
-    // repeated didChangeDependencies calls Flutter makes on dependency changes.
-    if (_initialized) return;
-    _initialized = true;
+  /// Seeds the form — and, for `submit`, runs the query — from the location.
+  ///
+  /// Read once here rather than on every dependency change: the location is
+  /// fixed for the life of the page, so re-reading it would undo the rider's
+  /// own edits to the form.
+  void _applyRouteArgs() {
+    final args = widget.args;
+    // No origin means a bare `/rail`: the empty form, with nothing to seed and
+    // nothing to submit.
+    if (args == null || args.originName.isEmpty) return;
 
-    final request = RailNavigationRequest.consume();
-    if (request == null) return;
-
-    _system = request.system;
-    _originName = request.originName;
-    // The near station id is already a valid tra/thsr station_id, so carry it
+    _system = args.system;
+    _originName = args.originName;
+    // A near station's id is already a valid tra/thsr station_id, so carry it
     // directly rather than re-resolving by name.
-    _originId = request.originId ?? '';
-    _destName = request.destName ?? '';
-    // A hand-off can name the same station twice; clear the dest rather than
+    _originId = args.originId;
+    _destName = args.destName;
+    // A location can name the same station twice; clear the dest rather than
     // carry a zero-length trip into the form.
-    if (_originName.isNotEmpty && _originName == _destName) _destName = '';
-    _destId = request.destId ?? '';
-    _selectedDate = request.date;
-    _isDeparture = request.isDeparture;
+    if (_originName == _destName) _destName = '';
+    _destId = args.destId;
+    // Null means "now" — resolved here rather than in the location, so a
+    // restored or shared link is not stuck at the time it was made.
+    _selectedDate = args.date ?? DateTime.now();
+    _isDeparture = args.isDeparture;
     // Seed the form with the full effective query (not just the origin) so the
     // sheet and the auto-submitted results can't disagree.
     _preset = RailQueryPreset(
-      system: request.system,
+      system: _system,
       originName: _originName,
-      originId: request.originId,
+      originId: args.originId,
       destName: _destName,
-      destId: request.destId,
-      date: request.date,
-      isDeparture: request.isDeparture,
+      destId: args.destId,
+      date: _selectedDate,
+      isDeparture: _isDeparture,
     );
 
-    // An origin-only hand-off has nothing to submit: it opens the form with the
+    // An origin-only location has nothing to submit: it opens the form with the
     // origin filled and waits for a destination.
-    if (request.autoSubmit && _originName.isNotEmpty && _destName.isNotEmpty) {
-      // A full O/D hand-off (from the home sheet): run it immediately and drop
-      // the query sheet out of the way so results are the first thing shown.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        setState(() => _hasSubmittedQuery = true);
-        _dispatchSearch();
-        unawaited(
-          _sheetController.animateToDetent(
-            AppSheetSnap.peek,
-            reduced: AppMotion.reduced(context),
-          ),
-        );
-      });
-    }
+    if (!args.submit || _destName.isEmpty) return;
+    // A full O/D location (from the home sheet): run it immediately and drop
+    // the query sheet out of the way so results are the first thing shown.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() => _hasSubmittedQuery = true);
+      _dispatchSearch();
+      unawaited(
+        _sheetController.animateToDetent(
+          AppSheetSnap.peek,
+          reduced: AppMotion.reduced(context),
+        ),
+      );
+    });
   }
 
   // Derived card rows, cached per loaded-state instance so local setState
@@ -297,14 +303,11 @@ class _RailScreenState extends State<RailScreen> {
         );
       case RailTrainQuerySubmission():
         unawaited(
-          Navigator.push(
-            context,
-            MaterialPageRoute<void>(
-              builder: (_) => RailTrainScreen(
-                type: submission.system == RailSystem.thsr ? '高鐵' : '台鐵',
-                trainNo: submission.trainNo,
-                date: _dateFormat.format(submission.date),
-              ),
+          context.push(
+            AppRoutes.railTrain(
+              submission.trainNo,
+              system: submission.system,
+              date: submission.date,
             ),
           ),
         );
@@ -437,6 +440,7 @@ class _RailScreenState extends State<RailScreen> {
                             ),
                             itemBuilder: (context, i) => _TrainRow(
                               row: items[i],
+                              system: _system,
                               date: state.date,
                               origin: state.originName,
                               destination: state.destName,

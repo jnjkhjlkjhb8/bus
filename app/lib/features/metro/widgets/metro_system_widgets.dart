@@ -1,7 +1,8 @@
 part of '../view/metro_screen.dart';
 
 /// Floating time/fare toggle mirroring the system pill's card styling. Drives
-/// [_MapMode], which controls the labels shown on every station across the map.
+/// [MetroMapMode], which controls the labels shown on every station across
+/// the map.
 class _MapModeChip extends StatelessWidget {
   const _MapModeChip({
     required this.mode,
@@ -9,13 +10,13 @@ class _MapModeChip extends StatelessWidget {
     super.key,
   });
 
-  final _MapMode mode;
-  final ValueChanged<_MapMode> onChanged;
+  final MetroMapMode mode;
+  final ValueChanged<MetroMapMode> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final i18n = AppI18n.of(context);
-    return AppSlidingSegment<_MapMode>(
+    return AppSlidingSegment<MetroMapMode>(
       style: AppSegmentStyle.floating,
       // Hugs its labels rather than stretching: it floats beside the system
       // pill over the map, where a full-width control would cover the network.
@@ -23,8 +24,8 @@ class _MapModeChip extends StatelessWidget {
       // Built per call rather than held in a static: the labels follow the
       // rider's language, which a `static const` would freeze at first load.
       options: {
-        _MapMode.time: i18n.metroMapModeTime,
-        _MapMode.fare: i18n.metroMapModeFare,
+        MetroMapMode.time: i18n.metroMapModeTime,
+        MetroMapMode.fare: i18n.metroMapModeFare,
       },
       value: mode,
       onChanged: onChanged,

@@ -140,18 +140,17 @@ class _DepartureRow extends StatelessWidget {
 
   void _open(BuildContext context) {
     unawaited(
-      // The root navigator, not the sheet's: the train screen is a full page
-      // with its own app bar, and pushing it onto the sheet navigator would
-      // render it inside the sheet's box.
-      Navigator.of(context, rootNavigator: true).push(
-        MaterialPageRoute<void>(
-          builder: (_) => RailTrainScreen(
-            type: system == RailSystem.thsr ? '高鐵' : '台鐵',
-            trainNo: departure.trainNo,
-            date: departure.serviceDate,
-            delayMinutes: delayMinutes,
-            remark: departure.remark,
-          ),
+      // `/rail/train/...` sits outside the shell, so the train screen lands on
+      // the root navigator as a full page rather than inside the sheet's box.
+      context.push(
+        AppRoutes.railTrain(
+          departure.trainNo,
+          system: system,
+          date: DateTime.tryParse(departure.serviceDate),
+        ),
+        extra: RailTrainExtra(
+          delayMinutes: delayMinutes,
+          remark: departure.remark,
         ),
       ),
     );

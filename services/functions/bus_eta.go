@@ -9,6 +9,7 @@ import (
 	"math"
 	"runtime/debug"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -105,9 +106,9 @@ var busEtaSkip = map[string]struct{}{
 }
 
 // vehicleSource is a live vehicle feed richer than TDX's, layered over the TDX
-// positions for the cities it covers. Nil means no such feed is configured and
-// every city stays on TDX alone — which is what the tests run with, so none of
-// them reach the network for it.
+// positions for the cities it covers. A nil map, or a city missing from it,
+// leaves that city on TDX alone — which is what the tests run with, so none
+// of them reach the network for it.
 type vehicleSource interface {
 	positions(context.Context) ([]rawBusPosition, error)
 }
@@ -117,7 +118,8 @@ type busLiveJob struct {
 	sink     liveSink
 	store    busEtaStore
 	notifier busArrivalNotifier
-	vehicles vehicleSource
+	vehicles map[string]vehicleSource
+	eta      map[string]etaSource
 	now      func() time.Time
 	// snapshot is fixed for the whole run so every city lands on the same side
 	// of the history sampling clock (see snapshotTick).
@@ -201,9 +203,39 @@ func decodeBusEtaArray(dec *json.Decoder) (eat []rawBusEsimated, complete bool) 
 	return eat, true
 }
 
-// busEta refreshes live bus arrivals for all cities on the 30s cron. Cities are
-// processed concurrently, capped at 4 in flight (sem). Two cities with no usable
-// TDX ETA feed are skipped inline. It blocks until every city finishes.
+// busEtaFastCities are Taipei and New Taipei: the cities runCity gets its ETA
+// for from Data.taipei rather than TDX (FDPL-66 Phase 4), so they are not
+// bound to the shared TDX cadence and run on their own faster cron instead
+// (busEtaFast, live.go "@every 20s" — see busEtaFastTickInterval for why 20s
+// rather than mrt's 15s).
+var busEtaFastCities = func() []string {
+	fast := make([]string, 0, len(dataTaipeiDynamicCities))
+	for city := range dataTaipeiDynamicCities {
+		fast = append(fast, city)
+	}
+	sort.Strings(fast)
+	return fast
+}()
+
+// busEtaSlowCities is cities minus busEtaFastCities: every city still polled
+// for ETA on the shared "@every 30s" TDX cadence.
+var busEtaSlowCities = func() []string {
+	fast := make(map[string]struct{}, len(dataTaipeiDynamicCities))
+	for _, city := range busEtaFastCities {
+		fast[city] = struct{}{}
+	}
+	slow := make([]string, 0, len(cities))
+	for _, city := range cities {
+		if _, isFast := fast[city]; !isFast {
+			slow = append(slow, city)
+		}
+	}
+	return slow
+}()
+
+// busEta refreshes live bus arrivals for busEtaSlowCities on the 30s cron.
+// Cities are processed concurrently, capped at 4 in flight (sem). It blocks
+// until every city finishes.
 func busEta(
 	ctx context.Context,
 	fetch boundFetch,
@@ -211,17 +243,57 @@ func busEta(
 	db *pgxpool.Pool,
 	dispatcher *notify.Dispatcher,
 ) error {
-	zap.S().Infow("start", "component", "bus_eta", "action", "Bus_eta", "event", "start")
+	return runBusEtaTick(ctx, "bus_eta", busEtaSlowCities, busEtaTickInterval, nil, nil, fetch, sink, db, dispatcher)
+}
+
+// busEtaFast refreshes busEtaFastCities' live bus arrivals on their own 15s
+// cron, independent of TDX (FDPL-66 Phase 4).
+func busEtaFast(
+	ctx context.Context,
+	fetch boundFetch,
+	sink liveSink,
+	db *pgxpool.Pool,
+	dispatcher *notify.Dispatcher,
+) error {
+	// One feed per Data.taipei city, shared between the vehicle overlay and the
+	// ETA override: both read the same blob container.
+	vehicles := make(map[string]vehicleSource, len(busEtaFastCities))
+	etaFeeds := make(map[string]etaSource, len(busEtaFastCities))
+	for _, city := range busEtaFastCities {
+		feed := newDataTaipeiFeed(city)
+		vehicles[city] = feed
+		etaFeeds[city] = feed
+	}
+	return runBusEtaTick(ctx, "bus_eta_fast", busEtaFastCities, busEtaFastTickInterval, vehicles, etaFeeds, fetch, sink, db, dispatcher)
+}
+
+// runBusEtaTick is the shared body of busEta and busEtaFast: build the job,
+// run cityList, log start/complete under component so the two crons are
+// distinguishable in the logs.
+func runBusEtaTick(
+	ctx context.Context,
+	component string,
+	cityList []string,
+	tickInterval time.Duration,
+	vehicles map[string]vehicleSource,
+	eta map[string]etaSource,
+	fetch boundFetch,
+	sink liveSink,
+	db *pgxpool.Pool,
+	dispatcher *notify.Dispatcher,
+) error {
+	zap.S().Infow("start", "component", component, "action", "Bus_eta", "event", "start")
 	job := busLiveJob{
 		fetch:    fetch,
 		sink:     sink,
 		store:    pgBusEtaStore{db: db},
-		vehicles: newDataTaipeiFeed(),
+		vehicles: vehicles,
+		eta:      eta,
 		now:      time.Now,
-		snapshot: snapshotTick(time.Now()),
+		snapshot: snapshotTick(time.Now(), tickInterval),
 	}
-	jobErr := runBusEtaCities(ctx, cities, &job, dispatcher)
-	zap.S().Infow("complete", "component", "bus_eta", "action", "Bus_eta", "event", "complete")
+	jobErr := runBusEtaCities(ctx, cityList, &job, dispatcher)
+	zap.S().Infow("complete", "component", component, "action", "Bus_eta", "event", "complete")
 	return jobErr
 }
 
@@ -375,32 +447,50 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 		)
 		return nil
 	}
-	var etaURL string
-	if city == "InterCity" {
-		etaURL = "/v2/Bus/EstimatedTimeOfArrival/InterCity"
-	} else {
-		etaURL = fmt.Sprintf("/v2/Bus/EstimatedTimeOfArrival/City/%s", city)
-	}
-	etaFetch, err := j.fetch(ctx, etaURL, "bus_EstimatedTimeOfArrival"+city)
-	if err != nil {
-		return fmt.Errorf("fetch bus ETA for %s: %w", city, err)
-	}
 	var eat []rawBusEsimated
 	var etaRaw []byte
-	if etaFetch.Modified {
-		var complete bool
-		eat, complete = decodeBusEtaArray(etaFetch.Decoder)
-		closeErr := etaFetch.Close()
-		var decodeErr error
-		if !complete {
-			decodeErr = errors.New("decode bus ETA response: incomplete JSON array")
-		}
-		if decodeErr != nil || closeErr != nil {
-			return errors.Join(decodeErr, closeErr)
+	var etaFetch *shared.TDXFetch
+	// etaModified drives the same cache-write/observed logic a TDX 304 would:
+	// a Data.taipei city has no such signal (source is checked in a moment)
+	// and its blob is treated as always fresh, since the whole job — and so
+	// this feed's own etag cache — is rebuilt every tick anyway.
+	etaModified := true
+	if source, ok := j.eta[city]; ok {
+		eat, err = source.estimates(ctx)
+		if err != nil {
+			return fmt.Errorf("fetch bus ETA for %s: %w", city, err)
 		}
 		etaRaw, err = json.Marshal(eat)
 		if err != nil {
 			return err
+		}
+	} else {
+		var etaURL string
+		if city == "InterCity" {
+			etaURL = "/v2/Bus/EstimatedTimeOfArrival/InterCity"
+		} else {
+			etaURL = fmt.Sprintf("/v2/Bus/EstimatedTimeOfArrival/City/%s", city)
+		}
+		etaFetch, err = j.fetch(ctx, etaURL, "bus_EstimatedTimeOfArrival"+city)
+		if err != nil {
+			return fmt.Errorf("fetch bus ETA for %s: %w", city, err)
+		}
+		etaModified = etaFetch.Modified
+		if etaFetch.Modified {
+			var complete bool
+			eat, complete = decodeBusEtaArray(etaFetch.Decoder)
+			closeErr := etaFetch.Close()
+			var decodeErr error
+			if !complete {
+				decodeErr = errors.New("decode bus ETA response: incomplete JSON array")
+			}
+			if decodeErr != nil || closeErr != nil {
+				return errors.Join(decodeErr, closeErr)
+			}
+			etaRaw, err = json.Marshal(eat)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -435,7 +525,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 	positionCacheKey := shared.BusPositionRawKey(city)
 	pipe := j.sink.pipeline()
 	var cacheErr error
-	if etaFetch.Modified {
+	if etaModified {
 		pipe.Set(etaCacheKey, etaRaw, busFeedCacheTTL)
 	} else {
 		eat, err = readBusFeedCache[rawBusEsimated](ctx, j.sink, etaCacheKey)
@@ -460,7 +550,10 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 		execErr := pipe.Exec(ctx)
 		var ackErr error
 		if execErr == nil {
-			if etaFetch.Modified {
+			// etaFetch is nil for a Data.taipei city (no TDX ETA fetch to
+			// acknowledge or invalidate); etaModified is always true for one,
+			// so neither branch below would otherwise skip it.
+			if etaModified && etaFetch != nil {
 				ackErr = errors.Join(ackErr, acknowledgeTDXFetch(etaFetch))
 			}
 			if positionFetch.Modified {
@@ -468,7 +561,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 			}
 		}
 		var invalidateErr error
-		if !etaFetch.Modified {
+		if etaFetch != nil && !etaModified {
 			invalidateErr = errors.Join(invalidateErr, invalidateTDXFetch(etaFetch))
 		}
 		if !positionFetch.Modified {
@@ -485,7 +578,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 	// the route read 進站中. What is genuinely new information, and so gated on a
 	// modified feed below, is the history and prediction rows: re-recording the
 	// same TDX entry under a fresh timestamp would invent observations.
-	observed := etaFetch.Modified || positionFetch.Modified
+	observed := etaModified || positionFetch.Modified
 
 	stations := make(map[string]*models.Bus_StationArrival)
 	routes := make(map[string]*models.Bus_RouteArrival)
@@ -774,7 +867,7 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 		"posit_count", len(posit),
 	)
 	var ackErr error
-	if etaFetch.Modified {
+	if etaModified && etaFetch != nil {
 		ackErr = errors.Join(ackErr, acknowledgeTDXFetch(etaFetch))
 	}
 	if positionFetch.Modified {

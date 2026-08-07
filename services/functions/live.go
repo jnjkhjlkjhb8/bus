@@ -461,6 +461,7 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 		return []ttlPattern{
 			{pattern: shared.TraDelayAllKey, ttl: traLiveTTL},
 			{pattern: shared.TraDelayHashKey, ttl: traLiveTTL},
+			{pattern: shared.TraDelayStationKey, ttl: traLiveTTL},
 			{pattern: shared.TraDelayTrainChannel("*"), ttl: traLiveTTL},
 		}
 	}
@@ -484,6 +485,17 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 		{key: "bus", cadence: "@every 30s", ttlPatterns: nil,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				return busEta(ctx, fetch, sink, db, dispatcher)
+			}},
+		// Taipei and New Taipei get their ETA from Data.taipei, not TDX
+		// (FDPL-66 Phase 4), so they are not bound to the shared TDX cadence
+		// above and run on their own faster tick instead — 20s, matching
+		// Data.taipei's own blob refresh rate rather than mrt's 15s (see
+		// busEtaFastTickInterval), which also keeps this job out of mrt's
+		// cadence group so it gets its own tick deadline. The ttlPatterns:nil
+		// reasoning above applies here too.
+		{key: "bus_fast", cadence: "@every 20s", ttlPatterns: nil,
+			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
+				return busEtaFast(ctx, fetch, sink, db, dispatcher)
 			}},
 		// TDX Metro LiveBoard is paused for all four systems (ADR-0014): TRTC
 		// arrivals+congestion come from the Metro Taipei API on a 15s cadence;

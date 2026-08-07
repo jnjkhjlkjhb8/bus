@@ -16,7 +16,9 @@ import 'package:wheres_the_bus/features/go/model/planned_place.dart';
 import 'package:wheres_the_bus/features/go/view/go_screen.dart';
 import 'package:wheres_the_bus/features/home/home_screen.dart';
 import 'package:wheres_the_bus/features/metro/view/metro_screen.dart';
+import 'package:wheres_the_bus/features/rail/rail_system_labels.dart';
 import 'package:wheres_the_bus/features/rail/view/rail_screen.dart';
+import 'package:wheres_the_bus/features/rail/view/rail_train_screen.dart';
 import 'package:wheres_the_bus/features/search/view/search_screen.dart';
 import 'package:wheres_the_bus/features/settings/bloc/settings_state.dart';
 import 'package:wheres_the_bus/features/settings/settings_option_screen.dart';
@@ -25,6 +27,53 @@ import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/widgets/main_scaffold.dart';
 
 Page<T> _page<T>(Widget child) => MaterialPage<T>(child: child);
+
+/// Identity of the home page across every location it serves.
+///
+/// The same key on all of them is what makes `/` → `/near/bus/1` an update to
+/// the running screen instead of a new one: a fresh page would dispose the map
+/// and reload it, which is exactly what opening a station must not do.
+const _homePageKey = ValueKey<String>('home');
+
+Page<void> _homePage(GoRouterState state) => NoTransitionPage(
+  key: _homePageKey,
+  child: HomeScreen(
+    station: NearStationRouteArgs.fromUri(state.uri),
+    showRailQuery: state.uri.path == AppRoutes.railQueryPattern,
+  ),
+);
+
+/// Service date as the train screen wants it, defaulting to today: a location
+/// that names no date means "the train running now", not one frozen at the
+/// moment the link was made.
+String _railDate(DateTime? date) {
+  final d = date ?? DateTime.now();
+  return '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+}
+
+/// Identity of the line map across both of its locations.
+///
+/// Same reasoning as [_homePageKey], and the same requirement: selecting a
+/// station rewrites the location, and a page rebuilt on that rewrite would
+/// reset the rider's pan and zoom on the map they were reading. It also means
+/// only one line map may ever be on a navigator at a time — which the app
+/// enforces by never opening `/metro*` from the line map itself.
+const _metroPageKey = ValueKey<String>('metro');
+
+/// Shared by `/metro` and `/metro/station/:id` — the same screen, differing
+/// only in whether the location names a station to open on.
+Page<void> _metroPage(GoRouterState state) {
+  final args = MetroRouteArgs.from(
+    state.pathParameters,
+    state.uri.queryParameters,
+  );
+  return MaterialPage(
+    key: _metroPageKey,
+    child: MetroScreen(stationId: args.stationId, mode: args.mode),
+  );
+}
 
 /// Reads an optional `{options: List<String>, selected: String}` cache from
 /// `state.extra`, falling back to [options]/[selected] when absent so the
@@ -92,7 +141,28 @@ List<RouteBase> buildAppRoutes({
         routes: [
           GoRoute(
             path: AppRoutes.home,
-            pageBuilder: (_, _) => const NoTransitionPage(child: HomeScreen()),
+            pageBuilder: (_, state) => _homePage(state),
+          ),
+          // Siblings of `/`, all rendering the same keyed home page: the sheet
+          // is home's own navigator, so its second layer has to arrive as an
+          // update to the live screen. Nested routes would stack a second map
+          // over the first, and an unkeyed page would rebuild — and reload —
+          // the one underneath.
+          GoRoute(
+            path: AppRoutes.nearStationPattern,
+            pageBuilder: (_, state) {
+              // A station kind the app does not have is a broken link, not a
+              // request for the bare map: opening home anyway would answer it
+              // with something that looks like it worked.
+              if (NearStationRouteArgs.fromUri(state.uri) == null) {
+                return _page(RouteErrorScreen(uri: state.uri));
+              }
+              return _homePage(state);
+            },
+          ),
+          GoRoute(
+            path: AppRoutes.railQueryPattern,
+            pageBuilder: (_, state) => _homePage(state),
           ),
           GoRoute(
             path: AppRoutes.settings,
@@ -149,7 +219,9 @@ List<RouteBase> buildAppRoutes({
           ),
           GoRoute(
             path: AppRoutes.search,
-            pageBuilder: (_, _) => _page(const SearchScreen()),
+            pageBuilder: (_, state) => _page(
+              SearchScreen(initialQuery: state.uri.queryParameters['q']),
+            ),
           ),
           GoRoute(
             path: AppRoutes.favorites,
@@ -202,12 +274,20 @@ List<RouteBase> buildAppRoutes({
           ),
           GoRoute(
             path: AppRoutes.rail,
-            pageBuilder: (_, _) => _page(const RailScreen()),
+            pageBuilder: (_, state) => _page(
+              RailScreen(args: RailRouteArgs.from(state.uri.queryParameters)),
+            ),
           ),
           GoRoute(
             path: AppRoutes.metro,
-            pageBuilder: (_, state) =>
-                _page(MetroScreen(initialStation: state.extra as String?)),
+            pageBuilder: (_, state) => _metroPage(state),
+          ),
+          // A sibling of `/metro` rather than a child: the station detail is a
+          // sheet inside the line map's own screen, so nesting would stack a
+          // second line map underneath it on a cold deep link.
+          GoRoute(
+            path: AppRoutes.metroStationPattern,
+            pageBuilder: (_, state) => _metroPage(state),
           ),
           GoRoute(
             path: AppRoutes.feedback,
@@ -235,6 +315,33 @@ List<RouteBase> buildAppRoutes({
       ),
     ],
   ),
+  // Outside the shell, not merely on top of it: a full-screen page reached
+  // from the home sheet, the rail screen and search alike, so it must cover
+  // the banners and must not stack a rail screen underneath.
+  GoRoute(
+    path: AppRoutes.railTrainPattern,
+    pageBuilder: (_, state) {
+      final args = RailTrainRouteArgs.from(
+        state.pathParameters,
+        state.uri.queryParameters,
+      );
+      if (args == null) return _page(RouteErrorScreen(uri: state.uri));
+      final extra = state.extra;
+      final warm = extra is RailTrainExtra ? extra : const RailTrainExtra();
+      return _page(
+        RailTrainScreen(
+          type: warm.typeLabel ?? railSystemLabel(args.system),
+          trainNo: args.trainNo,
+          date: _railDate(args.date),
+          userOrigin: warm.userOrigin,
+          userDest: warm.userDest,
+          delayMinutes: warm.delayMinutes,
+          marks: warm.marks,
+          remark: warm.remark,
+        ),
+      );
+    },
+  ),
 ];
 
 class AppRouter {
@@ -249,10 +356,15 @@ class AppRouter {
   static GoRouter createRouter({
     GlobalKey<NavigatorState>? navigatorKey,
     String initialLocation = AppRoutes.home,
-  }) => GoRouter(
-    navigatorKey: navigatorKey,
-    initialLocation: initialLocation,
-    errorPageBuilder: (_, state) => _page(RouteErrorScreen(uri: state.uri)),
-    routes: buildAppRoutes(),
-  );
+  }) {
+    return GoRouter(
+      navigatorKey: navigatorKey,
+      initialLocation: initialLocation,
+      // Survives Android process death: without it the whole stack is lost and
+      // a rider who switched apps mid-journey comes back to the home screen.
+      restorationScopeId: 'app_router',
+      errorPageBuilder: (_, state) => _page(RouteErrorScreen(uri: state.uri)),
+      routes: buildAppRoutes(),
+    );
+  }
 }

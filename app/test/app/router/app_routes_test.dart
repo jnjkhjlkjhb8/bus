@@ -1,6 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_bus/app/router/app_routes.dart';
+import 'package:wheres_the_bus/data/models/metro_map_models.dart';
+import 'package:wheres_the_bus/data/models/near_models.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
 
+/// Every location is built by one helper and read back by one parser. These
+/// tests pin the two together: a builder that renames a parameter without its
+/// parser is a link that silently opens the wrong thing, which no screen test
+/// would catch because both halves still compile.
 void main() {
   group('AppRoutes.busRoute', () {
     test('encodes the subRouteUid path segment', () {
@@ -207,6 +214,261 @@ void main() {
         }),
         isNull,
       );
+    });
+  });
+
+  group('near station', () {
+    test('round-trips every field', () {
+      final uri = Uri.parse(
+        AppRoutes.nearStation(
+          type: NearStationType.bike,
+          id: 'YouBike2.0_500101001',
+          name: '捷運市政府站(3號出口)',
+          lat: 25.041,
+          lon: 121.5677,
+        ),
+      );
+      final args = NearStationRouteArgs.fromUri(uri);
+      expect(args, isNotNull);
+      expect(args!.type, NearStationType.bike);
+      expect(args.id, 'YouBike2.0_500101001');
+      expect(args.name, '捷運市政府站(3號出口)');
+      expect(args.lat, closeTo(25.041, 1e-9));
+      expect(args.lon, closeTo(121.5677, 1e-9));
+    });
+
+    test('survives an id that needs escaping', () {
+      final uri = Uri.parse(
+        AppRoutes.nearStation(type: NearStationType.bus, id: 'a/b c&d'),
+      );
+      expect(NearStationRouteArgs.fromUri(uri)?.id, 'a/b c&d');
+    });
+
+    test('an id alone is enough; the hints are optional', () {
+      final args = NearStationRouteArgs.fromUri(
+        Uri.parse(AppRoutes.nearStation(type: NearStationType.tra, id: '1000')),
+      );
+      expect(args?.type, NearStationType.tra);
+      expect(args?.name, isNull);
+      expect(args?.lat, isNull);
+    });
+
+    test('round-trips a return location for a caller it had to replace', () {
+      final back = AppRoutes.searchLocation(query: '台北車站');
+      final args = NearStationRouteArgs.fromUri(
+        Uri.parse(
+          AppRoutes.nearStation(
+            type: NearStationType.bus,
+            id: '1234',
+            back: back,
+          ),
+        ),
+      );
+      expect(args?.back, back);
+    });
+
+    test('has no return location when the caller was the map itself', () {
+      final args = NearStationRouteArgs.fromUri(
+        Uri.parse(AppRoutes.nearStation(type: NearStationType.bus, id: '1')),
+      );
+      expect(args?.back, isNull);
+    });
+
+    test('is null for anything that does not name a station', () {
+      for (final location in [
+        '/',
+        '/near',
+        '/near/bus',
+        '/near/bus/',
+        '/near/nope/1',
+        '/near/bus/1/extra',
+        '/rail-query',
+      ]) {
+        expect(
+          NearStationRouteArgs.fromUri(Uri.parse(location)),
+          isNull,
+          reason: location,
+        );
+      }
+    });
+  });
+
+  group('home locations', () {
+    test('cover the map and both of the sheet second layers', () {
+      for (final location in [
+        AppRoutes.home,
+        AppRoutes.railQuery(),
+        AppRoutes.nearStation(type: NearStationType.mrt, id: 'BL12'),
+      ]) {
+        expect(
+          AppRoutes.isHomeLocation(Uri.parse(location)),
+          isTrue,
+          reason: location,
+        );
+      }
+    });
+
+    test('do not cover a screen of its own', () {
+      for (final location in [AppRoutes.metro, AppRoutes.rail, '/settings']) {
+        expect(
+          AppRoutes.isHomeLocation(Uri.parse(location)),
+          isFalse,
+          reason: location,
+        );
+      }
+    });
+  });
+
+  group('metro', () {
+    test('round-trips the station id and the map mode', () {
+      final uri = Uri.parse(
+        AppRoutes.metroStation('BL15_BR10', mode: MetroMapMode.fare),
+      );
+      final args = MetroRouteArgs.from(
+        {'id': uri.pathSegments.last},
+        uri.queryParameters,
+      );
+      expect(args.stationId, 'BL15_BR10');
+      expect(args.mode, MetroMapMode.fare);
+    });
+
+    test('the bare map has no station and the default mode', () {
+      final uri = Uri.parse(AppRoutes.metroLocation());
+      final args = MetroRouteArgs.from(const {}, uri.queryParameters);
+      expect(args.stationId, isNull);
+      expect(args.mode, MetroMapMode.time);
+    });
+
+    test('an unreadable mode falls back rather than failing', () {
+      final args = MetroRouteArgs.from(const {}, const {'mode': 'sideways'});
+      expect(args.mode, MetroMapMode.time);
+    });
+
+    test('every line-map station resolves from its own name', () {
+      for (final station in metroMapStations) {
+        expect(
+          metroStationIdForName(station.name),
+          isNotNull,
+          reason: station.name,
+        );
+      }
+    });
+  });
+
+  group('rail timetable', () {
+    test('round-trips a full submitted O/D query', () {
+      final date = DateTime(2026, 8, 6, 17, 30);
+      final uri = Uri.parse(
+        AppRoutes.railLocation(
+          system: RailSystem.thsr,
+          originName: '台北',
+          originId: '1000',
+          destName: '左營',
+          destId: '1210',
+          date: date,
+          isDeparture: false,
+          submit: true,
+        ),
+      );
+      final args = RailRouteArgs.from(uri.queryParameters);
+      expect(args.system, RailSystem.thsr);
+      expect(args.originName, '台北');
+      expect(args.originId, '1000');
+      expect(args.destName, '左營');
+      expect(args.destId, '1210');
+      // Minute precision, so the time-of-day cutoff survives the link.
+      expect(args.date, date);
+      expect(args.isDeparture, isFalse);
+      expect(args.submit, isTrue);
+    });
+
+    test('a station preset carries an origin and does not submit', () {
+      final args = RailRouteArgs.from(
+        Uri.parse(
+          AppRoutes.railLocation(
+            system: RailSystem.tra,
+            originName: '花蓮',
+            originId: '7000',
+          ),
+        ).queryParameters,
+      );
+      expect(args.originName, '花蓮');
+      expect(args.destName, isEmpty);
+      expect(args.submit, isFalse);
+      // Departure is the default, so a location that says nothing means it.
+      expect(args.isDeparture, isTrue);
+      // No date means "now", resolved at the screen.
+      expect(args.date, isNull);
+    });
+
+    test('a bare /rail opens the empty form', () {
+      final args = RailRouteArgs.from(const {});
+      expect(args.originName, isEmpty);
+      expect(args.submit, isFalse);
+      expect(args.system, RailSystem.tra);
+    });
+  });
+
+  group('rail train', () {
+    test('round-trips the train, system and service date', () {
+      final uri = Uri.parse(
+        AppRoutes.railTrain(
+          '1234',
+          system: RailSystem.thsr,
+          date: DateTime(2026, 8, 6),
+        ),
+      );
+      final args = RailTrainRouteArgs.from({
+        'trainNo': uri.pathSegments.last,
+      }, uri.queryParameters);
+      expect(args, isNotNull);
+      expect(args!.trainNo, '1234');
+      expect(args.system, RailSystem.thsr);
+      expect(args.date, DateTime(2026, 8, 6));
+    });
+
+    test('is null without a train number', () {
+      expect(RailTrainRouteArgs.from(const {}, const {}), isNull);
+      expect(RailTrainRouteArgs.from(const {'trainNo': ''}, const {}), isNull);
+    });
+  });
+
+  group('rail query sheet', () {
+    test('round-trips its station preset', () {
+      final args = RailQueryRouteArgs.from(
+        Uri.parse(
+          AppRoutes.railQuery(
+            system: RailSystem.thsr,
+            originName: '板橋',
+            originId: '1010',
+          ),
+        ).queryParameters,
+      );
+      expect(args.system, RailSystem.thsr);
+      expect(args.originName, '板橋');
+      expect(args.originId, '1010');
+    });
+  });
+
+  group('rail system', () {
+    test('falls back to TRA for anything unrecognised', () {
+      expect(railSystemFromName(null), RailSystem.tra);
+      expect(railSystemFromName(''), RailSystem.tra);
+      expect(railSystemFromName('metro'), RailSystem.tra);
+      expect(railSystemFromName('thsr'), RailSystem.thsr);
+    });
+  });
+
+  group('search', () {
+    test('carries a query and omits an absent one', () {
+      expect(AppRoutes.searchLocation(query: '台北車站'), contains('q='));
+      expect(
+        Uri.parse(
+          AppRoutes.searchLocation(query: '台北車站'),
+        ).queryParameters['q'],
+        '台北車站',
+      );
+      expect(AppRoutes.searchLocation(), AppRoutes.search);
     });
   });
 }

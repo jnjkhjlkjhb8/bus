@@ -9,8 +9,10 @@ import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/data/models/city_names.dart';
+import 'package:wheres_the_bus/data/models/metro_map_models.dart';
+import 'package:wheres_the_bus/data/models/near_models.dart';
 import 'package:wheres_the_bus/data/models/search_models.dart';
-import 'package:wheres_the_bus/features/rail/view/rail_train_screen.dart';
+import 'package:wheres_the_bus/features/rail/bloc/rail_event.dart';
 import 'package:wheres_the_bus/features/search/bloc/search_bloc.dart';
 import 'package:wheres_the_bus/features/search/bloc/search_event.dart';
 import 'package:wheres_the_bus/features/search/bloc/search_state.dart';
@@ -37,11 +39,12 @@ const double _minTouchTarget = 48;
 /// wall of text can't be fired at the router on every keystroke.
 const int _maxQueryLength = 50;
 
-String _todayIso() {
-  final now = DateTime.now();
-  final m = now.month.toString().padLeft(2, '0');
-  final d = now.day.toString().padLeft(2, '0');
-  return '${now.year}-$m-$d';
+/// This screen as somewhere to come back to: the search location carrying the
+/// query that is on screen. Results are re-run rather than frozen, which is
+/// what a rider returning to a departure board wants anyway.
+String _backHere(BuildContext context) {
+  final query = context.read<SearchBloc>().state.query;
+  return AppRoutes.searchLocation(query: query.isEmpty ? null : query);
 }
 
 void _navigateToResult(BuildContext context, SearchResult result) {
@@ -52,44 +55,56 @@ void _navigateToResult(BuildContext context, SearchResult result) {
   switch (result.type) {
     case SearchResultType.busRoute:
       unawaited(context.push(AppRoutes.busRoute(result.uid)));
+    // Stations land on the home map's own detail sheet rather than a screen of
+    // their own, so one kind of place has one presentation however it was
+    // reached. `go` rather than `push`: home is the root of the stack, and a
+    // pushed second home would be a second map — so this page cannot stay
+    // under the station. `back` is what replaces it: closing the sheet returns
+    // here, to this query, instead of stopping at the bare map.
     case SearchResultType.busStation:
-      unawaited(
-        context.push(
-          AppRoutes.busStopLocation(
-            stopName: result.name,
-            stopId: result.uid,
-            city: result.city,
-            lat: result.lat,
-            lon: result.lon,
-          ),
+      context.go(
+        AppRoutes.nearStation(
+          type: NearStationType.bus,
+          id: result.uid,
+          name: result.name,
+          lat: result.lat,
+          lon: result.lon,
+          back: _backHere(context),
         ),
       );
     case SearchResultType.bikeStation:
-      unawaited(
-        context.push(
-          AppRoutes.bikeStationLocation(
-            stationUid: result.uid,
-            name: result.name,
-            lat: result.lat,
-            lon: result.lon,
-          ),
+      context.go(
+        AppRoutes.nearStation(
+          type: NearStationType.bike,
+          id: result.uid,
+          name: result.name,
+          lat: result.lat,
+          lon: result.lon,
+          back: _backHere(context),
         ),
       );
     case SearchResultType.mrtStation:
-      // Land on the picked station, not the bare map. Matched by name (the
-      // search uid and the map's station ids use different code schemes).
-      unawaited(context.push(AppRoutes.metro, extra: result.name));
+      // Resolved to a line-map id here rather than passing the name on: the
+      // search uid and the map's station ids use different code schemes, and
+      // `/metro/station/:id` is specified to carry a TDX code. A name the map
+      // does not know opens it bare, which is what it would show anyway.
+      final stationId = metroStationIdForName(result.name);
+      unawaited(
+        context.push(
+          stationId == null
+              ? AppRoutes.metro
+              : AppRoutes.metroStation(stationId),
+        ),
+      );
     case SearchResultType.traTrain:
     case SearchResultType.thsrTrain:
       unawaited(
-        Navigator.push(
-          context,
-          MaterialPageRoute<void>(
-            builder: (_) => RailTrainScreen(
-              type: result.type == SearchResultType.traTrain ? '台鐵' : '高鐵',
-              trainNo: result.uid,
-              date: _todayIso(),
-            ),
+        context.push(
+          AppRoutes.railTrain(
+            result.uid,
+            system: result.type == SearchResultType.traTrain
+                ? RailSystem.tra
+                : RailSystem.thsr,
           ),
         ),
       );
@@ -97,7 +112,12 @@ void _navigateToResult(BuildContext context, SearchResult result) {
 }
 
 class SearchScreen extends StatelessWidget {
-  const SearchScreen({super.key, this.bloc});
+  const SearchScreen({super.key, this.bloc, this.initialQuery});
+
+  /// Text to open the field with, from `/search?q=`. The query runs on the
+  /// first frame, so a location that names one lands on its results rather
+  /// than on an empty screen with the words already typed.
+  final String? initialQuery;
 
   /// Test seam. The screen owns its bloc in the app — nothing routes to it
   /// with one — but a widget test has no Hive box or router behind the
@@ -118,13 +138,15 @@ class SearchScreen extends StatelessWidget {
         // coming back has to land on the answer that sent you there.
         BlocProvider(create: (_) => GenUiBloc()),
       ],
-      child: const _SearchView(),
+      child: _SearchView(initialQuery: initialQuery),
     );
   }
 }
 
 class _SearchView extends StatefulWidget {
-  const _SearchView();
+  const _SearchView({this.initialQuery});
+
+  final String? initialQuery;
 
   @override
   State<_SearchView> createState() => _SearchViewState();
@@ -137,8 +159,18 @@ class _SearchViewState extends State<_SearchView> {
   @override
   void initState() {
     super.initState();
+    final query = widget.initialQuery;
+    if (query != null && query.isNotEmpty) {
+      _controller.text = query;
+      _controller.selection = TextSelection.collapsed(offset: query.length);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focusNode.requestFocus();
+      // After the provider is in place: the bloc this dispatches to is
+      // installed by the [SearchScreen] above this widget.
+      if (query != null && query.isNotEmpty && mounted) {
+        context.read<SearchBloc>().add(SearchQueryChanged(query));
+      }
     });
   }
 

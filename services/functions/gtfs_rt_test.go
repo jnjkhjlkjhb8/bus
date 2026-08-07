@@ -149,7 +149,7 @@ func TestBuildGTFSRTCancellationsReportsTheMissingDeparture(t *testing.T) {
 		[3]string{"KHH1:0:0630:W:1111100", "W:1111100", "0"},
 		[3]string{"KHH1:0:0700:W:1111100", "W:1111100", "0"},
 	)
-	entities, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
+	entities, _, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
 		gtfsRTReader(map[string]*models.Bus_DailyTimetables{
 			"KHH1": gtfsRTDaily("KHH1", 0, "06:00", "07:00"),
 		}))
@@ -176,7 +176,7 @@ func TestBuildGTFSRTCancellationsSilencesASubrouteWithAnUnexplainedDeparture(t *
 		[3]string{"KHH1:0:0600:W:1111100", "W:1111100", "0"},
 		[3]string{"KHH1:0:0630:W:1111100", "W:1111100", "0"},
 	)
-	entities, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
+	entities, _, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
 		gtfsRTReader(map[string]*models.Bus_DailyTimetables{
 			"KHH1": gtfsRTDaily("KHH1", 0, "06:00", "06:45"),
 		}))
@@ -196,7 +196,7 @@ func TestBuildGTFSRTCancellationsLetsOneObservationSatisfyEveryMask(t *testing.T
 		[3]string{"KHH1:0:0600:W:1111100", "W:1111100", "0"},
 		[3]string{"KHH1:0:0600:W:1111111", "W:1111111", "0"},
 	)
-	entities, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
+	entities, _, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
 		gtfsRTReader(map[string]*models.Bus_DailyTimetables{
 			"KHH1": gtfsRTDaily("KHH1", 0, "06:00"),
 		}))
@@ -215,7 +215,7 @@ func TestBuildGTFSRTCancellationsStaysSilentWithoutADailyTimetable(t *testing.T)
 		[3]string{"TPE1:0:0600:W:1111100", "W:1111100", "0"},
 		[3]string{"TPE1:0:0630:W:1111100", "W:1111100", "0"},
 	)
-	entities, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
+	entities, _, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
 		gtfsRTReader(map[string]*models.Bus_DailyTimetables{}))
 	if len(entities) != 0 {
 		t.Fatalf("emitted %v for a city with no daily timetable", gtfsRTCancelledIDs(entities))
@@ -232,7 +232,7 @@ func TestBuildGTFSRTCancellationsIgnoresTripsNotRunningToday(t *testing.T) {
 	index := gtfsRTIndexOf(t,
 		[3]string{"KHH1:0:0600:W:0000011", "W:0000011", "0"},
 	)
-	entities, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
+	entities, _, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
 		gtfsRTReader(map[string]*models.Bus_DailyTimetables{}))
 	if len(entities) != 0 || stats.routesConsidered != 0 {
 		t.Fatalf("emitted %v with stats %+v, want nothing considered", gtfsRTCancelledIDs(entities), stats)
@@ -252,7 +252,7 @@ func TestBuildGTFSRTCancellationsSilencesAnUnreadableDeparture(t *testing.T) {
 		&models.Bus_DailyTimetable{StopTimes: []*models.Bus_StopTime{
 			{StopSequence: 1, DepartureTime: "not a time", StopUID: "S1"},
 		}})
-	entities, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
+	entities, _, stats := buildGTFSRTCancellations(context.Background(), index, gtfsRTWednesday,
 		gtfsRTReader(map[string]*models.Bus_DailyTimetables{"KHH1": daily}))
 	if len(entities) != 0 {
 		t.Fatalf("emitted %v, want nothing", gtfsRTCancelledIDs(entities))

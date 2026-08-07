@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -35,6 +36,28 @@ func gtfsTestPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// gtfsTestTx starts the transaction the export runs in and materializes its temp
+// tables, so a test can run the feed's statements the way writeGTFSArchive does.
+// It rolls back on cleanup; the temp tables go with it.
+func gtfsTestTx(t *testing.T, pool *pgxpool.Pool, withData bool) pgx.Tx {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	t.Cleanup(conn.Release)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	if err := createGTFSTempTables(ctx, tx, withData); err != nil {
+		t.Fatalf("temp tables: %v", err)
+	}
+	return tx
+}
+
 // TestGTFSStatementsPlan asserts every statement in the feed resolves against the
 // real schema.
 //
@@ -49,13 +72,89 @@ func gtfsTestPool(t *testing.T) *pgxpool.Pool {
 // a 2 GB Azure instance where stop_times is six million rows, and a test that
 // scans it to prove it parses would be a worse problem than the one it finds.
 func TestGTFSStatementsPlan(t *testing.T) {
-	pool := gtfsTestPool(t)
+	// The files read the export's temp tables by name, so they only resolve
+	// inside a transaction that has declared them. Declared empty here: a plan
+	// needs the columns, not the rows.
+	tx := gtfsTestTx(t, gtfsTestPool(t), false /* withData */)
 	for _, file := range gtfsFiles("20260801-0345") {
 		t.Run(file.name, func(t *testing.T) {
-			if _, err := pool.Exec(context.Background(), "EXPLAIN "+file.sql); err != nil {
+			if _, err := tx.Exec(context.Background(), "EXPLAIN "+file.sql); err != nil {
 				t.Errorf("%s does not plan: %v", file.name, err)
 			}
 		})
+	}
+}
+
+// TestGTFSCalendarWindow asserts the feed states gtfsCalendarDays of service and
+// that the rail trips agree with the calendar about which days those are.
+//
+// Both halves matter, and the second is the one that can break quietly. Rail
+// trips derive their service_id from the date railTripSource states, and
+// calendar_dates derives its dates from the same set — so bounding one without
+// the other does not produce a shorter feed, it produces trips naming a service
+// no date ever states. Comparing the two sets is what catches a bound applied in
+// only one place.
+//
+// It runs the calendar statement rather than EXPLAINing it. That is affordable
+// where TestGTFSTranslationsReferenceEmittedRecords is not: nothing here touches
+// stop_times, and the whole result is a few thousand rows of dates.
+func TestGTFSCalendarWindow(t *testing.T) {
+	pool := gtfsTestPool(t)
+	ctx := context.Background()
+
+	var (
+		railDays, calendarDays, disagreeing int
+		first, last                         string
+	)
+	// min and max are COALESCEd rather than scanned into pointers: an empty
+	// calendar makes them null, and the only thing this reads them for is the
+	// failure message.
+	err := pool.QueryRow(ctx, `
+		WITH rail AS (SELECT DISTINCT service_date FROM (`+railTripSource+`) r),
+		     cal AS (SELECT DISTINCT to_date(date, 'YYYYMMDD') AS service_date
+		             FROM (`+gtfsCalendarDatesSQL+`) c)
+		SELECT (SELECT count(*) FROM rail),
+		       (SELECT count(*) FROM cal),
+		       (SELECT count(*) FROM (
+		          (SELECT * FROM rail EXCEPT SELECT * FROM cal)
+		          UNION ALL
+		          (SELECT * FROM cal EXCEPT SELECT * FROM rail)) d),
+		       (SELECT COALESCE(to_char(min(service_date), 'YYYY-MM-DD'), '') FROM cal),
+		       (SELECT COALESCE(to_char(max(service_date), 'YYYY-MM-DD'), '') FROM cal)`).
+		Scan(&railDays, &calendarDays, &disagreeing, &first, &last)
+	if err != nil {
+		t.Fatalf("read calendar window: %v", err)
+	}
+	// A database with no landed rail timetable states no dates, and there is
+	// nothing to check about a window that is empty for want of data.
+	if railDays == 0 {
+		t.Skip("no rail timetable landed; skipping calendar window check")
+	}
+	if calendarDays > gtfsCalendarDays {
+		t.Errorf("calendar_dates covers %d days (%s..%s), want at most %d",
+			calendarDays, first, last, gtfsCalendarDays)
+	}
+	if disagreeing != 0 {
+		t.Errorf("%d dates are stated by rail trips or by calendar_dates but not both; "+
+			"the window has been bounded in only one of them", disagreeing)
+	}
+
+	// And the days it covers are the ones from here on. A window anchored to a
+	// landed date rather than to today would drift into the past as the timetable
+	// ages, which reads the same in the counts above and plans nothing.
+	// $1 is cast: PostgreSQL has both date + int and date + interval, so an
+	// untyped parameter there is ambiguous and the statement fails to plan.
+	var past, future int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE service_date < (now() AT TIME ZONE 'Asia/Taipei')::date),
+		       count(*) FILTER (WHERE service_date >= (now() AT TIME ZONE 'Asia/Taipei')::date + $1::int)
+		FROM (SELECT DISTINCT service_date FROM (`+railTripSource+`) r) d`,
+		gtfsCalendarDays).Scan(&past, &future); err != nil {
+		t.Fatalf("read window bounds: %v", err)
+	}
+	if past != 0 || future != 0 {
+		t.Errorf("rail states %d dates before today and %d at or beyond day %d",
+			past, future, gtfsCalendarDays)
 	}
 }
 
@@ -125,7 +224,7 @@ func TestGTFSFaresAreConsistent(t *testing.T) {
 	if os.Getenv("GTFS_DB_HEAVY_TESTS") != "1" {
 		t.Skip("GTFS_DB_HEAVY_TESTS != 1; skipping (this one scans stop_times)")
 	}
-	pool := gtfsTestPool(t)
+	tx := gtfsTestTx(t, gtfsTestPool(t), true /* withData */)
 	ctx := context.Background()
 
 	for _, c := range []struct{ name, query string }{
@@ -150,7 +249,7 @@ func TestGTFSFaresAreConsistent(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var bad int
-			if err := pool.QueryRow(ctx, c.query).Scan(&bad); err != nil {
+			if err := tx.QueryRow(ctx, c.query).Scan(&bad); err != nil {
 				t.Fatalf("query: %v", err)
 			}
 			if bad != 0 {
@@ -160,7 +259,7 @@ func TestGTFSFaresAreConsistent(t *testing.T) {
 	}
 
 	var products, rules int
-	if err := pool.QueryRow(ctx,
+	if err := tx.QueryRow(ctx,
 		`SELECT (SELECT count(*) FROM (`+gtfsFareProductsSQL+`) p),
 		        (SELECT count(*) FROM (`+gtfsFareLegRulesSQL+`) r)`).Scan(&products, &rules); err != nil {
 		t.Fatalf("count: %v", err)
@@ -170,7 +269,7 @@ func TestGTFSFaresAreConsistent(t *testing.T) {
 		// Empty fare files are only a fault when there were fares to read. A
 		// database with none landed correctly prices nothing.
 		var landed int
-		if err := pool.QueryRow(ctx, `
+		if err := tx.QueryRow(ctx, `
 			SELECT (SELECT count(*) FROM raw_tdx.bus_routefare)
 			     + (SELECT count(*) FROM raw_tdx.tra_odfare)
 			     + (SELECT count(*) FROM raw_tdx.thsr_odfare)
@@ -206,7 +305,7 @@ func TestGTFSPathwaysAreConsistent(t *testing.T) {
 	if os.Getenv("GTFS_DB_HEAVY_TESTS") != "1" {
 		t.Skip("GTFS_DB_HEAVY_TESTS != 1; skipping (this one scans stop_times)")
 	}
-	pool := gtfsTestPool(t)
+	tx := gtfsTestTx(t, gtfsTestPool(t), true /* withData */)
 	ctx := context.Background()
 
 	for _, c := range []struct{ name, query string }{
@@ -231,7 +330,7 @@ func TestGTFSPathwaysAreConsistent(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var bad int
-			if err := pool.QueryRow(ctx, c.query).Scan(&bad); err != nil {
+			if err := tx.QueryRow(ctx, c.query).Scan(&bad); err != nil {
 				t.Fatalf("query: %v", err)
 			}
 			if bad != 0 {
@@ -243,7 +342,7 @@ func TestGTFSPathwaysAreConsistent(t *testing.T) {
 	// Every entrance should be reachable. One with no pathway is an entrance a
 	// router can route to and not out of.
 	var stranded int
-	if err := pool.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		SELECT count(*) FROM (`+gtfsStopsSQL+`) s
 		WHERE s.location_type = 2
 		  AND s.stop_id NOT IN (SELECT from_stop_id FROM (`+gtfsPathwaysSQL+`) p)`).Scan(&stranded); err != nil {
@@ -271,7 +370,9 @@ func TestGTFSTranslationsReferenceEmittedRecords(t *testing.T) {
 	if os.Getenv("GTFS_DB_HEAVY_TESTS") != "1" {
 		t.Skip("GTFS_DB_HEAVY_TESTS != 1; skipping (this one scans stop_times)")
 	}
-	pool := gtfsTestPool(t)
+	// gtfsStopsSQL now reads the materialized calls, so it only resolves inside
+	// the export's transaction.
+	tx := gtfsTestTx(t, gtfsTestPool(t), true /* withData */)
 	ctx := context.Background()
 
 	for _, c := range []struct{ table, emitted, idColumn string }{
@@ -282,7 +383,7 @@ func TestGTFSTranslationsReferenceEmittedRecords(t *testing.T) {
 		t.Run(c.table, func(t *testing.T) {
 			var translated, dangling, emitted int
 			var sample *string
-			err := pool.QueryRow(ctx, `
+			err := tx.QueryRow(ctx, `
 				SELECT count(*),
 				       count(*) FILTER (WHERE tr.record_id NOT IN (SELECT `+c.idColumn+` FROM (`+c.emitted+`) e)),
 				       min(tr.record_id) FILTER (WHERE tr.record_id NOT IN (SELECT `+c.idColumn+` FROM (`+c.emitted+`) e2)),

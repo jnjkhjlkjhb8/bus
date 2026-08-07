@@ -18,32 +18,56 @@ import (
 	"go.uber.org/zap"
 )
 
-// Data.taipei (大臺北公車) is the upstream TDX relays Taipei bus data from, and
-// it publishes two things TDX drops on the way: the plate number and the
-// 附屬路線 id of every reporting vehicle (GetBusData), plus which stop that
-// vehicle is standing at (GetBusEvent). TDX's Taipei position feed carries
-// neither, which is why bus_eta.go pairs vehicles to arrivals by GPS distance
-// (FDPL-66 Phase 1; Phase 2 replaces that pairing with the plate).
+// Data.taipei (大臺北公車) is the upstream TDX relays Taipei and New Taipei bus
+// data from. Each city is its own blob container (dataTaipeiDynamicCities)
+// with independent Route/Stop numbering — New Taipei's is not a partition of
+// Taipei's — verified against TDX's own UIDs by scripts/probe-datataipei-ids.py.
+// It publishes several things TDX drops or only gives at route level: the
+// plate number and the 附屬路線 id of every reporting vehicle (GetBusData),
+// which stop that vehicle is standing at (GetBusEvent), and its seat crowding
+// (BusSeatEvent) — FDPL-66 Phase 1/2. Those three only ever overlay the TDX
+// positions bus_eta.go already fetched (overlayVehicles).
 //
-// The feed only ever replaces positions. Estimates stay on TDX: Data.taipei's
-// GetEstimateTime is keyed on the 主路線, the same route-level granularity TDX
-// already gives, so swapping it would buy nothing.
+// GetEstimateTime is different: it is the same route-level granularity TDX
+// itself gives for these two cities (buildBusEtaMap's comment on
+// SubRouteUID), so there is no detail lost by using it instead — runCity
+// skips the TDX ETA call entirely for a city dataTaipeiDynamicCities lists,
+// rather than overlaying its result (FDPL-66 Phase 4).
 //
-// There is no SLA behind these blobs. Every failure path here returns the TDX
-// positions untouched, so a stalled or unreachable feed degrades to exactly the
-// behavior that shipped before this file existed.
+// There is no SLA behind these blobs. A vehicle-feed failure returns the TDX
+// positions untouched, so a stalled or unreachable feed degrades to exactly
+// the behavior that shipped before this file existed. An ETA-feed failure
+// fails that city's tick outright: there is no TDX ETA fetched for it to fall
+// back to.
 
 const dataTaipeiBlobBase = "https://tcgbusfs.blob.core.windows.net/blobbus/"
+const dataTaipeiNTPCBusBase = "https://tcgbusfs.blob.core.windows.net/ntpcbus/"
 
-// dataTaipeiCity is the only city the feed can be joined to. All 792 subroutes
-// it publishes resolve to TPE-prefixed TDX UIDs (measured 2026-08-06:
-// 415/415 routes, 784/792 subroutes, 28701/28742 stops) — New Taipei's own
-// routes are not in it, so the NewTaipei job stays entirely on TDX.
+// dataTaipeiCity is the only city GetSpecTimeTable — the daily timetable feed
+// landed in datataipei_static.go — can join to; New Taipei's blob does not
+// publish that endpoint at all. The live feeds in this file are broader and
+// use dataTaipeiDynamicCities instead.
 const dataTaipeiCity = "Taipei"
 
-// dataTaipeiUIDPrefix turns a bare Data.taipei number into a TDX UID. Verified
-// by scripts/probe-datataipei-ids.py, which is the gate this whole path rests on.
+// dataTaipeiUIDPrefix turns a bare Data.taipei number into a Taipei TDX UID,
+// used by the Taipei-only daily timetable landing (datataipei_static.go). The
+// live feeds in this file carry their own per-city prefix instead
+// (dataTaipeiDynamicCities).
 const dataTaipeiUIDPrefix = "TPE"
+
+// dataTaipeiDynamicCities are the cities Data.taipei publishes live vehicle
+// position, stop events, seat crowding, and estimated arrivals for. Verified
+// by scripts/probe-datataipei-ids.py (2026-08-07): every RouteID the live
+// GetEstimateTime feed publishes resolves to a bus_static.route_uid under the
+// listed prefix for both cities (100%), and 96-98% of StopID to a
+// bus_station_stop_map.stop_uid.
+var dataTaipeiDynamicCities = map[string]struct {
+	base   string
+	prefix string
+}{
+	"Taipei":    {base: dataTaipeiBlobBase, prefix: dataTaipeiUIDPrefix},
+	"NewTaipei": {base: dataTaipeiNTPCBusBase, prefix: "NWT"},
+}
 
 const dataTaipeiTimeout = 10 * time.Second
 
@@ -83,33 +107,46 @@ type dataTaipeiSeat struct {
 	Level *int   `json:"Level"`
 }
 
-// dataTaipeiFeed holds one conditional-GET session against the blobs. The blobs
-// answer with an ETag and rewrite roughly every 20 seconds, so the last decoded
-// payload is kept per endpoint: a 304 on one of the two must not discard the
-// other's rows, and the position and event feeds do not always turn over on the
-// same tick.
+// dataTaipeiFeed holds one conditional-GET session against one city's blobs.
+// The blobs answer with an ETag and rewrite roughly every 20 seconds, so the
+// last decoded payload is kept per endpoint: a 304 on one of them must not
+// discard another's rows, since the position, event, seat, and estimate feeds
+// do not all turn over on the same tick.
 type dataTaipeiFeed struct {
 	client *resty.Client
+	prefix string
 
-	mu     sync.Mutex
-	etag   map[string]string
-	buses  []dataTaipeiBus
-	events []dataTaipeiEvent
-	seats  []dataTaipeiSeat
+	mu           sync.Mutex
+	etag         map[string]string
+	buses        []dataTaipeiBus
+	events       []dataTaipeiEvent
+	seats        []dataTaipeiSeat
+	estimateRows []dataTaipeiEstimate
 }
 
-// dataTaipeiClient is shared across ticks for connection reuse, the same shape
-// trtcClient has; per-tick deadlines come from the live runner's context.
-var dataTaipeiClient = resty.New().
-	SetBaseURL(dataTaipeiBlobBase).
-	SetTimeout(dataTaipeiTimeout)
+// dataTaipeiClients are shared across ticks for connection reuse, the same
+// shape trtcClient has, one per dataTaipeiDynamicCities entry; per-tick
+// deadlines come from the live runner's context.
+var dataTaipeiClients = func() map[string]*resty.Client {
+	clients := make(map[string]*resty.Client, len(dataTaipeiDynamicCities))
+	for city, cfg := range dataTaipeiDynamicCities {
+		clients[city] = resty.New().SetBaseURL(cfg.base).SetTimeout(dataTaipeiTimeout)
+	}
+	return clients
+}()
 
 var _ vehicleSource = (*dataTaipeiFeed)(nil)
+var _ etaSource = (*dataTaipeiFeed)(nil)
 
-func newDataTaipeiFeed() *dataTaipeiFeed {
+// newDataTaipeiFeed builds a feed scoped to one dataTaipeiDynamicCities entry.
+// Callers only ever pass a listed city (busEta, ingestor.go's daily timetable
+// landing), so an unlisted one is not defended against here.
+func newDataTaipeiFeed(city string) *dataTaipeiFeed {
+	cfg := dataTaipeiDynamicCities[city]
 	return &dataTaipeiFeed{
-		client: dataTaipeiClient,
-		etag:   make(map[string]string, 2),
+		client: dataTaipeiClients[city],
+		prefix: cfg.prefix,
+		etag:   make(map[string]string, 4),
 	}
 }
 
@@ -204,18 +241,18 @@ func (f *dataTaipeiFeed) positions(ctx context.Context) ([]rawBusPosition, error
 	}
 	buses, events, seats = f.buses, f.events, f.seats
 	f.mu.Unlock()
-	return dataTaipeiRawPositions(buses, events, seats), nil
+	return dataTaipeiRawPositions(f.prefix, buses, events, seats), nil
 }
 
 // dataTaipeiRawPositions converts the feed onto the TDX position shape the ETA
 // job already consumes. Rows that cannot be placed on a route — an unknown
 // direction ("2"), an unparseable coordinate — are dropped rather than passed
 // on as a bus at (0, 0).
-func dataTaipeiRawPositions(buses []dataTaipeiBus, events []dataTaipeiEvent, seats []dataTaipeiSeat) []rawBusPosition {
+func dataTaipeiRawPositions(prefix string, buses []dataTaipeiBus, events []dataTaipeiEvent, seats []dataTaipeiSeat) []rawBusPosition {
 	atStop := make(map[string]string, len(events))
 	for _, e := range events {
 		if e.CarOnStop == "1" && e.StopID != "" {
-			atStop[e.BusID] = dataTaipeiUIDPrefix + e.StopID
+			atStop[e.BusID] = prefix + e.StopID
 		}
 	}
 	crowd := make(map[string]models.BusCrowdLevel, len(seats))
@@ -237,7 +274,7 @@ func dataTaipeiRawPositions(buses []dataTaipeiBus, events []dataTaipeiEvent, sea
 		}
 		p := rawBusPosition{
 			PlateNumb:   b.BusID,
-			SubRouteUID: dataTaipeiUIDPrefix + b.RouteID,
+			SubRouteUID: prefix + b.RouteID,
 			StopUID:     atStop[b.BusID],
 			Direction:   direction,
 			Azimuth:     dataTaipeiFloat(b.Azimuth),
@@ -302,6 +339,101 @@ func dataTaipeiUint8(s string) uint8 {
 	return uint8(v)
 }
 
+// dataTaipeiEstimate is one GetEstimateTime element: a route's live estimate at
+// one stop. Unlike TDX's EstimatedTimeOfArrival, status is folded into
+// EstimateTime's sign instead of a separate field: positive is seconds to
+// arrival, and -1/-2/-3/-4 name the same four schedule states TDX's own
+// StopStatus enum does (app/lib/data/models/eta_format.dart). RouteID is the
+// 主路線 (main route) — the same route-level granularity Taipei and NewTaipei
+// already publish through TDX (see buildBusEtaMap's comment on SubRouteUID),
+// so this loses no detail relative to what ships today.
+type dataTaipeiEstimate struct {
+	RouteID      int    `json:"RouteID"`
+	StopID       int    `json:"StopID"`
+	EstimateTime string `json:"EstimateTime"`
+	GoBack       string `json:"GoBack"`
+}
+
+// etaSource is a live ETA feed that replaces TDX's for a city rather than
+// overlaying it, the way vehicleSource's positions do. A nil map entry (or a
+// city missing from it) leaves that city on TDX.
+type etaSource interface {
+	estimates(context.Context) ([]rawBusEsimated, error)
+}
+
+// estimates fetches GetEstimateTime and returns it as TDX-shaped ETA rows.
+func (f *dataTaipeiFeed) estimates(ctx context.Context) ([]rawBusEsimated, error) {
+	var rows []dataTaipeiEstimate
+	fresh, err := f.getRows(ctx, "GetEstimateTime", &rows)
+	if err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	if fresh {
+		f.estimateRows = rows
+	}
+	rows = f.estimateRows
+	f.mu.Unlock()
+	return dataTaipeiRawEstimates(f.prefix, rows), nil
+}
+
+// dataTaipeiRawEstimates converts the feed onto the TDX ETA shape the ETA job
+// already consumes. A row whose EstimateTime does not parse as one of the
+// documented values is dropped rather than guessed at.
+func dataTaipeiRawEstimates(prefix string, rows []dataTaipeiEstimate) []rawBusEsimated {
+	out := make([]rawBusEsimated, 0, len(rows))
+	for _, r := range rows {
+		status, seconds, ok := dataTaipeiStopStatus(r.EstimateTime)
+		if !ok {
+			continue
+		}
+		out = append(out, rawBusEsimated{
+			StopUID:       fmt.Sprintf("%s%d", prefix, r.StopID),
+			RouteUID:      fmt.Sprintf("%s%d", prefix, r.RouteID),
+			Direction:     dataTaipeiEstimateDirection(r.GoBack),
+			EstimatedTime: seconds,
+			StopStatus:    status,
+		})
+	}
+	return out
+}
+
+// dataTaipeiStopStatus maps EstimateTime's sign onto TDX's StopStatus: a
+// positive value is status 0 (a live countdown) with that many seconds to
+// arrival, and -1/-2/-3/-4 are TDX's 1/2/3/4 in disguise — not yet departed,
+// traffic control, last bus passed, not operating today.
+func dataTaipeiStopStatus(estimateTime string) (status uint8, seconds int32, ok bool) {
+	v, err := strconv.Atoi(estimateTime)
+	if err != nil {
+		return 0, 0, false
+	}
+	if v > 0 {
+		return 0, int32(v), true
+	}
+	switch v {
+	case -1, -2, -3, -4:
+		return uint8(-v), 0, true
+	default:
+		return 0, 0, false
+	}
+}
+
+// dataTaipeiEstimateDirection maps GoBack onto TDX's Direction. "2" (not yet
+// departed) and "3" (last bus gone) carry no direction; busEtaDirectionUnknown
+// fans such an entry out across every direction mp records for the route —
+// the same widening buildBusEtaMap already does for Tainan's schedule-only
+// entries.
+func dataTaipeiEstimateDirection(goBack string) uint8 {
+	switch goBack {
+	case "0":
+		return 0
+	case "1":
+		return 1
+	default:
+		return busEtaDirectionUnknown
+	}
+}
+
 // mergeDataTaipeiPositions layers the Data.taipei rows over the TDX ones: a
 // subroute direction Data.taipei reports is taken from Data.taipei entirely,
 // and one it does not report keeps its TDX rows. Overlaying rather than
@@ -326,15 +458,16 @@ func mergeDataTaipeiPositions(tdx, dataTaipei []rawBusPosition) []rawBusPosition
 	return merged
 }
 
-// overlayVehicles is the ETA job's whole view of this file: for the city the
-// configured feed covers it swaps in the richer vehicles, and for every other
-// city, every failure, and a job with no feed at all it hands back the TDX
+// overlayVehicles is the ETA job's whole view of this file: for a city listed
+// in j.vehicles it swaps in the richer vehicles, and for every other city,
+// every failure, and a job with no feed at all it hands back the TDX
 // positions it was given.
 func (j *busLiveJob) overlayVehicles(ctx context.Context, city string, tdx []rawBusPosition) []rawBusPosition {
-	if j.vehicles == nil || city != dataTaipeiCity {
+	feed, ok := j.vehicles[city]
+	if !ok {
 		return tdx
 	}
-	fresh, err := j.vehicles.positions(ctx)
+	fresh, err := feed.positions(ctx)
 	if err != nil {
 		zap.S().Warnw(fmt.Sprintf("fetch failed; keeping TDX positions: %v", err),
 			"component", "datataipei",

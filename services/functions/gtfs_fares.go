@@ -8,6 +8,22 @@ package main
 // Fares (GTFS-Fares v2).
 // ---------------------------------------------------------------------------
 
+// The temp tables gtfsTempTables materializes, named where the queries read
+// them. They exist only inside the export transaction, so every statement below
+// is one a bare psql session cannot run on its own — createGTFSTempTables comes
+// first, and TestGTFSStatementsPlan proves the set is closed.
+const (
+	gtfsStopTable       = "gtfs_stop"
+	gtfsStopTimeTable   = "gtfs_stop_time"
+	gtfsFareSrcTable    = "gtfs_fare_src"
+	gtfsStopUIDTable    = "gtfs_stop_uid"
+	gtfsStopSeqTable    = "gtfs_stop_seq"
+	gtfsFarePairTable   = "gtfs_fare_pair"
+	gtfsFareLegTable    = "gtfs_fare_leg"
+	gtfsFarePricedTable = "gtfs_fare_priced"
+	gtfsFareZoneTable   = "gtfs_fare_zone"
+)
+
 // gtfsFareODSQL is every station-to-station fare the feed prices, flattened to
 // one row per (network, origin station, destination station, amount).
 //
@@ -89,11 +105,11 @@ const gtfsFareODSQL = `
 // A leg priced at zero is dropped here but not from the flat rules: on a station
 // pair zero means TDX stated no fare, while a free bus states zero and means it.
 var gtfsFarePricedSQL = `
-  WITH emitted AS (SELECT stop_id FROM (` + gtfsStopsSQL + `) s), leg AS (
+  WITH leg AS (
     SELECT network_id, from_stop, to_stop, amount FROM (` + gtfsFareODSQL + `) rail
     UNION ALL
     SELECT network_id, from_uid, to_uid, amount
-    FROM (` + busFareLegSQL + `) bus
+    FROM ` + gtfsFareLegTable + ` bus
     WHERE from_uid IS NOT NULL AND to_uid IS NOT NULL
   )
   SELECT leg.network_id,
@@ -103,24 +119,23 @@ var gtfsFarePricedSQL = `
   FROM leg
   WHERE leg.amount > 0
     AND leg.from_stop <> leg.to_stop
-    AND leg.from_stop IN (SELECT stop_id FROM emitted)
-    AND leg.to_stop   IN (SELECT stop_id FROM emitted)`
+    AND leg.from_stop IN (SELECT stop_id FROM ` + gtfsStopTable + `)
+    AND leg.to_stop   IN (SELECT stop_id FROM ` + gtfsStopTable + `)`
 
 // gtfsFareFlatSQL prices the routes that charge one fare however far the rider
 // goes. Both area fields empty is Fares v2's way of saying "any leg on this
 // network".
 var gtfsFareFlatSQL = `
   SELECT network_id, '' AS from_area_id, '' AS to_area_id, amount
-  FROM (` + busFareLegSQL + `) flat
+  FROM ` + gtfsFareLegTable + ` flat
   WHERE from_uid IS NULL AND amount >= 0`
 
 // gtfsFareZoneSQL is busSectionZoneSQL restricted to stops the feed emits, so a
 // zone that survives has something in it.
 var gtfsFareZoneSQL = `
-  WITH emitted AS (SELECT stop_id FROM (` + gtfsStopsSQL + `) s)
   SELECT z.routeuid, z.unit, z.stop_uid, z.idx
   FROM (` + busSectionZoneSQL + `) z
-  WHERE z.stop_uid IN (SELECT stop_id FROM emitted)`
+  WHERE z.stop_uid IN (SELECT stop_id FROM ` + gtfsStopTable + `)`
 
 // gtfsFareZoneMembersSQL is which stops each section zone holds.
 //
@@ -128,7 +143,7 @@ var gtfsFareZoneSQL = `
 // id, so stop_areas.txt takes it from here.
 var gtfsFareZoneMembersSQL = `
   SELECT DISTINCT 'Z:' || z.routeuid || ':' || z.idx::text AS area_id, z.stop_uid AS stop_id
-  FROM (` + gtfsFareZoneSQL + `) z`
+  FROM ` + gtfsFareZoneTable + ` z`
 
 // gtfsFareZoneRulesSQL prices a sectioned leg: one unit per section entered.
 //
@@ -144,7 +159,7 @@ var gtfsFareZoneMembersSQL = `
 // same odd index the range it counts over runs backwards and it returns -1,
 // which priced a ride that begins and ends inside one buffer zone at nothing.
 var gtfsFareZoneRulesSQL = `
-  WITH zone AS (SELECT DISTINCT routeuid, unit, idx FROM (` + gtfsFareZoneSQL + `) z)
+  WITH zone AS (SELECT DISTINCT routeuid, unit, idx FROM ` + gtfsFareZoneTable + ` z)
   SELECT 'BUS:' || a.routeuid AS network_id,
          'Z:' || a.routeuid || ':' || a.idx::text AS from_area_id,
          'Z:' || a.routeuid || ':' || b.idx::text AS to_area_id,
@@ -161,7 +176,7 @@ func busSectionUnitsSQL(from, to string) string {
 
 // gtfsFareAllRulesSQL is every priced leg: per-pair, sectioned and flat alike.
 var gtfsFareAllRulesSQL = `
-  SELECT network_id, from_area_id, to_area_id, amount FROM (` + gtfsFarePricedSQL + `) p
+  SELECT network_id, from_area_id, to_area_id, amount FROM ` + gtfsFarePricedTable + ` p
   UNION ALL
   SELECT network_id, from_area_id, to_area_id, amount FROM (` + gtfsFareZoneRulesSQL + `) z
   UNION ALL
@@ -170,7 +185,7 @@ var gtfsFareAllRulesSQL = `
 // gtfsAreasSQL declares every fare area: one per priced stop, plus one per
 // section zone.
 var gtfsAreasSQL = `
-WITH priced AS (` + gtfsFarePricedSQL + `)
+WITH priced AS (SELECT * FROM ` + gtfsFarePricedTable + `)
 SELECT DISTINCT area_id, '' AS area_name
 FROM (
   SELECT from_area_id AS area_id FROM priced
@@ -187,16 +202,16 @@ ORDER BY area_id`
 // An 'A:' area's membership is its id: the stop, and its platform when the stop
 // is a station. A 'Z:' area's is not, so it comes from the zone assignment.
 var gtfsStopAreasSQL = `
-WITH priced AS (` + gtfsFarePricedSQL + `), area AS (
-  SELECT from_area_id AS area_id FROM priced
+WITH area AS (
+  SELECT from_area_id AS area_id FROM ` + gtfsFarePricedTable + `
   UNION
-  SELECT to_area_id FROM priced
+  SELECT to_area_id FROM ` + gtfsFarePricedTable + `
 )
 SELECT area.area_id, s.stop_id
 FROM area
-JOIN (` + gtfsStopsSQL + `) s
-  ON s.stop_id = substring(area.area_id from 3)
-  OR s.stop_id = substring(area.area_id from 3) || ':platform'
+JOIN ` + gtfsStopTable + ` s
+  ON s.stop_id IN (substring(area.area_id from 3),
+                   substring(area.area_id from 3) || ':platform')
 UNION
 SELECT area_id, stop_id FROM (` + gtfsFareZoneMembersSQL + `) z
 ORDER BY area_id, stop_id`
@@ -294,6 +309,20 @@ const busFareSourceSQL = `
 // Measured 2026-08-01: 678 fare records over 455 routes carry buffer zones,
 // averaging 2.7 zones each, and all 1,216 zone endpoints resolve to a stop on
 // their own subroute.
+// busStopSeqSQL is every subroute's stop list with the sequence the section
+// zones are laid out along. It is materialized (gtfsTempTables) because
+// busSectionZoneSQL joins to it three times — the two ends of every buffer zone,
+// then every stop to be placed between them.
+const busStopSeqSQL = `
+    SELECT r.city, r.subrouteuid, COALESCE(r.direction, 0) AS direction,
+           s->>'StopUID' AS stop_uid, s->>'StopID' AS stop_id,
+           (s->>'StopSequence')::int AS seq
+    FROM raw_tdx.bus_stopofroute r
+    CROSS JOIN LATERAL jsonb_array_elements(r.stops) s
+    WHERE jsonb_typeof(r.stops) = 'array'
+      AND COALESCE(s->>'StopUID', '') <> ''
+      AND (s->>'StopSequence') ~ '^[0-9]+$'`
+
 const busSectionZoneSQL = `
   WITH rec AS (
     SELECT f.city, f.routeid, f.subrouteid,
@@ -317,25 +346,16 @@ const busSectionZoneSQL = `
     WHERE jsonb_typeof(r.subroutes) = 'array'
       AND COALESCE(s->>'SubRouteID', '') <> ''
       AND COALESCE(s->>'SubRouteUID', '') <> ''
-  ), stop AS (
-    SELECT r.city, r.subrouteuid, COALESCE(r.direction, 0) AS direction,
-           s->>'StopUID' AS stop_uid, s->>'StopID' AS stop_id,
-           (s->>'StopSequence')::int AS seq
-    FROM raw_tdx.bus_stopofroute r
-    CROSS JOIN LATERAL jsonb_array_elements(r.stops) s
-    WHERE jsonb_typeof(r.stops) = 'array'
-      AND COALESCE(s->>'StopUID', '') <> ''
-      AND (s->>'StopSequence') ~ '^[0-9]+$'
   ), buffer AS (
     SELECT sub.routeuid, sub.subrouteuid, o.direction, rec.unit,
            o.seq AS lo, d.seq AS hi
     FROM rec
     JOIN sub ON sub.city = rec.city AND sub.subrouteid = rec.subrouteid
     CROSS JOIN LATERAL jsonb_array_elements(rec.zones) z
-    JOIN stop o ON o.city = rec.city AND o.subrouteuid = sub.subrouteuid
+    JOIN ` + gtfsStopSeqTable + ` o ON o.city = rec.city AND o.subrouteuid = sub.subrouteuid
                 AND o.direction = (z.value->>'Direction')::int
                 AND o.stop_id = z.value->'FareBufferZoneOrigin'->>'StopID'
-    JOIN stop d ON d.city = rec.city AND d.subrouteuid = sub.subrouteuid
+    JOIN ` + gtfsStopSeqTable + ` d ON d.city = rec.city AND d.subrouteuid = sub.subrouteuid
                 AND d.direction = o.direction
                 AND d.stop_id = z.value->'FareBufferZoneDestination'->>'StopID'
     WHERE o.seq <= d.seq
@@ -345,7 +365,7 @@ const busSectionZoneSQL = `
              + CASE WHEN count(*) FILTER (WHERE s.seq BETWEEN b.lo AND b.hi) > 0
                     THEN 1 ELSE 0 END AS idx
     FROM buffer b
-    JOIN stop s ON s.subrouteuid = b.subrouteuid AND s.direction = b.direction
+    JOIN ` + gtfsStopSeqTable + ` s ON s.subrouteuid = b.subrouteuid AND s.direction = b.direction
     GROUP BY b.routeuid, b.unit, b.subrouteuid, b.direction, s.stop_uid, s.seq
   ), conflict AS (
     -- A stop landing on two indices means two subroutes or two directions of one
@@ -371,6 +391,17 @@ const busFareAdultSQL = `(p.value->>'TicketType')::int = 1
     AND (p.value->>'FareClass')::int = 1
     AND (p.value->>'Price') ~ '^[0-9]+$'`
 
+// busStopUIDSQL maps TDX's city-local StopID to the StopUID stop_times
+// references. It is materialized (gtfsTempTables) because the fare legs join to
+// it twice, once per endpoint, over 1.8M rows.
+const busStopUIDSQL = `
+    SELECT DISTINCT r.city, s->>'StopID' AS stop_id, s->>'StopUID' AS stop_uid
+    FROM raw_tdx.bus_stopofroute r
+    CROSS JOIN LATERAL jsonb_array_elements(r.stops) s
+    WHERE jsonb_typeof(r.stops) = 'array'
+      AND COALESCE(s->>'StopID', '') <> ''
+      AND COALESCE(s->>'StopUID', '') <> ''`
+
 // busFareLegSQL resolves bus fares onto the ids the feed uses, and collapses a
 // route whose every leg costs the same into one rule.
 //
@@ -383,9 +414,12 @@ const busFareAdultSQL = `(p.value->>'TicketType')::int = 1
 //
 // StopID is TDX's city-local id and stop_times references StopUID, so the pair
 // rows are mapped through bus_stopofroute, which carries both.
-var busFareLegSQL = `
-  WITH src AS (` + busFareSourceSQL + `
-  ), route AS (
+// busFarePairSQL is one row per priced leg with both ends resolved onto the ids
+// the feed uses. It is materialized (gtfsTempTables) because busFareLegSQL joins
+// it to itself twice — a leg to its reverse, then a route to its verdict — over
+// 1.75M rows.
+var busFarePairSQL = `
+  WITH route AS (
     -- The same route set gtfsRoutesSQL's bus branch emits, and for the same
     -- reason it has to be: a fare naming a route routes.txt dropped is a leg
     -- rule on a network no route belongs to, which is an invalid feed. Kept in
@@ -397,36 +431,50 @@ var busFareLegSQL = `
       AND COALESCE(r.operators->0->>'OperatorID', '') <> ''
       AND COALESCE(TRIM(COALESCE(NULLIF(r.routename->>'Zh_tw', ''), r.routeid)), '') <> ''
     ORDER BY r.city, r.routeid, r.updatetime DESC NULLS LAST
-  ), uid AS (
-    SELECT DISTINCT r.city, s->>'StopID' AS stop_id, s->>'StopUID' AS stop_uid
-    FROM raw_tdx.bus_stopofroute r
-    CROSS JOIN LATERAL jsonb_array_elements(r.stops) s
-    WHERE jsonb_typeof(r.stops) = 'array'
-      AND COALESCE(s->>'StopID', '') <> ''
-      AND COALESCE(s->>'StopUID', '') <> ''
-  ), resolved AS (
-    SELECT route.routeuid, fu.stop_uid AS from_uid, tu.stop_uid AS to_uid, src.amount
-    FROM src
-    JOIN route ON route.city = src.city AND route.routeid = src.routeid
-    LEFT JOIN uid fu ON fu.city = src.city AND fu.stop_id = src.from_id
-    LEFT JOIN uid tu ON tu.city = src.city AND tu.stop_id = src.to_id
-    -- A pair whose stops do not resolve prices nothing, and keeping it would
-    -- make the route look flat when it is not.
-    WHERE (src.from_id IS NULL) = (fu.stop_uid IS NULL)
-      AND (src.to_id IS NULL) = (tu.stop_uid IS NULL)
-  ), flat AS (
+  )
+  SELECT route.routeuid, fu.stop_uid AS from_uid, tu.stop_uid AS to_uid, src.amount
+  FROM ` + gtfsFareSrcTable + ` src
+  JOIN route ON route.city = src.city AND route.routeid = src.routeid
+  LEFT JOIN ` + gtfsStopUIDTable + ` fu ON fu.city = src.city AND fu.stop_id = src.from_id
+  LEFT JOIN ` + gtfsStopUIDTable + ` tu ON tu.city = src.city AND tu.stop_id = src.to_id
+  -- A pair whose stops do not resolve prices nothing, and keeping it would
+  -- make the route look flat when it is not.
+  WHERE (src.from_id IS NULL) = (fu.stop_uid IS NULL)
+    AND (src.to_id IS NULL) = (tu.stop_uid IS NULL)`
+
+var busFareLegSQL = `
+  WITH flat AS (
     SELECT routeuid, MIN(amount) AS amount
-    FROM resolved
+    FROM ` + gtfsFarePairTable + `
     GROUP BY routeuid
     HAVING COUNT(DISTINCT amount) = 1
   )
   SELECT 'BUS:' || routeuid AS network_id, NULL::text AS from_uid, NULL::text AS to_uid, amount
   FROM flat
   UNION ALL
-  SELECT 'BUS:' || r.routeuid, r.from_uid, r.to_uid, r.amount
-  FROM resolved r
-  WHERE r.from_uid IS NOT NULL AND r.to_uid IS NOT NULL
-    AND r.routeuid NOT IN (SELECT routeuid FROM flat)`
+  SELECT 'BUS:' || p.routeuid, p.from_uid, p.to_uid, p.amount
+  FROM ` + gtfsFarePairTable + ` p
+  WHERE p.from_uid IS NOT NULL AND p.to_uid IS NOT NULL
+    AND p.routeuid NOT IN (SELECT routeuid FROM flat)
+  UNION ALL
+  -- The mirrored half: a Fares v2 leg rule is directional and TDX prices one
+  -- direction of most bus pairs, so without this a rider travelling the other
+  -- way along the same route matches no rule and is quoted nothing. On the
+  -- 2026-08-06 feed that was 89.7% of the 1,637,421 priced pairs.
+  --
+  -- Where TDX priced the reverse itself it is left alone — the source is the
+  -- better authority on its own fare. Where it did not, the outbound price is
+  -- assumed to hold: of the pairs priced both ways, 90% agree. The other 10% are
+  -- the cost of this, and it is a deliberate trade of some wrong prices for a
+  -- feed that can price a return journey at all.
+  SELECT 'BUS:' || p.routeuid, p.to_uid, p.from_uid, p.amount
+  FROM ` + gtfsFarePairTable + ` p
+  WHERE p.from_uid IS NOT NULL AND p.to_uid IS NOT NULL
+    AND p.routeuid NOT IN (SELECT routeuid FROM flat)
+    AND NOT EXISTS (
+      SELECT 1 FROM ` + gtfsFarePairTable + ` x
+      WHERE x.routeuid = p.routeuid AND x.from_uid = p.to_uid AND x.to_uid = p.from_uid
+    )`
 
 // gtfsFareProductsSQL is one product per distinct amount, not per station pair.
 //
@@ -439,7 +487,10 @@ var gtfsFareProductsSQL = `
 SELECT DISTINCT
   'P:' || amount::text AS fare_product_id,
   '' AS fare_product_name,
-  amount AS amount,
+  -- TWD's minor unit is two digits, and GTFS wants an amount written to its
+  -- currency's precision: 20 is rejected where 20.00 is read as NT$20. The id
+  -- keeps the integer spelling — it is opaque, and fare_leg_rules names it.
+  to_char(amount, 'FM999999990.00') AS amount,
   'TWD' AS currency
 FROM (` + gtfsFareAllRulesSQL + `) p
 ORDER BY fare_product_id`

@@ -76,15 +76,18 @@ var (
 	// so there is nothing to lose by not asking. Restore TYMC here if it ever
 	// gains a second line.
 	ingestMetroLineTransfer = []string{"TRTC", "KRTC", "NTMC"}
-	// The GTFS export endpoints. Their asymmetry is what the feed builder has to
-	// work around: TMRT has routes and headways but no timetable, so Taichung is
-	// expressible only as frequencies.txt; the three light-rail systems are the
-	// reverse, with timetables but no headways; and TRTCMG (Maokong Gondola) has
-	// routes, stations and exits but neither timetable nor headway, so it lands
-	// with no service data at all and the builder must skip it (FDPL-6).
+	// The GTFS export endpoints. Frequency is narrower than the systems TDX
+	// serves it for because it is only what the feed can express: TRTCMG (Maokong
+	// Gondola) has routes, stations and exits but no service data at all, so the
+	// builder skips it (FDPL-6).
+	//
+	// Metro/StationTimeTable used to be landed alongside these and is not any
+	// more. Nothing ever read it: the metro half of the feed is built from routes,
+	// stations and headways, so a per-station timetable had no consumer, and the
+	// real per-train times are coming from TDX's published GTFS instead
+	// (FDPL-69).
 	ingestMetroFrequency = []string{"TRTC", "KRTC", "TYMC", "TMRT", "NTMC"}
 	ingestMetroExit      = []string{"TRTC", "KRTC", "TYMC", "TMRT", "NTMC", "TRTCMG"}
-	ingestMetroTimetable = []string{"TRTC", "KRTC", "TYMC", "KLRT", "NTDLRT", "NTALRT", "NTMC"}
 )
 
 const ingestTimeout = 20 * time.Minute
@@ -134,7 +137,7 @@ func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool
 				// their hourly refresh.
 				var taipeiErr error
 				if hasTDXCredentials() {
-					taipeiErr = landDataTaipeiDailyTimetable(ctx, newDataTaipeiFeed(), time.Now)
+					taipeiErr = landDataTaipeiDailyTimetable(ctx, newDataTaipeiFeed(dataTaipeiCity), time.Now)
 				}
 				return errors.Join(ingestRaw(ctx, tdx, "bus_dailytimetable"), taipeiErr)
 			})

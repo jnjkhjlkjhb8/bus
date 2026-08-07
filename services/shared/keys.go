@@ -128,6 +128,15 @@ const TraDelayHashKey = "tra:delay"
 // TRA delay snapshot.
 const TraDelayAllKey = "tra:delay:all"
 
+// TraDelayStationKey is the hash of the station each train's delay was measured
+// at, keyed by train number and written alongside TraDelayHashKey.
+//
+// It is a second hash rather than a richer value in the first because the app
+// reads TraDelayHashKey's values as plain minutes; only the GTFS-RT feed needs
+// to know where the observation was taken, and it needs it to place the delay on
+// a stop rather than on the whole train.
+const TraDelayStationKey = "tra:delay:station"
+
 // TraDelayTrainChannel returns the per-train delay key/channel written by the
 // realtime TRA job and consumed by the router's Tra_DetainService.
 func TraDelayTrainChannel(trainNo string) string {

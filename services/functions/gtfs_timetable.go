@@ -1,5 +1,10 @@
 package main
 
+import (
+	"strconv"
+	"time"
+)
+
 // GTFS timetable files: trips, stop_times, calendar_dates, frequencies,
 // transfers and shapes. Split out of gtfs_files.go for size; that file
 // documents the identifier scheme every statement assumes.
@@ -8,14 +13,37 @@ package main
 // Timetable files: trips, calls, service days and metro headways.
 // ---------------------------------------------------------------------------
 
-// railTripSource flattens both daily-timetable tables to one shape.
+// gtfsMidnightGap is the longest wait between two consecutive calls that a
+// midnight rollover may imply. Beyond it a time that moves backwards is read as
+// bad data rather than as a new day (gtfsStopTimesSQL).
+const gtfsMidnightGap = 3 * time.Hour
+
+// gtfsMidnightGapSecs is gtfsMidnightGap in the units the calls are compared in,
+// which is what the statement can splice.
+var gtfsMidnightGapSecs = strconv.Itoa(int(gtfsMidnightGap / time.Second))
+
+// gtfsCalendarDays is how many days of service the feed states, counting from
+// the day it is built.
+//
+// Rail is the only mode landed as a per-date expansion, so before this bound
+// existed the window was simply however far TDX had landed — ~85 days, which is
+// 91,875 of the feed's 209,894 trips and a third of its calls. Nothing needs
+// that reach: the app answers a rail timetable query straight out of PostgreSQL
+// (ADR-0005), and this feed exists to plan journeys, which nobody does three
+// months out. The feed is rebuilt nightly, so the window always carries a
+// fortnight of slack against a run that fails.
+const gtfsCalendarDays = 15
+
+// railTripRows flattens both daily-timetable tables to one shape.
 //
 // The two differ in ways that have to be reconciled before anything else can be
 // shared: tra_dailytimetable.traindate is text while thsr_dailytimetable's is
 // timestamptz landed at Taipei midnight (so it must be read back in Taipei, not
 // in the services' UTC session), and only TRA carries train types, suspension
 // flags and wheelchair flags.
-const railTripSource = `
+//
+// Read railTripSource, not this: every consumer wants the windowed set.
+const railTripRows = `
   SELECT
     'TRA' AS operator,
     dailytraininfo->>'TrainNo' AS train_no,
@@ -43,6 +71,22 @@ const railTripSource = `
   FROM raw_tdx.thsr_dailytimetable
   WHERE COALESCE(dailytraininfo->>'TrainNo', '') <> ''`
 
+// railTripSource is railTripRows cut to the feed's window.
+//
+// The bound lives here rather than on calendar_dates because trips.txt and
+// stop_times.txt read this set too and derive their service_id from the date in
+// it. Trimming only the calendar would leave every trip past the window naming
+// a service no date ever states, which is not a shorter feed but a broken one.
+//
+// now() is stable for the length of a transaction, and the whole archive is
+// written inside one (writeGTFSArchive), so every file resolves the window to
+// the same fortnight however long the build runs.
+var railTripSource = `
+  SELECT * FROM (` + railTripRows + `) w
+  WHERE w.service_date >= (now() AT TIME ZONE 'Asia/Taipei')::date
+    AND w.service_date < (now() AT TIME ZONE 'Asia/Taipei')::date + ` +
+	strconv.Itoa(gtfsCalendarDays)
+
 // gtfsCalendarDatesSQL emits one service per date the timetable covers.
 //
 // calendar.txt is not used: rail is landed as a per-date expansion, so its
@@ -51,15 +95,23 @@ const railTripSource = `
 // cancelled workings correct for free — they are already baked into the dates
 // TDX served.
 //
-// The range every weekly mask is expanded over is the union of the dates the
-// landed timetables cover, which in practice is rail's: it lands ~85 days ahead
-// where the bus daily timetable lands one.
+// The range every weekly mask is expanded over is the dates rail states, which
+// railTripSource has already cut to gtfsCalendarDays. Rail is what sets it
+// because it is the only mode landed per date — the bus daily timetable lands
+// one day and is published here as a weekday mask.
 var gtfsCalendarDatesSQL = `
 WITH day AS (
   -- The feed's calendar range: every date any timetable covers. Only rail
   -- carries dates — every bus trip now runs on a weekday mask — so rail alone
   -- sets how far ahead the masks below are expanded.
-  SELECT service_date FROM (` + railTripSource + `) r
+  --
+  -- DISTINCT is load-bearing, not tidiness: railTripSource is one row per train
+  -- per date, so without it the mask branch below cross joins every service
+  -- against every train running that day and states the same (service, date) a
+  -- few thousand times over. It made calendar_dates.txt 3,178,308 rows where
+  -- 3,204 say the same thing, and every one of the repeats is a duplicate
+  -- primary key a validator rejects.
+  SELECT DISTINCT service_date FROM (` + railTripSource + `) r
 ), svc AS (
   SELECT * FROM (` + metroServiceSQL + `) m
   UNION
@@ -93,7 +145,14 @@ var gtfsTripsSQL = `
 -- calls into a journey that does not exist.
 SELECT DISTINCT ON (trip_id)
        route_id, service_id, trip_id, trip_headsign, trip_short_name,
-       direction_id, wheelchair_accessible, shape_id
+       -- TDX's third direction is 迴圈 (circular), which GTFS has no value for:
+       -- direction_id is a two-way label, not a route shape. A circular route is
+       -- reported as the outbound one, which is what a rider boarding it is
+       -- doing. Clamped here rather than at the source because trip_id and
+       -- shape_id are built from the raw value and must keep matching
+       -- bus_shape.direction.
+       LEAST(direction_id, 1) AS direction_id,
+       wheelchair_accessible, shape_id
 FROM (
   SELECT
     route_id,
@@ -154,6 +213,11 @@ FROM (
   SELECT * FROM (` + busPatternTripsSQL + `) bp
 ) t
 WHERE trip_id <> ''
+  -- A trip is only published if its calls are: gtfsStopTimesSQL drops the ones
+  -- whose times it cannot state, and a trip row with no stop_times is one a
+  -- planner can board and never leave. Reading the materialized calls rather
+  -- than deriving them again is what makes this affordable.
+  AND trip_id IN (SELECT trip_id FROM ` + gtfsStopTimeTable + `)
 ORDER BY trip_id`
 
 // gtfsStopTimesSQL emits each trip's calls.
@@ -227,16 +291,34 @@ WITH calls AS (
   SELECT *, LAG(arr) OVER (PARTITION BY trip_id ORDER BY stop_sequence) AS prev_arr
   FROM deduped
 ), rolled AS (
+  -- A time that moves backwards is either midnight or bad data, and the two are
+  -- told apart by what the rollover would imply about the wait between the two
+  -- stops. 23:50 -> 00:20 implies half an hour, which is a bus. 07:42 -> 07:13
+  -- implies 23 and a half hours, which is nothing.
+  --
+  -- Measured over the 2026-08-06 feed: 2,763 trips roll over with every implied
+  -- gap under three hours and all of them start at 23:xx, while 1,613 imply gaps
+  -- of 12 to 23 hours. Nothing at all falls between 3 and 12, so the threshold
+  -- sits in an empty band rather than through a distribution.
   SELECT *,
-    SUM(CASE WHEN prev_arr IS NOT NULL AND arr < prev_arr THEN 1 ELSE 0 END)
+    SUM(CASE WHEN prev_arr IS NOT NULL AND arr < prev_arr
+                  AND arr + 86400 - prev_arr <= ` + gtfsMidnightGapSecs + ` THEN 1 ELSE 0 END)
       OVER (PARTITION BY trip_id ORDER BY stop_sequence
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS day_offset
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS day_offset,
+    -- One unexplainable step condemns the whole trip. The calls after it are a
+    -- consistent run at the wrong time of day, so there is no prefix worth
+    -- keeping: published either way round, this trip tells a planner a bus
+    -- arrives a day late.
+    MAX(CASE WHEN prev_arr IS NOT NULL AND arr < prev_arr
+                  AND arr + 86400 - prev_arr > ` + gtfsMidnightGapSecs + ` THEN 1 ELSE 0 END)
+      OVER (PARTITION BY trip_id) AS broken
   FROM lagged
 ), timed AS (
   SELECT trip_id, stop_id, stop_sequence, suspended,
     day_offset * 86400 + arr AS arr_s,
     day_offset * 86400 + CASE WHEN dep < arr THEN dep + 86400 ELSE dep END AS dep_s
   FROM rolled
+  WHERE broken = 0
   UNION ALL
   -- Metro template trips carry offsets from the journey's start, not wall-clock
   -- times: frequencies.txt anchors them. Starting at zero is the plain reading
