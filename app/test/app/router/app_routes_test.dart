@@ -471,4 +471,69 @@ void main() {
       expect(AppRoutes.searchLocation(), AppRoutes.search);
     });
   });
+
+  group('deep links', () {
+    test('leaves an in-app location alone', () {
+      expect(normalizeDeepLink(Uri.parse('/metro/station/BL12?mode=map')), null);
+    });
+
+    test('strips the scheme from the canonical three-slash form', () {
+      expect(
+        normalizeDeepLink(Uri.parse('$appLinkScheme:///metro/station/BL12')),
+        '/metro/station/BL12',
+      );
+    });
+
+    test('keeps query parameters and decodes path segments', () {
+      expect(
+        normalizeDeepLink(Uri.parse('$appLinkScheme:///rail/train/152?sys=tra')),
+        '/rail/train/152?sys=tra',
+      );
+    });
+
+    test('folds an authority back into the path', () {
+      expect(
+        normalizeDeepLink(Uri.parse('$appLinkScheme://bus/route/abc')),
+        '/bus/route/abc',
+      );
+    });
+
+    test('a bare scheme opens home', () {
+      expect(normalizeDeepLink(Uri.parse('$appLinkScheme://')), AppRoutes.home);
+    });
+
+    test('an https app link drops the domain and the prefix', () {
+      expect(
+        normalizeDeepLink(
+          Uri.parse(
+            'https://$appLinkHost$appLinkPathPrefix/metro/station/BL12',
+          ),
+        ),
+        '/metro/station/BL12',
+      );
+    });
+
+    test('an https app link keeps its query', () {
+      expect(
+        normalizeDeepLink(
+          Uri.parse('https://$appLinkHost$appLinkPathPrefix/rail?sys=thsr'),
+        ),
+        '/rail?sys=thsr',
+      );
+    });
+
+    test('the bare prefix opens home', () {
+      expect(
+        normalizeDeepLink(Uri.parse('https://$appLinkHost$appLinkPathPrefix')),
+        AppRoutes.home,
+      );
+    });
+
+    test('a path that only looks like the prefix is left whole', () {
+      expect(
+        normalizeDeepLink(Uri.parse('https://$appLinkHost/apple/pie')),
+        '/apple/pie',
+      );
+    });
+  });
 }

@@ -10,10 +10,13 @@ import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
+import 'package:wheres_the_bus/core/location/location_service.dart';
+import 'package:wheres_the_bus/core/location/nearest_within.dart';
 import 'package:wheres_the_bus/data/models/favorite.dart';
 import 'package:wheres_the_bus/data/models/journey_info.dart';
 import 'package:wheres_the_bus/data/models/metro_map_models.dart';
 import 'package:wheres_the_bus/data/models/metro_topology.dart';
+import 'package:wheres_the_bus/data/repositories/near_repository.dart';
 import 'package:wheres_the_bus/features/favorites/bloc/favorites_bloc.dart';
 import 'package:wheres_the_bus/features/metro/bloc/metro_bloc.dart';
 import 'package:wheres_the_bus/features/metro/bloc/metro_event.dart';
@@ -129,9 +132,18 @@ class MetroScreen extends StatefulWidget {
   State<MetroScreen> createState() => _MetroScreenState();
 }
 
+/// How close the rider must be for the bare map to open on a station for them.
+/// Metro stations are large and their exits spread out, so this is generous
+/// enough to fire from the far end of a concourse.
+const _kAutoFocusRadiusMeters = 300;
+
 class _MetroScreenState extends State<MetroScreen> {
   MetroMapStation? _selected;
   MetroMapStation? _prevSelected;
+
+  /// Set while [_autoFocusNearest] drives the next selection, so it lands
+  /// without the tap haptic — the rider did not tap anything.
+  bool _autoSelecting = false;
   late MetroMapMode _mode = widget.mode;
   final _metroBloc = MetroBloc();
   final _sheetController = SheetController();
@@ -140,10 +152,59 @@ class _MetroScreenState extends State<MetroScreen> {
   void initState() {
     super.initState();
     final station = _stationFor(widget.stationId);
-    if (station == null) return;
+    if (station == null) {
+      unawaited(_autoFocusNearest());
+      return;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _selectStation(station);
     });
+  }
+
+  /// A rider opening the bare map is usually standing at one of these stations,
+  /// so the one they are at is selected for them — once, on entry.
+  ///
+  /// The line map carries artwork coordinates, not WGS-84 ones, so the nearest
+  /// station comes from the router's nearby query. It is matched back by
+  /// *name*: an interchange is one combined id here (`BL15_BR10`) and one id
+  /// per line on the wire.
+  Future<void> _autoFocusNearest() async {
+    try {
+      final fix = await LocationService.instance.lastKnownPosition();
+      if (!mounted ||
+          fix == null ||
+          !usableAutoFocusFix(
+            fix,
+            maxAccuracyMeters: _kAutoFocusRadiusMeters.toDouble(),
+            now: DateTime.now().toUtc(),
+          )) {
+        return;
+      }
+      final stations = await NearRepository.instance
+          .nearOnce(fix.latitude, fix.longitude, _kAutoFocusRadiusMeters)
+          .first;
+      // The rider may have picked a station themselves while the query was in
+      // flight; auto-focus is a head start, never a correction.
+      if (!mounted || _selected != null || widget.stationId != null) return;
+      final near = nearestWithin(
+        stations.where((s) => s.type == NearStationType.mrt),
+        lat: fix.latitude,
+        lon: fix.longitude,
+        radiusMeters: _kAutoFocusRadiusMeters.toDouble(),
+        latOf: (s) => s.lat,
+        lonOf: (s) => s.lon,
+      );
+      if (near == null) return;
+      final id = metroStationIdForName(near.stationName);
+      if (id == null || _stationFor(id) == null) return;
+      _autoSelecting = true;
+      _goToStation(_stationFor(id)!);
+    } on Object {
+      // Auto-focus is a head start, not a feature the rider asked for: the
+      // usual failure here is the nearby query being offline, which the map
+      // itself already shows and which home already reports. Losing the head
+      // start leaves the bare map — the screen's normal opening state.
+    }
   }
 
   @override
@@ -222,7 +283,11 @@ class _MetroScreenState extends State<MetroScreen> {
   }
 
   void _selectStation(MetroMapStation station) {
-    unawaited(HapticService.instance.lightTap());
+    if (_autoSelecting) {
+      _autoSelecting = false;
+    } else {
+      unawaited(HapticService.instance.lightTap());
+    }
     setState(() {
       _prevSelected = _selected;
       _selected = station;
@@ -354,108 +419,116 @@ class _MetroScreenState extends State<MetroScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    return BlocProvider.value(
-      value: _metroBloc,
-      child: Scaffold(
-        // The map SVG is transparent, so the Scaffold paints the map canvas.
-        // A dedicated canvas — crisp white in light, deepened near-black in
-        // dark — instead of the grey scaffold surface, so lines and the
-        // #1a1a1a interchange dots lift off the background.
-        backgroundColor: cs.brightness == Brightness.dark
-            ? const Color(0xFF0C0C0C)
-            : Colors.white,
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            BlocBuilder<MetroBloc, MetroState>(
-              // The map only reads journeyMatrix (via _buildLabels below);
-              // activeStationId/error changes elsewhere in MetroState
-              // shouldn't force a full SVG map + ~120 label rebuild.
-              buildWhen: (previous, current) =>
-                  previous.journeyMatrix != current.journeyMatrix,
-              builder: (context, state) => MetroSvgMap(
-                selectedStationId: _selected?.id,
-                onStationTap: _onMapStationTap,
-                pickAheadIds: _pickAheadIds(context),
-                pickBoardId: context
-                    .watch<MrtTrackBloc>()
-                    .state
-                    .pickArrival
-                    ?.stationId,
-                pickedStationId: context
-                    .watch<MrtTrackBloc>()
-                    .state
-                    .pickTargetStationId,
-                stationLabels: _buildLabels(
-                  metroMapStations,
-                  state.journeyMatrix,
+    return PopScope(
+      // A station selected: back closes the sheet instead of leaving the
+      // page, since the sheet and the bare map share one Navigator entry.
+      canPop: _selected == null,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _dismiss();
+      },
+      child: BlocProvider.value(
+        value: _metroBloc,
+        child: Scaffold(
+          // The map SVG is transparent, so the Scaffold paints the map canvas.
+          // A dedicated canvas — crisp white in light, deepened near-black in
+          // dark — instead of the grey scaffold surface, so lines and the
+          // #1a1a1a interchange dots lift off the background.
+          backgroundColor: cs.brightness == Brightness.dark
+              ? const Color(0xFF0C0C0C)
+              : Colors.white,
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              BlocBuilder<MetroBloc, MetroState>(
+                // The map only reads journeyMatrix (via _buildLabels below);
+                // activeStationId/error changes elsewhere in MetroState
+                // shouldn't force a full SVG map + ~120 label rebuild.
+                buildWhen: (previous, current) =>
+                    previous.journeyMatrix != current.journeyMatrix,
+                builder: (context, state) => MetroSvgMap(
+                  selectedStationId: _selected?.id,
+                  onStationTap: _onMapStationTap,
+                  pickAheadIds: _pickAheadIds(context),
+                  pickBoardId: context
+                      .watch<MrtTrackBloc>()
+                      .state
+                      .pickArrival
+                      ?.stationId,
+                  pickedStationId: context
+                      .watch<MrtTrackBloc>()
+                      .state
+                      .pickTargetStationId,
+                  stationLabels: _buildLabels(
+                    metroMapStations,
+                    state.journeyMatrix,
+                  ),
+                  animate: _prevSelected == null && _selected != null,
                 ),
-                animate: _prevSelected == null && _selected != null,
               ),
-            ),
-            // Both map-level controls share one row so the width they compete
-            // for is real: the back button and system pill take their intrinsic
-            // width, and the time/fare switch flex-shrinks into whatever is
-            // left instead of overdrawing them at large text scales. The
-            // switch lives on the map because it drives the whole-map station
-            // labels, and surfaces only once a station is selected.
-            Align(
-              alignment: Alignment.topCenter,
-              child: FloatingAppBar(
-                leading: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    AppBarBackButton(floating: true),
-                    SizedBox(width: AppBarMetrics.gap),
-                    _SystemPill(),
-                  ],
+              // Both map-level controls share one row so the width they compete
+              // for is real: the back button and system pill take their intrinsic
+              // width, and the time/fare switch flex-shrinks into whatever is
+              // left instead of overdrawing them at large text scales. The
+              // switch lives on the map because it drives the whole-map station
+              // labels, and surfaces only once a station is selected.
+              Align(
+                alignment: Alignment.topCenter,
+                child: FloatingAppBar(
+                  leading: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      AppBarBackButton(floating: true),
+                      SizedBox(width: AppBarMetrics.gap),
+                      _SystemPill(),
+                    ],
+                  ),
+                  trailing: Flexible(
+                    child: AnimatedSwitcher(
+                      duration: AppMotion.short,
+                      switchInCurve: AppMotion.easeOut,
+                      switchOutCurve: AppMotion.easeOut,
+                      transitionBuilder: (child, animation) => FadeTransition(
+                        opacity: animation,
+                        child: ScaleTransition(
+                          scale: Tween<double>(
+                            begin: 0.9,
+                            end: 1,
+                          ).animate(animation),
+                          child: child,
+                        ),
+                      ),
+                      child: _selected != null
+                          ? _MapModeChip(
+                              key: const ValueKey('map-mode-chip'),
+                              mode: _mode,
+                              onChanged: _goToMode,
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  ),
                 ),
-                trailing: Flexible(
-                  child: AnimatedSwitcher(
-                    duration: AppMotion.short,
-                    switchInCurve: AppMotion.easeOut,
-                    switchOutCurve: AppMotion.easeOut,
-                    transitionBuilder: (child, animation) => FadeTransition(
-                      opacity: animation,
-                      child: ScaleTransition(
-                        scale: Tween<double>(
-                          begin: 0.9,
-                          end: 1,
-                        ).animate(animation),
-                        child: child,
+              ),
+              if (!context.watch<MrtTrackBloc>().state.picking)
+                _buildBottomSheetWidget(context, cs),
+              if (context.watch<MrtTrackBloc>().state.picking)
+                Positioned(
+                  top: MediaQuery.paddingOf(context).top + 60,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: AlightPickCapsule(
+                      onCancel: () => context.read<MrtTrackBloc>().add(
+                        const MrtAlightPickCancelled(),
                       ),
                     ),
-                    child: _selected != null
-                        ? _MapModeChip(
-                            key: const ValueKey('map-mode-chip'),
-                            mode: _mode,
-                            onChanged: _goToMode,
-                          )
-                        : const SizedBox.shrink(),
                   ),
                 ),
+              const Align(
+                alignment: Alignment.bottomCenter,
+                child: _MetroAlightDock(),
               ),
-            ),
-            if (!context.watch<MrtTrackBloc>().state.picking)
-              _buildBottomSheetWidget(context, cs),
-            if (context.watch<MrtTrackBloc>().state.picking)
-              Positioned(
-                top: MediaQuery.paddingOf(context).top + 60,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: AlightPickCapsule(
-                    onCancel: () => context.read<MrtTrackBloc>().add(
-                      const MrtAlightPickCancelled(),
-                    ),
-                  ),
-                ),
-              ),
-            const Align(
-              alignment: Alignment.bottomCenter,
-              child: _MetroAlightDock(),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

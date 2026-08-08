@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -12,6 +13,8 @@ import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/app/theme/app_text_styles.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
 import 'package:wheres_the_bus/core/haptics/alight_haptics.dart';
+import 'package:wheres_the_bus/core/location/location_service.dart';
+import 'package:wheres_the_bus/core/location/nearest_within.dart';
 import 'package:wheres_the_bus/data/decoders/fare_decoder.dart';
 import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/data/models/bus_route_detail.dart';
@@ -56,6 +59,11 @@ part '../widgets/bus_route_horizontal_timeline.dart';
 part '../widgets/bus_route_sheet_widgets.dart';
 part '../widgets/bus_route_stop_list_widgets.dart';
 part '../widgets/bus_route_timetable_widgets.dart';
+
+/// How close the rider must be for the route to open on a stop rather than on
+/// the whole line. Stops on a route are often only 300–500 m apart, so a wider
+/// radius starts picking the neighbouring one.
+const _kRouteAutoFocusRadiusMeters = 200.0;
 
 const _kDefaultCamera = CameraPosition(
   target: LatLng(25.0416, 121.5501),
@@ -133,6 +141,10 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     onVehicleTap: _togglePin,
   );
   bool _fitted = false;
+
+  /// The one cached fix the opening camera is decided from — see [_maybeFit].
+  /// Held so a rebuild that re-enters the decision reuses the same answer.
+  Future<Position?>? _autoFocusFix;
   // didChangeDependencies fires for reasons other than a brightness flip (text
   // scale, locale, ...); this tracks the last-seen value so only an actual
   // light/dark change forces a resync.
@@ -226,7 +238,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
       // mid-glide retargets smoothly because `from` is the live position.
       unawaited(_busGlide.forward(from: 0));
     }
-    _maybeFit();
+    unawaited(_maybeFit(s));
   }
 
   /// Runs the once-a-second bubble clock only while a bubble is on screen.
@@ -268,12 +280,59 @@ class _BusRouteScreenState extends State<BusRouteScreen>
     );
   }
 
-  void _maybeFit() {
+  /// Sets the opening camera, once: on the stop the rider is standing at when
+  /// there is one, otherwise on the whole route.
+  ///
+  /// The auto-focus answer is awaited *before* any camera move. Fitting the
+  /// route and then zooming to one stop would be two moves where the rider
+  /// should see one, and the second would read as the map correcting itself.
+  /// The fix is the prefetched cached one, so the wait is not a real one.
+  Future<void> _maybeFit(BusRouteState s) async {
     if (_fitted) return;
-    final c = _mapController;
-    if (c == null || _overlay.stopPoints.isEmpty) return;
+    if (_mapController == null || _overlay.stopPoints.isEmpty) return;
     _fitted = true;
-    unawaited(c.animateCamera(_fitUpdate()));
+    final stop = await _nearestStopOnEntry(s);
+    final c = _mapController;
+    if (!mounted || c == null) return;
+    if (stop == null) {
+      unawaited(c.animateCamera(_fitUpdate()));
+      return;
+    }
+    unawaited(
+      c.animateCamera(
+        CameraUpdate.newLatLngZoom(LatLng(stop.lat, stop.lon), 16),
+      ),
+    );
+    // After a frame: the sheet's stop list and horizontal timeline have to be
+    // laid out before their controllers can be scrolled to the stop.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _flashStop(stop.stopUid);
+    });
+  }
+
+  /// The stop of the displayed direction the rider is standing at, or null.
+  ///
+  /// Direction is never switched automatically — the rider chose the one on
+  /// screen, and flipping it under them is a bigger claim than "you are here".
+  Future<BusStopModel?> _nearestStopOnEntry(BusRouteState s) async {
+    final fix = await (_autoFocusFix ??= LocationService.instance
+        .lastKnownPosition());
+    if (fix == null ||
+        !usableAutoFocusFix(
+          fix,
+          maxAccuracyMeters: _kRouteAutoFocusRadiusMeters,
+          now: DateTime.now().toUtc(),
+        )) {
+      return null;
+    }
+    return nearestWithin(
+      _currentStops(s),
+      lat: fix.latitude,
+      lon: fix.longitude,
+      radiusMeters: _kRouteAutoFocusRadiusMeters,
+      latOf: (stop) => stop.lat,
+      lonOf: (stop) => stop.lon,
+    );
   }
 
   CameraUpdate _fitUpdate() => _overlay.stopPoints.length == 1
@@ -690,7 +749,7 @@ class _BusRouteScreenState extends State<BusRouteScreen>
                         onTap: (_) => _selectStop(null),
                         onMapCreated: (controller) {
                           _mapController = controller;
-                          _maybeFit();
+                          unawaited(_maybeFit(_bloc.state));
                         },
                       ),
                     ),

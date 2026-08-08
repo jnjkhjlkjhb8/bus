@@ -10,8 +10,11 @@ import 'package:smooth_sheets/smooth_sheets.dart';
 import 'package:wheres_the_bus/app/theme/app_shadows.dart';
 import 'package:wheres_the_bus/core/firebase/crash_reporter.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
+import 'package:wheres_the_bus/core/location/nearest_within.dart';
+import 'package:wheres_the_bus/data/models/bus_models.dart';
 import 'package:wheres_the_bus/features/alerts/view/inline_notice.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_stop_bloc.dart';
+import 'package:wheres_the_bus/features/bus/bloc/bus_stop_event.dart';
 import 'package:wheres_the_bus/features/bus/bloc/bus_stop_state.dart';
 import 'package:wheres_the_bus/features/bus/view/bus_stop_detail_view.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
@@ -24,6 +27,14 @@ import 'package:wheres_the_bus/shared/widgets/app_spinner.dart';
 import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
 
 const _kDefaultPos = LatLng(25.0330, 121.5654);
+
+/// Standing-at-the-pole distance: the two poles of one stop are typically
+/// 20–40 m apart across a road, so anything wider stops meaning "this side".
+const _kMemberRadiusMeters = 10.0;
+
+/// Deliberately looser than [_kMemberRadiusMeters] — see
+/// [_BusStopScreenState._autoSelectMemberAtRider].
+const _kMemberAccuracyMeters = 30.0;
 
 class BusStopScreen extends StatefulWidget {
   const BusStopScreen({
@@ -162,6 +173,39 @@ class _BusStopScreenState extends State<BusStopScreen> {
     unawaited(_moveToCurrentLocation());
   }
 
+  /// Filters the arrivals to the pole the rider is standing at, once, when the
+  /// member stops land.
+  ///
+  /// Poles of one stop sit on opposite sides of a road, so the radius is tight
+  /// enough that only standing at one counts. That also puts it below a typical
+  /// fix's own error, which is why the accuracy gate is looser than the radius
+  /// here instead of matching it: gating at 10 m would reject every real fix
+  /// and the filter would never apply.
+  Future<void> _autoSelectMemberAtRider(List<BusStationMember> members) async {
+    if (_bloc.state.selectedStationUid != null) return;
+    final fix = await LocationService.instance.lastKnownPosition();
+    if (!mounted ||
+        fix == null ||
+        !usableAutoFocusFix(
+          fix,
+          maxAccuracyMeters: _kMemberAccuracyMeters,
+          now: DateTime.now().toUtc(),
+        )) {
+      return;
+    }
+    final member = nearestWithin(
+      members,
+      lat: fix.latitude,
+      lon: fix.longitude,
+      radiusMeters: _kMemberRadiusMeters,
+      latOf: (m) => m.lat,
+      lonOf: (m) => m.lon,
+    );
+    // The rider may have picked a pole themselves while the fix was in flight.
+    if (member == null || _bloc.state.selectedStationUid != null) return;
+    _bloc.add(BusStopStationSelected(member.stationUid));
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -189,6 +233,7 @@ class _BusStopScreenState extends State<BusStopScreen> {
                       CameraUpdate.newLatLng(LatLng(first.lat, first.lon)),
                     ),
                   );
+                  unawaited(_autoSelectMemberAtRider(state.members));
                 },
                 buildWhen: (prev, next) => prev.members != next.members,
                 builder: (context, state) {

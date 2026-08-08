@@ -47,6 +47,32 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Hands the incoming URL to go_router instead of the legacy
+                 initial-route channel. -->
+            <meta-data
+                android:name="flutter_deeplinking_enabled"
+                android:value="true" />
+            <!-- Verified App Links, scoped to /app so the rest of the site
+                 still opens in the browser. Verification needs
+                 https://rabbitsayhello.me/.well-known/assetlinks.json to name
+                 this package's release signing fingerprint; until it does the
+                 links simply stay in the browser. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https"
+                      android:host="rabbitsayhello.me"
+                      android:pathPrefix="/app"/>
+            </intent-filter>
+            <!-- Kept alongside the App Link: it needs no hosting, so it works
+                 on debug builds and from adb. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="wheresthebus"/>
+            </intent-filter>
         </activity>
         <!-- Redraws the tracking card from a server push (ADR-0018). A receiver
              rather than a FirebaseMessagingService: firebase_messaging already

@@ -363,6 +363,9 @@ class AppRouter {
       // Survives Android process death: without it the whole stack is lost and
       // a rider who switched apps mid-journey comes back to the home screen.
       restorationScopeId: 'app_router',
+      // Cold `wheresthebus:///…` links arrive as a full URL on iOS; strip the
+      // scheme so they match the same routes an in-app `go()` does.
+      redirect: (_, state) => normalizeDeepLink(state.uri),
       errorPageBuilder: (_, state) => _page(RouteErrorScreen(uri: state.uri)),
       routes: buildAppRoutes(),
     );

@@ -248,6 +248,49 @@ class AppRoutes {
   );
 }
 
+/// Custom URL scheme the app is registered for on both platforms.
+///
+/// Canonical link form is three slashes — `wheresthebus:///metro/station/BL12`
+/// — because Android hands Dart the URL's path alone and drops any authority,
+/// so a two-slash `wheresthebus://metro/...` loses `metro` before the router
+/// can see it. iOS hands over the whole URL instead; [normalizeDeepLink]
+/// reconciles the two.
+const appLinkScheme = 'wheresthebus';
+
+/// Domain the app claims verified https links on.
+const appLinkHost = 'rabbitsayhello.me';
+
+/// Prefix every https app link sits under, e.g.
+/// `https://rabbitsayhello.me/app/metro/station/BL12`.
+///
+/// Scoped rather than claiming the whole domain because the site serves pages
+/// of its own: one prefix is one pattern to verify and one to strip, where
+/// per-route patterns would need a new entry on both platforms for every route
+/// added here.
+const appLinkPathPrefix = '/app';
+
+/// Turns an incoming deep-link location into a plain in-app location.
+///
+/// Returns null when [uri] is already one — the redirect then leaves it alone.
+String? normalizeDeepLink(Uri uri) {
+  if (!uri.hasScheme) return null;
+  // A custom-scheme link can carry its first path segment as the authority,
+  // which iOS preserves and Android drops; an https link's authority is the
+  // domain, which goes away either way.
+  var path = uri.scheme == appLinkScheme && uri.host.isNotEmpty
+      ? '/${uri.host}${uri.path}'
+      : uri.path;
+  if (path == appLinkPathPrefix) {
+    path = AppRoutes.home;
+  } else if (path.startsWith('$appLinkPathPrefix/')) {
+    path = path.substring(appLinkPathPrefix.length);
+  }
+  return Uri(
+    path: path.isEmpty ? AppRoutes.home : path,
+    queryParameters: uri.queryParameters.isEmpty ? null : uri.queryParameters,
+  ).toString();
+}
+
 /// Destination seed for [AppRoutes.go]. Absent or malformed parameters mean
 /// the planner opens empty, exactly as it does from the nav bar.
 class GoRouteArgs {
