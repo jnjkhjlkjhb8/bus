@@ -13,8 +13,11 @@ package main
 // is one a bare psql session cannot run on its own — createGTFSTempTables comes
 // first, and TestGTFSStatementsPlan proves the set is closed.
 const (
-	gtfsStopTable       = "gtfs_stop"
-	gtfsStopTimeTable   = "gtfs_stop_time"
+	gtfsStopTable          = "gtfs_stop"
+	gtfsStopTimeTable      = "gtfs_stop_time"
+	gtfsRailSegTable       = "gtfs_rail_seg"
+	gtfsRailTripShapeTable = "gtfs_rail_trip_shape"
+
 	gtfsFareSrcTable    = "gtfs_fare_src"
 	gtfsStopUIDTable    = "gtfs_stop_uid"
 	gtfsStopSeqTable    = "gtfs_stop_seq"

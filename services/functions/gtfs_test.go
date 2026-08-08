@@ -133,6 +133,30 @@ func TestGTFSFilesAreWellFormed(t *testing.T) {
 	}
 }
 
+// TestGTFSTempTablesAreDeclaredBeforeUse asserts the materialized sets are
+// listed in dependency order.
+//
+// createGTFSTempTables walks the list once, so a set reading one declared after
+// it fails at the CREATE — during the nightly export, where runGTFSExport logs
+// the failure rather than returning it and the feed is simply not rebuilt. The
+// order is a property of the list, so it is checked here rather than against a
+// database.
+func TestGTFSTempTablesAreDeclaredBeforeUse(t *testing.T) {
+	tables := gtfsTempTables()
+	declared := make(map[string]bool, len(tables))
+	for _, table := range tables {
+		for _, other := range tables {
+			if other.name == table.name || declared[other.name] {
+				continue
+			}
+			if strings.Contains(table.sql, other.name) {
+				t.Errorf("%s reads %s, which is materialized after it", table.name, other.name)
+			}
+		}
+		declared[table.name] = true
+	}
+}
+
 // TestGTFSFeedInfoQuotesVersion asserts the interpolated version is quoted.
 // COPY takes no bind parameters, so this is the one value in the feed that is
 // concatenated into SQL rather than bound.

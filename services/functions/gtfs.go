@@ -93,6 +93,11 @@ func gtfsTempTables() []gtfsTempTable {
 		// stop_areas.txt looks a stop up per fare area, so this one is indexed
 		// even though every other reader of it scans.
 		{name: gtfsStopTable, sql: gtfsStopsSQL, indexOn: "stop_id"},
+		// Rail geometry: the clipped segments first, then the trip-to-shape
+		// mapping shapes.txt and trips.txt both read. Both are joined to per stop
+		// pair and per trip rather than scanned, hence the indexes.
+		{name: gtfsRailSegTable, sql: gtfsRailSegSQL, indexOn: "from_stop, to_stop"},
+		{name: gtfsRailTripShapeTable, sql: gtfsRailTripShapeSQL, indexOn: "trip_id"},
 		{name: gtfsFareSrcTable, sql: busFareSourceSQL, indexOn: "city, routeid"},
 		{name: gtfsStopUIDTable, sql: busStopUIDSQL, indexOn: "city, stop_id"},
 		{name: gtfsStopSeqTable, sql: busStopSeqSQL, indexOn: "subrouteuid, direction, stop_id"},
