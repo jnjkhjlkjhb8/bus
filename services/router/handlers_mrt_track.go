@@ -39,13 +39,13 @@ type mrtTrainInfo interface {
 // stored so any caller holding a track ID can reach both rows.
 func mrtLeadReminderID(trackID string) string { return trackID + ":lead" }
 
-// mrtTrackSessionTTL keeps a session's reminder row and Redis state alive for a
+// _mrtTrackSessionTTL keeps a session's reminder row and Redis state alive for a
 // generous single ride; the functions tracker ends most sessions well before it.
-const mrtTrackSessionTTL = 3 * time.Hour
+const _mrtTrackSessionTTL = 3 * time.Hour
 
-// mrtTrackEndedStateTTL keeps a cancelled session's final state briefly so a
+// _mrtTrackEndedStateTTL keeps a cancelled session's final state briefly so a
 // connected watcher receives the ending before the key disappears.
-const mrtTrackEndedStateTTL = 60 * time.Second
+const _mrtTrackEndedStateTTL = 60 * time.Second
 
 // CreateTrack opens a metro alight-reminder session. It validates that the
 // target is strictly ahead on the board→terminal path (BFS over mrt_adjacency,
@@ -82,6 +82,12 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 
 	adjacency, err := s.loadMrtAdjacency(ctx, "TRTC")
 	if err != nil {
+		zap.S().Errorw("query failed",
+			"component", "mrt_track",
+			"action", "create",
+			"event", "load_adjacency_failed",
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to load metro adjacency")
 	}
 	path, ok := mrtBFSPath(adjacency, request.BoardStationId, request.DestStationId)
@@ -95,6 +101,13 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 
 	info, found, err := s.trtc.GetTrainInfo(ctx, request.CarId)
 	if err != nil {
+		zap.S().Errorw("query failed",
+			"component", "mrt_track",
+			"action", "create",
+			"event", "get_train_info_failed",
+			"car", request.CarId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to verify car binding")
 	}
 	if !found {
@@ -103,15 +116,27 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 
 	names, err := s.mrtStationNames(ctx, path)
 	if err != nil {
+		zap.S().Errorw("query failed",
+			"component", "mrt_track",
+			"action", "create",
+			"event", "load_station_names_failed",
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to load station names")
 	}
 
 	trackID, err := NewUUIDv4()
 	if err != nil {
+		zap.S().Errorw("uuid generation failed",
+			"component", "mrt_track",
+			"action", "create",
+			"event", "uuid_failed",
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to create session ID")
 	}
 	now := s.clock()
-	expiresAt := now.Add(mrtTrackSessionTTL)
+	expiresAt := now.Add(_mrtTrackSessionTTL)
 	// Reminders-table mapping for a metro session (ADR-0015): plate=carID,
 	// route_key=TripId, stop_key=target, direction=terminal, lead_minutes reused
 	// as the stops-based lead, fire_at NULL (fired off live position, like bus).
@@ -128,6 +153,13 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 		AlightEvent: "alight",
 	}
 	if err := s.store.CreateArrivalReminder(ctx, stored); err != nil {
+		zap.S().Errorw("store failed",
+			"component", "mrt_track",
+			"action", "create",
+			"event", "save_session_failed",
+			"track", trackID,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to save metro session")
 	}
 	if request.LeadStops > 0 {
@@ -135,6 +167,13 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 		lead.ReminderID = mrtLeadReminderID(trackID)
 		lead.AlightEvent = "lead"
 		if err := s.store.CreateArrivalReminder(ctx, lead); err != nil {
+			zap.S().Errorw("store failed",
+				"component", "mrt_track",
+				"action", "create",
+				"event", "save_lead_session_failed",
+				"track", trackID,
+				"err", err,
+			)
 			return nil, status.Error(codes.Internal, "failed to save metro session")
 		}
 	}
@@ -163,7 +202,14 @@ func (s *MrtServer) CreateTrack(ctx context.Context, request *pb.CreateMrtTrackR
 		LineCode:     request.LineCode,
 		LineColorHex: request.LineColorHex,
 	}
-	if err := s.writeTrackState(ctx, state, mrtTrackSessionTTL); err != nil {
+	if err := s.writeTrackState(ctx, state, _mrtTrackSessionTTL); err != nil {
+		zap.S().Errorw("store failed",
+			"component", "mrt_track",
+			"action", "create",
+			"event", "seed_state_failed",
+			"track", trackID,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to seed metro session state")
 	}
 	zap.S().Infow("log",
@@ -210,6 +256,13 @@ func (s *MrtServer) CancelTrack(ctx context.Context, request *pb.CancelMrtTrackR
 	}
 	cancelled, err := s.store.CancelArrivalReminder(ctx, request.TrackId, request.InstallId)
 	if err != nil {
+		zap.S().Errorw("store failed",
+			"component", "mrt_track",
+			"action", "cancel",
+			"event", "cancel_failed",
+			"track", request.TrackId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to cancel metro session")
 	}
 	if !cancelled {
@@ -253,13 +306,27 @@ func (s *MrtServer) SetTrackPushToken(ctx context.Context, request *pb.SetMrtTra
 		return nil, err
 	}
 	key := shared.MrtTrackPushTokenKey(request.TrackId)
-	var err error
 	if request.PushToken == "" {
-		err = s.rc.Del(ctx, key).Err()
-	} else {
-		err = s.rc.Set(ctx, key, request.PushToken, mrtTrackSessionTTL).Err()
+		if err := s.rc.Del(ctx, key).Err(); err != nil {
+			zap.S().Errorw("store failed",
+				"component", "mrt_track",
+				"action", "set_push_token",
+				"event", "del_failed",
+				"track", request.TrackId,
+				"err", err,
+			)
+			return nil, status.Error(codes.Internal, "failed to store push token")
+		}
+		return &pb.MrtTrackAck{Ok: true}, nil
 	}
-	if err != nil {
+	if err := s.rc.Set(ctx, key, request.PushToken, _mrtTrackSessionTTL).Err(); err != nil {
+		zap.S().Errorw("store failed",
+			"component", "mrt_track",
+			"action", "set_push_token",
+			"event", "set_failed",
+			"track", request.TrackId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to store push token")
 	}
 	return &pb.MrtTrackAck{Ok: true}, nil
@@ -319,7 +386,7 @@ func publishCancelledTrackState(ctx context.Context, rc *redis.Client, trackID s
 	}
 	state.Status = "cancelled"
 	state.NextPollAtUnix = 0
-	if err := writeTrackState(ctx, rc, state, mrtTrackEndedStateTTL); err != nil {
+	if err := writeTrackState(ctx, rc, state, _mrtTrackEndedStateTTL); err != nil {
 		zap.S().Warnw("publish error",
 			"component", "mrt_track",
 			"action", "cancel",
@@ -365,6 +432,12 @@ func (s *MrtServer) authorizeInstall(ctx context.Context, installID string) erro
 	}
 	authorized, err := s.store.AuthorizeInstall(ctx, installID, secretHash)
 	if err != nil {
+		zap.S().Errorw("query failed",
+			"component", "mrt_track",
+			"action", "authorize_install",
+			"event", "query_failed",
+			"err", err,
+		)
 		return status.Error(codes.Internal, "failed to verify installation credential")
 	}
 	if !authorized {
@@ -382,7 +455,7 @@ func (s *MrtServer) loadMrtAdjacency(ctx context.Context, system string) (map[st
 		return nil, err
 	}
 	defer rows.Close()
-	adjacency := map[string][]string{}
+	adjacency := make(map[string][]string)
 	for rows.Next() {
 		var from, to string
 		if err := rows.Scan(&from, &to); err != nil {
@@ -401,7 +474,7 @@ func (s *MrtServer) mrtStationNames(ctx context.Context, path []string) ([]strin
 		return nil, err
 	}
 	defer rows.Close()
-	byID := map[string]string{}
+	byID := make(map[string]string)
 	for rows.Next() {
 		var id, name string
 		if err := rows.Scan(&id, &name); err != nil {

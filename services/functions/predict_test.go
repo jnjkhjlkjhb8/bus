@@ -28,47 +28,41 @@ func TestDedupRouteDirPairs(t *testing.T) {
 }
 
 func TestPredictNextBusTime_NoModelReturnsEmpty(t *testing.T) {
-	old := etaModel
-	etaModel = nil
-	t.Cleanup(func() { etaModel = old })
+	p := &predictor{}
 
-	got := predictNextBusTime(nil, busStopCtx{}, predictionInputs{nextDep: time.Now()})
+	got := p.predictNextBusTime(nil, busStopCtx{}, predictionInputs{nextDep: time.Now()})
 	if got != "" {
 		t.Fatalf("want empty, got %q", got)
 	}
 }
 
 func TestPredictNextBusTime_NoDepartureReturnsEmpty(t *testing.T) {
-	old := etaModel
-	etaModel = &leaves.Ensemble{}
-	t.Cleanup(func() { etaModel = old })
+	p := &predictor{model: &leaves.Ensemble{}}
 
-	got := predictNextBusTime(nil, busStopCtx{}, predictionInputs{})
+	got := p.predictNextBusTime(nil, busStopCtx{}, predictionInputs{})
 	if got != "" {
 		t.Fatalf("want empty, got %q", got)
 	}
 }
 
 func TestPredictNextBusTime_NoStopOffsetReturnsDeparture(t *testing.T) {
-	old := etaModel
-	etaModel = &leaves.Ensemble{}
-	t.Cleanup(func() { etaModel = old })
+	p := &predictor{model: &leaves.Ensemble{}}
 
-	now := time.Date(2026, 7, 3, 8, 0, 0, 0, taipei)
-	dep := time.Date(2026, 1, 1, 9, 30, 0, 0, taipei)
-	got := predictNextBusTime(nil, busStopCtx{}, predictionInputs{
+	now := time.Date(2026, 7, 3, 8, 0, 0, 0, _taipei)
+	dep := time.Date(2026, 1, 1, 9, 30, 0, 0, _taipei)
+	got := p.predictNextBusTime(nil, busStopCtx{}, predictionInputs{
 		now:     now,
 		nextDep: dep,
 	})
-	want := time.Date(2026, 7, 3, 9, 30, 0, 0, taipei).Format(time.RFC3339)
+	want := time.Date(2026, 7, 3, 9, 30, 0, 0, _taipei).Format(time.RFC3339)
 	if got != want {
 		t.Fatalf("want %q, got %q", want, got)
 	}
 }
 
 func TestBaselineArrival(t *testing.T) {
-	now := time.Date(2026, 7, 6, 8, 0, 0, 0, taipei)
-	dep := time.Date(2026, 1, 1, 8, 5, 0, 0, taipei)
+	now := time.Date(2026, 7, 6, 8, 0, 0, 0, _taipei)
+	dep := time.Date(2026, 1, 1, 8, 5, 0, 0, _taipei)
 
 	t.Run("no departure yields zero time", func(t *testing.T) {
 		if got := baselineArrival(predictionInputs{now: now}); !got.IsZero() {
@@ -80,7 +74,7 @@ func TestBaselineArrival(t *testing.T) {
 		got := baselineArrival(predictionInputs{
 			now: now, nextDep: dep, offsetSec: 120, hasOffset: true,
 		})
-		want := time.Date(2026, 7, 6, 8, 7, 0, 0, taipei)
+		want := time.Date(2026, 7, 6, 8, 7, 0, 0, _taipei)
 		if !got.Equal(want) {
 			t.Fatalf("got %v, want %v", got, want)
 		}
@@ -88,7 +82,7 @@ func TestBaselineArrival(t *testing.T) {
 
 	t.Run("no stop offset yields bare departure", func(t *testing.T) {
 		got := baselineArrival(predictionInputs{now: now, nextDep: dep})
-		want := time.Date(2026, 7, 6, 8, 5, 0, 0, taipei)
+		want := time.Date(2026, 7, 6, 8, 5, 0, 0, _taipei)
 		if !got.Equal(want) {
 			t.Fatalf("got %v, want %v", got, want)
 		}

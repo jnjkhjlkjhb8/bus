@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,29 +36,29 @@ import (
 // a planner the static timetable, an invented one actively misroutes.
 
 const (
-	// gtfsRTCadence matches the bus ETA refresh. Cancellations themselves move
+	// _gtfsRTCadence matches the bus ETA refresh. Cancellations themselves move
 	// at most hourly (the daily timetable's incremental load), but the delay
 	// producer FDPL-29 adds to this same snapshot moves at the ETA's pace, and
 	// one cadence is cheaper to reason about than two.
-	gtfsRTCadence = "@every 30s"
-	// gtfsRTSnapshotTTL outlives several rebuild periods so an ordinary slow
+	_gtfsRTCadence = "@every 30s"
+	// _gtfsRTSnapshotTTL outlives several rebuild periods so an ordinary slow
 	// tick cannot blank the feed, while still expiring fast enough that a dead
 	// builder is noticed as a 503 rather than served as fresh data.
-	gtfsRTSnapshotTTL = 3 * time.Minute
-	// gtfsRTBuildTimeout bounds one rebuild. The Redis scan dominates it; the
+	_gtfsRTSnapshotTTL = 3 * time.Minute
+	// _gtfsRTBuildTimeout bounds one rebuild. The Redis scan dominates it; the
 	// static index is already in memory.
-	gtfsRTBuildTimeout = 60 * time.Second
-	// gtfsRTIndexTimeout bounds the once-a-day static index query, which repeats
+	_gtfsRTBuildTimeout = 60 * time.Second
+	// _gtfsRTIndexTimeout bounds the once-a-day static index query, which repeats
 	// the same lateral expansion of raw_tdx.bus_schedule the GTFS static build
 	// pays for.
-	gtfsRTIndexTimeout = 10 * time.Minute
-	// gtfsRTIndexReadyHour is the local hour from which the index may be rebuilt
+	_gtfsRTIndexTimeout = 10 * time.Minute
+	// _gtfsRTIndexReadyHour is the local hour from which the index may be rebuilt
 	// for a new day: the 03:00 landing and 03:30 load are both done by then, so
 	// the index is derived from the same raw rows the static feed was.
-	gtfsRTIndexReadyHour = 4
-	// gtfsRTMGetBatch bounds one MGET. A few thousand subroutes is a handful of
+	_gtfsRTIndexReadyHour = 4
+	// _gtfsRTMGetBatch bounds one MGET. A few thousand subroutes is a handful of
 	// round trips at this size, and no single reply is large enough to matter.
-	gtfsRTMGetBatch = 256
+	_gtfsRTMGetBatch = 256
 )
 
 // gtfsRTRouteKey identifies one canonical subroute direction — the granularity
@@ -115,7 +114,7 @@ type gtfsRTStats struct {
 	cancellations    int
 }
 
-// gtfsRTTripIndexSQL is every bus trip the static feed can emit, reduced to the
+// _gtfsRTTripIndexSQL is every bus trip the static feed can emit, reduced to the
 // three columns a cancellation needs.
 //
 // It reads the same two sources gtfs_files.go builds trips.txt from, so the
@@ -134,12 +133,12 @@ type gtfsRTStats struct {
 //
 // city comes along because canonicalisation needs it: InterCity encodes
 // direction in the UID suffix and everything else does not.
-var gtfsRTTripIndexSQL = `
+var _gtfsRTTripIndexSQL = `
 SELECT DISTINCT trip_id, direction_id, service_id
 FROM (
-  SELECT trip_id, direction_id, service_id FROM (` + busScheduleSource + `) s
+  SELECT trip_id, direction_id, service_id FROM (` + _busScheduleSource + `) s
   UNION ALL
-  SELECT trip_id, direction_id, service_id FROM (` + busPatternTripsSQL + `) o
+  SELECT trip_id, direction_id, service_id FROM (` + _busPatternTripsSQL + `) o
 ) t
 WHERE trip_id <> '' AND service_id LIKE 'W:%'`
 
@@ -148,10 +147,10 @@ WHERE trip_id <> '' AND service_id LIKE 'W:%'`
 // Redis to expire on its own.
 func registerGTFSRTCron(r *cron.Cron, db *pgxpool.Pool, rc *redis.Client) {
 	builder := &gtfsRTBuilder{db: db, rc: rc}
-	_, _ = addStaticCron(r, gtfsRTCadence, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), gtfsRTBuildTimeout)
+	_, _ = addStaticCron(r, _gtfsRTCadence, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), _gtfsRTBuildTimeout)
 		defer cancel()
-		if err := builder.run(ctx, time.Now().In(taipei)); err != nil {
+		if err := builder.run(ctx, time.Now().In(_taipei)); err != nil {
 			zap.S().Errorw("failed", "component", "gtfs_rt", "action", "build", "event", "failed", "err", err)
 		}
 	})
@@ -195,8 +194,8 @@ func (b *gtfsRTBuilder) run(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
-	if err := b.rc.Set(ctx, shared.GTFSRealtimeKey(), payload, gtfsRTSnapshotTTL).Err(); err != nil {
-		return fmt.Errorf("gtfs-rt: publish snapshot: %w", err)
+	if err := b.rc.Set(ctx, shared.GTFSRealtimeKey(), payload, _gtfsRTSnapshotTTL).Err(); err != nil {
+		return _oops.Wrapf(err, "gtfs-rt: publish snapshot")
 	}
 	zap.S().Infow("success",
 		"component", "gtfs_rt",
@@ -217,10 +216,10 @@ func (b *gtfsRTBuilder) run(ctx context.Context, now time.Time) error {
 // previous day's index is still the one the published static feed matches.
 func (b *gtfsRTBuilder) refreshIndex(ctx context.Context, now time.Time) error {
 	today := now.Format(time.DateOnly)
-	if b.index != nil && (b.index.builtFor == today || now.Hour() < gtfsRTIndexReadyHour) {
+	if b.index != nil && (b.index.builtFor == today || now.Hour() < _gtfsRTIndexReadyHour) {
 		return nil
 	}
-	indexCtx, cancel := context.WithTimeout(ctx, gtfsRTIndexTimeout)
+	indexCtx, cancel := context.WithTimeout(ctx, _gtfsRTIndexTimeout)
 	defer cancel()
 	index, err := loadGTFSRTIndex(indexCtx, b.db, today)
 	if err != nil {
@@ -255,9 +254,9 @@ func (b *gtfsRTBuilder) refreshIndex(ctx context.Context, now time.Time) error {
 // loadGTFSRTIndex reads every schedule-derived bus trip and groups it by the
 // canonical subroute direction the daily timetable is keyed by.
 func loadGTFSRTIndex(ctx context.Context, db *pgxpool.Pool, today string) (*gtfsRTIndex, error) {
-	rows, err := db.Query(ctx, gtfsRTTripIndexSQL)
+	rows, err := db.Query(ctx, _gtfsRTTripIndexSQL)
 	if err != nil {
-		return nil, fmt.Errorf("gtfs-rt: load trip index: %w", err)
+		return nil, _oops.Wrapf(err, "gtfs-rt: load trip index")
 	}
 	defer rows.Close()
 	index := &gtfsRTIndex{builtFor: today, trips: make(map[gtfsRTRouteKey][]gtfsRTTrip, 8192)}
@@ -265,7 +264,7 @@ func loadGTFSRTIndex(ctx context.Context, db *pgxpool.Pool, today string) (*gtfs
 		var tripID, serviceID string
 		var direction int32
 		if err := rows.Scan(&tripID, &direction, &serviceID); err != nil {
-			return nil, fmt.Errorf("gtfs-rt: load trip index: scan: %w", err)
+			return nil, _oops.Wrapf(err, "gtfs-rt: load trip index: scan")
 		}
 		trip, key, ok := parseGTFSRTTrip(tripID, serviceID, direction)
 		if !ok {
@@ -274,7 +273,7 @@ func loadGTFSRTIndex(ctx context.Context, db *pgxpool.Pool, today string) (*gtfs
 		index.trips[key] = append(index.trips[key], trip)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("gtfs-rt: load trip index: rows: %w", err)
+		return nil, _oops.Wrapf(err, "gtfs-rt: load trip index: rows")
 	}
 	rail, err := loadRailDelayIndex(ctx, db, today)
 	if err != nil {
@@ -327,7 +326,7 @@ func parseGTFSRTTrip(tripID, serviceID string, direction int32) (gtfsRTTrip, gtf
 func canonicalGTFSRTSubroute(tdxUID string, direction uint8) (string, uint8) {
 	city := ""
 	if len(tdxUID) >= 3 {
-		city = citymap2[tdxUID[:3]]
+		city = _citymap2[tdxUID[:3]]
 	}
 	return shared.CanonicalSubroute(city, tdxUID, direction)
 }
@@ -598,7 +597,7 @@ func marshalGTFSRTFeed(entities []*gtfs.FeedEntity, now time.Time) ([]byte, erro
 	}
 	payload, err := proto.Marshal(feed)
 	if err != nil {
-		return nil, fmt.Errorf("gtfs-rt: marshal feed: %w", err)
+		return nil, _oops.Wrapf(err, "gtfs-rt: marshal feed")
 	}
 	return payload, nil
 }
@@ -610,8 +609,8 @@ func marshalGTFSRTFeed(entities []*gtfs.FeedEntity, now time.Time) ([]byte, erro
 func (b *gtfsRTBuilder) readDailyTimetables(ctx context.Context, subRouteUIDs []string) (map[string]*models.Bus_DailyTimetables, error) {
 	client := b.rc
 	out := make(map[string]*models.Bus_DailyTimetables, len(subRouteUIDs))
-	for start := 0; start < len(subRouteUIDs); start += gtfsRTMGetBatch {
-		end := min(start+gtfsRTMGetBatch, len(subRouteUIDs))
+	for start := 0; start < len(subRouteUIDs); start += _gtfsRTMGetBatch {
+		end := min(start+_gtfsRTMGetBatch, len(subRouteUIDs))
 		batch := subRouteUIDs[start:end]
 		keys := make([]string, len(batch))
 		for index, uid := range batch {
@@ -619,7 +618,7 @@ func (b *gtfsRTBuilder) readDailyTimetables(ctx context.Context, subRouteUIDs []
 		}
 		values, err := client.MGet(ctx, keys...).Result()
 		if err != nil {
-			return nil, fmt.Errorf("gtfs-rt: read daily timetables: %w", err)
+			return nil, _oops.Wrapf(err, "gtfs-rt: read daily timetables")
 		}
 		for index, value := range values {
 			text, ok := value.(string)

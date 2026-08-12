@@ -40,36 +40,36 @@ import (
 // fails that city's tick outright: there is no TDX ETA fetched for it to fall
 // back to.
 
-const dataTaipeiBlobBase = "https://tcgbusfs.blob.core.windows.net/blobbus/"
-const dataTaipeiNTPCBusBase = "https://tcgbusfs.blob.core.windows.net/ntpcbus/"
+const _dataTaipeiBlobBase = "https://tcgbusfs.blob.core.windows.net/blobbus/"
+const _dataTaipeiNTPCBusBase = "https://tcgbusfs.blob.core.windows.net/ntpcbus/"
 
-// dataTaipeiCity is the only city GetSpecTimeTable — the daily timetable feed
+// _dataTaipeiCity is the only city GetSpecTimeTable — the daily timetable feed
 // landed in datataipei_static.go — can join to; New Taipei's blob does not
 // publish that endpoint at all. The live feeds in this file are broader and
 // use dataTaipeiDynamicCities instead.
-const dataTaipeiCity = "Taipei"
+const _dataTaipeiCity = "Taipei"
 
-// dataTaipeiUIDPrefix turns a bare Data.taipei number into a Taipei TDX UID,
+// _dataTaipeiUIDPrefix turns a bare Data.taipei number into a Taipei TDX UID,
 // used by the Taipei-only daily timetable landing (datataipei_static.go). The
 // live feeds in this file carry their own per-city prefix instead
 // (dataTaipeiDynamicCities).
-const dataTaipeiUIDPrefix = "TPE"
+const _dataTaipeiUIDPrefix = "TPE"
 
-// dataTaipeiDynamicCities are the cities Data.taipei publishes live vehicle
+// _dataTaipeiDynamicCities are the cities Data.taipei publishes live vehicle
 // position, stop events, seat crowding, and estimated arrivals for. Verified
 // by scripts/probe-datataipei-ids.py (2026-08-07): every RouteID the live
 // GetEstimateTime feed publishes resolves to a bus_static.route_uid under the
 // listed prefix for both cities (100%), and 96-98% of StopID to a
 // bus_station_stop_map.stop_uid.
-var dataTaipeiDynamicCities = map[string]struct {
+var _dataTaipeiDynamicCities = map[string]struct {
 	base   string
 	prefix string
 }{
-	"Taipei":    {base: dataTaipeiBlobBase, prefix: dataTaipeiUIDPrefix},
-	"NewTaipei": {base: dataTaipeiNTPCBusBase, prefix: "NWT"},
+	"Taipei":    {base: _dataTaipeiBlobBase, prefix: _dataTaipeiUIDPrefix},
+	"NewTaipei": {base: _dataTaipeiNTPCBusBase, prefix: "NWT"},
 }
 
-const dataTaipeiTimeout = 10 * time.Second
+const _dataTaipeiTimeout = 10 * time.Second
 
 // dataTaipeiBus is one GetBusData element: a vehicle's current position.
 // Every numeric is delivered as a string, including the coordinates.
@@ -124,13 +124,13 @@ type dataTaipeiFeed struct {
 	estimateRows []dataTaipeiEstimate
 }
 
-// dataTaipeiClients are shared across ticks for connection reuse, the same
+// _dataTaipeiClients are shared across ticks for connection reuse, the same
 // shape trtcClient has, one per dataTaipeiDynamicCities entry; per-tick
 // deadlines come from the live runner's context.
-var dataTaipeiClients = func() map[string]*resty.Client {
-	clients := make(map[string]*resty.Client, len(dataTaipeiDynamicCities))
-	for city, cfg := range dataTaipeiDynamicCities {
-		clients[city] = resty.New().SetBaseURL(cfg.base).SetTimeout(dataTaipeiTimeout)
+var _dataTaipeiClients = func() map[string]*resty.Client {
+	clients := make(map[string]*resty.Client, len(_dataTaipeiDynamicCities))
+	for city, cfg := range _dataTaipeiDynamicCities {
+		clients[city] = resty.New().SetBaseURL(cfg.base).SetTimeout(_dataTaipeiTimeout)
 	}
 	return clients
 }()
@@ -142,9 +142,9 @@ var _ etaSource = (*dataTaipeiFeed)(nil)
 // Callers only ever pass a listed city (busEta, ingestor.go's daily timetable
 // landing), so an unlisted one is not defended against here.
 func newDataTaipeiFeed(city string) *dataTaipeiFeed {
-	cfg := dataTaipeiDynamicCities[city]
+	cfg := _dataTaipeiDynamicCities[city]
 	return &dataTaipeiFeed{
-		client: dataTaipeiClients[city],
+		client: _dataTaipeiClients[city],
 		prefix: cfg.prefix,
 		etag:   make(map[string]string, 4),
 	}
@@ -169,14 +169,14 @@ func (f *dataTaipeiFeed) getEnvelope(ctx context.Context, name string, out any) 
 		return false, nil
 	}
 	if resp.StatusCode() != http.StatusOK {
-		return false, fmt.Errorf("%s: HTTP %d", name, resp.StatusCode())
+		return false, _oops.With("name", name).With("status_code", resp.StatusCode()).Errorf("HTTP")
 	}
 	body, err := gunzipIfCompressed(resp.Body())
 	if err != nil {
-		return false, fmt.Errorf("%s: %w", name, err)
+		return false, _oops.With("dataset", name).Wrapf(err, "Data.taipei resource")
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return false, fmt.Errorf("%s: %w", name, err)
+		return false, _oops.With("dataset", name).Wrapf(err, "Data.taipei resource")
 	}
 	f.mu.Lock()
 	f.etag[name] = resp.Header().Get("ETag")
@@ -196,7 +196,7 @@ func (f *dataTaipeiFeed) getRows(ctx context.Context, name string, out any) (boo
 		return false, err
 	}
 	if err := json.Unmarshal(envelope.BusInfo, out); err != nil {
-		return false, fmt.Errorf("%s: %w", name, err)
+		return false, _oops.With("dataset", name).Wrapf(err, "Data.taipei resource")
 	}
 	return true, nil
 }
@@ -430,7 +430,7 @@ func dataTaipeiEstimateDirection(goBack string) uint8 {
 	case "1":
 		return 1
 	default:
-		return busEtaDirectionUnknown
+		return _busEtaDirectionUnknown
 	}
 }
 
@@ -469,10 +469,11 @@ func (j *busLiveJob) overlayVehicles(ctx context.Context, city string, tdx []raw
 	}
 	fresh, err := feed.positions(ctx)
 	if err != nil {
-		zap.S().Warnw(fmt.Sprintf("fetch failed; keeping TDX positions: %v", err),
+		zap.S().Warnw("fetch failed; keeping TDX positions",
 			"component", "datataipei",
 			"action", "positions",
 			"city", city,
+			"err", err,
 		)
 		return tdx
 	}

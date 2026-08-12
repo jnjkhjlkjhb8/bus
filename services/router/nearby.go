@@ -14,23 +14,23 @@ import (
 )
 
 const (
-	defaultNearbyRadius = 670
-	maxNearbyRadius     = 5000
-	defaultNearbyLimit  = 80
+	_defaultNearbyRadius = 670
+	_maxNearbyRadius     = 5000
+	_defaultNearbyLimit  = 80
 	// Radii are snapped up to this many metres so viewport-derived values share
-	// cache entries; maxNearbyRadius is a multiple of it, so snapping can never
+	// cache entries; _maxNearbyRadius is a multiple of it, so snapping can never
 	// push a valid radius past the maximum.
-	nearbyRadiusBucket = 100
+	_nearbyRadiusBucket = 100
 )
 
 const (
 	// Station positions only change at the 03:30 load, so the bound here is
 	// staleness tolerance rather than correctness.
-	nearbyCacheTTL = 10 * time.Minute
+	_nearbyCacheTTL = 10 * time.Minute
 	// Keys are coordinate cells, so a panning client mints a new one per
 	// settled camera position: the cache has to be capped or it grows without
 	// bound inside the router's 230 MiB heap.
-	nearbyCacheMaxEntries = 128
+	_nearbyCacheMaxEntries = 128
 )
 
 var (
@@ -47,13 +47,13 @@ type NearbyMode int32
 
 const (
 	NearbyBus NearbyMode = iota + 1
-	nearbyBike
-	nearbyMRT
-	nearbyTRA
-	nearbyTHSR
+	_nearbyBike
+	_nearbyMRT
+	_nearbyTRA
+	_nearbyTHSR
 )
 
-var AllNearbyModes = [...]NearbyMode{NearbyBus, nearbyBike, nearbyMRT, nearbyTRA, nearbyTHSR}
+var AllNearbyModes = [...]NearbyMode{NearbyBus, _nearbyBike, _nearbyMRT, _nearbyTRA, _nearbyTHSR}
 
 type NearbyQuery struct {
 	Origin       GeoPoint
@@ -139,11 +139,11 @@ func (d *NearbyDiscovery) cacheResponse(key string, response *pb.RespNear) {
 	if d.cache == nil {
 		return
 	}
-	if d.cacheCount >= nearbyCacheMaxEntries {
+	if d.cacheCount >= _nearbyCacheMaxEntries {
 		d.cache, d.cacheCount = NewTTLCache(), 0
 	}
 	d.cacheCount++
-	d.cache.set(key, data, nearbyCacheTTL)
+	d.cache.set(key, data, _nearbyCacheTTL)
 }
 
 func receiveNearbyModeResult(ctx context.Context, results <-chan nearbyModeResult) (nearbyModeResult, error) {
@@ -161,28 +161,28 @@ func receiveNearbyModeResult(ctx context.Context, results <-chan nearbyModeResul
 func validateNearbyQuery(query NearbyQuery) (NearbyQuery, error) {
 	if math.IsNaN(query.Origin.Lon) || math.IsInf(query.Origin.Lon, 0) ||
 		query.Origin.Lon < -180 || query.Origin.Lon > 180 {
-		return NearbyQuery{}, fmt.Errorf("%w: longitude must be finite and between -180 and 180", ErrInvalidNearbyQuery)
+		return NearbyQuery{}, _oops.Wrapf(ErrInvalidNearbyQuery, "longitude must be finite and between -180 and 180")
 	}
 	if math.IsNaN(query.Origin.Lat) || math.IsInf(query.Origin.Lat, 0) ||
 		query.Origin.Lat < -90 || query.Origin.Lat > 90 {
-		return NearbyQuery{}, fmt.Errorf("%w: latitude must be finite and between -90 and 90", ErrInvalidNearbyQuery)
+		return NearbyQuery{}, _oops.Wrapf(ErrInvalidNearbyQuery, "latitude must be finite and between -90 and 90")
 	}
 	if query.RadiusMeters == 0 {
-		query.RadiusMeters = defaultNearbyRadius
+		query.RadiusMeters = _defaultNearbyRadius
 	}
-	if query.RadiusMeters < 0 || query.RadiusMeters > maxNearbyRadius {
-		return NearbyQuery{}, fmt.Errorf("%w: radius must be zero or between 1 and %d metres", ErrInvalidNearbyQuery, maxNearbyRadius)
+	if query.RadiusMeters < 0 || query.RadiusMeters > _maxNearbyRadius {
+		return NearbyQuery{}, _oops.With("_max_nearby_radius", _maxNearbyRadius).Wrapf(ErrInvalidNearbyQuery, "radius must be zero or between 1 and metres")
 	}
 	if query.Limit <= 0 {
-		query.Limit = defaultNearbyLimit
+		query.Limit = _defaultNearbyLimit
 	}
 	// The cache key carries the radius, and the client derives its radius from
 	// the exact viewport (screen size × zoom), so an unrounded value mints a
 	// fresh key on nearly every cold start. Snapping up to the next 100 m
 	// collapses those into one entry and only ever widens the search, so the
 	// answer stays a superset of what was asked for.
-	query.RadiusMeters = (query.RadiusMeters + nearbyRadiusBucket - 1) /
-		nearbyRadiusBucket * nearbyRadiusBucket
+	query.RadiusMeters = (query.RadiusMeters + _nearbyRadiusBucket - 1) /
+		_nearbyRadiusBucket * _nearbyRadiusBucket
 	return query, nil
 }
 
@@ -221,11 +221,19 @@ func (d *NearbyDiscovery) Discover(ctx context.Context, query NearbyQuery) (*pb.
 // as any single mode errors, so a partial nearby list never reaches the client.
 func (d *NearbyDiscovery) findAll(ctx context.Context, query NearbyQuery) (map[NearbyMode][]NearbyCandidate, error) {
 	workerCtx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	// cancel unblocks any worker still waiting to send on results (e.g. after
+	// an early error return below); wg.Wait must run after it so both defers
+	// together guarantee every worker has actually exited before findAll
+	// returns, not just that it has been asked to.
+	defer wg.Wait()
 	defer cancel()
 
 	results := make(chan nearbyModeResult, len(AllNearbyModes))
 	for _, mode := range AllNearbyModes {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			candidates, err := d.store.Find(workerCtx, mode, query)
 			select {
 			case results <- nearbyModeResult{mode: mode, candidates: candidates, queryError: err}:
@@ -264,7 +272,7 @@ func (d *NearbyDiscovery) findAll(ctx context.Context, query NearbyQuery) (map[N
 // table service reuses the shared origin search, and the single-core osrm
 // container no longer has five of them contending for it.
 func (d *NearbyDiscovery) enrich(ctx context.Context, origin GeoPoint, byMode map[NearbyMode][]NearbyCandidate) (*pb.RespNear, error) {
-	points := make([]GeoPoint, 0, len(byMode)*defaultNearbyLimit)
+	points := make([]GeoPoint, 0, len(byMode)*_defaultNearbyLimit)
 	for _, mode := range AllNearbyModes {
 		for _, item := range byMode[mode] {
 			points = append(points, item.Point)
@@ -297,7 +305,9 @@ func (d *NearbyDiscovery) enrich(ctx context.Context, origin GeoPoint, byMode ma
 		if len(candidates) == 0 {
 			continue
 		}
-		appendNearbyResult(response, mode, nearbyStations(candidates, metrics[min(offset, len(metrics)):]))
+		if err := appendNearbyResult(response, mode, nearbyStations(candidates, metrics[min(offset, len(metrics)):])); err != nil {
+			return nil, err
+		}
 		offset += len(candidates)
 	}
 	return response, nil
@@ -327,23 +337,24 @@ func nearbyStations(candidates []NearbyCandidate, metrics []walkingMetric) []*pb
 	return stations
 }
 
-func appendNearbyResult(response *pb.RespNear, mode NearbyMode, stations []*pb.NearStation) {
+func appendNearbyResult(response *pb.RespNear, mode NearbyMode, stations []*pb.NearStation) error {
 	switch mode {
 	case NearbyBus:
 		for _, station := range stations {
 			response.NearBusStations[station.StationID] = &pb.ArrayNear{NearStations: []*pb.NearStation{station}}
 		}
-	case nearbyBike:
+	case _nearbyBike:
 		response.NearBikeStations = stations
-	case nearbyMRT:
+	case _nearbyMRT:
 		response.NearMrtStations = stations
-	case nearbyTRA:
+	case _nearbyTRA:
 		response.NearTraStations = stations
-	case nearbyTHSR:
+	case _nearbyTHSR:
 		response.NearThsrStations = stations
 	default:
-		panic(fmt.Sprintf("unknown nearby mode %d", mode))
+		return _oops.With("mode", mode).Errorf("unknown nearby mode")
 	}
+	return nil
 }
 
 func isContextError(err error) bool {

@@ -184,9 +184,9 @@ func TestBatchStopOffsets(t *testing.T) {
 		uid, from, to string
 		secs          int
 	}{
-		{whole, "S1", "S2", 90},
-		{whole, "S2", "S3", 150},
-		{holed, "S1", "S2", 90},
+		{uid: whole, from: "S1", to: "S2", secs: 90},
+		{uid: whole, from: "S2", to: "S3", secs: 150},
+		{uid: holed, from: "S1", to: "S2", secs: 90},
 	}
 	for _, s := range segments {
 		if _, err := pool.Exec(ctx, `

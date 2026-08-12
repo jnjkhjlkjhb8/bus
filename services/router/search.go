@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"sort"
@@ -20,39 +19,39 @@ import (
 )
 
 const (
-	maxSearchQueryRunes  = 128
-	searchRequestTimeout = 5 * time.Second
+	_maxSearchQueryRunes  = 128
+	_searchRequestTimeout = 5 * time.Second
 
-	// maxSearchCityRunes bounds the city filter. Values are TDX city codes
+	// _maxSearchCityRunes bounds the city filter. Values are TDX city codes
 	// ("Taipei", "HsinchuCounty"); anything longer is not one, and the cap
 	// keeps a caller from growing the response cache's keys without bound.
 	// An unknown-but-short code is passed through and simply matches
 	// nothing, which is the honest answer for a city we hold no rows for.
-	maxSearchCityRunes = 32
+	_maxSearchCityRunes = 32
 
-	// searchCacheTTL is how long a rendered response stays served from
+	// _searchCacheTTL is how long a rendered response stays served from
 	// memory. search_vector is rewritten once a day by the loader, so the
 	// underlying rows are static across any plausible session; the ceiling
 	// exists so a same-day reload is picked up without a restart.
-	searchCacheTTL = 10 * time.Minute
+	_searchCacheTTL = 10 * time.Minute
 
-	// searchCacheMaxEntries bounds the response cache. Keys are user query
+	// _searchCacheMaxEntries bounds the response cache. Keys are user query
 	// text, so the keyspace is unbounded and the cache must be too.
-	searchCacheMaxEntries = 500
+	_searchCacheMaxEntries = 500
 
-	// textSearchBranchCap bounds how many rows each UNION ALL branch in
-	// textSearchSQL may return before ranking/dedup, independent of the
+	// _textSearchBranchCap bounds how many rows each UNION ALL branch in
+	// _textSearchSQL may return before ranking/dedup, independent of the
 	// caller's requested result limit. This keeps every branch a capped,
 	// indexable scan instead of one unbounded all-fields OR predicate.
-	textSearchBranchCap = 200
+	_textSearchBranchCap = 200
 
-	// textSearchBranchScale sizes the per-branch cap relative to the
-	// caller's limit so small requests don't pull textSearchBranchCap rows
-	// per branch; it's clamped to textSearchBranchCap either way.
-	textSearchBranchScale = 5
+	// _textSearchBranchScale sizes the per-branch cap relative to the
+	// caller's limit so small requests don't pull _textSearchBranchCap rows
+	// per branch; it's clamped to _textSearchBranchCap either way.
+	_textSearchBranchScale = 5
 )
 
-// textSearchSQL splits exact, prefix/trigram, and contains matching into
+// _textSearchSQL splits exact, prefix/trigram, and contains matching into
 // separate capped UNION ALL branches instead of one all-fields OR predicate.
 // The exact branch (uid = $1) stays a single indexable equality predicate.
 // Each branch orders its candidates by the same relevance signal the outer
@@ -68,7 +67,7 @@ const (
 // would search the branch caps for the chosen city instead of searching
 // that city, and a city that placed no rows in the top $2 would come back
 // empty even when it holds hundreds.
-const textSearchSQL = `
+const _textSearchSQL = `
 SELECT type, uid, name, city, depart, destin, ST_Y(geom), ST_X(geom),
        CASE
          WHEN uid = $1 THEN 0
@@ -103,17 +102,17 @@ FROM (
 ) candidates
 ORDER BY rank, sim DESC, name ASC`
 
-// textSearchBranchLimit bounds the per-branch row cap in textSearchSQL. It
+// textSearchBranchLimit bounds the per-branch row cap in _textSearchSQL. It
 // scales with the caller's requested limit so small requests scan less, but
-// never exceeds textSearchBranchCap regardless of the requested limit.
+// never exceeds _textSearchBranchCap regardless of the requested limit.
 func textSearchBranchLimit(limit int) int {
 	if limit <= 0 {
 		return 0
 	}
-	if scaled := limit * textSearchBranchScale; scaled > 0 && scaled < textSearchBranchCap {
+	if scaled := limit * _textSearchBranchScale; scaled > 0 && scaled < _textSearchBranchCap {
 		return scaled
 	}
-	return textSearchBranchCap
+	return _textSearchBranchCap
 }
 
 type searchDB interface {
@@ -131,6 +130,97 @@ type searchResult struct {
 	Lon    *float64 `json:"lon"`
 }
 
+func HandleSearch(db searchDB) gin.HandlerFunc {
+	// One cache per handler, built when the routes are wired.
+	cache := NewBoundedTTLCache(_searchCacheMaxEntries)
+	return func(c *gin.Context) {
+		q := strings.TrimSpace(c.Query("q"))
+		if len(q) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "q required"})
+			return
+		}
+		if utf8.RuneCountInString(q) > _maxSearchQueryRunes {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "q too long"})
+			return
+		}
+		city := strings.TrimSpace(c.Query("city"))
+		if utf8.RuneCountInString(city) > _maxSearchCityRunes {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "city too long"})
+			return
+		}
+		limit := 20
+		if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 50 {
+			limit = l
+		}
+		key := searchCacheKey(q, city, limit)
+		if data, ok := cache.get(key); ok {
+			c.Data(http.StatusOK, "application/json; charset=utf-8", data)
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), _searchRequestTimeout)
+		defer cancel()
+		var trainResults []searchResult
+		// A train number is not a city-scoped entity — search_vector carries
+		// no city for tra_train/thsr_train rows — so a city filter excludes
+		// trains rather than trying to place them in one.
+		if isNumericQuery(q) && city == "" {
+			var err error
+			trainResults, err = trainNumberSearch(ctx, q, db)
+			if err != nil {
+				zap.S().Errorw("train number search failed", "component", "search", "err", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
+				return
+			}
+		}
+		textResults, err := textSearch(ctx, q, city, limit, db)
+		if err != nil {
+			zap.S().Errorw("error", "component", "search", "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
+			return
+		}
+		results := mergeSearchResults(limit, trainResults, textResults)
+		// semantic fallback only when text search found nothing — the embedQuery
+		// call + vector scan are expensive; skip them whenever trigram/ILIKE
+		// already matched. Loosen this if typo-tolerance suffers.
+		//
+		// A city filter also skips it: the HNSW index orders by embedding
+		// distance alone, so honouring the filter would mean post-filtering
+		// an approximate neighbour set — which returns fewer rows the more
+		// selective the city is, exactly backwards.
+		if len(results) == 0 && city == "" && shouldUseVector(q) {
+			// the fallback is a bonus on an already-empty result, so a
+			// failing embedder or vector scan degrades to the empty
+			// result instead of turning "no match" into a 500.
+			vectorResults, err := vectorSearch(ctx, q, limit, db)
+			if err != nil {
+				zap.S().Errorw("vector search failed", "component", "search", "err", err)
+			} else {
+				results = mergeSearchResults(limit, results, vectorResults)
+			}
+		}
+		// Expansion can only add rows, and the response is already capped at
+		// limit, so a full page has no room for them — running the join
+		// would spend a second round trip on results that get dropped.
+		if len(results) < limit {
+			expandedResults, err := expandStationRoutes(ctx, results, db)
+			if err != nil {
+				zap.S().Errorw("route expansion failed", "component", "search", "err", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
+				return
+			}
+			results = mergeSearchResults(limit, expandedResults)
+		}
+		body, err := json.Marshal(gin.H{"results": results})
+		if err != nil {
+			zap.S().Errorw("response encode failed", "component", "search", "err", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
+			return
+		}
+		cache.set(key, body, _searchCacheTTL)
+		c.Data(http.StatusOK, "application/json; charset=utf-8", body)
+	}
+}
+
 func toVecLiteral(v []float32) string {
 	parts := make([]string, len(v))
 	for i, f := range v {
@@ -143,20 +233,20 @@ func embeddingURL() string {
 	return strings.TrimSpace(os.Getenv("EMBED_URL"))
 }
 
-// embedClient is process-wide so every search reuses one connection pool. A
+// _embedClient is process-wide so every search reuses one connection pool. A
 // per-call resty.New() builds its own http.Transport, so each query opened a
 // fresh connection and left an unreachable pool behind for the GC. Per-call
 // deadlines come from the request context, not a client timeout.
-var embedClient = resty.New().SetHeader("Content-Type", "application/json")
+var _embedClient = resty.New().SetHeader("Content-Type", "application/json")
 
 func embedQuery(ctx context.Context, text string) ([]float32, error) {
 	url := embeddingURL()
 	if url == "" {
-		return nil, fmt.Errorf("embedding disabled")
+		return nil, _oops.Errorf("embedding disabled")
 	}
-	ctx, cancel := context.WithTimeout(ctx, searchRequestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, _searchRequestTimeout)
 	defer cancel()
-	resp, err := embedClient.R().
+	resp, err := _embedClient.R().
 		SetContext(ctx).
 		SetBody(map[string]any{
 			"model": "qwen3-embedding:0.6b",
@@ -170,13 +260,13 @@ func embedQuery(ctx context.Context, text string) ([]float32, error) {
 		return nil, err
 	}
 	if resp.StatusCode() != 200 {
-		return nil, fmt.Errorf("embed %d: %s", resp.StatusCode(), resp.Body())
+		return nil, _oops.With("status_code", resp.StatusCode()).With("body", resp.Body()).Errorf("embed")
 	}
 	var result struct {
 		Embeddings [][]float32 `json:"embeddings"`
 	}
 	if err := json.Unmarshal(resp.Body(), &result); err != nil {
-		return nil, fmt.Errorf("embed parse: %w", err)
+		return nil, _oops.Wrapf(err, "embed parse")
 	}
 	if len(result.Embeddings) == 0 {
 		return nil, errors.New("embed parse: response carried no embedding")
@@ -228,7 +318,7 @@ type textSearchCandidate struct {
 }
 
 func textSearch(ctx context.Context, q, city string, limit int, db searchDB) ([]searchResult, error) {
-	rows, err := db.Query(ctx, textSearchSQL, q, textSearchBranchLimit(limit), city)
+	rows, err := db.Query(ctx, _textSearchSQL, q, textSearchBranchLimit(limit), city)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +382,7 @@ func mergeSearchResults(limit int, groups ...[]searchResult) []searchResult {
 	if limit <= 0 {
 		return nil
 	}
-	seen := make(map[string]bool)
+	seen := make(map[string]bool, limit)
 	merged := make([]searchResult, 0, limit)
 	for _, group := range groups {
 		for _, r := range group {
@@ -312,7 +402,7 @@ func mergeSearchResults(limit int, groups ...[]searchResult) []searchResult {
 
 func expandStationRoutes(ctx context.Context, primary []searchResult, db searchDB) ([]searchResult, error) {
 	var groupUIDs []string
-	seen := make(map[string]bool)
+	seen := make(map[string]bool, len(primary))
 	for _, r := range primary {
 		seen[searchResultKey(r)] = true
 		if r.Type == "bus_station" {
@@ -402,95 +492,4 @@ func trainNumberSearch(ctx context.Context, q string, db searchDB) ([]searchResu
 // collide with another.
 func searchCacheKey(q, city string, limit int) string {
 	return q + "\x00" + city + "\x00" + strconv.Itoa(limit)
-}
-
-func HandleSearch(db searchDB) gin.HandlerFunc {
-	// One cache per handler, built when the routes are wired.
-	cache := NewBoundedTTLCache(searchCacheMaxEntries)
-	return func(c *gin.Context) {
-		q := strings.TrimSpace(c.Query("q"))
-		if len(q) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "q required"})
-			return
-		}
-		if utf8.RuneCountInString(q) > maxSearchQueryRunes {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "q too long"})
-			return
-		}
-		city := strings.TrimSpace(c.Query("city"))
-		if utf8.RuneCountInString(city) > maxSearchCityRunes {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "city too long"})
-			return
-		}
-		limit := 20
-		if l, err := strconv.Atoi(c.Query("limit")); err == nil && l > 0 && l <= 50 {
-			limit = l
-		}
-		key := searchCacheKey(q, city, limit)
-		if data, ok := cache.get(key); ok {
-			c.Data(http.StatusOK, "application/json; charset=utf-8", data)
-			return
-		}
-		ctx, cancel := context.WithTimeout(c.Request.Context(), searchRequestTimeout)
-		defer cancel()
-		var trainResults []searchResult
-		// A train number is not a city-scoped entity — search_vector carries
-		// no city for tra_train/thsr_train rows — so a city filter excludes
-		// trains rather than trying to place them in one.
-		if isNumericQuery(q) && city == "" {
-			var err error
-			trainResults, err = trainNumberSearch(ctx, q, db)
-			if err != nil {
-				zap.S().Errorw(fmt.Sprintf("train number search failed: %v", err), "component", "search")
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
-				return
-			}
-		}
-		textResults, err := textSearch(ctx, q, city, limit, db)
-		if err != nil {
-			zap.S().Errorw(fmt.Sprintf("error: %v", err), "component", "search")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
-			return
-		}
-		results := mergeSearchResults(limit, trainResults, textResults)
-		// semantic fallback only when text search found nothing — the embedQuery
-		// call + vector scan are expensive; skip them whenever trigram/ILIKE
-		// already matched. Loosen this if typo-tolerance suffers.
-		//
-		// A city filter also skips it: the HNSW index orders by embedding
-		// distance alone, so honouring the filter would mean post-filtering
-		// an approximate neighbour set — which returns fewer rows the more
-		// selective the city is, exactly backwards.
-		if len(results) == 0 && city == "" && shouldUseVector(q) {
-			// the fallback is a bonus on an already-empty result, so a
-			// failing embedder or vector scan degrades to the empty
-			// result instead of turning "no match" into a 500.
-			vectorResults, err := vectorSearch(ctx, q, limit, db)
-			if err != nil {
-				zap.S().Errorw(fmt.Sprintf("vector search failed: %v", err), "component", "search")
-			} else {
-				results = mergeSearchResults(limit, results, vectorResults)
-			}
-		}
-		// Expansion can only add rows, and the response is already capped at
-		// limit, so a full page has no room for them — running the join
-		// would spend a second round trip on results that get dropped.
-		if len(results) < limit {
-			expandedResults, err := expandStationRoutes(ctx, results, db)
-			if err != nil {
-				zap.S().Errorw(fmt.Sprintf("route expansion failed: %v", err), "component", "search")
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
-				return
-			}
-			results = mergeSearchResults(limit, expandedResults)
-		}
-		body, err := json.Marshal(gin.H{"results": results})
-		if err != nil {
-			zap.S().Errorw(fmt.Sprintf("response encode failed: %v", err), "component", "search")
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "search failed"})
-			return
-		}
-		cache.set(key, body, searchCacheTTL)
-		c.Data(http.StatusOK, "application/json; charset=utf-8", body)
-	}
 }

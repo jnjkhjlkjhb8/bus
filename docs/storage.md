@@ -12,6 +12,10 @@ made by claude
   - 公車站點資訊與座標
 - `bus_station_stop_map`
   - 站點與路線對應（每次 `loadBus` 前先刪除舊資料再重新插入，避免殘留已刪路線的停靠點）
+- `bus_stop_alias`（migration `2026-08-08-bus-stop-alias.sql`）
+  - 聯營路線其他業者的站牌 UID 別名。同一實體站牌在每家業者的 StopOfRoute 清單中有不同 StopID，而 N1 預估到站是以「跑該班次的業者」的 StopID 為鍵；loader 只保留第一份清單做站序（`bus_station_stop_map`），其餘變體的 StopUID 以 `stop_sequence` 對位寫進本表。欄位：`sub_route_uid, direction, alias_stop_uid, stop_uid, updated_at`；PK `(sub_route_uid, direction, alias_stop_uid)`。與站序同一交易內分割替換（先 `DELETE ... WHERE sub_route_uid LIKE prefix || '%'`）。ETA join（`etaForStop`）先查本站 UID，查不到才走別名
+- `bus_display_stop_map`（migration `2026-08-09-bus-display-stop-of-route.sql`）
+  - TDX `DisplayStopOfRoute`：整條路線攤平成一條線性站序（307 經西藏路／經莒光路合成一份），供單一頁面顯示整條路線用。欄位：`route_uid, direction, stop_uid, stop_sequence, station_id, stop_name, updated_at`；PK `(route_uid, direction, stop_uid)`。由獨立 loader `loadBusDisplayStops` 以縣市前綴分割替換寫入（**不**併入 bus city snapshot：snapshot 要求所有相關 partition 同一 ingest cycle，而這份資料目前還沒有讀者）。InterCity 無此端點（404），故不落地
 - `bus_schedule`
   - 班表與發車頻率；分割替換（partition-replace）：`saveschedule` 在單一交易內先 `DELETE FROM bus_schedule WHERE sub_route_uid LIKE citymap[city] || '%'`，再從 `raw_tdx.bus_schedule` 展開後純 `INSERT`（無 DISTINCT ON、無 ON CONFLICT）；`updated_at` 蓋 NOW()。無自然鍵唯一約束——環狀路線同一趟重複經過同站會產生相同自然鍵，這些列刻意全部保留
 
@@ -70,11 +74,11 @@ made by claude
   - ETA 預測與 GTFS 匯出都以 `busPatternSQL` 沿站序累加成各站的起點偏移量；缺任一站間的路線方向整條不採用
   - 取代 `bus_travel_avg`（2026-07-31 DROP）：後者記的是從發車到各站的累計時間，每筆觀測都要對上 `bus_schedule` 的班次才算數，對不上就丟掉
 
-### vector
+### search（原 vector）
 - `search_vector`
-  - 欄位：`type`, `uid`, `name`, `city`, `depart`, `destin`, `geom`, `embedding vector(1024)`, `updated_at`
+  - 欄位：`type`, `uid`, `name`, `alias`, `city`, `depart`, `destin`, `geom`, `updated_at`
   - 唯一鍵：`(type, uid, city)`
-  - `embedding` 欄位使用 pgvector，HNSW 索引（cosine），取代舊的 `blob bytea`
+  - `alias` 存 `name` 的讀音與簡寫（全拼、拼音首字母、無聲調注音、手工簡寫如 `北車`），由 loader 的 changetovector 階段以 `searchAlias`（`services/functions/search_alias.go`）產生；router 的 `_textSearchSQL` 以與 `name` 相同的 trigram 述詞比對，排序層級一律低於 `name`。migration 之後、下一次 nightly load 之前為 NULL，述詞視同不命中
   - type 值：`bus_route`, `bus_station`, `bike_station`, `mrt_station`, `tra_station`, `thsr_station`, `tra_train`, `thsr_train`
 
 ## PowerSync（離線鏡像）
@@ -84,7 +88,7 @@ made by claude
 目前同步表：
 - `mrt_journey_matrix`（捷運票價/時間矩陣，`MrtRepository.journeyMatrix`）
 - `mrt_schedule`（捷運首末班車，`MrtRepository.schedule`）
-- `search_vector`（離線搜尋，`SearchRepository._searchLocal`；只同步 `type/uid/name/city/depart/destin`，`embedding`/`geom` 不同步——PowerSync column type 只有 text/integer/real，且裝置端不需要向量搜尋）
+- `search_vector`（離線搜尋，`SearchRepository._searchLocal`；只同步 `type/uid/name/city/depart/destin`，`geom` 不同步——PowerSync column type 只有 text/integer/real）
 - `tra_stations` / `thsr_stations`（台鐵/高鐵站名→station_id 查詢，`TraRepository.stationId`/`ThsrRepository.stationId`；只同步 `station_id` 與 `name AS station_name`，不含 `city`/`geom`）
 
 對應的 Postgres publication 設定見 `migrations/2026-07-17-powersync-publication-schema-scoped.sql`（取代 `migrations/2026-07-14-powersync-publication-add-synced-tables.sql` 的 `public` 硬編）。
@@ -115,6 +119,7 @@ made by claude
 | `bus_station_stop_map` | `idx_bssm_station_name` | `(station_name)` |
 | `bus_eta_history` | `idx_eta_history_recorded` | `(recorded_at)` |
 | `search_vector` | `idx_search_vector_name_trgm` | `USING gin (name gin_trgm_ops)`，需 `pg_trgm` |
+| `search_vector` | `idx_search_vector_alias_trgm` | `USING gin (alias gin_trgm_ops)`，需 `pg_trgm` |
 
 ## 常見讀寫行為
 - `bus_static` 以 `sub_route_uid` 查詢 protobuf bytes；票價（`Bus_Fare`）內含於此 protobuf

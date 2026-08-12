@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"fmt"
 	"math/big"
 	"net/http"
 	"os"
@@ -30,16 +29,16 @@ import (
 // environment is forced to hold Apple credentials to run the tracker.
 
 const (
-	apnsProduction = "https://api.push.apple.com"
-	apnsSandbox    = "https://api.sandbox.push.apple.com"
-	// apnsTokenTTL refreshes the provider JWT well inside Apple's one-hour
+	_apnsProduction = "https://api.push.apple.com"
+	_apnsSandbox    = "https://api.sandbox.push.apple.com"
+	// _apnsTokenTTL refreshes the provider JWT well inside Apple's one-hour
 	// ceiling. Apple rejects a token younger than 20 minutes on refresh, so this
 	// sits between the two bounds rather than near either.
-	apnsTokenTTL = 45 * time.Minute
-	// apnsTimeout bounds one push. A station hop is the unit of work here, and a
+	_apnsTokenTTL = 45 * time.Minute
+	// _apnsTimeout bounds one push. A station hop is the unit of work here, and a
 	// push that has not landed within this is better dropped than queued behind
 	// the next hop's.
-	apnsTimeout = 10 * time.Second
+	_apnsTimeout = 10 * time.Second
 )
 
 // APNSSender delivers one Live Activity update to one activity push token.
@@ -82,14 +81,14 @@ func NewAPNSSender() (APNSSender, error) {
 	}
 	key, err := parseP8(p8)
 	if err != nil {
-		return nil, fmt.Errorf("parse APNS_P8: %w", err)
+		return nil, _oops.Wrapf(err, "parse APNS_P8")
 	}
-	host := apnsProduction
+	host := _apnsProduction
 	if os.Getenv("APNS_SANDBOX") == "1" {
-		host = apnsSandbox
+		host = _apnsSandbox
 	}
 	return &apnsSender{
-		client: &http.Client{Timeout: apnsTimeout},
+		client: &http.Client{Timeout: _apnsTimeout},
 		host:   host,
 		// Live Activity pushes go to the app's bundle id with this suffix; the
 		// plain topic addresses the app itself and is rejected for this push type.
@@ -133,7 +132,7 @@ func (s *apnsSender) SendLiveActivity(ctx context.Context, token string, payload
 	default:
 		var body bytes.Buffer
 		_, _ = body.ReadFrom(response.Body)
-		return fmt.Errorf("apns %d: %s", response.StatusCode, strings.TrimSpace(body.String()))
+		return _oops.With("status_code", response.StatusCode).With("string", strings.TrimSpace(body.String())).Errorf("apns")
 	}
 }
 
@@ -149,7 +148,7 @@ func (s *apnsSender) providerToken() (string, error) {
 	if s.nowFunc != nil {
 		now = s.nowFunc()
 	}
-	if s.token != "" && now.Sub(s.tokenAge) < apnsTokenTTL {
+	if s.token != "" && now.Sub(s.tokenAge) < _apnsTokenTTL {
 		return s.token, nil
 	}
 	token, err := signES256(s.key, map[string]string{"alg": "ES256", "kid": s.keyID}, map[string]any{
@@ -177,7 +176,7 @@ func parseP8(value string) (*ecdsa.PrivateKey, error) {
 	}
 	key, ok := parsed.(*ecdsa.PrivateKey)
 	if !ok {
-		return nil, fmt.Errorf("want an EC key, got %T", parsed)
+		return nil, _oops.With("parsed", parsed).Errorf("want an EC key")
 	}
 	return key, nil
 }

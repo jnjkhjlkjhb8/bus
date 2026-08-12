@@ -250,6 +250,26 @@ void main() {
     test('empty routes yields empty list', () {
       expect(_decoder.decodeStationEta(respWith(const []), now: _now), isEmpty);
     });
+
+    test('carries IsLastBus and keeps it, with crowding, through decay', () {
+      final resp = respWith([
+        Bus_StopEstimate(
+          stopUid: 'S1',
+          routeName: '9999',
+          direction: 0,
+          stopStatus: 0,
+          arrivalUnix: Int64(_nowUnix + 300),
+          crowdLevel: BusCrowdLevel.BUS_CROWD_CROWDED,
+          isLastBus: true,
+        ),
+      ]);
+      final arrival = _decoder.decodeStationEta(resp, now: _now).single;
+      expect(arrival.isLastBus, isTrue);
+      final later = arrival.decayed(_now.add(const Duration(minutes: 1)));
+      expect(later.estimateSeconds, 240);
+      expect(later.isLastBus, isTrue);
+      expect(later.crowdLevel, CrowdLevel.crowded);
+    });
   });
 
   group('decodeStationMembers', () {

@@ -25,7 +25,7 @@ func enrichWalkSections(ctx context.Context, osrmClient *resty.Client, refs []ma
 		return
 	}
 	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(maasOSRMConcurrency)
+	group.SetLimit(_maasOSRMConcurrency)
 	for _, ref := range refs {
 		if !isWalkSection(ref.source) {
 			continue
@@ -183,22 +183,22 @@ func isBusMode(mode string) bool {
 	return strings.EqualFold(mode, "bus") || strings.EqualFold(mode, "HighwayBus")
 }
 
-// maasTransitPathConcurrency bounds concurrent rail_shapes lookups the same
-// way maasOSRMConcurrency bounds OSRM lookups in enrichWalkSections.
-const maasTransitPathConcurrency = 4
+// _maasTransitPathConcurrency bounds concurrent rail_shapes lookups the same
+// way _maasOSRMConcurrency bounds OSRM lookups in enrichWalkSections.
+const _maasTransitPathConcurrency = 4
 
-// railShapeSnapMeters is the maximum distance (in meters) a section's
+// _railShapeSnapMeters is the maximum distance (in meters) a section's
 // departure/arrival stop may sit from a candidate line before that line is
 // rejected as a match. 500m tolerates the walk-in access point TDX sometimes
 // reports for a station without matching an unrelated line.
-const railShapeSnapMeters = 500.0
+const _railShapeSnapMeters = 500.0
 
-// railShapeSimplifyTolerance is the ST_SimplifyPreserveTopology tolerance (in
+// _railShapeSimplifyTolerance is the ST_SimplifyPreserveTopology tolerance (in
 // degrees) applied to a clipped line before it is returned, trimming
 // coordinate density without visibly changing the drawn path.
-const railShapeSimplifyTolerance = 0.0001
+const _railShapeSimplifyTolerance = 0.0001
 
-// transitPathClipSQL finds the rail_shapes line that best matches one stop
+// _transitPathClipSQL finds the rail_shapes line that best matches one stop
 // pair for a given mode and returns it clipped between the two stops.
 //
 // Matching is purely geometric (MaaS sections carry no LineID): "best" is the
@@ -207,12 +207,12 @@ const railShapeSimplifyTolerance = 0.0001
 // candidate merged geometry is chosen, its individual components are dumped
 // (ST_Dump) so ST_LineLocatePoint/ST_LineSubstring — which require a simple
 // LINESTRING — operate on the one component whose distance to both stops is
-// within railShapeSnapMeters; a shape whose components each miss one stop
+// within _railShapeSnapMeters; a shape whose components each miss one stop
 // (no single component holds both) yields no row, so the caller falls back to
 // a straight line for that pair. ST_LineLocatePoint fractions are ordered
 // low-to-high before ST_LineSubstring, since the stop pair's travel direction
 // does not necessarily match the shape's digitized direction.
-const transitPathClipSQL = `
+const _transitPathClipSQL = `
 WITH candidates AS (
 	SELECT ST_LineMerge(geom) AS merged
 	FROM rail_shapes
@@ -307,32 +307,32 @@ func appendTransitSegment(path []*pb.Location, seg []*pb.Location) []*pb.Locatio
 
 // parseWKTLineString parses a PostGIS ST_AsText LINESTRING result into
 // Locations. It never encounters MULTILINESTRING or any other geometry type
-// since transitPathClipSQL always clips a single dumped component.
+// since _transitPathClipSQL always clips a single dumped component.
 func parseWKTLineString(wkt string) ([]*pb.Location, error) {
 	wkt = strings.TrimSpace(wkt)
 	open := strings.IndexByte(wkt, '(')
 	closeIdx := strings.LastIndexByte(wkt, ')')
 	if !strings.HasPrefix(strings.ToUpper(wkt), "LINESTRING") || open < 0 || closeIdx <= open {
-		return nil, fmt.Errorf("not a LINESTRING: %q", wkt)
+		return nil, _oops.With("wkt", wkt).Errorf("not a LINESTRING")
 	}
 	body := wkt[open+1 : closeIdx]
 	if strings.TrimSpace(body) == "" {
-		return nil, fmt.Errorf("empty LINESTRING: %q", wkt)
+		return nil, _oops.With("wkt", wkt).Errorf("empty LINESTRING")
 	}
 	pairs := strings.Split(body, ",")
 	points := make([]*pb.Location, 0, len(pairs))
 	for _, pair := range pairs {
 		fields := strings.Fields(strings.TrimSpace(pair))
 		if len(fields) < 2 {
-			return nil, fmt.Errorf("malformed coordinate %q in %q", pair, wkt)
+			return nil, _oops.With("pair", pair).With("wkt", wkt).Errorf("malformed coordinate")
 		}
 		lng, err := strconv.ParseFloat(fields[0], 64)
 		if err != nil {
-			return nil, fmt.Errorf("parse lng %q: %w", fields[0], err)
+			return nil, _oops.With("fields", fields[0]).Wrapf(err, "parse lng")
 		}
 		lat, err := strconv.ParseFloat(fields[1], 64)
 		if err != nil {
-			return nil, fmt.Errorf("parse lat %q: %w", fields[1], err)
+			return nil, _oops.With("fields", fields[1]).Wrapf(err, "parse lat")
 		}
 		points = append(points, &pb.Location{Lat: lat, Lng: lng})
 	}
@@ -342,7 +342,7 @@ func parseWKTLineString(wkt string) ([]*pb.Location, error) {
 // clipRailShape looks up and clips the rail_shapes line best matching one
 // stop pair. ok is false whenever the enrichment does not apply: missing
 // coordinates, a query error, no candidate line, or every candidate's snap
-// distance exceeding railShapeSnapMeters. The caller falls back to a straight
+// distance exceeding _railShapeSnapMeters. The caller falls back to a straight
 // line between the two stops in every ok=false case.
 func clipRailShape(ctx context.Context, db maasDB, mode string, a, b transitStopPoint) ([]*pb.Location, bool) {
 	if db == nil {
@@ -351,8 +351,8 @@ func clipRailShape(ctx context.Context, db maasDB, mode string, a, b transitStop
 	if (a.lat == 0 && a.lng == 0) || (b.lat == 0 && b.lng == 0) {
 		return nil, false
 	}
-	rows, err := db.Query(ctx, transitPathClipSQL,
-		mode, a.lng, a.lat, b.lng, b.lat, railShapeSnapMeters, railShapeSimplifyTolerance)
+	rows, err := db.Query(ctx, _transitPathClipSQL,
+		mode, a.lng, a.lat, b.lng, b.lat, _railShapeSnapMeters, _railShapeSimplifyTolerance)
 	if err != nil {
 		zap.S().Warnw("query error",
 			"component", "maas",
@@ -426,7 +426,7 @@ func enrichTransitPaths(ctx context.Context, db maasDB, refs []maasSectionRef) {
 		return
 	}
 	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(maasTransitPathConcurrency)
+	group.SetLimit(_maasTransitPathConcurrency)
 	for _, ref := range refs {
 		mode := railShapeMode(ref.source.Transport.Mode)
 		if mode == "" {

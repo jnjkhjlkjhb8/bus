@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -17,10 +16,10 @@ import (
 // be compared tier by tier. Values match the source column of
 // bus_eta_prediction_error.
 const (
-	sourceTDX         = "tdx"
-	sourcePropagation = "propagation"
-	sourceModel       = "model"
-	sourceSchedule    = "schedule"
+	_sourceTDX         = "tdx"
+	_sourcePropagation = "propagation"
+	_sourceModel       = "model"
+	_sourceSchedule    = "schedule"
 )
 
 // predictionRecord is one prediction awaiting an actual: a predicted arrival at
@@ -152,13 +151,13 @@ func aggregateMAE(errs []matchedError) []maeStat {
 	return out
 }
 
-// predictionMatchWindow bounds how long after a prediction an arrival may occur
+// _predictionMatchWindow bounds how long after a prediction an arrival may occur
 // and still be treated as the arrival that prediction was about.
-const predictionMatchWindow = 30 * time.Minute
+const _predictionMatchWindow = 30 * time.Minute
 
-// predictionLookback is how far back measurePredictionError considers still-open
+// _predictionLookback is how far back measurePredictionError considers still-open
 // predictions, and therefore how much arrival history it needs to load.
-const predictionLookback = 24 * time.Hour
+const _predictionLookback = 24 * time.Hour
 
 // loadOpenPredictions reads predictions from the last day that have no actual
 // yet. Postgres owns bus_eta_prediction_error; only the arrivals moved.
@@ -168,7 +167,7 @@ func loadOpenPredictions(ctx context.Context, db *pgxpool.Pool) ([]predictionRec
 		FROM bus_eta_prediction_error
 		WHERE actual_seconds IS NULL AND predicted_at >= NOW() - INTERVAL '1 day'`)
 	if err != nil {
-		return nil, fmt.Errorf("query open predictions: %w", err)
+		return nil, _oops.Wrapf(err, "query open predictions")
 	}
 	defer rows.Close()
 	var out []predictionRecord
@@ -176,7 +175,7 @@ func loadOpenPredictions(ctx context.Context, db *pgxpool.Pool) ([]predictionRec
 		var p predictionRecord
 		if err := rows.Scan(&p.subRouteUID, &p.direction, &p.stopUID, &p.source,
 			&p.predictedAt, &p.predictedSecs); err != nil {
-			return nil, fmt.Errorf("scan open prediction: %w", err)
+			return nil, _oops.Wrapf(err, "scan open prediction")
 		}
 		out = append(out, p)
 	}
@@ -215,7 +214,7 @@ func writePredictionActuals(ctx context.Context, db *pgxpool.Pool, matched []mat
 		  AND pe.actual_seconds IS NULL`,
 		uids, dirs, stops, sources, at, actual)
 	if err != nil {
-		return 0, fmt.Errorf("write prediction actuals: %w", err)
+		return 0, _oops.Wrapf(err, "write prediction actuals")
 	}
 	return tag.RowsAffected(), nil
 }
@@ -230,18 +229,18 @@ func fillPredictionActuals(ctx context.Context, db *pgxpool.Pool, hist historySo
 	}
 	preds, err := loadOpenPredictions(ctx, db)
 	if err != nil {
-		return 0, obs.Transient(fmt.Errorf("load open predictions: %w", err))
+		return 0, obs.Transient(_oops.Wrapf(err, "load open predictions"))
 	}
 	if len(preds) == 0 {
 		return 0, nil
 	}
-	arrivals, err := hist.arrivals(ctx, time.Now().Add(-predictionLookback))
+	arrivals, err := hist.arrivals(ctx, time.Now().Add(-_predictionLookback))
 	if err != nil {
-		return 0, obs.Transient(fmt.Errorf("load history arrivals: %w", err))
+		return 0, obs.Transient(_oops.Wrapf(err, "load history arrivals"))
 	}
-	n, err := writePredictionActuals(ctx, db, matchPredictionActual(preds, arrivals, predictionMatchWindow))
+	n, err := writePredictionActuals(ctx, db, matchPredictionActual(preds, arrivals, _predictionMatchWindow))
 	if err != nil {
-		return 0, obs.Transient(fmt.Errorf("fill prediction actuals: %w", err))
+		return 0, obs.Transient(_oops.Wrapf(err, "fill prediction actuals"))
 	}
 	return n, nil
 }
@@ -264,7 +263,7 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historyS
 	if err != nil {
 		return err
 	}
-	zap.S().Infow(fmt.Sprintf("filled %d actuals", filled), "component", "eta_error")
+	zap.S().Infow("filled actuals", "component", "eta_error", "actuals", filled)
 
 	rows, err := db.Query(ctx, `
 		SELECT sub_route_uid, source,
@@ -276,7 +275,7 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historyS
 		GROUP BY sub_route_uid, source
 		ORDER BY sub_route_uid, source`)
 	if err != nil {
-		return obs.Transient(fmt.Errorf("aggregate prediction error: %w", err))
+		return obs.Transient(_oops.Wrapf(err, "aggregate prediction error"))
 	}
 	defer rows.Close()
 	count := 0
@@ -285,7 +284,7 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historyS
 		var mae float64
 		var samples int
 		if err := rows.Scan(&sub, &source, &mae, &samples); err != nil {
-			zap.S().Errorw(fmt.Sprintf("scan error: %v", err), "component", "eta_error")
+			zap.S().Errorw("scan error", "component", "eta_error", "err", err)
 			continue
 		}
 		zap.S().Infow("log",
@@ -298,7 +297,7 @@ func measurePredictionError(ctx context.Context, db *pgxpool.Pool, hist historyS
 		count++
 	}
 	if err := rows.Err(); err != nil {
-		return obs.Transient(fmt.Errorf("aggregate prediction error rows: %w", err))
+		return obs.Transient(_oops.Wrapf(err, "aggregate prediction error rows"))
 	}
 	zap.S().Infow("complete", "component", "eta_error", "groups", count)
 	return nil

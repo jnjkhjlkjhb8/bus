@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -24,19 +23,21 @@ type rawFetcher interface {
 	GetInto(context.Context, string, string, func(shared.TDXIntoCommit) error) (shared.TDXIntoResult, error)
 }
 
+var _ rawFetcher = (*shared.TDXClient)(nil)
+
 // ROLE=ingestor fetches static TDX endpoints and lands the raw payloads into
 // raw_tdx (via dumpRawTDX in fetchRaw's GetInto commit). No transforms, no
 // per-env writes.
 
-// ingestBusAPIs lists the TDX Bus static endpoints landed for every city in one
+// _ingestBusAPIs lists the TDX Bus static endpoints landed for every city in one
 // ingestor run.
-var ingestBusAPIs = []string{
+var _ingestBusAPIs = []string{
 	"Route", "StopOfRoute", "Shape", "Schedule", "Station", "StationGroup",
-	"Operator", "RouteFare", "DailyTimeTable",
+	"Operator", "RouteFare", "DailyTimeTable", "DisplayStopOfRoute",
 }
 
 // cities with no public bike-share feed.
-var ingestBikeSkip = map[string]bool{
+var _ingestBikeSkip = map[string]bool{
 	"Keelung": true, "HsinchuCounty": true, "NantouCounty": true,
 	"YilanCounty": true, "PenghuCounty": true, "KinmenCounty": true,
 	"LienchiangCounty": true, "InterCity": true, "HualienCounty": true,
@@ -53,21 +54,21 @@ var ingestBikeSkip = map[string]bool{
 //
 //	GET /v2/Rail/Metro/<Endpoint>/ZZZZ
 var (
-	// metroSystemsAll is every rail system TDX serves. Station, Shape, ODFare,
+	// _metroSystemsAll is every rail system TDX serves. Station, Shape, ODFare,
 	// Route, StationOfRoute and Line all accept the full set.
-	metroSystemsAll = []string{
+	_metroSystemsAll = []string{
 		"TRTC", "KRTC", "TYMC", "KLRT", "NTDLRT", "NTALRT", "TMRT", "NTMC", "TRTCMG",
 	}
 
-	ingestMetroStationSystems = metroSystemsAll
-	ingestMetroODFare         = metroSystemsAll
+	_ingestMetroStationSystems = _metroSystemsAll
+	_ingestMetroODFare         = _metroSystemsAll
 	// FirstLastTimetable omits the two newest light-rail lines.
-	ingestMetroFirstLast = []string{"TRTC", "KRTC", "TYMC", "KLRT", "TMRT", "NTMC", "TRTCMG"}
+	_ingestMetroFirstLast = []string{"TRTC", "KRTC", "TYMC", "KLRT", "TMRT", "NTMC", "TRTCMG"}
 	// S2STravelTime and LineTransfer feed the travel graph. Both consumers
 	// (mrt_traveltime, mrt_adjacency) run over the S2STravelTime set; a system
 	// with no LineTransfer partition reads as an empty array, which is the right
 	// answer for a single-line system that has no line-to-line interchange.
-	ingestMetroS2STravelTime = []string{"TRTC", "KRTC", "TYMC", "KLRT", "TMRT", "NTMC"}
+	_ingestMetroS2STravelTime = []string{"TRTC", "KRTC", "TYMC", "KLRT", "TMRT", "NTMC"}
 	// LineTransfer is narrower than the four systems TDX accepts, because TYMC
 	// serves an empty array and sends no Last-Modified header with it. The
 	// landing path requires a marker (raw_land.go), so that partition fails every
@@ -75,7 +76,7 @@ var (
 	// later 304 pass. Airport MRT is single-line and genuinely has no interchange,
 	// so there is nothing to lose by not asking. Restore TYMC here if it ever
 	// gains a second line.
-	ingestMetroLineTransfer = []string{"TRTC", "KRTC", "NTMC"}
+	_ingestMetroLineTransfer = []string{"TRTC", "KRTC", "NTMC"}
 	// The GTFS export endpoints. Frequency is narrower than the systems TDX
 	// serves it for because it is only what the feed can express: TRTCMG (Maokong
 	// Gondola) has routes, stations and exits but no service data at all, so the
@@ -86,21 +87,21 @@ var (
 	// stations and headways, so a per-station timetable had no consumer, and the
 	// real per-train times are coming from TDX's published GTFS instead
 	// (FDPL-69).
-	ingestMetroFrequency = []string{"TRTC", "KRTC", "TYMC", "TMRT", "NTMC"}
-	ingestMetroExit      = []string{"TRTC", "KRTC", "TYMC", "TMRT", "NTMC", "TRTCMG"}
+	_ingestMetroFrequency = []string{"TRTC", "KRTC", "TYMC", "TMRT", "NTMC"}
+	_ingestMetroExit      = []string{"TRTC", "KRTC", "TYMC", "TMRT", "NTMC", "TRTCMG"}
 )
 
-const ingestTimeout = 20 * time.Minute
+const _ingestTimeout = 20 * time.Minute
 
-// busDailyIngestTimeout bounds one hourly bus_dailytimetable landing. It is a
+// _busDailyIngestTimeout bounds one hourly bus_dailytimetable landing. It is a
 // single dataset over ~23 city partitions, most of them answering 304, so it
 // needs far less than the full run's budget.
-const busDailyIngestTimeout = 10 * time.Minute
+const _busDailyIngestTimeout = 10 * time.Minute
 
-// fullRelandWeekday is the day the daily 03:00 run re-lands every static
+// _fullRelandWeekday is the day the daily 03:00 run re-lands every static
 // endpoint unconditionally (FDPL-37). Sunday is the lightest traffic day, and
 // the following 03:30 load is the one most likely to be watched on a Monday.
-const fullRelandWeekday = time.Sunday
+const _fullRelandWeekday = time.Sunday
 
 // registerIngestorCrons schedules the daily 03:00 raw landing (under a 20-minute
 // timeout) plus the hourly bus_dailytimetable landing. When INGEST_ON_BOOT=true
@@ -109,9 +110,9 @@ const fullRelandWeekday = time.Sunday
 // tracks that goroutine so drainShutdown waits for it instead of abandoning it
 // mid-run on shutdown.
 func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool.Pool, boot *sync.WaitGroup) {
-	runner := newStaticPipelineRunner(rawPool, ingestTimeout)
+	runner := newStaticPipelineRunner(rawPool, _ingestTimeout)
 	_, _ = addStaticCron(r, "0 0 3 * * *", func() {
-		runDaily("ingest", ingestTimeout, func(ctx context.Context) error {
+		runDaily("ingest", _ingestTimeout, func(ctx context.Context) error {
 			return runner.Run(ctx, func(ctx context.Context) error {
 				return ingestRaw(ctx, tdx)
 			})
@@ -123,9 +124,9 @@ func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool
 	// and never touches raw_tdx. The static-pipeline lock inside runner.Run
 	// serializes this against the 03:00 landing and the loader's runs, so the
 	// 03:00 overlap needs no separate guard.
-	hourly := newStaticPipelineRunner(rawPool, busDailyIngestTimeout)
+	hourly := newStaticPipelineRunner(rawPool, _busDailyIngestTimeout)
 	_, _ = addStaticCron(r, "0 0 * * * *", func() {
-		runDaily("ingest_bus_dailytimetable", busDailyIngestTimeout, func(ctx context.Context) error {
+		runDaily("ingest_bus_dailytimetable", _busDailyIngestTimeout, func(ctx context.Context) error {
 			return hourly.Run(ctx, func(ctx context.Context) error {
 				// Taipei's partition of the same table, from Data.taipei rather than
 				// TDX (FDPL-66 Phase 3). It rides this entry so both writers to
@@ -137,7 +138,7 @@ func registerIngestorCrons(r *cron.Cron, tdx *shared.TDXClient, rawPool *pgxpool
 				// their hourly refresh.
 				var taipeiErr error
 				if hasTDXCredentials() {
-					taipeiErr = landDataTaipeiDailyTimetable(ctx, newDataTaipeiFeed(dataTaipeiCity), time.Now)
+					taipeiErr = landDataTaipeiDailyTimetable(ctx, newDataTaipeiFeed(_dataTaipeiCity), time.Now)
 				}
 				return errors.Join(ingestRaw(ctx, tdx, "bus_dailytimetable"), taipeiErr)
 			})
@@ -201,7 +202,7 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	// a week the whole feed is re-read unconditionally so such a deletion is
 	// corrected within seven days (FDPL-37). Full runs only — the hourly
 	// bus_dailytimetable subset stays conditional.
-	fullReland := len(only) == 0 && time.Now().In(taipei).Weekday() == fullRelandWeekday
+	fullReland := len(only) == 0 && time.Now().In(_taipei).Weekday() == _fullRelandWeekday
 	zap.S().Infow("start",
 		"component", "ingest",
 		"action", "raw",
@@ -211,7 +212,7 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	)
 	landingCycle, err := newRawLandingCycle()
 	if err != nil {
-		return fmt.Errorf("start raw landing cycle: %w", err)
+		return _oops.Wrapf(err, "start raw landing cycle")
 	}
 
 	// Build the fetch jobs from the single datasetRegistry: every fetched dataset
@@ -256,8 +257,8 @@ func ingestRaw(ctx context.Context, tdx rawFetcher, tables ...string) error {
 	}
 	// Only a full run touches every partition, so only a full run can tell a
 	// partition nobody fetches from one this subset simply did not cover.
-	if len(only) == 0 && ingestDB != nil {
-		reportStalePartitions(ctx, ingestDB)
+	if len(only) == 0 && _ingestDB != nil {
+		reportStalePartitions(ctx, _ingestDB)
 	}
 	zap.S().Infow("end", "component", "ingest", "action", "raw", "event", "end", "scope", scope)
 	return errors.Join(joined...)
@@ -294,17 +295,7 @@ func fetchRawWithVerifier(
 			return dumpRawTDXReader(ctx, target, commit.Marker, landingCycle, commit.Body)
 		})
 		if err != nil {
-			if errors.Is(err, errRawDump) {
-				zap.S().Errorw("raw dump error",
-					"component", "ingest",
-					"url", url,
-					"event", "raw_dump_error",
-					"err", err,
-				)
-			} else {
-				zap.S().Errorw("fetch error", "component", "ingest", "url", url, "event", "fetch_error", "err", err)
-			}
-			return fmt.Errorf("fetch raw %s: %w", url, err)
+			return _oops.With("url", url).Wrapf(err, "fetch raw")
 		}
 		if result.Modified {
 			return nil
@@ -321,10 +312,10 @@ func fetchRawWithVerifier(
 		// not have.
 		if forceReland && attempt == 0 {
 			if result.Invalidate == nil {
-				return fmt.Errorf("force reland %s: nil marker invalidator", url)
+				return _oops.With("url", url).Errorf("force reland: nil marker invalidator")
 			}
 			if err := result.Invalidate(); err != nil {
-				return fmt.Errorf("force reland %s: %w", url, err)
+				return _oops.With("url", url).Wrapf(err, "force reland")
 			}
 			zap.S().Infow("refetch", "component", "ingest", "url", url, "event", "refetch", "reason", "full_reland")
 			continue
@@ -336,16 +327,16 @@ func fetchRawWithVerifier(
 			return nil
 		}
 		if !errors.Is(err, errRawLandingStateMismatch) {
-			return fmt.Errorf("verify raw %s: %w", url, err)
+			return _oops.With("url", url).Wrapf(err, "verify raw")
 		}
 		if attempt == 1 {
-			return fmt.Errorf("verify raw %s after forced refetch: %w", url, err)
+			return _oops.With("url", url).Wrapf(err, "verify raw after forced refetch")
 		}
 		if result.Invalidate == nil {
-			return fmt.Errorf("verify raw %s: %w: nil marker invalidator", url, err)
+			return _oops.With("url", url).Wrapf(err, "verify raw: nil marker invalidator")
 		}
 		if invalidateErr := result.Invalidate(); invalidateErr != nil {
-			return fmt.Errorf("verify raw %s: %w", url, errors.Join(err, invalidateErr))
+			return _oops.With("url", url).Wrapf(errors.Join(err, invalidateErr), "verify raw")
 		}
 		zap.S().Infow("refetch",
 			"component", "ingest",
@@ -360,7 +351,7 @@ func fetchRawWithVerifier(
 func newRawLandingCycle() (string, error) {
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
-		return "", fmt.Errorf("generate random identity: %w", err)
+		return "", _oops.Wrapf(err, "generate random identity")
 	}
 	return hex.EncodeToString(random[:]), nil
 }

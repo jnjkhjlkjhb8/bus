@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -26,29 +25,29 @@ import (
 // running system — stations in bike_stations, availability in Redis under
 // shared.BikeAvailabilityKey — so a builder would only add a copy to go stale.
 const (
-	gbfsVersion = "2.3"
-	// gbfsSystemID identifies the whole feed as one system.
+	_gbfsVersion = "2.3"
+	// _gbfsSystemID identifies the whole feed as one system.
 	//
 	// Taiwan has several bikeshare operators and GBFS models one operator per
 	// feed, so this is a deliberate simplification: it publishes them as a single
 	// system. A planner only needs to know where a bike can be picked up and
 	// dropped off, and that answer does not change. Split into per-operator feeds
 	// if something downstream ever needs to price or brand a leg.
-	gbfsSystemID = "tw"
+	_gbfsSystemID = "tw"
 	// Station locations change on the order of months and availability on the
 	// order of seconds; the ttl fields tell a consumer how often to re-poll each.
-	// gbfsStatusTTL matches the 30s bikeEta cron that writes the Redis keys —
+	// _gbfsStatusTTL matches the 30s bikeEta cron that writes the Redis keys —
 	// polling faster than the producer only re-reads the same numbers.
-	gbfsStaticTTL = 3600
-	gbfsStatusTTL = 30
-	// gbfsStatusChunk bounds one MGET. The network is ~10k stations, and asking
+	_gbfsStaticTTL = 3600
+	_gbfsStatusTTL = 30
+	// _gbfsStatusChunk bounds one MGET. The network is ~10k stations, and asking
 	// for every key in a single command makes one oversized request and one
 	// oversized reply; chunking keeps both bounded without meaningfully more
 	// round trips.
-	gbfsStatusChunk = 1000
+	_gbfsStatusChunk = 1000
 	// TDX ServiceStatus: 0 stopped, 1 in service, 2 suspended.
-	bikeServiceStopped   = 0
-	bikeServiceInService = 1
+	_bikeServiceStopped   = 0
+	_bikeServiceInService = 1
 )
 
 // gbfsWrite emits the envelope every GBFS file shares: when it was generated,
@@ -57,7 +56,7 @@ func gbfsWrite(c *gin.Context, ttl int, data any) {
 	c.JSON(http.StatusOK, gin.H{
 		"last_updated": time.Now().Unix(),
 		"ttl":          ttl,
-		"version":      gbfsVersion,
+		"version":      _gbfsVersion,
 		"data":         data,
 	})
 }
@@ -71,12 +70,12 @@ func gbfsWrite(c *gin.Context, ttl int, data any) {
 func handleGBFSDiscovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		base := requestBaseURL(c.Request)
-		feeds := make([]gin.H, 0, len(gbfsFeedNames))
-		for _, name := range gbfsFeedNames {
+		feeds := make([]gin.H, 0, len(_gbfsFeedNames))
+		for _, name := range _gbfsFeedNames {
 			feeds = append(feeds, gin.H{"name": name, "url": base + "/gbfs/" + name + ".json"})
 		}
 		// The spec keys feeds by language; this feed is published in one.
-		gbfsWrite(c, gbfsStaticTTL, gin.H{"zh-TW": gin.H{"feeds": feeds}})
+		gbfsWrite(c, _gbfsStaticTTL, gin.H{"zh-TW": gin.H{"feeds": feeds}})
 	}
 }
 
@@ -96,8 +95,8 @@ func requestBaseURL(r *http.Request) string {
 
 func handleGBFSSystemInformation() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		gbfsWrite(c, gbfsStaticTTL, gin.H{
-			"system_id": gbfsSystemID,
+		gbfsWrite(c, _gbfsStaticTTL, gin.H{
+			"system_id": _gbfsSystemID,
 			"language":  "zh-TW",
 			"name":      "台灣公共自行車",
 			"timezone":  "Asia/Taipei",
@@ -129,19 +128,19 @@ func gbfsStations(ctx context.Context, db *pgxpool.Pool) ([]gbfsStation, error) 
 		WHERE geom IS NOT NULL
 		ORDER BY station_uid`)
 	if err != nil {
-		return nil, fmt.Errorf("gbfs stations: query: %w", err)
+		return nil, _oops.Wrapf(err, "gbfs stations: query")
 	}
 	defer rows.Close()
 	stations := make([]gbfsStation, 0, 12000)
 	for rows.Next() {
 		var s gbfsStation
 		if err := rows.Scan(&s.StationID, &s.Name, &s.Lat, &s.Lon, &s.Address, &s.Capacity); err != nil {
-			return nil, fmt.Errorf("gbfs stations: scan: %w", err)
+			return nil, _oops.Wrapf(err, "gbfs stations: scan")
 		}
 		stations = append(stations, s)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("gbfs stations: rows: %w", err)
+		return nil, _oops.Wrapf(err, "gbfs stations: rows")
 	}
 	return stations, nil
 }
@@ -159,7 +158,7 @@ func handleGBFSStationInformation(db *pgxpool.Pool) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "station information unavailable"})
 			return
 		}
-		gbfsWrite(c, gbfsStaticTTL, gin.H{"stations": stations})
+		gbfsWrite(c, _gbfsStaticTTL, gin.H{"stations": stations})
 	}
 }
 
@@ -195,8 +194,8 @@ func handleGBFSStationStatus(db *pgxpool.Pool, rc *redis.Client) gin.HandlerFunc
 		// within that window — the value is accurate to the cadence, not invented.
 		now := time.Now().Unix()
 		statuses := make([]gbfsStatus, 0, len(stations))
-		for start := 0; start < len(stations); start += gbfsStatusChunk {
-			end := min(start+gbfsStatusChunk, len(stations))
+		for start := 0; start < len(stations); start += _gbfsStatusChunk {
+			end := min(start+_gbfsStatusChunk, len(stations))
 			chunk := stations[start:end]
 			keys := make([]string, len(chunk))
 			for i, s := range chunk {
@@ -230,7 +229,7 @@ func handleGBFSStationStatus(db *pgxpool.Pool, rc *redis.Client) gin.HandlerFunc
 				"reported", len(statuses),
 			)
 		}
-		gbfsWrite(c, gbfsStatusTTL, gin.H{"stations": statuses})
+		gbfsWrite(c, _gbfsStatusTTL, gin.H{"stations": statuses})
 	}
 }
 
@@ -256,7 +255,7 @@ func decodeBikeStatus(stationID string, value any, now int64) (gbfsStatus, bool)
 		)
 		return gbfsStatus{}, false
 	}
-	inService := eta.GetServiceStatus() == bikeServiceInService
+	inService := eta.GetServiceStatus() == _bikeServiceInService
 	return gbfsStatus{
 		StationID: stationID,
 		// TDX splits the rentable count by vehicle kind. GBFS carries that split
@@ -265,17 +264,17 @@ func decodeBikeStatus(stationID string, value any, now int64) (gbfsStatus, bool)
 		// vehicle_types when a leg's speed or price depends on the distinction.
 		NumBikesAvailable: eta.GetGeneralBikes() + eta.GetElectricBikes(),
 		NumDocksAvailable: eta.GetAvailableReturnBikes(),
-		IsInstalled:       eta.GetServiceStatus() != bikeServiceStopped,
+		IsInstalled:       eta.GetServiceStatus() != _bikeServiceStopped,
 		IsRenting:         inService,
 		IsReturning:       inService,
 		LastReported:      now,
 	}, true
 }
 
-// gbfsFeedNames is the file set the discovery document advertises. It is also
+// _gbfsFeedNames is the file set the discovery document advertises. It is also
 // what registerGBFSRoutes mounts, so a file cannot be advertised without being
 // served.
-var gbfsFeedNames = []string{"system_information", "station_information", "station_status"}
+var _gbfsFeedNames = []string{"system_information", "station_information", "station_status"}
 
 // RegisterGBFSRoutes mounts the feed. Every file is unauthenticated: the whole
 // point is that a planner can poll it. The rate limit is the only guard, and it
@@ -287,7 +286,7 @@ func RegisterGBFSRoutes(r gin.IRoutes, db *pgxpool.Pool, rc *redis.Client, limit
 		"station_status":      handleGBFSStationStatus(db, rc),
 	}
 	r.GET("/gbfs/gbfs.json", limit, handleGBFSDiscovery())
-	for _, name := range gbfsFeedNames {
+	for _, name := range _gbfsFeedNames {
 		r.GET("/gbfs/"+name+".json", limit, handlers[name])
 	}
 }

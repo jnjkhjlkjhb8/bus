@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,7 +28,7 @@ func (r pgPipelineMarkerReader) MarkerExists(ctx context.Context, job string, ru
 		job, runDate.Format(time.DateOnly),
 	).Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("query pipeline_runs marker %s: %w", job, err)
+		return false, _oops.With("job", job).Wrapf(err, "query pipeline_runs marker")
 	}
 	return exists, nil
 }
@@ -45,7 +44,7 @@ func recordPipelineMarker(ctx context.Context, db *pgxpool.Pool, job string, run
 		job, runDate.Format(time.DateOnly),
 	)
 	if err != nil {
-		return fmt.Errorf("record pipeline_runs marker %s: %w", job, err)
+		return _oops.With("job", job).Wrapf(err, "record pipeline_runs marker")
 	}
 	return nil
 }
@@ -91,8 +90,8 @@ func recordPipelineMarkerWithRetry(ctx context.Context, db *pgxpool.Pool, job st
 }
 
 const (
-	pipelineMarkerPollInterval = 5 * time.Minute
-	pipelineMarkerPollDeadline = 2 * time.Hour
+	_pipelineMarkerPollInterval = 5 * time.Minute
+	_pipelineMarkerPollDeadline = 2 * time.Hour
 )
 
 // waitForPipelineMarker polls reader for job's runDate marker: an immediate
@@ -147,9 +146,9 @@ func waitForPipelineMarker(
 				"run_date", runDate.Format(time.DateOnly),
 			)
 			if lastErr != nil {
-				return fmt.Errorf("pipeline marker %q not confirmed for %s by deadline: %w", job, runDate.Format(time.DateOnly), lastErr)
+				return _oops.With("job", job).With("run_date", runDate.Format(time.DateOnly)).Wrapf(lastErr, "pipeline marker not confirmed for by deadline")
 			}
-			return fmt.Errorf("pipeline marker %q not found for %s by deadline", job, runDate.Format(time.DateOnly))
+			return _oops.With("job", job).With("run_date", runDate.Format(time.DateOnly)).Errorf("pipeline marker not found for by deadline")
 		}
 		if err := sleep(ctx, interval); err != nil {
 			return err

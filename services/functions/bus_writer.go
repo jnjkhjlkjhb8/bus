@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +26,8 @@ type busTxBeginner interface {
 
 type pgBusTxBeginner struct{ db *pgxpool.Pool }
 
+var _ busTxBeginner = pgBusTxBeginner{}
+
 func (b pgBusTxBeginner) BeginBusTx(ctx context.Context) (busTx, error) {
 	return b.db.Begin(ctx)
 }
@@ -44,7 +45,7 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 	}
 	tx, err := db.BeginBusTx(ctx)
 	if err != nil {
-		return fmt.Errorf("write bus city snapshot %s: begin: %w", snapshot.city, err)
+		return _oops.With("city", snapshot.city).Wrapf(err, "write bus city snapshot: begin")
 	}
 	defer func() {
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -53,7 +54,7 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 	}()
 
 	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '20s'"); err != nil {
-		return fmt.Errorf("write bus city snapshot %s: set lock timeout: %w", snapshot.city, err)
+		return _oops.With("city", snapshot.city).Wrapf(err, "write bus city snapshot: set lock timeout")
 	}
 
 	temps := []busTempSpec{
@@ -109,13 +110,18 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 				suid text, seq int) ON COMMIT DROP`,
 			columns: []string{"sid", "sname", "sruid", "rname", "dir", "suid", "seq"}, rows: snapshot.stopMapRows,
 		},
+		{
+			name: "temp_bus_stop_alias", create: `CREATE TEMP TABLE temp_bus_stop_alias (
+				sruid text, dir smallint, alias text, suid text) ON COMMIT DROP`,
+			columns: []string{"sruid", "dir", "alias", "suid"}, rows: snapshot.aliasRows,
+		},
 	}
 	for _, temp := range temps {
 		if _, err := tx.Exec(ctx, temp.create); err != nil {
-			return fmt.Errorf("write bus city snapshot %s: create %s: %w", snapshot.city, temp.name, err)
+			return _oops.With("city", snapshot.city).With("temp_name", temp.name).Wrapf(err, "write bus city snapshot: create")
 		}
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{temp.name}, temp.columns, pgx.CopyFromRows(temp.rows)); err != nil {
-			return fmt.Errorf("write bus city snapshot %s: copy %s: %w", snapshot.city, temp.name, err)
+			return _oops.With("city", snapshot.city).With("temp_name", temp.name).Wrapf(err, "write bus city snapshot: copy")
 		}
 	}
 
@@ -130,10 +136,10 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 		  ON current.city = $1 AND current.group_id = incoming.group_id
 		WHERE current.group_uid <> incoming.group_uid
 	)`, snapshot.city).Scan(&unsafeGroupRekey); err != nil {
-		return fmt.Errorf("write bus city snapshot %s: inspect station-group rekey: %w", snapshot.city, err)
+		return _oops.With("city", snapshot.city).Wrapf(err, "write bus city snapshot: inspect station-group rekey")
 	}
 	if unsafeGroupRekey {
-		return fmt.Errorf("%w: city %s station group changed UID for an existing group_id", errBusSnapshotConflict, snapshot.city)
+		return _oops.With("city", snapshot.city).Wrapf(errBusSnapshotConflict, "city station group changed UID for an existing group_id")
 	}
 
 	steps := []struct {
@@ -150,7 +156,7 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 			operator_phone = EXCLUDED.operator_phone,
 			operator_url = EXCLUDED.operator_url,
 			updated_at = NOW()`},
-		{name: "upsert subroutes", sql: busSubroutesUpsertSQL},
+		{name: "upsert subroutes", sql: _busSubroutesUpsertSQL},
 		{name: "upsert stations", sql: `INSERT INTO bus_stations (
 			station_uid, station_name, city, position, updated_at)
 		SELECT station_uid, station_name, $1,
@@ -202,7 +208,7 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 			position = EXCLUDED.position,
 			updated_at = NOW()`, args: []any{snapshot.city}},
 		{name: "replace schedule partition", sql: `DELETE FROM bus_schedule WHERE sub_route_uid LIKE $1`, args: []any{snapshot.prefix + "%"}},
-		{name: "insert schedule", sql: busScheduleInsertSQL},
+		{name: "insert schedule", sql: _busScheduleInsertSQL},
 		{name: "upsert static protobufs", sql: `INSERT INTO bus_static (
 			sub_route_name, route_name, sub_route_uid, route_uid, city, depart, destin, pb)
 		SELECT sname, rname, uid, rid, city, depart, destin, pb
@@ -229,6 +235,16 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 			station_name = EXCLUDED.station_name,
 			route_name = EXCLUDED.route_name,
 			stop_sequence = EXCLUDED.stop_sequence,
+			updated_at = NOW()`},
+		{name: "delete old stop alias partition", sql: `DELETE FROM bus_stop_alias WHERE sub_route_uid LIKE $1`, args: []any{snapshot.prefix + "%"}},
+		{name: "insert stop aliases", sql: `INSERT INTO bus_stop_alias (
+			sub_route_uid, direction, alias_stop_uid, stop_uid, updated_at)
+		SELECT DISTINCT ON (sruid, dir, alias)
+			sruid, dir, alias, suid, NOW()
+		FROM temp_bus_stop_alias
+		ORDER BY sruid, dir, alias, suid
+		ON CONFLICT (sub_route_uid, direction, alias_stop_uid) DO UPDATE SET
+			stop_uid = EXCLUDED.stop_uid,
 			updated_at = NOW()`},
 		{name: "prune stale station-group members", sql: `DELETE FROM bus_station_group_members current
 		WHERE current.city = $1
@@ -258,12 +274,12 @@ func writeBusCitySnapshot(ctx context.Context, db busTxBeginner, snapshot *busCi
 	}
 	for _, step := range steps {
 		if _, err := tx.Exec(ctx, step.sql, step.args...); err != nil {
-			return fmt.Errorf("write bus city snapshot %s: %s: %w", snapshot.city, step.name, err)
+			return _oops.With("city", snapshot.city).With("step_name", step.name).Wrapf(err, "write bus city snapshot")
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("write bus city snapshot %s: commit: %w", snapshot.city, err)
+		return _oops.With("city", snapshot.city).Wrapf(err, "write bus city snapshot: commit")
 	}
 	return nil
 }

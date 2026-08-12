@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -60,7 +59,7 @@ type traFareRow struct {
 	Price      int32  `db:"price"`
 }
 
-// traTicketTypes are the TDX ticket types the app quotes. TDX packs 票種 and
+// _traTicketTypes are the TDX ticket types the app quotes. TDX packs 票種 and
 // 車種 into a single ticket_type string, so the set is the cross product of
 // both axes.
 //
@@ -71,7 +70,7 @@ type traFareRow struct {
 // 票種 axis: 成 (全票), 孩 (孩童), 敬 (敬老), 愛 (愛心). The app resolves it from
 // the rider's persisted 票種 preference. Excluded are 折 (return-trip discount)
 // and group fares, which belong to a booking flow rather than a fare quote.
-var traTicketTypes = buildTraTicketTypes()
+var _traTicketTypes = buildTraTicketTypes()
 
 func buildTraTicketTypes() []string {
 	fareKinds := []string{"成", "孩", "敬", "愛"}
@@ -87,7 +86,7 @@ func buildTraTicketTypes() []string {
 
 // TRAFarePayload reads a TRA pair's fares from the loaded env schema and
 // returns the marshaled TraFareItems proto, one item per 票種 × 車種 combination
-// the pair prices (see traTicketTypes), priciest first. The app picks the row
+// the pair prices (see _traTicketTypes), priciest first. The app picks the row
 // matching the train's class and the rider's 票種 preference; a combination TDX
 // never landed simply is not in the response, so the app falls back rather than
 // showing a hole. It returns an empty slice (not an error) when no rows match,
@@ -103,7 +102,7 @@ func TRAFarePayload(ctx context.Context, db railDB, start, end string) ([]byte, 
 		return nil, err
 	}
 	const q = `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = ANY($3) AND price > 0 ORDER BY price DESC, ticket_type;`
-	rows, err := db.Query(ctx, q, start, end, traTicketTypes)
+	rows, err := db.Query(ctx, q, start, end, _traTicketTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -153,49 +152,6 @@ func TRAStoptimesPayload(ctx context.Context, db railDB, trainno, dateStr string
 		return nil, 0, err
 	}
 	return b, len(row), nil
-}
-
-// isNumericStationID reports whether s is already a numeric station code (TRA
-// and THSR ids are digit strings) rather than a station name needing resolution.
-func isNumericStationID(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// resolveRailStationID maps a station name to its numeric station_id, tolerating
-// the 臺/台 spelling split (TDX data stores 臺, the app's labels use 台). Inputs
-// that are already numeric ids, or that match no station, are returned as-is.
-// Database errors are returned to the caller rather than treated as a miss.
-// table is a caller-supplied constant ("tra_stations"/"thsr_stations").
-func resolveRailStationID(ctx context.Context, db railDB, table, s string) (string, error) {
-	if isNumericStationID(s) {
-		return s, nil
-	}
-	rows, err := db.Query(ctx,
-		`SELECT station_id FROM `+table+
-			` WHERE replace(name, '臺', '台') = replace($1, '臺', '台') ORDER BY station_id LIMIT 1`, s)
-	if err != nil {
-		return "", err
-	}
-	defer rows.Close()
-	if rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return "", err
-		}
-		return id, nil
-	}
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-	return s, nil
 }
 
 // TRAStationBoardPayload reads every departure from one station on one date in
@@ -262,7 +218,7 @@ func TRATimetablePayload(ctx context.Context, db railDB, start, end string, date
 	}
 	mp := make(map[string]*models.TraTimetable)
 	startSeq := make(map[string]int)
-	arr := []*models.TraTimetable{}
+	arr := make([]*models.TraTimetable, 0, len(row))
 	for _, temp := range row {
 		if temp.Stationid == start {
 			startSeq[temp.Trainno] = temp.Stopsequence
@@ -296,7 +252,7 @@ func TRATimetablePayload(ctx context.Context, db railDB, start, end string, date
 		}
 		w, err := time.Parse(time.RFC3339, seed.Starting_Time)
 		if err != nil {
-			zap.S().Errorw(fmt.Sprintf("parse time error: %v", err))
+			zap.S().Errorw("parse time error", "err", err)
 			continue
 		}
 		t := temp.Arrivaltime
@@ -313,4 +269,47 @@ func TRATimetablePayload(ctx context.Context, db railDB, start, end string, date
 		return nil, 0, err
 	}
 	return b, len(arr), nil
+}
+
+// isNumericStationID reports whether s is already a numeric station code (TRA
+// and THSR ids are digit strings) rather than a station name needing resolution.
+func isNumericStationID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveRailStationID maps a station name to its numeric station_id, tolerating
+// the 臺/台 spelling split (TDX data stores 臺, the app's labels use 台). Inputs
+// that are already numeric ids, or that match no station, are returned as-is.
+// Database errors are returned to the caller rather than treated as a miss.
+// table is a caller-supplied constant ("tra_stations"/"thsr_stations").
+func resolveRailStationID(ctx context.Context, db railDB, table, s string) (string, error) {
+	if isNumericStationID(s) {
+		return s, nil
+	}
+	rows, err := db.Query(ctx,
+		`SELECT station_id FROM `+table+
+			` WHERE replace(name, '臺', '台') = replace($1, '臺', '台') ORDER BY station_id LIMIT 1`, s)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return "", err
+		}
+		return id, nil
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return s, nil
 }

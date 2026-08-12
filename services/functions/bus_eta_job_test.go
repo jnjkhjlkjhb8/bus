@@ -23,6 +23,7 @@ type fakeBusEtaStore struct {
 	stopOffsetUIDs    []string
 	stopOffsetMap     map[stopOffsetKey]int
 	historyRows       [][]interface{}
+	stopEventRows     [][]interface{}
 	predictions       []predictionRecord
 	predictionCalls   int
 	nextDepartureMap  map[routeDirKey]time.Time
@@ -50,6 +51,10 @@ func (s *fakeBusEtaStore) stopOffsets(_ context.Context, uids []string) map[stop
 
 func (s *fakeBusEtaStore) saveHistory(_ context.Context, rows [][]interface{}) {
 	s.historyRows = rows
+}
+
+func (s *fakeBusEtaStore) saveStopEvents(_ context.Context, rows [][]interface{}) {
+	s.stopEventRows = append(s.stopEventRows, rows...)
 }
 
 func (s *fakeBusEtaStore) recordPredictions(_ context.Context, rows []predictionRecord) {
@@ -104,15 +109,15 @@ func TestBusArrivalBatchFlushesOncePerTick(t *testing.T) {
 }
 
 func TestRunBusEtaCitiesFlushesOnlySuccessfulCityArrivalsOnce(t *testing.T) {
-	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, taipei)
+	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, _taipei)
 	for _, city := range []string{"Taipei", "NewTaipei"} {
-		prefix := citymap[city]
-		busStaticMapCache.Delete(prefix)
-		storeBusStaticMapIn(&busStaticMapCache, prefix, []busStationmap{{
+		prefix := _citymap[city]
+		_busStaticMapCache.Delete(prefix)
+		storeBusStaticMapIn(&_busStaticMapCache, prefix, []busStationmap{{
 			StationUID: "STATION1", StationName: "站牌一", GroupUID: "GROUP1", GroupName: "群組一",
 			SubRouteUID: prefix + "1", SubRouteName: "一路", Direction: 0, StopUID: "STOP1", StopSequence: 1,
 		}}, "", now)
-		t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+		t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 	}
 
 	cityErr := errors.New("new taipei ETA unavailable")
@@ -150,11 +155,11 @@ func TestRunBusEtaCitiesFlushesOnlySuccessfulCityArrivalsOnce(t *testing.T) {
 }
 
 func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
-	prefix := citymap["InterCity"]
-	busStaticMapCache.Delete(prefix)
-	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	prefix := _citymap["InterCity"]
+	_busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 
-	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, taipei)
+	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, _taipei)
 	src := &fakeLiveSource{fixtures: map[string][]byte{
 		"bus_EstimatedTimeOfArrivalInterCity": []byte(`[{"PlateNumb":"KKA-1234","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":9,"EstimateTime":120,"StopStatus":0,"SrcUpdateTime":"2026-07-10T09:00:00+08:00"}]`),
 		"bus_RealTimeByFrequencyInterCity":    []byte(`[{"PlateNumb":"GPS-9999","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":9,"BusPosition":{"PositionLon":121.5,"PositionLat":25.05},"Azimuth":90,"Speed":30}]`),
@@ -186,8 +191,8 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 
 	stationKey := shared.BusStationEtaKey("InterCity", "GROUP1")
 	stationWrite := sink.setFor(stationKey)
-	if stationWrite == nil || stationWrite.ttl != busLiveTTL {
-		t.Fatalf("station SET = %+v, want key %s with ttl %v", stationWrite, stationKey, busLiveTTL)
+	if stationWrite == nil || stationWrite.ttl != _busLiveTTL {
+		t.Fatalf("station SET = %+v, want key %s with ttl %v", stationWrite, stationKey, _busLiveTTL)
 	}
 	var station models.Bus_StationArrival
 	if err := proto.Unmarshal(stationWrite.value, &station); err != nil {
@@ -206,8 +211,8 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 
 	routeKey := shared.BusRouteEtaKey("THB9023")
 	routeWrite := sink.setFor(routeKey)
-	if routeWrite == nil || routeWrite.ttl != busLiveTTL {
-		t.Fatalf("route SET = %+v, want key %s with ttl %v", routeWrite, routeKey, busLiveTTL)
+	if routeWrite == nil || routeWrite.ttl != _busLiveTTL {
+		t.Fatalf("route SET = %+v, want key %s with ttl %v", routeWrite, routeKey, _busLiveTTL)
 	}
 	var route models.Bus_RouteArrival
 	if err := proto.Unmarshal(routeWrite.value, &route); err != nil {
@@ -232,11 +237,11 @@ func TestBusLiveJobModifiedFeedPublishesCanonicalArrivals(t *testing.T) {
 // take the stop's Redis payload with it — the live path would go dark for
 // nineteen ticks out of twenty while the logs showed nothing wrong.
 func TestBusLiveJobPublishesOnNonSnapshotTicks(t *testing.T) {
-	prefix := citymap["InterCity"]
-	busStaticMapCache.Delete(prefix)
-	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	prefix := _citymap["InterCity"]
+	_busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 
-	now := time.Date(2026, time.July, 6, 9, 15, 0, 0, taipei)
+	now := time.Date(2026, time.July, 6, 9, 15, 0, 0, _taipei)
 	src := &fakeLiveSource{fixtures: map[string][]byte{
 		"bus_EstimatedTimeOfArrivalInterCity": []byte(`[{"PlateNumb":"KKA-1234","StopUID":"STOP1","SubRouteUID":"THB902301","Direction":0,"EstimateTime":120,"StopStatus":0,"SrcUpdateTime":"2026-07-06T09:15:00+08:00"}]`),
 		"bus_RealTimeByFrequencyInterCity":    []byte(`[]`),
@@ -269,11 +274,11 @@ func TestBusLiveJobPublishesOnNonSnapshotTicks(t *testing.T) {
 }
 
 func TestBusLiveJobBatchesPredictionInputs(t *testing.T) {
-	prefix := citymap["Taipei"]
-	busStaticMapCache.Delete(prefix)
-	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	prefix := _citymap["Taipei"]
+	_busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 
-	now := time.Date(2026, time.July, 6, 9, 15, 0, 0, taipei)
+	now := time.Date(2026, time.July, 6, 9, 15, 0, 0, _taipei)
 	src := &fakeLiveSource{fixtures: map[string][]byte{
 		"bus_EstimatedTimeOfArrivalTaipei": []byte(`[{"PlateNumb":"BUS-1","StopUID":"STOP1","SubRouteUID":"TPE1","Direction":1,"EstimatedTime":120,"StopStatus":0},{"StopUID":"STOP2","SubRouteUID":"TPE1","Direction":1,"StopStatus":1}]`),
 		"bus_RealTimeByFrequencyTaipei":    []byte(`[]`),
@@ -310,15 +315,15 @@ func TestBusLiveJobBatchesPredictionInputs(t *testing.T) {
 		t.Fatalf("prediction persistence calls/rows = %d/%+v, want one call with one row", store.predictionCalls, store.predictions)
 	}
 	prediction := store.predictions[0]
-	if prediction.subRouteUID != "TPE1" || prediction.direction != 1 || prediction.stopUID != "STOP2" || prediction.source != sourcePropagation {
+	if prediction.subRouteUID != "TPE1" || prediction.direction != 1 || prediction.stopUID != "STOP2" || prediction.source != _sourcePropagation {
 		t.Fatalf("prediction persistence row = %+v", prediction)
 	}
 }
 
 func TestBusLiveJobReusesStaticStopCache(t *testing.T) {
-	prefix := citymap["Taipei"]
-	busStaticMapCache.Delete(prefix)
-	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	prefix := _citymap["Taipei"]
+	_busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 
 	src := &fakeLiveSource{fixtures: map[string][]byte{
 		"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
@@ -331,7 +336,7 @@ func TestBusLiveJobReusesStaticStopCache(t *testing.T) {
 	}}}
 	job := busLiveJob{
 		fetch: bindFetch(src, sink, specByKey(t, "bus")), sink: sink, store: store,
-		notifier: &captureBusArrivalNotifier{}, now: func() time.Time { return time.Date(2026, time.July, 6, 9, 15, 0, 0, taipei) },
+		notifier: &captureBusArrivalNotifier{}, now: func() time.Time { return time.Date(2026, time.July, 6, 9, 15, 0, 0, _taipei) },
 	}
 
 	_ = job.runCity(context.Background(), "Taipei")
@@ -351,8 +356,8 @@ func TestBusLiveJobReusesStaticStopCache(t *testing.T) {
 func TestBusSpec304RefreshesCityTTL(t *testing.T) {
 	src := &fakeLiveSource{fixtures: map[string][]byte{}}
 	sink := &captureLiveSink{}
-	storeBusStaticMap(citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
-	t.Cleanup(func() { storeBusStaticMap(citymap["Taipei"], nil) })
+	storeBusStaticMap(_citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
+	t.Cleanup(func() { storeBusStaticMap(_citymap["Taipei"], nil) })
 
 	job := busLiveJob{
 		fetch:    bindFetch(src, sink, specByKey(t, "bus")),
@@ -388,8 +393,8 @@ func TestBusCityAbortRefreshesCityTTL(t *testing.T) {
 		"bus_RealTimeByFrequency" + "Taipei":    []byte(`[{"PlateNumb":`),
 	}}
 	sink := &captureLiveSink{}
-	storeBusStaticMap(citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
-	t.Cleanup(func() { storeBusStaticMap(citymap["Taipei"], nil) })
+	storeBusStaticMap(_citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
+	t.Cleanup(func() { storeBusStaticMap(_citymap["Taipei"], nil) })
 
 	job := busLiveJob{
 		fetch:    bindFetch(src, sink, specByKey(t, "bus")),
@@ -418,8 +423,8 @@ func TestBusCityPublishSkipsRedundantRefresh(t *testing.T) {
 		"bus_RealTimeByFrequency" + "Taipei":    []byte(`[]`),
 	}}
 	sink := &captureLiveSink{}
-	storeBusStaticMap(citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
-	t.Cleanup(func() { storeBusStaticMap(citymap["Taipei"], nil) })
+	storeBusStaticMap(_citymap["Taipei"], []busStationmap{{SubRouteUID: "TPE1", StopUID: "S1"}})
+	t.Cleanup(func() { storeBusStaticMap(_citymap["Taipei"], nil) })
 
 	job := busLiveJob{
 		fetch:    bindFetch(src, sink, specByKey(t, "bus")),

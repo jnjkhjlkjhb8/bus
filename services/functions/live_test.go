@@ -261,17 +261,17 @@ func specByKey(t *testing.T, key string) liveSpec {
 	return liveSpec{}
 }
 
-// trtcTestNames is the station-name fixture the TRTC live tests resolve
+// _trtcTestNames is the station-name fixture the TRTC live tests resolve
 // against (mrt_station is not available in unit tests).
-var trtcTestNames = map[string][]string{
+var _trtcTestNames = map[string][]string{
 	"台北車站":  {"BL12", "R10"},
 	"南港展覽館": {"BL23", "BR24"},
 	"頂埔":    {"BL01"},
 }
 
-// trtcTestTracks: two arrivals at BL12 toward opposite BL terminals; train 215
+// _trtcTestTracks: two arrivals at BL12 toward opposite BL terminals; train 215
 // has a congestion reading, train 222 does not.
-var trtcTestTracks = []trtcTrack{
+var _trtcTestTracks = []trtcTrack{
 	{TrainNumber: "215", StationName: "台北車站", DestinationName: "南港展覽館站", CountDown: "02:00", NowDateTime: "2026-07-22 15:09:55"},
 	{TrainNumber: "222", StationName: "台北車站", DestinationName: "頂埔站", CountDown: "01:10", NowDateTime: "2026-07-22 15:09:55"},
 }
@@ -283,7 +283,7 @@ func TestTrtcPublishWritesArrivals(t *testing.T) {
 	sink := &captureLiveSink{}
 	exRows := []trtcWeightEx{{TrainNumber: "215", CN1: "163/164", StationID: "BL10",
 		Cart1L: "1", Cart2L: "2", Cart3L: "2", Cart4L: "2", Cart5L: "2", Cart6L: "1"}}
-	if err := trtcPublish(context.Background(), sink, trtcTestNames, nil, time.Now(), trtcTestTracks, exRows, nil); err != nil {
+	if err := trtcPublish(context.Background(), sink, _trtcTestNames, nil, time.Now(), _trtcTestTracks, exRows, nil); err != nil {
 		t.Fatalf("trtcPublish: %v", err)
 	}
 
@@ -292,8 +292,8 @@ func TestTrtcPublishWritesArrivals(t *testing.T) {
 	if sw == nil {
 		t.Fatalf("expected SET for %s; got keys %v", key, setKeys(sink))
 	}
-	if sw.ttl != mrtLiveTTL {
-		t.Fatalf("mrt SET ttl = %v, want %v", sw.ttl, mrtLiveTTL)
+	if sw.ttl != _mrtLiveTTL {
+		t.Fatalf("mrt SET ttl = %v, want %v", sw.ttl, _mrtLiveTTL)
 	}
 	var got models.MrtLive
 	if err := proto.Unmarshal(sw.value, &got); err != nil {
@@ -335,7 +335,7 @@ func TestTrtcPublishWritesArrivals(t *testing.T) {
 
 func TestTrtcOppositeDestinationsUseDistinctRedisKeys(t *testing.T) {
 	sink := &captureLiveSink{}
-	if err := trtcPublish(context.Background(), sink, trtcTestNames, nil, time.Now(), trtcTestTracks, nil, nil); err != nil {
+	if err := trtcPublish(context.Background(), sink, _trtcTestNames, nil, time.Now(), _trtcTestTracks, nil, nil); err != nil {
 		t.Fatalf("trtcPublish: %v", err)
 	}
 	keys := map[string]struct{}{}
@@ -375,8 +375,8 @@ func TestTraSpecCachesDelays(t *testing.T) {
 		t.Fatalf("expected HSET %s 1234 = 5; got %+v", shared.TraDelayHashKey, sink.hsets)
 	}
 	// All-delay snapshot cached with the 3m TTL and published for streaming.
-	if sw := sink.setFor(shared.TraDelayAllKey); sw == nil || sw.ttl != traLiveTTL {
-		t.Fatalf("expected SET %s ttl=%v; got %+v", shared.TraDelayAllKey, traLiveTTL, sw)
+	if sw := sink.setFor(shared.TraDelayAllKey); sw == nil || sw.ttl != _traLiveTTL {
+		t.Fatalf("expected SET %s ttl=%v; got %+v", shared.TraDelayAllKey, _traLiveTTL, sw)
 	}
 	var pub *publishWrite
 	for i := range sink.publishs {
@@ -426,8 +426,8 @@ func TestBikeSpecWritesAvailability(t *testing.T) {
 	if sw == nil {
 		t.Fatalf("expected SET for %s; got %v", key, setKeys(sink))
 	}
-	if sw.ttl != bikeLiveTTL {
-		t.Fatalf("bike SET ttl = %v, want %v", sw.ttl, bikeLiveTTL)
+	if sw.ttl != _bikeLiveTTL {
+		t.Fatalf("bike SET ttl = %v, want %v", sw.ttl, _bikeLiveTTL)
 	}
 	var got models.BikeEta
 	if err := proto.Unmarshal(sw.value, &got); err != nil {
@@ -454,15 +454,15 @@ func TestThsrSeatsSpecWritesSeats(t *testing.T) {
 	sink := &captureLiveSink{}
 	runLiveSpec(context.Background(), src, sink, specByKey(t, "thsr_seats"))
 
-	date := time.Now().In(taipei).Format(time.DateOnly)
+	date := time.Now().In(_taipei).Format(time.DateOnly)
 
 	// Train 0801 carries both fixture segments, aggregated into one snapshot.
 	sw := sink.setFor(shared.ThsrSeatsKey(date, "0801"))
 	if sw == nil {
 		t.Fatalf("expected SET for train 0801; got keys %v", setKeys(sink))
 	}
-	if sw.ttl != thsrSeatsLiveTTL {
-		t.Fatalf("thsr seats SET ttl = %v, want %v", sw.ttl, thsrSeatsLiveTTL)
+	if sw.ttl != _thsrSeatsLiveTTL {
+		t.Fatalf("thsr seats SET ttl = %v, want %v", sw.ttl, _thsrSeatsLiveTTL)
 	}
 	var got models.ThsrAvailableSeats
 	if err := proto.Unmarshal(sw.value, &got); err != nil {
@@ -509,9 +509,9 @@ func TestThsrSeatsSpec304RefreshesTTL(t *testing.T) {
 	if len(sink.refresh) != 1 {
 		t.Fatalf("refreshTTL calls = %d, want 1", len(sink.refresh))
 	}
-	date := time.Now().In(taipei).Format(time.DateOnly)
+	date := time.Now().In(_taipei).Format(time.DateOnly)
 	got := sink.refresh[0]
-	if len(got) != 1 || got[0].pattern != shared.ThsrSeatsPattern(date) || got[0].ttl != thsrSeatsLiveTTL {
+	if len(got) != 1 || got[0].pattern != shared.ThsrSeatsPattern(date) || got[0].ttl != _thsrSeatsLiveTTL {
 		t.Fatalf("refresh patterns = %+v", got)
 	}
 }
@@ -525,7 +525,7 @@ func TestBoundFetch304RefreshesTTL(t *testing.T) {
 	spec := liveSpec{
 		key: "probe",
 		ttlPatterns: func(string) []ttlPattern {
-			return []ttlPattern{{pattern: "mrt_live:*", ttl: mrtLiveTTL}}
+			return []ttlPattern{{pattern: "mrt_live:*", ttl: _mrtLiveTTL}}
 		},
 	}
 	fetch := bindFetch(src, sink, spec)
@@ -540,7 +540,7 @@ func TestBoundFetch304RefreshesTTL(t *testing.T) {
 		t.Fatalf("refreshTTL calls = %d, want 1", len(sink.refresh))
 	}
 	got := sink.refresh[0]
-	if len(got) != 1 || got[0].pattern != "mrt_live:*" || got[0].ttl != mrtLiveTTL {
+	if len(got) != 1 || got[0].pattern != "mrt_live:*" || got[0].ttl != _mrtLiveTTL {
 		t.Fatalf("refresh patterns = %+v", got)
 	}
 }
@@ -634,7 +634,7 @@ func TestRealtimePipelineFailureDoesNotAcknowledge(t *testing.T) {
 func TestTrtcPublishExecFailure(t *testing.T) {
 	wantErr := errors.New("redis pipeline failed")
 	sink := &captureLiveSink{execErr: wantErr}
-	err := trtcPublish(context.Background(), sink, trtcTestNames, nil, time.Now(), trtcTestTracks, nil, nil)
+	err := trtcPublish(context.Background(), sink, _trtcTestNames, nil, time.Now(), _trtcTestTracks, nil, nil)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("pipeline error = %v, want wrapped %v", err, wantErr)
 	}
@@ -669,7 +669,7 @@ func TestAllRealtimeWritersCancelDuringExecWithoutAck(t *testing.T) {
 		// mrt is TRTC-sourced now (no TDX fetch/marker); it keeps the same
 		// cancel-during-Exec invariant via trtcPublish, driven fixture-direct.
 		{name: "mrt", fixtures: map[string][]byte{}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
-			return trtcPublish(ctx, sink, trtcTestNames, nil, time.Now(), trtcTestTracks, nil, nil)
+			return trtcPublish(ctx, sink, _trtcTestNames, nil, time.Now(), _trtcTestTracks, nil, nil)
 		}},
 		{name: "tra", fixtures: map[string][]byte{"tra_delay": readFixture(t, "tdx_tra_delay.json")}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
 			spec := specByKey(t, "tra")
@@ -683,9 +683,9 @@ func TestAllRealtimeWritersCancelDuringExecWithoutAck(t *testing.T) {
 			"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
 			"bus_RealTimeByFrequencyTaipei":    []byte(`[]`),
 		}, run: func(ctx context.Context, src *fakeLiveSource, sink *captureLiveSink) error {
-			prefix := citymap["Taipei"]
-			busStaticMapCache.Delete(prefix)
-			t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+			prefix := _citymap["Taipei"]
+			_busStaticMapCache.Delete(prefix)
+			t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 			job := busLiveJob{
 				fetch: bindFetch(src, sink, specByKey(t, "bus")), sink: sink,
 				store:    &fakeBusEtaStore{stops: []busStationmap{{StationUID: "S", SubRouteUID: "TPE1", StopUID: "STOP", StopSequence: 1}}},
@@ -852,9 +852,9 @@ func TestCorruptGzipChecksumDoesNotAck(t *testing.T) {
 }
 
 func TestBusPublishFailureDoesNotAckEitherFeed(t *testing.T) {
-	prefix := citymap["Taipei"]
-	busStaticMapCache.Delete(prefix)
-	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	prefix := _citymap["Taipei"]
+	_busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 
 	src := &fakeLiveSource{fixtures: map[string][]byte{
 		"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
@@ -884,9 +884,9 @@ func TestBusPublishFailureDoesNotAckEitherFeed(t *testing.T) {
 }
 
 func TestBusAcknowledgesBothFeedsAfterPublish(t *testing.T) {
-	prefix := citymap["Taipei"]
-	busStaticMapCache.Delete(prefix)
-	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	prefix := _citymap["Taipei"]
+	_busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 
 	src := &fakeLiveSource{fixtures: map[string][]byte{
 		"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
@@ -973,9 +973,9 @@ func TestBusOneModifiedFeedUsesCachedCounterpartAndAdvances(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			prefix := citymap["Taipei"]
-			busStaticMapCache.Delete(prefix)
-			t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+			prefix := _citymap["Taipei"]
+			_busStaticMapCache.Delete(prefix)
+			t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 
 			src := &fakeLiveSource{fixtures: tt.fixtures}
 			sink := &captureLiveSink{strings: map[string]string{tt.cachedKey: `[]`}}
@@ -994,11 +994,11 @@ func TestBusOneModifiedFeedUsesCachedCounterpartAndAdvances(t *testing.T) {
 			if len(src.acked) != 1 || src.acked[0] != tt.modified {
 				t.Fatalf("acked feeds = %v, want [%s]", src.acked, tt.modified)
 			}
-			if sw := sink.setFor(tt.writtenKey); sw == nil || sw.ttl != busFeedCacheTTL || string(sw.value) != `[]` {
-				t.Fatalf("raw feed cache %s = %+v, want ttl %v", tt.writtenKey, sw, busFeedCacheTTL)
+			if sw := sink.setFor(tt.writtenKey); sw == nil || sw.ttl != _busFeedCacheTTL || string(sw.value) != `[]` {
+				t.Fatalf("raw feed cache %s = %+v, want ttl %v", tt.writtenKey, sw, _busFeedCacheTTL)
 			}
-			if ew := sink.expireFor(tt.cachedKey); ew == nil || ew.ttl != busFeedCacheTTL {
-				t.Fatalf("cached counterpart %s expiry = %+v, want ttl %v", tt.cachedKey, ew, busFeedCacheTTL)
+			if ew := sink.expireFor(tt.cachedKey); ew == nil || ew.ttl != _busFeedCacheTTL {
+				t.Fatalf("cached counterpart %s expiry = %+v, want ttl %v", tt.cachedKey, ew, _busFeedCacheTTL)
 			}
 			if sink.setFor(shared.BusRouteEtaKey("TPE1")) == nil {
 				t.Fatal("combined route snapshot was not published")
@@ -1008,9 +1008,9 @@ func TestBusOneModifiedFeedUsesCachedCounterpartAndAdvances(t *testing.T) {
 }
 
 func TestBusMissingCachedCounterpartPersistsModifiedFeedAndInvalidatesMarker(t *testing.T) {
-	prefix := citymap["Taipei"]
-	busStaticMapCache.Delete(prefix)
-	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	prefix := _citymap["Taipei"]
+	_busStaticMapCache.Delete(prefix)
+	t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 	src := &fakeLiveSource{fixtures: map[string][]byte{
 		"bus_EstimatedTimeOfArrivalTaipei": []byte(`[]`),
 	}}
@@ -1027,7 +1027,7 @@ func TestBusMissingCachedCounterpartPersistsModifiedFeedAndInvalidatesMarker(t *
 	if err := job.runCity(context.Background(), "Taipei"); err == nil {
 		t.Fatal("missing cached counterpart returned nil error")
 	}
-	if sw := sink.setFor(shared.BusETARawKey("Taipei")); sw == nil || sw.ttl != busFeedCacheTTL {
+	if sw := sink.setFor(shared.BusETARawKey("Taipei")); sw == nil || sw.ttl != _busFeedCacheTTL {
 		t.Fatalf("ETA raw cache = %+v, want durable bounded cache", sw)
 	}
 	if len(src.acked) != 1 || src.acked[0] != "bus_EstimatedTimeOfArrivalTaipei" {
@@ -1044,9 +1044,9 @@ func TestBusIndependentAckFailuresLeaveBothRawFeedsDurable(t *testing.T) {
 		"bus_RealTimeByFrequencyTaipei",
 	} {
 		t.Run(failedFeed, func(t *testing.T) {
-			prefix := citymap["Taipei"]
-			busStaticMapCache.Delete(prefix)
-			t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+			prefix := _citymap["Taipei"]
+			_busStaticMapCache.Delete(prefix)
+			t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 			ackErr := errors.New("marker write failed")
 			src := &fakeLiveSource{
 				fixtures: map[string][]byte{
@@ -1072,7 +1072,7 @@ func TestBusIndependentAckFailuresLeaveBothRawFeedsDurable(t *testing.T) {
 				t.Fatalf("Ack attempts = %v, want both independent feeds", src.acked)
 			}
 			for _, key := range []string{shared.BusETARawKey("Taipei"), shared.BusPositionRawKey("Taipei")} {
-				if sw := sink.setFor(key); sw == nil || sw.ttl != busFeedCacheTTL {
+				if sw := sink.setFor(key); sw == nil || sw.ttl != _busFeedCacheTTL {
 					t.Fatalf("raw feed cache %s = %+v", key, sw)
 				}
 			}
@@ -1119,7 +1119,7 @@ func TestBike304RefreshesOnlyPartitionOwnedKeys(t *testing.T) {
 		t.Fatalf("bike 304 refreshes = %+v, want owned keys %v", sink.refresh, want)
 	}
 	for _, refresh := range sink.refresh[0] {
-		if !want[refresh.pattern] || refresh.ttl != bikeLiveTTL {
+		if !want[refresh.pattern] || refresh.ttl != _bikeLiveTTL {
 			t.Fatalf("bike 304 refreshed unowned key or wrong TTL: %+v", refresh)
 		}
 	}
@@ -1161,11 +1161,11 @@ func TestRedisOwnedTTLIntegration(t *testing.T) {
 	pipe := redisLiveSink{rc: rc}.pipeline()
 	pipe.Set(owned, "owned", 5*time.Second)
 	pipe.Set(unowned, "unowned", 5*time.Second)
-	pipe.ReplaceOwnedKeys(owner, []string{owned}, ownedKeysTTL)
+	pipe.ReplaceOwnedKeys(owner, []string{owned}, _ownedKeysTTL)
 	if err := pipe.Exec(context.Background()); err != nil {
 		t.Fatalf("seed ownership: %v", err)
 	}
-	if err := (redisLiveSink{rc: rc}).refreshOwnedTTL(context.Background(), owner, bikeLiveTTL); err != nil {
+	if err := (redisLiveSink{rc: rc}).refreshOwnedTTL(context.Background(), owner, _bikeLiveTTL); err != nil {
 		t.Fatalf("refresh owned TTL: %v", err)
 	}
 	ownedTTL, err := rc.PTTL(context.Background(), owned).Result()
@@ -1325,7 +1325,7 @@ func TestRedisCanceledTHSRExecDoesNotAcknowledge(t *testing.T) {
 	if len(src.acked) != 0 {
 		t.Fatalf("canceled Redis Exec acknowledged marker: %v", src.acked)
 	}
-	key := shared.ThsrSeatsKey(time.Now().In(taipei).Format(time.DateOnly), "0801")
+	key := shared.ThsrSeatsKey(time.Now().In(_taipei).Format(time.DateOnly), "0801")
 	const newer = "newer same-runner snapshot"
 	if err := rc.Set(context.Background(), key, newer, time.Minute).Err(); err != nil {
 		t.Fatalf("write newer snapshot after canceled call returned: %v", err)
@@ -1348,7 +1348,7 @@ func TestRedisLivePipelineRejectsUnboundedSocketWait(t *testing.T) {
 	defer func() { _ = rc.Close() }()
 	pipe := redisLiveSink{rc: rc}.pipeline()
 	pipe.Set("unreachable", "value", time.Minute)
-	if err := pipe.Exec(context.Background()); err == nil || !strings.Contains(err.Error(), "finite Redis read timeout") {
+	if err := pipe.Exec(context.Background()); err == nil || !errMentions(err, "finite Redis read timeout") {
 		t.Fatalf("Exec error = %v, want finite-timeout guard", err)
 	}
 }

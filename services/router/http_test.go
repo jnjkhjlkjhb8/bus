@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto"
 	cryptorand "crypto/rand"
 	"crypto/rsa"
@@ -9,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -22,6 +22,9 @@ import (
 	"github.com/getsentry/sentry-go"
 	"github.com/gin-gonic/gin"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func testKey(t *testing.T) *rsa.PrivateKey {
@@ -87,7 +90,7 @@ func TestHandleTokenIssuesValidJWT(t *testing.T) {
 		t.Fatal(err)
 	}
 	claims := verifyJWT(t, body.Token, &key.PublicKey)
-	if claims["aud"] != "powersync" || claims["sub"] != powersyncAnonymousSubject {
+	if claims["aud"] != "powersync" || claims["sub"] != _powersyncAnonymousSubject {
 		t.Fatalf("unexpected claims: %v", claims)
 	}
 	exp := int64(claims["exp"].(float64))
@@ -95,7 +98,7 @@ func TestHandleTokenIssuesValidJWT(t *testing.T) {
 	if exp <= iat || exp <= time.Now().Unix() {
 		t.Fatalf("bad exp/iat: exp=%d iat=%d", exp, iat)
 	}
-	if got, want := exp-iat, int64(powersyncTokenTTL.Seconds()); got != want {
+	if got, want := exp-iat, int64(_powersyncTokenTTL.Seconds()); got != want {
 		t.Fatalf("token TTL = %ds, want %ds", got, want)
 	}
 }
@@ -134,12 +137,12 @@ func TestTokenSubjectSanitizesInput(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"empty falls back", "", powersyncAnonymousSubject},
-		{"whitespace-only falls back", "   ", powersyncAnonymousSubject},
+		{"empty falls back", "", _powersyncAnonymousSubject},
+		{"whitespace-only falls back", "   ", _powersyncAnonymousSubject},
 		{"normal id passes through", "install-1", "install-1"},
 		{"trims surrounding whitespace", "  install-1  ", "install-1"},
-		{"oversized falls back", strings.Repeat("a", installIDHeaderMaxLen+1), powersyncAnonymousSubject},
-		{"control characters fall back", "install\n1", powersyncAnonymousSubject},
+		{"oversized falls back", strings.Repeat("a", _installIDHeaderMaxLen+1), _powersyncAnonymousSubject},
+		{"control characters fall back", "install\n1", _powersyncAnonymousSubject},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -390,12 +393,12 @@ func TestHTTPRoutesUseIndependentRateBuckets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := newHTTPRouter(nil, NewLiveHub(newHubSource(), 2), testKey(t), httpServerConfig{MetricsCredential: strings.Repeat("m", 32)})
 
-	for requestNumber := 1; requestNumber <= httpTokenRateLimit+1; requestNumber++ {
+	for requestNumber := 1; requestNumber <= _httpTokenRateLimit+1; requestNumber++ {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "/api/token/powersync", nil)
 		router.ServeHTTP(response, request)
 		want := http.StatusOK
-		if requestNumber > httpTokenRateLimit {
+		if requestNumber > _httpTokenRateLimit {
 			want = http.StatusTooManyRequests
 		}
 		if response.Code != want {
@@ -411,17 +414,17 @@ func TestHTTPRoutesUseIndependentRateBuckets(t *testing.T) {
 }
 
 func TestMetricsRequiresConfiguredCredential(t *testing.T) {
-	t.Setenv(metricsCredentialEnv, "")
+	t.Setenv(_metricsCredentialEnv, "")
 	if _, err := metricsCredentialFromEnv(); err == nil {
 		t.Fatal("empty metrics credential was accepted")
 	}
-	t.Setenv(metricsCredentialEnv, "too-short")
+	t.Setenv(_metricsCredentialEnv, "too-short")
 	if _, err := metricsCredentialFromEnv(); err == nil {
 		t.Fatal("short metrics credential was accepted")
 	}
 
 	credential := strings.Repeat("s", 32)
-	t.Setenv(metricsCredentialEnv, credential)
+	t.Setenv(_metricsCredentialEnv, credential)
 	loaded, err := metricsCredentialFromEnv()
 	if err != nil || loaded != credential {
 		t.Fatalf("metricsCredentialFromEnv() = (%q, %v)", loaded, err)
@@ -456,8 +459,8 @@ func TestMetricsRequiresConfiguredCredential(t *testing.T) {
 }
 
 func TestHTTPServerConfigFromEnvValidatesBeforeStartup(t *testing.T) {
-	t.Setenv(metricsCredentialEnv, strings.Repeat("s", 32))
-	t.Setenv(trustedProxiesEnv, "10.0.0.0/8, 192.0.2.10, 198.51.100.27/24")
+	t.Setenv(_metricsCredentialEnv, strings.Repeat("s", 32))
+	t.Setenv(_trustedProxiesEnv, "10.0.0.0/8, 192.0.2.10, 198.51.100.27/24")
 
 	config, err := httpServerConfigFromEnv()
 	if err != nil {
@@ -480,12 +483,12 @@ func TestHTTPServerConfigFromEnvValidatesBeforeStartup(t *testing.T) {
 		}
 	}
 
-	t.Setenv(metricsCredentialEnv, "short")
+	t.Setenv(_metricsCredentialEnv, "short")
 	if _, err := httpServerConfigFromEnv(); err == nil {
 		t.Fatal("short metrics token was accepted")
 	}
-	t.Setenv(metricsCredentialEnv, strings.Repeat("s", 32))
-	t.Setenv(trustedProxiesEnv, "not-an-ip")
+	t.Setenv(_metricsCredentialEnv, strings.Repeat("s", 32))
+	t.Setenv(_trustedProxiesEnv, "not-an-ip")
 	if _, err := httpServerConfigFromEnv(); err == nil {
 		t.Fatal("invalid trusted proxy was accepted")
 	}
@@ -495,7 +498,7 @@ func TestHTTPServerConfigFromEnvValidatesBeforeStartup(t *testing.T) {
 		"::ffff:0:0/96", "0.1.2.3/8",
 	} {
 		t.Run("reject unsafe proxy "+unsafe, func(t *testing.T) {
-			t.Setenv(trustedProxiesEnv, unsafe)
+			t.Setenv(_trustedProxiesEnv, unsafe)
 			if _, err := httpServerConfigFromEnv(); err == nil {
 				t.Fatalf("unsafe trusted proxy %q was accepted", unsafe)
 			}
@@ -634,28 +637,34 @@ func TestMetricsBearerParsingAndSecurityHeaders(t *testing.T) {
 
 func TestSafeAccessLoggerNeverLogsRawQuery(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	var output bytes.Buffer
+	core, logs := observer.New(zapcore.InfoLevel)
+	defer zap.ReplaceGlobals(zap.New(core))()
 	router := gin.New()
-	router.Use(safeAccessLogger(&output))
+	router.Use(safeAccessLogger())
 	router.GET("/probe", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	secret := "credential-that-must-not-be-logged"
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/probe?token="+secret, nil))
-	if strings.Contains(output.String(), secret) || strings.Contains(output.String(), "token=") {
-		t.Fatalf("safe logger exposed query: %q", output.String())
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("access log entries = %d, want 1", len(entries))
 	}
-	for _, want := range []string{"GET", "/probe", "204"} {
-		if !strings.Contains(output.String(), want) {
-			t.Fatalf("safe logger output %q missing %q", output.String(), want)
+	rendered := fmt.Sprint(entries[0].Message, entries[0].ContextMap())
+	if strings.Contains(rendered, secret) || strings.Contains(rendered, "token=") {
+		t.Fatalf("safe logger exposed query: %q", rendered)
+	}
+	fields := entries[0].ContextMap()
+	for key, want := range map[string]any{"method": "GET", "path": "/probe", "status": int64(204)} {
+		if fields[key] != want {
+			t.Fatalf("access log %s = %v, want %v", key, fields[key], want)
 		}
 	}
 }
 
 func TestSafeAccessLoggerRecordsHTTPMetricsByRoutePattern(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	var output bytes.Buffer
 	router := gin.New()
-	router.Use(safeAccessLogger(&output))
+	router.Use(safeAccessLogger())
 	router.GET("/probe-metrics/:id", func(c *gin.Context) {
 		if c.Param("id") == "fail" {
 			c.Status(http.StatusInternalServerError)
@@ -684,7 +693,7 @@ func TestSafeAccessLoggerRecordsHTTPMetricsByRoutePattern(t *testing.T) {
 func TestSafeAccessLoggerLabelsUnmatchedRoutesSeparately(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.Use(safeAccessLogger(&bytes.Buffer{}))
+	router.Use(safeAccessLogger())
 
 	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/probe-metrics/does-not-exist-route", nil))
 

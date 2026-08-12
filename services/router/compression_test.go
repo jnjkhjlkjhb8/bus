@@ -18,12 +18,12 @@ import (
 // Stands in for the verbatim TDX fare JSON a Bus_Fare carries. It is far more
 // repetitive than real data, so the ratios these tests log mean nothing — the
 // assertions are only that compression happened at all.
-var compressibleFare = strings.Repeat(`{"TicketType":1,"FareClass":1,"Price":145},`, 500)
+var _compressibleFare = strings.Repeat(`{"TicketType":1,"FareClass":1,"Price":145},`, 500)
 
 const (
-	compressionUnaryMethod  = "/router.test.Fare/Get"
-	compressionStreamMethod = "/router.test.Fare/Watch"
-	compressionStreamFrames = 3
+	_compressionUnaryMethod  = "/router.test.Fare/Get"
+	_compressionStreamMethod = "/router.test.Fare/Watch"
+	_compressionStreamFrames = 3
 )
 
 // The router registers no compressor of its own; it relies on grpc-go answering
@@ -36,11 +36,11 @@ func TestServerMirrorsGzipFromClient(t *testing.T) {
 	conn, seen := compressionTestConn(t)
 
 	out := &pb.Bus_Fare{}
-	if err := conn.Invoke(context.Background(), compressionUnaryMethod, &pb.Bus_Fare{}, out, grpc.UseCompressor(gzip.Name)); err != nil {
+	if err := conn.Invoke(context.Background(), _compressionUnaryMethod, &pb.Bus_Fare{}, out, grpc.UseCompressor(gzip.Name)); err != nil {
 		t.Fatalf("invoke: %v", err)
 	}
-	if string(out.SectionFaresJson) != compressibleFare {
-		t.Fatalf("payload round-tripped wrong: got %d bytes, want %d", len(out.SectionFaresJson), len(compressibleFare))
+	if string(out.SectionFaresJson) != _compressibleFare {
+		t.Fatalf("payload round-tripped wrong: got %d bytes, want %d", len(out.SectionFaresJson), len(_compressibleFare))
 	}
 	assertCompressed(t, seen, 1)
 }
@@ -53,7 +53,7 @@ func TestServerMirrorsGzipOnServerStream(t *testing.T) {
 	conn, seen := compressionTestConn(t)
 
 	stream, err := conn.NewStream(context.Background(),
-		&grpc.StreamDesc{ServerStreams: true}, compressionStreamMethod, grpc.UseCompressor(gzip.Name))
+		&grpc.StreamDesc{ServerStreams: true}, _compressionStreamMethod, grpc.UseCompressor(gzip.Name))
 	if err != nil {
 		t.Fatalf("new stream: %v", err)
 	}
@@ -72,11 +72,11 @@ func TestServerMirrorsGzipOnServerStream(t *testing.T) {
 		if err != nil {
 			t.Fatalf("recv: %v", err)
 		}
-		if string(out.SectionFaresJson) != compressibleFare {
-			t.Fatalf("frame round-tripped wrong: got %d bytes, want %d", len(out.SectionFaresJson), len(compressibleFare))
+		if string(out.SectionFaresJson) != _compressibleFare {
+			t.Fatalf("frame round-tripped wrong: got %d bytes, want %d", len(out.SectionFaresJson), len(_compressibleFare))
 		}
 	}
-	assertCompressed(t, seen, compressionStreamFrames)
+	assertCompressed(t, seen, _compressionStreamFrames)
 }
 
 func assertCompressed(t *testing.T, seen *payloadSizes, wantFrames int) {
@@ -93,11 +93,11 @@ func assertCompressed(t *testing.T, seen *payloadSizes, wantFrames int) {
 }
 
 // compressionTestConn serves one unary and one server-streaming method off a
-// bufconn, both replying with compressibleFare, and returns a client wired to a
+// bufconn, both replying with _compressibleFare, and returns a client wired to a
 // stats handler that measures what arrives.
 func compressionTestConn(t *testing.T) (*grpc.ClientConn, *payloadSizes) {
 	t.Helper()
-	reply := &pb.Bus_Fare{SectionFaresJson: []byte(compressibleFare)}
+	reply := &pb.Bus_Fare{SectionFaresJson: []byte(_compressibleFare)}
 
 	desc := &grpc.ServiceDesc{
 		ServiceName: "router.test.Fare",
@@ -117,7 +117,7 @@ func compressionTestConn(t *testing.T) (*grpc.ClientConn, *payloadSizes) {
 				if err := stream.RecvMsg(&pb.Bus_Fare{}); err != nil {
 					return err
 				}
-				for range compressionStreamFrames {
+				for range _compressionStreamFrames {
 					if err := stream.SendMsg(reply); err != nil {
 						return err
 					}

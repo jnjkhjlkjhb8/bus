@@ -213,6 +213,34 @@ func TestBuildBusEtaMap(t *testing.T) {
 	})
 }
 
+// An estimate published under another operator's StopUID still belongs to this
+// stop; the primary UID is preferred when both are present.
+func TestEtaForStopResolvesOperatorAliases(t *testing.T) {
+	stop := busStationmap{
+		SubRouteUID:   "THB1234",
+		Direction:     0,
+		StopUID:       "OP1_S5",
+		AliasStopUIDs: []string{"OP2_S5", "OP3_S5"},
+	}
+	etamap := map[etaKey]rawBusEsimated{
+		{"THB1234", 0, "OP3_S5"}: {EstimatedTime: 240},
+	}
+
+	got, ok := etaForStop(etamap, stop)
+	if !ok || got.EstimatedTime != 240 {
+		t.Fatalf("alias lookup = %+v (ok=%v), want the aliased estimate", got, ok)
+	}
+
+	etamap[etaKey{"THB1234", 0, "OP1_S5"}] = rawBusEsimated{EstimatedTime: 60}
+	if got, _ = etaForStop(etamap, stop); got.EstimatedTime != 60 {
+		t.Errorf("primary lookup = %+v, want the stop's own entry to win", got)
+	}
+
+	if _, ok := etaForStop(map[etaKey]rawBusEsimated{}, stop); ok {
+		t.Error("empty map reported a match")
+	}
+}
+
 func TestBuildBusPositionMap(t *testing.T) {
 	posit := []rawBusPosition{
 		{PlateNumb: "AAA-1", SubRouteUID: "R1", Direction: 0, Speed: 42.7, Azimuth: 180},
@@ -222,7 +250,7 @@ func TestBuildBusPositionMap(t *testing.T) {
 	}
 	posit[0].BusPosition.PositionLon = 121.5
 	posit[0].BusPosition.PositionLat = 25.0
-	m := buildDirectionAwareBusPositionMap("Taipei", posit)
+	m := buildDirectionAwareBusPositionMap("Taipei", posit, time.Now())
 	if len(m["R1\x000"]) != 2 {
 		t.Fatalf("R1 direction 0 buses = %d, want 2", len(m["R1\x000"]))
 	}
@@ -244,7 +272,7 @@ func TestBuildBusPositionMap(t *testing.T) {
 func TestParseGPSTimeUnix(t *testing.T) {
 	// +08:00 offset (the common TDX form) and a zone-less string read as Taipei
 	// both resolve to the same instant; junk and empty fall back to 0.
-	want := time.Date(2026, 7, 13, 8, 30, 0, 0, taipei).Unix()
+	want := time.Date(2026, 7, 13, 8, 30, 0, 0, _taipei).Unix()
 	cases := map[string]int64{
 		"2026-07-13T08:30:00+08:00": want,
 		"2026-07-13T08:30:00":       want,
@@ -331,6 +359,91 @@ func TestBuildUpstreamObs(t *testing.T) {
 	}
 }
 
+// TDX keeps a vehicle's last A1 record for two hours; only the fresh ones may be
+// published, and a record whose GPSTime does not parse carries no age to judge.
+func TestBuildBusPositionMapDropsStaleGPS(t *testing.T) {
+	now := time.Date(2026, 7, 10, 8, 0, 0, 0, _taipei)
+	posit := []rawBusPosition{
+		{PlateNumb: "FRESH", SubRouteUID: "R1", GPSTime: now.Add(-1 * time.Minute).Format(time.RFC3339)},
+		{PlateNumb: "STALE", SubRouteUID: "R1", GPSTime: now.Add(-2 * time.Hour).Format(time.RFC3339)},
+		{PlateNumb: "NO-CLOCK", SubRouteUID: "R1", GPSTime: ""},
+	}
+	buses := buildDirectionAwareBusPositionMap("Taipei", posit, now)["R1\x000"]
+	if len(buses) != 2 {
+		t.Fatalf("published buses = %d, want 2 (fresh + unparseable)", len(buses))
+	}
+	for _, bus := range buses {
+		if bus.PlateNumb == "STALE" {
+			t.Error("a two-hour-old GPS record was published")
+		}
+	}
+}
+
+// TDX's own system refuses to estimate arrivals from a vehicle that ended its
+// duty or left service, so neither may be attributed to a stop.
+func TestNearestBusSkipsOutOfService(t *testing.T) {
+	stopLat, stopLon := 25.0400, 121.5300
+	buses := []*models.BusPosition{
+		{PlateNumb: "REFUELLING", PositionLat: 25.0401, PositionLon: 121.5301, BusStatus: 99, DutyStatus: 2},
+		{PlateNumb: "OFF-DUTY", PositionLat: 25.0402, PositionLon: 121.5302, DutyStatus: 2},
+		{PlateNumb: "IN-SERVICE", PositionLat: 25.0500, PositionLon: 121.5400, Speed: 20},
+	}
+
+	t.Run("nearest in-service vehicle wins over a closer out-of-service one", func(t *testing.T) {
+		plate, speed, dist := nearestBus(stopLat, stopLon, buses)
+		if plate == nil || *plate != "IN-SERVICE" {
+			t.Fatalf("plate = %v, want IN-SERVICE", plate)
+		}
+		if speed == nil || *speed != 20 || dist == nil || *dist <= 0 {
+			t.Errorf("speed = %v dist = %v, want 20 and positive metres", speed, dist)
+		}
+	})
+
+	t.Run("only out-of-service vehicles returns nil", func(t *testing.T) {
+		plate, speed, dist := nearestBus(stopLat, stopLon, buses[:2])
+		if plate != nil || speed != nil || dist != nil {
+			t.Errorf("want all nil, got %v %v %v", plate, speed, dist)
+		}
+	})
+}
+
+// The measurement behind FDPL-79: an estimate the source stopped recomputing
+// shows up as SrcUpdateTime running ahead of DataTime.
+func TestCountFrozenEstimates(t *testing.T) {
+	stamp := func(t time.Time) string { return t.Format(time.RFC3339) }
+	base := time.Date(2026, 7, 10, 8, 0, 0, 0, _taipei)
+	eat := []rawBusEsimated{
+		{SrcUpdateTime: stamp(base), DataTime: stamp(base.Add(-10 * time.Second))},
+		{SrcUpdateTime: stamp(base), DataTime: stamp(base.Add(-5 * time.Minute))},
+		{SrcUpdateTime: stamp(base), DataTime: stamp(base.Add(-31 * time.Minute))},
+		{SrcUpdateTime: stamp(base)},
+		{DataTime: stamp(base)},
+	}
+	if got := countFrozenEstimates(eat); got != 2 {
+		t.Errorf("frozen count = %d, want 2", got)
+	}
+}
+
+func TestNormalizeArrivalPlate(t *testing.T) {
+	tests := []struct {
+		name  string
+		plate string
+		want  string
+	}{
+		{name: "trims and upper-cases", plate: " kka-1234 ", want: "KKA-1234"},
+		{name: "passed-stop marker is not a plate", plate: "-1", want: ""},
+		{name: "padded passed-stop marker", plate: " -1 ", want: ""},
+		{name: "empty stays empty", plate: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeArrivalPlate(tt.plate); got != tt.want {
+				t.Errorf("normalizeArrivalPlate(%q) = %q, want %q", tt.plate, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNearestBus(t *testing.T) {
 	stopLat, stopLon := 25.0400, 121.5300
 	buses := []*models.BusPosition{
@@ -375,11 +488,11 @@ func TestComputeArrivalUnix(t *testing.T) {
 		nextBusTime string
 		want        int64
 	}{
-		{"status 0 positive estimate", 0, 90, "", now.Add(90 * time.Second).Unix()},
-		{"status 0 non-positive estimate stays zero", 0, 0, "", 0},
-		{"status 1 valid next bus time", 1, 0, "2026-07-10T08:05:00Z", time.Date(2026, 7, 10, 8, 5, 0, 0, time.UTC).Unix()},
-		{"status 1 empty next bus time stays zero", 1, 0, "", 0},
-		{"status 1 unparseable next bus time stays zero", 1, 0, "not-a-time", 0},
+		{name: "status 0 positive estimate", status: 0, est: 90, nextBusTime: "", want: now.Add(90 * time.Second).Unix()},
+		{name: "status 0 non-positive estimate stays zero", status: 0, est: 0, nextBusTime: "", want: 0},
+		{name: "status 1 valid next bus time", status: 1, est: 0, nextBusTime: "2026-07-10T08:05:00Z", want: time.Date(2026, 7, 10, 8, 5, 0, 0, time.UTC).Unix()},
+		{name: "status 1 empty next bus time stays zero", status: 1, est: 0, nextBusTime: "", want: 0},
+		{name: "status 1 unparseable next bus time stays zero", status: 1, est: 0, nextBusTime: "not-a-time", want: 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

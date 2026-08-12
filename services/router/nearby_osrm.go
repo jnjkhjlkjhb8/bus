@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,7 +30,7 @@ func (r *osrmWalkingRouter) RouteMany(ctx context.Context, origin GeoPoint, dest
 		return nil, nil
 	}
 	if r == nil || r.client == nil {
-		return nil, fmt.Errorf("OSRM client unavailable")
+		return nil, errors.New("OSRM client unavailable")
 	}
 
 	coordinates := make([]string, 0, len(destinations)+1)
@@ -52,7 +53,7 @@ func (r *osrmWalkingRouter) RouteMany(ctx context.Context, origin GeoPoint, dest
 		return nil, err
 	}
 	if !response.IsSuccess() || result.Code != "Ok" || len(result.Durations) == 0 {
-		return nil, fmt.Errorf("OSRM table response invalid: status=%d code=%q", response.StatusCode(), result.Code)
+		return nil, _oops.With("status_code", response.StatusCode()).With("result__code", result.Code).Errorf("OSRM table response invalid: status= code=")
 	}
 
 	metrics := make([]walkingMetric, len(destinations))

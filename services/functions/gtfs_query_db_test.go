@@ -110,9 +110,9 @@ func TestGTFSCalendarWindow(t *testing.T) {
 	// calendar makes them null, and the only thing this reads them for is the
 	// failure message.
 	err := pool.QueryRow(ctx, `
-		WITH rail AS (SELECT DISTINCT service_date FROM (`+railTripSource+`) r),
+		WITH rail AS (SELECT DISTINCT service_date FROM (`+_railTripSource+`) r),
 		     cal AS (SELECT DISTINCT to_date(date, 'YYYYMMDD') AS service_date
-		             FROM (`+gtfsCalendarDatesSQL+`) c)
+		             FROM (`+_gtfsCalendarDatesSQL+`) c)
 		SELECT (SELECT count(*) FROM rail),
 		       (SELECT count(*) FROM cal),
 		       (SELECT count(*) FROM (
@@ -130,9 +130,9 @@ func TestGTFSCalendarWindow(t *testing.T) {
 	if railDays == 0 {
 		t.Skip("no rail timetable landed; skipping calendar window check")
 	}
-	if calendarDays > gtfsCalendarDays {
+	if calendarDays > _gtfsCalendarDays {
 		t.Errorf("calendar_dates covers %d days (%s..%s), want at most %d",
-			calendarDays, first, last, gtfsCalendarDays)
+			calendarDays, first, last, _gtfsCalendarDays)
 	}
 	if disagreeing != 0 {
 		t.Errorf("%d dates are stated by rail trips or by calendar_dates but not both; "+
@@ -148,13 +148,13 @@ func TestGTFSCalendarWindow(t *testing.T) {
 	if err := pool.QueryRow(ctx, `
 		SELECT count(*) FILTER (WHERE service_date < (now() AT TIME ZONE 'Asia/Taipei')::date),
 		       count(*) FILTER (WHERE service_date >= (now() AT TIME ZONE 'Asia/Taipei')::date + $1::int)
-		FROM (SELECT DISTINCT service_date FROM (`+railTripSource+`) r) d`,
-		gtfsCalendarDays).Scan(&past, &future); err != nil {
+		FROM (SELECT DISTINCT service_date FROM (`+_railTripSource+`) r) d`,
+		_gtfsCalendarDays).Scan(&past, &future); err != nil {
 		t.Fatalf("read window bounds: %v", err)
 	}
 	if past != 0 || future != 0 {
 		t.Errorf("rail states %d dates before today and %d at or beyond day %d",
-			past, future, gtfsCalendarDays)
+			past, future, _gtfsCalendarDays)
 	}
 }
 
@@ -231,21 +231,21 @@ func TestGTFSFaresAreConsistent(t *testing.T) {
 		// An empty area is a wildcard, not a reference: a flat-fare network
 		// prices every leg on it regardless of where the rider boards.
 		{"leg rules naming an area areas.txt omits", `
-			SELECT count(*) FROM (` + gtfsFareLegRulesSQL + `) r
-			WHERE (r.from_area_id <> '' AND r.from_area_id NOT IN (SELECT area_id FROM (` + gtfsAreasSQL + `) a1))
-			   OR (r.to_area_id   <> '' AND r.to_area_id   NOT IN (SELECT area_id FROM (` + gtfsAreasSQL + `) a2))`},
+			SELECT count(*) FROM (` + _gtfsFareLegRulesSQL + `) r
+			WHERE (r.from_area_id <> '' AND r.from_area_id NOT IN (SELECT area_id FROM (` + _gtfsAreasSQL + `) a1))
+			   OR (r.to_area_id   <> '' AND r.to_area_id   NOT IN (SELECT area_id FROM (` + _gtfsAreasSQL + `) a2))`},
 		{"leg rules naming a product fare_products.txt omits", `
-			SELECT count(*) FROM (` + gtfsFareLegRulesSQL + `) r
-			WHERE r.fare_product_id NOT IN (SELECT fare_product_id FROM (` + gtfsFareProductsSQL + `) p)`},
+			SELECT count(*) FROM (` + _gtfsFareLegRulesSQL + `) r
+			WHERE r.fare_product_id NOT IN (SELECT fare_product_id FROM (` + _gtfsFareProductsSQL + `) p)`},
 		{"stop_areas naming a stop stops.txt omits", `
-			SELECT count(*) FROM (` + gtfsStopAreasSQL + `) sa
-			WHERE sa.stop_id NOT IN (SELECT stop_id FROM (` + gtfsStopsSQL + `) s)`},
+			SELECT count(*) FROM (` + _gtfsStopAreasSQL + `) sa
+			WHERE sa.stop_id NOT IN (SELECT stop_id FROM (` + _gtfsStopsSQL + `) s)`},
 		{"areas with no stop in them", `
-			SELECT count(*) FROM (` + gtfsAreasSQL + `) a
-			WHERE a.area_id NOT IN (SELECT area_id FROM (` + gtfsStopAreasSQL + `) sa)`},
+			SELECT count(*) FROM (` + _gtfsAreasSQL + `) a
+			WHERE a.area_id NOT IN (SELECT area_id FROM (` + _gtfsStopAreasSQL + `) sa)`},
 		{"leg rules on a network no route belongs to", `
-			SELECT count(*) FROM (` + gtfsFareLegRulesSQL + `) r
-			WHERE r.network_id NOT IN (SELECT network_id FROM (` + gtfsRoutesSQL + `) ro)`},
+			SELECT count(*) FROM (` + _gtfsFareLegRulesSQL + `) r
+			WHERE r.network_id NOT IN (SELECT network_id FROM (` + _gtfsRoutesSQL + `) ro)`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var bad int
@@ -260,8 +260,8 @@ func TestGTFSFaresAreConsistent(t *testing.T) {
 
 	var products, rules int
 	if err := tx.QueryRow(ctx,
-		`SELECT (SELECT count(*) FROM (`+gtfsFareProductsSQL+`) p),
-		        (SELECT count(*) FROM (`+gtfsFareLegRulesSQL+`) r)`).Scan(&products, &rules); err != nil {
+		`SELECT (SELECT count(*) FROM (`+_gtfsFareProductsSQL+`) p),
+		        (SELECT count(*) FROM (`+_gtfsFareLegRulesSQL+`) r)`).Scan(&products, &rules); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	t.Logf("fare products=%d leg rules=%d", products, rules)
@@ -310,22 +310,22 @@ func TestGTFSPathwaysAreConsistent(t *testing.T) {
 
 	for _, c := range []struct{ name, query string }{
 		{"pathways naming a stop stops.txt omits", `
-			SELECT count(*) FROM (` + gtfsPathwaysSQL + `) p
-			WHERE p.from_stop_id NOT IN (SELECT stop_id FROM (` + gtfsStopsSQL + `) s1)
-			   OR p.to_stop_id   NOT IN (SELECT stop_id FROM (` + gtfsStopsSQL + `) s2)`},
+			SELECT count(*) FROM (` + _gtfsPathwaysSQL + `) p
+			WHERE p.from_stop_id NOT IN (SELECT stop_id FROM (` + _gtfsStopsSQL + `) s1)
+			   OR p.to_stop_id   NOT IN (SELECT stop_id FROM (` + _gtfsStopsSQL + `) s2)`},
 		{"pathways ending on a station rather than an entrance or platform", `
-			SELECT count(*) FROM (` + gtfsPathwaysSQL + `) p
-			JOIN (` + gtfsStopsSQL + `) a ON a.stop_id = p.from_stop_id
-			JOIN (` + gtfsStopsSQL + `) b ON b.stop_id = p.to_stop_id
+			SELECT count(*) FROM (` + _gtfsPathwaysSQL + `) p
+			JOIN (` + _gtfsStopsSQL + `) a ON a.stop_id = p.from_stop_id
+			JOIN (` + _gtfsStopsSQL + `) b ON b.stop_id = p.to_stop_id
 			WHERE a.location_type <> 2 OR b.location_type <> 0`},
 		{"pathways whose ends belong to different stations", `
-			SELECT count(*) FROM (` + gtfsPathwaysSQL + `) p
-			JOIN (` + gtfsStopsSQL + `) a ON a.stop_id = p.from_stop_id
-			JOIN (` + gtfsStopsSQL + `) b ON b.stop_id = p.to_stop_id
+			SELECT count(*) FROM (` + _gtfsPathwaysSQL + `) p
+			JOIN (` + _gtfsStopsSQL + `) a ON a.stop_id = p.from_stop_id
+			JOIN (` + _gtfsStopsSQL + `) b ON b.stop_id = p.to_stop_id
 			WHERE a.parent_station <> b.parent_station`},
 		{"duplicate pathway_id", `
 			SELECT COALESCE(sum(n) - count(*), 0) FROM (
-			  SELECT count(*) AS n FROM (` + gtfsPathwaysSQL + `) p GROUP BY p.pathway_id
+			  SELECT count(*) AS n FROM (` + _gtfsPathwaysSQL + `) p GROUP BY p.pathway_id
 			) d`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -343,9 +343,9 @@ func TestGTFSPathwaysAreConsistent(t *testing.T) {
 	// router can route to and not out of.
 	var stranded int
 	if err := tx.QueryRow(ctx, `
-		SELECT count(*) FROM (`+gtfsStopsSQL+`) s
+		SELECT count(*) FROM (`+_gtfsStopsSQL+`) s
 		WHERE s.location_type = 2
-		  AND s.stop_id NOT IN (SELECT from_stop_id FROM (`+gtfsPathwaysSQL+`) p)`).Scan(&stranded); err != nil {
+		  AND s.stop_id NOT IN (SELECT from_stop_id FROM (`+_gtfsPathwaysSQL+`) p)`).Scan(&stranded); err != nil {
 		t.Fatalf("stranded: %v", err)
 	}
 	if stranded != 0 {
@@ -376,9 +376,9 @@ func TestGTFSTranslationsReferenceEmittedRecords(t *testing.T) {
 	ctx := context.Background()
 
 	for _, c := range []struct{ table, emitted, idColumn string }{
-		{"agency", gtfsAgencySQL, "agency_id"},
-		{"stops", gtfsStopsSQL, "stop_id"},
-		{"routes", gtfsRoutesSQL, "route_id"},
+		{"agency", _gtfsAgencySQL, "agency_id"},
+		{"stops", _gtfsStopsSQL, "stop_id"},
+		{"routes", _gtfsRoutesSQL, "route_id"},
 	} {
 		t.Run(c.table, func(t *testing.T) {
 			var translated, dangling, emitted int
@@ -388,7 +388,7 @@ func TestGTFSTranslationsReferenceEmittedRecords(t *testing.T) {
 				       count(*) FILTER (WHERE tr.record_id NOT IN (SELECT `+c.idColumn+` FROM (`+c.emitted+`) e)),
 				       min(tr.record_id) FILTER (WHERE tr.record_id NOT IN (SELECT `+c.idColumn+` FROM (`+c.emitted+`) e2)),
 				       (SELECT count(*) FROM (`+c.emitted+`) e3)
-				FROM (`+gtfsTranslationsSQL+`) tr
+				FROM (`+_gtfsTranslationsSQL+`) tr
 				WHERE tr.table_name = $1`, c.table).Scan(&translated, &dangling, &sample, &emitted)
 			if err != nil {
 				t.Fatalf("compare: %v", err)

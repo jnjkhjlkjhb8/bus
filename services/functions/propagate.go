@@ -2,7 +2,7 @@ package main
 
 import "time"
 
-// delayDecayBase is the per-stop exponential decay applied to a vehicle's
+// _delayDecayBase is the per-stop exponential decay applied to a vehicle's
 // observed schedule delay as it propagates downstream: a delay of D seconds at
 // the vehicle's latest observed stop contributes D * delayDecayBase^(seqGap) at
 // a stop seqGap stops further along.
@@ -11,13 +11,13 @@ import "time"
 // beat the bare-schedule fallback, not a traffic model. Upgrade path: learn a
 // per-route (or per-route/hour) decay from bus_eta_prediction_error residuals,
 // or weight the decay by running time once bus_segment_time is dense.
-const delayDecayBase = 0.9
+const _delayDecayBase = 0.9
 
-// propagationStaleAfter bounds how old an upstream observation may be to still
+// _propagationStaleAfter bounds how old an upstream observation may be to still
 // describe the vehicle's current delay. Beyond this the vehicle may have
 // recovered or fallen further behind, so the observation is dropped and the
 // caller falls through to the model tier.
-const propagationStaleAfter = 3 * time.Minute
+const _propagationStaleAfter = 3 * time.Minute
 
 // upstreamObs is one fresh observation of a specific vehicle (plate) at a stop
 // on a sub_route/direction: its position (stopSequence) and how far ahead or
@@ -42,7 +42,7 @@ func latestUpstreamDelay(obs []upstreamObs, targetSeq int, now time.Time) (delay
 		if o.stopSequence >= targetSeq {
 			continue
 		}
-		if now.Sub(o.observedAt) > propagationStaleAfter {
+		if now.Sub(o.observedAt) > _propagationStaleAfter {
 			continue
 		}
 		if o.stopSequence > seq {
@@ -63,7 +63,7 @@ func decayDelay(delay float64, seqGap int) float64 {
 	}
 	factor := 1.0
 	for range seqGap {
-		factor *= delayDecayBase
+		factor *= _delayDecayBase
 	}
 	return delay * factor
 }

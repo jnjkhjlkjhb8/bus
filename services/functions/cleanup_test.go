@@ -37,10 +37,10 @@ func TestCleanupPredictionErrorsCapsDeleteBatches(t *testing.T) {
 
 	perrDelete := regexp.QuoteMeta("bus_eta_prediction_error")
 	db.ExpectExec(perrDelete).
-		WithArgs(cleanupBatchSize).
-		WillReturnResult(pgxmock.NewResult("DELETE", int64(cleanupBatchSize)))
+		WithArgs(_cleanupBatchSize).
+		WillReturnResult(pgxmock.NewResult("DELETE", int64(_cleanupBatchSize)))
 	db.ExpectExec(perrDelete).
-		WithArgs(cleanupBatchSize).
+		WithArgs(_cleanupBatchSize).
 		WillReturnResult(pgxmock.NewResult("DELETE", 37))
 
 	if err := cleanupPredictionErrors(context.Background(), db); err != nil {
@@ -81,8 +81,8 @@ func TestCleanupPredictionErrorsStopsOnContextCancellation(t *testing.T) {
 	// The first batch reports a full batch, so the loop wants to continue;
 	// cancellation lands immediately after, so no second Exec may issue.
 	db.ExpectExec(regexp.QuoteMeta("bus_eta_prediction_error")).
-		WithArgs(cleanupBatchSize).
-		WillReturnResult(pgxmock.NewResult("DELETE", int64(cleanupBatchSize)))
+		WithArgs(_cleanupBatchSize).
+		WillReturnResult(pgxmock.NewResult("DELETE", int64(_cleanupBatchSize)))
 
 	err := cleanupPredictionErrors(ctx, wrapped)
 	if err == nil {
@@ -99,7 +99,7 @@ func TestCleanupPredictionErrorsReportsFailure(t *testing.T) {
 	db := newRetentionMock(t)
 	wantErr := errors.New("connection reset")
 	db.ExpectExec(regexp.QuoteMeta("bus_eta_prediction_error")).
-		WithArgs(cleanupBatchSize).
+		WithArgs(_cleanupBatchSize).
 		WillReturnError(wantErr)
 
 	err := cleanupPredictionErrors(context.Background(), db)

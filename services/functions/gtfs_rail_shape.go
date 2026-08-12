@@ -42,6 +42,14 @@ var (
 	railShapeSimplifyToleranceSQL = strconv.FormatFloat(railShapeSimplifyTolerance, 'f', -1, 64)
 )
 
+// The rail branch's working tables, named here in the same form as the GTFS
+// table constants in gtfs_fares.go. gtfsRailSegSQL and gtfsRailTripShapeSQL
+// are what fill them; gtfsRailShapePointsSQL reads both back.
+const (
+	_gtfsRailSegTable       = "gtfs_rail_seg"
+	_gtfsRailTripShapeTable = "gtfs_rail_trip_shape"
+)
+
 // gtfsRailSegSQL clips one rail line between every distinct pair of
 // consecutive stops the feed's rail trips call at.
 //
@@ -66,7 +74,7 @@ WITH rail_stop AS (
   SELECT s.stop_id,
          CASE WHEN s.stop_id LIKE 'TRA:%' THEN 'tra' ELSE 'thsr' END AS mode,
          ST_SetSRID(ST_MakePoint(s.stop_lon, s.stop_lat), 4326) AS pt
-  FROM ` + gtfsStopTable + ` s
+  FROM ` + _gtfsStopTable + ` s
   WHERE s.location_type = 0
     AND (s.stop_id LIKE 'TRA:%' OR s.stop_id LIKE 'THSR:%')
 ), component AS (
@@ -90,7 +98,7 @@ WITH rail_stop AS (
   FROM (
     SELECT st.stop_id AS from_stop,
            LEAD(st.stop_id) OVER (PARTITION BY st.trip_id ORDER BY st.stop_sequence) AS to_stop
-    FROM ` + gtfsStopTimeTable + ` st
+    FROM ` + _gtfsStopTimeTable + ` st
     WHERE st.trip_id LIKE 'TRA:%' OR st.trip_id LIKE 'THSR:%'
   ) s
   WHERE to_stop IS NOT NULL
@@ -134,8 +142,8 @@ SELECT
   st.trip_id,
   'R:' || split_part(st.trip_id, ':', 1) || ':' ||
     md5(string_agg(st.stop_id, '>' ORDER BY st.stop_sequence)) AS shape_id
-FROM ` + gtfsStopTimeTable + ` st
-LEFT JOIN ` + gtfsStopTable + ` s ON s.stop_id = st.stop_id
+FROM ` + _gtfsStopTimeTable + ` st
+LEFT JOIN ` + _gtfsStopTable + ` s ON s.stop_id = st.stop_id
 WHERE st.trip_id LIKE 'TRA:%' OR st.trip_id LIKE 'THSR:%'
 GROUP BY st.trip_id
 HAVING count(*) > 1 AND count(*) = count(s.stop_id)`
@@ -175,14 +183,14 @@ FROM (
            LEAD(st.stop_id) OVER (PARTITION BY r.shape_id ORDER BY st.stop_sequence) AS to_stop
     FROM (
       SELECT DISTINCT ON (shape_id) shape_id, trip_id
-      FROM ` + gtfsRailTripShapeTable + `
+      FROM ` + _gtfsRailTripShapeTable + `
       ORDER BY shape_id, trip_id
     ) r
-    JOIN ` + gtfsStopTimeTable + ` st ON st.trip_id = r.trip_id
+    JOIN ` + _gtfsStopTimeTable + ` st ON st.trip_id = r.trip_id
   ) s
-  JOIN ` + gtfsStopTable + ` a ON a.stop_id = s.from_stop
-  JOIN ` + gtfsStopTable + ` b ON b.stop_id = s.to_stop
-  LEFT JOIN ` + gtfsRailSegTable + ` g
+  JOIN ` + _gtfsStopTable + ` a ON a.stop_id = s.from_stop
+  JOIN ` + _gtfsStopTable + ` b ON b.stop_id = s.to_stop
+  LEFT JOIN ` + _gtfsRailSegTable + ` g
     ON g.from_stop = s.from_stop AND g.to_stop = s.to_stop
   WHERE s.to_stop IS NOT NULL
 ) leg

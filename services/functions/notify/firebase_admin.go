@@ -2,7 +2,6 @@ package notify
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 
@@ -47,18 +46,18 @@ func NewFirebaseSender(ctx context.Context) (Sender, error) {
 	}
 	projectID := strings.TrimSpace(os.Getenv("FIREBASE_PROJECT_ID"))
 	if projectID == "" {
-		return nil, fmt.Errorf("FIREBASE_PROJECT_ID is required when Firebase is enabled")
+		return nil, _oops.Errorf("FIREBASE_PROJECT_ID is required when Firebase is enabled")
 	}
 	if _, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/firebase.messaging"); err != nil {
-		return nil, fmt.Errorf("load Firebase credentials: %w", err)
+		return nil, _oops.Wrapf(err, "load Firebase credentials")
 	}
 	app, err := firebase.NewApp(ctx, &firebase.Config{ProjectID: projectID})
 	if err != nil {
-		return nil, fmt.Errorf("initialize Firebase Admin: %w", err)
+		return nil, _oops.Wrapf(err, "initialize Firebase Admin")
 	}
 	client, err := app.Messaging(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("initialize Firebase Messaging: %w", err)
+		return nil, _oops.Wrapf(err, "initialize Firebase Messaging")
 	}
 	return firebaseSender{client: client}, nil
 }

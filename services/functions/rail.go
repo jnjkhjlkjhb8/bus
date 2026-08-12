@@ -170,14 +170,14 @@ func railMask(f railTrainFlags) uint16 {
 
 func validateBinaryFlag(field string, value uint8) error {
 	if value > 1 {
-		return fmt.Errorf("%s must be 0 or 1, got %d", field, value)
+		return _oops.With("field", field).With("value", value).Errorf("must be 0 or 1")
 	}
 	return nil
 }
 
 func requiredBinaryFlag(field string, value *uint8) (uint8, error) {
 	if value == nil {
-		return 0, fmt.Errorf("%s is required", field)
+		return 0, _oops.With("field", field).Errorf("is required")
 	}
 	if err := validateBinaryFlag(field, *value); err != nil {
 		return 0, err
@@ -191,10 +191,10 @@ func validateTraTimetable(timetable rawTraTimetable, partitionDate string) error
 		trainDate = partitionDate
 	}
 	if _, err := time.Parse(time.DateOnly, trainDate); err != nil {
-		return fmt.Errorf("TrainDate %q: %w", trainDate, err)
+		return _oops.With("train_date", trainDate).Wrapf(err, "TrainDate")
 	}
 	if trainDate != partitionDate {
-		return fmt.Errorf("TrainDate %q does not match partition date %q", trainDate, partitionDate)
+		return _oops.With("train_date", trainDate).With("partition_date", partitionDate).Errorf("TrainDate does not match partition date")
 	}
 	info := timetable.DailyTrainInfo
 	if strings.TrimSpace(info.TrainNo) == "" {
@@ -210,7 +210,7 @@ func validateTraTimetable(timetable rawTraTimetable, partitionDate string) error
 		return errors.New("missing Direction")
 	}
 	if *info.Direction > 1 {
-		return fmt.Errorf("invalid Direction %d, want 0 or 1", *info.Direction)
+		return _oops.With("direction", *info.Direction).Errorf("invalid Direction, want 0 or 1")
 	}
 	for _, flag := range []struct {
 		name  string
@@ -234,19 +234,19 @@ func validateTraTimetable(timetable rawTraTimetable, partitionDate string) error
 	}
 	for index, stop := range timetable.StopTimes {
 		if stop.StopSequence == 0 {
-			return fmt.Errorf("StopTimes element %d StopSequence must be positive", index)
+			return _oops.With("index", index).Errorf("StopTimes element StopSequence must be positive")
 		}
 		if strings.TrimSpace(stop.StationID) == "" {
-			return fmt.Errorf("StopTimes element %d StationID is required", index)
+			return _oops.With("index", index).Errorf("StopTimes element StationID is required")
 		}
 		if !validClock(stop.ArrivalTime) {
-			return fmt.Errorf("StopTimes element %d ArrivalTime is invalid: %q", index, stop.ArrivalTime)
+			return _oops.With("index", index).With("arrival_time", stop.ArrivalTime).Errorf("StopTimes element ArrivalTime is invalid")
 		}
 		if !validClock(stop.DepartureTime) {
-			return fmt.Errorf("StopTimes element %d DepartureTime is invalid: %q", index, stop.DepartureTime)
+			return _oops.With("index", index).With("departure_time", stop.DepartureTime).Errorf("StopTimes element DepartureTime is invalid")
 		}
 		if _, err := requiredBinaryFlag("SuspendedFlag", stop.SuspendedFlag); err != nil {
-			return fmt.Errorf("StopTimes element %d: %w", index, err)
+			return _oops.With("index", index).Wrapf(err, "StopTimes element")
 		}
 	}
 	return nil
@@ -254,10 +254,10 @@ func validateTraTimetable(timetable rawTraTimetable, partitionDate string) error
 
 func validateThsrTimetable(timetable rawThsrTimetable, partitionDate string) error {
 	if _, err := time.Parse(time.DateOnly, timetable.TrainDate); err != nil {
-		return fmt.Errorf("TrainDate %q: %w", timetable.TrainDate, err)
+		return _oops.With("train_date", timetable.TrainDate).Wrapf(err, "TrainDate")
 	}
 	if timetable.TrainDate != partitionDate {
-		return fmt.Errorf("TrainDate %q does not match partition date %q", timetable.TrainDate, partitionDate)
+		return _oops.With("train_date", timetable.TrainDate).With("partition_date", partitionDate).Errorf("TrainDate does not match partition date")
 	}
 	info := timetable.DailyTrainInfo
 	if strings.TrimSpace(info.TrainNo) == "" {
@@ -273,7 +273,7 @@ func validateThsrTimetable(timetable rawThsrTimetable, partitionDate string) err
 		return errors.New("missing Direction")
 	}
 	if *info.Direction > 1 {
-		return fmt.Errorf("invalid Direction %d, want 0 or 1", *info.Direction)
+		return _oops.With("direction", *info.Direction).Errorf("invalid Direction, want 0 or 1")
 	}
 	if info.Overnight == nil {
 		return errors.New("missing Overnight")
@@ -283,16 +283,16 @@ func validateThsrTimetable(timetable rawThsrTimetable, partitionDate string) err
 	}
 	for index, stop := range timetable.StopTimes {
 		if stop.StopSequence == 0 {
-			return fmt.Errorf("StopTimes element %d StopSequence must be positive", index)
+			return _oops.With("index", index).Errorf("StopTimes element StopSequence must be positive")
 		}
 		if strings.TrimSpace(stop.StationID) == "" {
-			return fmt.Errorf("StopTimes element %d StationID is required", index)
+			return _oops.With("index", index).Errorf("StopTimes element StationID is required")
 		}
 		if !validClock(stop.ArrivalTime) {
-			return fmt.Errorf("StopTimes element %d ArrivalTime is invalid: %q", index, stop.ArrivalTime)
+			return _oops.With("index", index).With("arrival_time", stop.ArrivalTime).Errorf("StopTimes element ArrivalTime is invalid")
 		}
 		if !validClock(stop.DepartureTime) {
-			return fmt.Errorf("StopTimes element %d DepartureTime is invalid: %q", index, stop.DepartureTime)
+			return _oops.With("index", index).With("departure_time", stop.DepartureTime).Errorf("StopTimes element DepartureTime is invalid")
 		}
 	}
 	return nil
@@ -305,7 +305,7 @@ func validateThsrTimetable(timetable rawThsrTimetable, partitionDate string) err
 // train-wide and stop-wide suspension flags combined in the stored stop mask.
 func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, date string) error {
 	if _, err := time.Parse(time.DateOnly, date); err != nil {
-		return fmt.Errorf("TRA timetable partition date %q: %w", date, err)
+		return _oops.With("date", date).Wrapf(err, "TRA timetable partition date")
 	}
 	timetables, err := decodeLoadArray[rawTraTimetable](dec, "TRA timetable "+date, func(_ int, timetable rawTraTimetable) error {
 		return validateTraTimetable(timetable, date)
@@ -322,11 +322,11 @@ func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, dat
 		for _, stop := range temp.StopTimes {
 			at, err := time.Parse("15:04", stop.ArrivalTime)
 			if err != nil {
-				return fmt.Errorf("TRA timetable %s train %q station %q ArrivalTime %q: %w", date, temp.DailyTrainInfo.TrainNo, stop.StationID, stop.ArrivalTime, err)
+				return _oops.With("date", date).With("train_no", temp.DailyTrainInfo.TrainNo).With("station_id", stop.StationID).With("arrival_time", stop.ArrivalTime).Wrapf(err, "TRA timetable train station ArrivalTime")
 			}
 			dt, err := time.Parse("15:04", stop.DepartureTime)
 			if err != nil {
-				return fmt.Errorf("TRA timetable %s train %q station %q DepartureTime %q: %w", date, temp.DailyTrainInfo.TrainNo, stop.StationID, stop.DepartureTime, err)
+				return _oops.With("date", date).With("train_no", temp.DailyTrainInfo.TrainNo).With("station_id", stop.StationID).With("departure_time", stop.DepartureTime).Wrapf(err, "TRA timetable train station DepartureTime")
 			}
 			candidate := []any{
 				temp.TrainDate,
@@ -359,7 +359,7 @@ func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, dat
 			}
 			key := temp.TrainDate + "\x00" + temp.DailyTrainInfo.TrainNo + "\x00" + stop.StationID
 			if err := appendUniqueLoadRow(&row, seen, key, "timetable", candidate); err != nil {
-				return fmt.Errorf("TRA timetable %s: %w", date, err)
+				return _oops.With("date", date).Wrapf(err, "TRA timetable")
 			}
 		}
 	}
@@ -420,7 +420,7 @@ func loadTraTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, dat
 // upsert are byte-identical to the legacy transform.
 func loadThsrTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, date string) error {
 	if _, err := time.Parse(time.DateOnly, date); err != nil {
-		return fmt.Errorf("THSR timetable partition date %q: %w", date, err)
+		return _oops.With("date", date).Wrapf(err, "THSR timetable partition date")
 	}
 	timetables, err := decodeLoadArray[rawThsrTimetable](dec, "THSR timetable "+date, func(_ int, timetable rawThsrTimetable) error {
 		return validateThsrTimetable(timetable, date)
@@ -434,11 +434,11 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, da
 		for _, stop := range temp.StopTimes {
 			at, err := time.Parse("15:04", stop.ArrivalTime)
 			if err != nil {
-				return fmt.Errorf("THSR timetable %s train %q station %q ArrivalTime %q: %w", date, temp.DailyTrainInfo.TrainNo, stop.StationID, stop.ArrivalTime, err)
+				return _oops.With("date", date).With("train_no", temp.DailyTrainInfo.TrainNo).With("station_id", stop.StationID).With("arrival_time", stop.ArrivalTime).Wrapf(err, "THSR timetable train station ArrivalTime")
 			}
 			dt, err := time.Parse("15:04", stop.DepartureTime)
 			if err != nil {
-				return fmt.Errorf("THSR timetable %s train %q station %q DepartureTime %q: %w", date, temp.DailyTrainInfo.TrainNo, stop.StationID, stop.DepartureTime, err)
+				return _oops.With("date", date).With("train_no", temp.DailyTrainInfo.TrainNo).With("station_id", stop.StationID).With("departure_time", stop.DepartureTime).Wrapf(err, "THSR timetable train station DepartureTime")
 			}
 			candidate := []any{
 				temp.TrainDate,
@@ -458,7 +458,7 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, da
 			}
 			key := temp.TrainDate + "\x00" + temp.DailyTrainInfo.TrainNo + "\x00" + stop.StationID
 			if err := appendUniqueLoadRow(&row, seen, key, "timetable", candidate); err != nil {
-				return fmt.Errorf("THSR timetable %s: %w", date, err)
+				return _oops.With("date", date).Wrapf(err, "THSR timetable")
 			}
 		}
 	}
@@ -513,7 +513,7 @@ func loadThsrTimetable(ctx context.Context, dec *json.Decoder, sink loadSink, da
 // transform. It returns the first hard error instead of logging-and-returning.
 func loadTraStation(ctx context.Context, dec *json.Decoder, sink loadSink, _ string) error {
 	stations, err := decodeLoadArray[railStation](dec, "TRA stations", func(_ int, station railStation) error {
-		return validateRailStation(station, false)
+		return validateRailStation(station, false /* requireStationCode */)
 	})
 	if err != nil {
 		return err
@@ -525,11 +525,11 @@ func loadTraStation(ctx context.Context, dec *json.Decoder, sink loadSink, _ str
 		candidate := []any{
 			temp.StationID,
 			temp.StationName.ZhTw,
-			citymap2[temp.LocationCityCode],
+			_citymap2[temp.LocationCityCode],
 			g,
 		}
 		if err := appendUniqueLoadRow(&row, seen, temp.StationID, "station", candidate); err != nil {
-			return fmt.Errorf("TRA stations: %w", err)
+			return _oops.Wrapf(err, "TRA stations")
 		}
 	}
 	if len(row) > 0 {
@@ -573,7 +573,7 @@ func loadTraStation(ctx context.Context, dec *json.Decoder, sink loadSink, _ str
 // invalid or ambiguous payload before opening the transaction.
 func loadThsrStation(ctx context.Context, dec *json.Decoder, sink copyUpsertSink, _ string) error {
 	stations, err := decodeLoadArray[railStation](dec, "THSR stations", func(_ int, station railStation) error {
-		return validateRailStation(station, true)
+		return validateRailStation(station, true /* requireStationCode */)
 	})
 	if err != nil {
 		return err
@@ -588,12 +588,12 @@ func loadThsrStation(ctx context.Context, dec *json.Decoder, sink copyUpsertSink
 		candidate := []any{
 			station.StationID,
 			station.StationName.ZhTw,
-			citymap2[station.LocationCityCode],
+			_citymap2[station.LocationCityCode],
 			g,
 			station.StationCode,
 		}
 		if err := appendUniqueLoadRow(&rows, seen, station.StationID, "station", candidate); err != nil {
-			return fmt.Errorf("THSR stations: %w", err)
+			return _oops.Wrapf(err, "THSR stations")
 		}
 	}
 	return sink.copyUpsert(ctx, copyUpsertSpec{
@@ -621,14 +621,14 @@ func validateRailStation(station railStation, requireStationCode bool) error {
 	if strings.TrimSpace(station.LocationCityCode) == "" {
 		return errors.New("LocationCityCode is required")
 	}
-	if _, ok := citymap2[station.LocationCityCode]; !ok {
-		return fmt.Errorf("LocationCityCode %q is unknown", station.LocationCityCode)
+	if _, ok := _citymap2[station.LocationCityCode]; !ok {
+		return _oops.With("location_city_code", station.LocationCityCode).Errorf("LocationCityCode is unknown")
 	}
 	if requireStationCode && strings.TrimSpace(station.StationCode) == "" {
 		return errors.New("StationCode is required")
 	}
 	if !validPosition(station.StationPosition.PositionLon, station.StationPosition.PositionLat) {
-		return fmt.Errorf("position is invalid: lon=%v lat=%v", station.StationPosition.PositionLon, station.StationPosition.PositionLat)
+		return _oops.With("position_lon", station.StationPosition.PositionLon).With("position_lat", station.StationPosition.PositionLat).Errorf("position is invalid: lon= lat=")
 	}
 	return nil
 }
@@ -651,10 +651,10 @@ func loadTraFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ string
 		}
 		for index, item := range fare.Fares {
 			if strings.TrimSpace(item.TicketType) == "" {
-				return fmt.Errorf("fares element %d missing TicketType", index)
+				return _oops.With("index", index).Errorf("fares element missing TicketType")
 			}
 			if item.Price < 0 {
-				return fmt.Errorf("fares element %d Price must be non-negative", index)
+				return _oops.With("index", index).Errorf("fares element Price must be non-negative")
 			}
 		}
 		return nil
@@ -672,7 +672,7 @@ func loadTraFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ string
 			candidate := []any{temp.OriginStationID, temp.DestinationStationID, t1.TicketType, t1.Price}
 			key := temp.OriginStationID + "\x00" + temp.DestinationStationID + "\x00" + t1.TicketType
 			if err := appendUniqueLoadRow(&row, seen, key, "fare", candidate); err != nil {
-				return fmt.Errorf("TRA fares: %w", err)
+				return _oops.Wrapf(err, "TRA fares")
 			}
 		}
 	}
@@ -717,13 +717,13 @@ func loadThsrFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ strin
 		}
 		for index, item := range fare.Fares {
 			if item.TicketType == 0 {
-				return fmt.Errorf("fares element %d missing TicketType", index)
+				return _oops.With("index", index).Errorf("fares element missing TicketType")
 			}
 			if item.FareClass == 0 {
-				return fmt.Errorf("fares element %d missing FareClass", index)
+				return _oops.With("index", index).Errorf("fares element missing FareClass")
 			}
 			if item.CabinClass == 0 {
-				return fmt.Errorf("fares element %d missing CabinClass", index)
+				return _oops.With("index", index).Errorf("fares element missing CabinClass")
 			}
 		}
 		return nil
@@ -741,7 +741,7 @@ func loadThsrFare(ctx context.Context, dec *json.Decoder, sink loadSink, _ strin
 			candidate := []any{temp.OriginStationID, temp.DestinationStationID, t1.TicketType, t1.FareClass, t1.CabinClass, t1.Price}
 			key := fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%d", temp.OriginStationID, temp.DestinationStationID, t1.TicketType, t1.FareClass, t1.CabinClass)
 			if err := appendUniqueLoadRow(&row, seen, key, "fare", candidate); err != nil {
-				return fmt.Errorf("THSR fares: %w", err)
+				return _oops.Wrapf(err, "THSR fares")
 			}
 		}
 	}
@@ -779,7 +779,7 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 	zap.S().Infow("start", "component", "tra_eta", "action", "tra_eta", "event", "start")
 	result, err := fetch(ctx, "/v2/Rail/TRA/LiveTrainDelay", "tra_delay")
 	if err != nil {
-		return fmt.Errorf("fetch TRA live train delay: %w", err)
+		return _oops.Wrapf(err, "fetch TRA live train delay")
 	}
 	if !result.Modified {
 		// On a 304, boundFetch has already re-armed the delay keys' TTL.
@@ -811,10 +811,10 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 			}
 			trainBytes, err := proto.Marshal(&models.TraDelays{Delay: map[string]int32{temp.TrainNo: delay}})
 			if err != nil {
-				return fmt.Errorf("marshal TRA delay for train %s: %w", temp.TrainNo, err)
+				return _oops.With("train_no", temp.TrainNo).Wrapf(err, "marshal TRA delay for train")
 			}
 			trainKey := shared.TraDelayTrainChannel(temp.TrainNo)
-			pipe.Set(trainKey, trainBytes, traLiveTTL)
+			pipe.Set(trainKey, trainBytes, _traLiveTTL)
 			pipe.Publish(trainKey, trainBytes)
 			return nil
 		}); decErr != nil {
@@ -824,12 +824,12 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 		if err != nil {
 			return err
 		}
-		pipe.Set(shared.TraDelayAllKey, bytes, traLiveTTL)
+		pipe.Set(shared.TraDelayAllKey, bytes, _traLiveTTL)
 		pipe.Publish(shared.TraDelayAllKey, string(bytes))
-		pipe.Expire(shared.TraDelayHashKey, traLiveTTL)
-		pipe.Expire(shared.TraDelayStationKey, traLiveTTL)
+		pipe.Expire(shared.TraDelayHashKey, _traLiveTTL)
+		pipe.Expire(shared.TraDelayStationKey, _traLiveTTL)
 		if err := pipe.Exec(ctx); err != nil {
-			return fmt.Errorf("publish TRA delay snapshot: %w", err)
+			return _oops.Wrapf(err, "publish TRA delay snapshot")
 		}
 		zap.S().Infow("delay redis success",
 			"component", "tra_eta",
@@ -840,7 +840,7 @@ func traEta(ctx context.Context, fetch boundFetch, sink liveSink) error {
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("process TRA live train delay: %w", err)
+		return _oops.Wrapf(err, "process TRA live train delay")
 	}
 	zap.S().Infow("complete", "component", "tra_eta", "action", "tra_eta", "event", "complete")
 	return nil

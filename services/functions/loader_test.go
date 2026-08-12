@@ -440,10 +440,6 @@ func TestLoaderReplayThsrStation(t *testing.T) {
 	defer pool.Close()
 	ctx := context.Background()
 
-	prev := ingestDB
-	ingestDB = pool
-	defer func() { ingestDB = prev }()
-
 	provisionThsrStationSink(t, ctx, pool)
 	cleanup := func() {
 		_, _ = pool.Exec(ctx, "DELETE FROM thsr_stations WHERE station_id IN ('0990','1000')")
@@ -569,7 +565,7 @@ func TestLoadQuarantineRatioGateIsPerKind(t *testing.T) {
 	if err == nil {
 		t.Fatal("exceeded() = nil, want the shape ratio to fail despite 4000 clean subroutes")
 	}
-	if !strings.Contains(err.Error(), "shape") {
+	if !errMentions(err, "shape") {
 		t.Fatalf("exceeded() = %v, want the offending kind named", err)
 	}
 	// No drops at all: nothing to gate on, including kinds never considered.
@@ -585,11 +581,11 @@ func TestQuarantineRatioLimitEnvOverride(t *testing.T) {
 	}
 	// A nonsense value must not silently disable the gate.
 	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "banana")
-	if got := quarantineRatioLimit(); got != defaultQuarantineRatio {
-		t.Fatalf("quarantineRatioLimit() = %v, want the %v default", got, defaultQuarantineRatio)
+	if got := quarantineRatioLimit(); got != _defaultQuarantineRatio {
+		t.Fatalf("quarantineRatioLimit() = %v, want the %v default", got, _defaultQuarantineRatio)
 	}
 	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "7")
-	if got := quarantineRatioLimit(); got != defaultQuarantineRatio {
-		t.Fatalf("quarantineRatioLimit() = %v, want the %v default for an out-of-range value", got, defaultQuarantineRatio)
+	if got := quarantineRatioLimit(); got != _defaultQuarantineRatio {
+		t.Fatalf("quarantineRatioLimit() = %v, want the %v default for an out-of-range value", got, _defaultQuarantineRatio)
 	}
 }

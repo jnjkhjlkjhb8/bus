@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -21,13 +20,15 @@ import (
 // guesses when the data moved.
 const StaticVersionPath = "/api/static-version"
 
-// staticVersionCacheTTL bounds how stale a served version may be. The value
-// only changes at 03:30 (and on a LOAD_ON_BOOT restart), so a few minutes of
-// lag costs nothing and keeps a launch spike off the database. The app fetches
-// this once per launch.
-const staticVersionCacheTTL = 5 * time.Minute
+const (
+	// _staticVersionCacheTTL bounds how stale a served version may be. The
+	// value only changes at 03:30 (and on a LOAD_ON_BOOT restart), so a few
+	// minutes of lag costs nothing and keeps a launch spike off the database.
+	// The app fetches this once per launch.
+	_staticVersionCacheTTL = 5 * time.Minute
 
-const staticVersionCacheKey = "static-version"
+	_staticVersionCacheKey = "static-version"
+)
 
 type staticVersionResponse struct {
 	Version string `json:"version"`
@@ -48,7 +49,7 @@ func HandleStaticVersion(db *pgxpool.Pool) gin.HandlerFunc {
 			return "0", nil
 		}
 		if err != nil {
-			return "", fmt.Errorf("query pipeline_runs load marker: %w", err)
+			return "", _oops.Wrapf(err, "query pipeline_runs load marker")
 		}
 		return strconv.FormatInt(completedAt.Unix(), 10), nil
 	})
@@ -58,7 +59,7 @@ func HandleStaticVersion(db *pgxpool.Pool) gin.HandlerFunc {
 // tested without a database.
 func handleStaticVersion(cache *TTLCache, read func(context.Context) (string, error)) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if body, ok := cache.get(staticVersionCacheKey); ok {
+		if body, ok := cache.get(_staticVersionCacheKey); ok {
 			c.Data(http.StatusOK, gin.MIMEJSON, body)
 			return
 		}
@@ -87,7 +88,7 @@ func handleStaticVersion(cache *TTLCache, read func(context.Context) (string, er
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "static version unavailable"})
 			return
 		}
-		cache.set(staticVersionCacheKey, body, staticVersionCacheTTL)
+		cache.set(_staticVersionCacheKey, body, _staticVersionCacheTTL)
 		c.Data(http.StatusOK, gin.MIMEJSON, body)
 	}
 }

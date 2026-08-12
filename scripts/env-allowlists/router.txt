@@ -12,7 +12,6 @@ ROUTER_TRUSTED_PROXIES
 ROUTER_MAX_LIVE_STREAMS
 ROUTER_LIVE_SUBSCRIBER_QUEUE
 REDIS_PASSWORD
-EMBED_URL
 # MaaS route planning is the router's sole, deliberate TDX carve-out
 # (services/router/main.go, services/router/maas.go NewAuthedClient) — it is
 # a request/response proxy for /api/maas, not cacheable live data, so it

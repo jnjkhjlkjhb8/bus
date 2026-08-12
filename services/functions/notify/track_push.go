@@ -119,15 +119,15 @@ func (p *TrackPusher) PushCard(ctx context.Context, card AlightCard, target Card
 	var errs []error
 	if p.fcm != nil && target.FCMToken != "" {
 		if err := p.fcm.Send(ctx, cardMessage(target.FCMToken, card)); err != nil {
-			errs = append(errs, fmt.Errorf("fcm: %w", err))
+			errs = append(errs, _oops.Wrapf(err, "fcm send"))
 		}
 	}
 	if p.apns != nil && target.ActivityToken != "" {
 		payload, err := liveActivityPayload(card, alert)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("apns payload: %w", err))
+			errs = append(errs, _oops.Wrapf(err, "apns payload"))
 		} else if err := p.apns.SendLiveActivity(ctx, target.ActivityToken, payload); err != nil {
-			errs = append(errs, fmt.Errorf("apns: %w", err))
+			errs = append(errs, _oops.Wrapf(err, "apns"))
 		}
 	}
 	return errors.Join(errs...)
@@ -139,7 +139,7 @@ func (p *TrackPusher) PushCard(ctx context.Context, card AlightCard, target Card
 // Priority high or Doze holds it until the rider has already missed the stop.
 func cardMessage(token string, card AlightCard) *messaging.Message {
 	data := map[string]string{
-		"type": trackPushType,
+		"type": _trackPushType,
 		// Rides on the card so its 取消追蹤 can end this session even from a
 		// process with no Dart alive (FDPL-65) — which is exactly the state a
 		// pushed card can be read in.
@@ -165,14 +165,14 @@ func cardMessage(token string, card AlightCard) *messaging.Message {
 	}
 }
 
-// trackPushType is the discriminator the Android receiver filters on. It sits
+// _trackPushType is the discriminator the Android receiver filters on. It sits
 // beside the existing "alight_vibrate" type on the same FCM path.
-const trackPushType = "alight_track"
+const _trackPushType = "alight_track"
 
-// cardDismissalLinger keeps a terminal card on screen before the system takes it
+// _cardDismissalLinger keeps a terminal card on screen before the system takes it
 // away, matching the linger the local iOS path ends with: an ending has to be
 // seen.
-const cardDismissalLinger = 8 * time.Second
+const _cardDismissalLinger = 8 * time.Second
 
 // liveActivityPayload is the iOS leg. `content-state` mirrors the widget's
 // ContentState field for field; `timestamp` is how APNs discards a push that
@@ -211,7 +211,7 @@ func liveActivityPayload(card AlightCard, alert *CardAlert) ([]byte, error) {
 		aps["stale-date"] = card.AsOf.Add(card.StaleAfter).Unix()
 	} else {
 		aps["event"] = "end"
-		aps["dismissal-date"] = card.AsOf.Add(cardDismissalLinger).Unix()
+		aps["dismissal-date"] = card.AsOf.Add(_cardDismissalLinger).Unix()
 	}
 	if alert != nil {
 		aps["alert"] = map[string]any{"title": alert.Title, "body": alert.Body}

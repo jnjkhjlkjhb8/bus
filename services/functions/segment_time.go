@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -39,16 +38,16 @@ import (
 // writer sampled (historySnapshotInterval), it would have manufactured arrivals
 // out of the sampling interval itself.
 const (
-	// segmentUpsertBatch bounds one upsert into bus_segment_time. The rebuild
+	// _segmentUpsertBatch bounds one upsert into bus_segment_time. The rebuild
 	// produces on the order of 150k hops and the target is a 2 GB Azure server, so
 	// the rows go over in batches rather than as one statement carrying every
 	// array. Each batch is one round trip; the medians are already computed.
-	segmentUpsertBatch = 2000
+	_segmentUpsertBatch = 2000
 	// Segments outside these bounds are dropped rather than recorded. Below five
 	// seconds is two stops sharing a position; above thirty minutes is a vehicle
 	// that went out of service, or two runs of one plate stitched together.
-	segmentMinSecs = 5
-	segmentMaxSecs = 1800
+	_segmentMinSecs = 5
+	_segmentMaxSecs = 1800
 )
 
 // upsertSegmentTimes writes already-reduced hops into bus_segment_time.
@@ -77,8 +76,8 @@ func upsertSegmentTimes(ctx context.Context, db *pgxpool.Pool, segs []segmentObs
 		              sample_count = EXCLUDED.sample_count,
 		              updated_at   = now()`
 	var total int64
-	for start := 0; start < len(segs); start += segmentUpsertBatch {
-		batch := segs[start:min(start+segmentUpsertBatch, len(segs))]
+	for start := 0; start < len(segs); start += _segmentUpsertBatch {
+		batch := segs[start:min(start+_segmentUpsertBatch, len(segs))]
 		subRoutes := make([]string, len(batch))
 		directions := make([]int16, len(batch))
 		fromStops := make([]string, len(batch))
@@ -92,7 +91,7 @@ func upsertSegmentTimes(ctx context.Context, db *pgxpool.Pool, segs []segmentObs
 		}
 		tag, err := db.Exec(ctx, stmt, subRoutes, directions, fromStops, toStops, secs, samples)
 		if err != nil {
-			return total, fmt.Errorf("upsert segments %d..%d: %w", start, start+len(batch), err)
+			return total, _oops.With("start", start).With("end", start+len(batch)).Wrapf(err, "upsert segments")
 		}
 		total += tag.RowsAffected()
 	}

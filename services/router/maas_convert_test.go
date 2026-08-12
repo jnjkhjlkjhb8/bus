@@ -56,7 +56,7 @@ func osrmClientReturning(status int, body string) *resty.Client {
 	return c
 }
 
-const osrmTransferRoute = `{
+const _osrmTransferRoute = `{
   "code":"Ok",
   "routes":[{
     "duration":222.5,
@@ -88,7 +88,7 @@ func TestConvertWalkRouteMapsTransferSection(t *testing.T) {
 		},
 	}}
 
-	out := convert(context.Background(), nil, osrmClientReturning(200, osrmTransferRoute), api)
+	out := convert(context.Background(), nil, osrmClientReturning(200, _osrmTransferRoute), api)
 	walk := out.Routes[0].Sections[1]
 	if walk.TravelSummary.Duration != 222 {
 		t.Fatalf("duration = %d, want 222 (OSRM time)", walk.TravelSummary.Duration)

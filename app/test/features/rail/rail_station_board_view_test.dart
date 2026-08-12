@@ -140,6 +140,23 @@ void main() {
     await disposeBoard(tester);
   });
 
+  // TDX's live TRA data runs about two minutes behind the platform displays
+  // and the operator asks that riders be told so.
+  testWidgets('the TRA board states its live-data lag', (tester) async {
+    await pumpBoard(
+      tester,
+      repo: _FakeTraRepository(board: [_departure(time: '14:32:00')]),
+    );
+
+    await tester.scrollUntilVisible(
+      find.textContaining('進站後請以站內看板為準'),
+      200,
+    );
+    expect(find.textContaining('進站後請以站內看板為準'), findsOneWidget);
+
+    await disposeBoard(tester);
+  });
+
   testWidgets('only the soonest departure carries a countdown', (tester) async {
     await pumpBoard(
       tester,

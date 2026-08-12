@@ -33,7 +33,7 @@ func TestFeedbackStoreOpenThreadSQL(t *testing.T) {
 
 	mock.ExpectQuery("INSERT INTO feedback_thread.*INSERT INTO feedback_message").
 		WithArgs("thread-1", "install-1", "eta", diagnostics,
-			feedbackQuotaWindow.Seconds(), feedbackQuota, "message-1", "到站時間跳動").
+			_feedbackQuotaWindow.Seconds(), _feedbackQuota, "message-1", "到站時間跳動").
 		WillReturnRows(pgxmock.NewRows([]string{"created_at"}).AddRow(createdAt))
 
 	got, err := store.OpenThread(ctx, record, "message-1")

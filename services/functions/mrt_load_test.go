@@ -34,7 +34,7 @@ func TestLoadMrtStationsRejectsMalformedOrInvalidElement(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sink := &fakeLoadSink{}
 			err := loadMrtStations(context.Background(), decodeInto(tt.body), sink, "TRTC")
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("loadMrtStations error = %v, want %q", err, tt.want)
 			}
 			if len(sink.calls) != 0 {
@@ -75,7 +75,7 @@ func TestLoadMrtFirstlastRejectsInvalidIdentityOrTime(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sink := &fakeLoadSink{}
 			err := loadMrtFirstlast(context.Background(), decodeInto(tt.body), sink, "TRTC")
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("loadMrtFirstlast error = %v, want %q", err, tt.want)
 			}
 			if len(sink.calls) != 0 {
@@ -174,7 +174,7 @@ func TestLoadMrtJourneyMatrixRejectsInvalidIdentityOrTravelTime(t *testing.T) {
 				}()
 				err = loadMrtJourneyMatrix(context.Background(), decodeInto(tt.body), &fakeLoadSink{}, "TRTC")
 			}()
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("loadMrtJourneyMatrix error = %v, want %q", err, tt.want)
 			}
 		})
@@ -198,7 +198,7 @@ func TestLoadMrtTravelTimeRejectsInvalidSegment(t *testing.T) {
 		}()
 		err = loadMrtTrtcTravelTime(context.Background(), src, &fakeLoadSink{}, "TRTC")
 	}()
-	if err == nil || !strings.Contains(err.Error(), "FromStationID") {
+	if err == nil || !errMentions(err, "FromStationID") {
 		t.Fatalf("loadMrtTrtcTravelTime error = %v, want FromStationID validation error", err)
 	}
 }
@@ -263,7 +263,7 @@ func TestLoadMrtTravelTimeRejectsFractionalDuration(t *testing.T) {
 				fetched: time.Now(),
 			}
 			err := loadMrtTrtcTravelTime(context.Background(), src, &fakeLoadSink{}, "TRTC")
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("loadMrtTrtcTravelTime error = %v, want whole-unit %s validation error", err, tt.want)
 			}
 		})
@@ -293,14 +293,14 @@ func TestLoadMrtTravelTimeRejectsComputedPostgresIntegerOverflow(t *testing.T) {
 		fetched: time.Now(),
 	}
 	err := loadMrtTrtcTravelTime(context.Background(), src, &fakeLoadSink{}, "TRTC")
-	if err == nil || !strings.Contains(err.Error(), "PostgreSQL integer") {
+	if err == nil || !errMentions(err, "PostgreSQL integer") {
 		t.Fatalf("loadMrtTrtcTravelTime error = %v, want computed target overflow rejection", err)
 	}
 }
 
 func TestDecodeLoadArrayRejectsTrailingJSON(t *testing.T) {
 	_, err := decodeLoadArray[map[string]any](json.NewDecoder(strings.NewReader(`[] {}`)), "probe", nil)
-	if err == nil || !strings.Contains(err.Error(), "trailing") {
+	if err == nil || !errMentions(err, "trailing") {
 		t.Fatalf("decodeLoadArray error = %v, want trailing JSON error", err)
 	}
 }
@@ -317,7 +317,7 @@ func TestLoadMrtDuplicatePolicies(t *testing.T) {
 		}
 		other := `{"StationID":"BL12","StationName":{"Zh_tw":"另一站"},"StationPosition":{"PositionLon":121.6,"PositionLat":25.05}}`
 		err := loadMrtStations(context.Background(), decodeInto(`[`+station+`,`+other+`]`), &fakeLoadSink{}, "TRTC")
-		if err == nil || !strings.Contains(err.Error(), "duplicate station") {
+		if err == nil || !errMentions(err, "duplicate station") {
 			t.Fatalf("divergent error = %v", err)
 		}
 	})
@@ -332,7 +332,7 @@ func TestLoadMrtDuplicatePolicies(t *testing.T) {
 		}
 		other := `{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":6,"Fares":[{"TicketType":1,"Price":20}]}`
 		err := loadMrtJourneyMatrix(context.Background(), decodeInto(`[`+fare+`,`+other+`]`), &fakeLoadSink{}, "TRTC")
-		if err == nil || !strings.Contains(err.Error(), "duplicate OD") {
+		if err == nil || !errMentions(err, "duplicate OD") {
 			t.Fatalf("divergent error = %v", err)
 		}
 	})
@@ -341,7 +341,7 @@ func TestLoadMrtDuplicatePolicies(t *testing.T) {
 	t.Run("journey divergent duplicate adult fare rejects", func(t *testing.T) {
 		body := `[{"OriginStationID":"BL01","DestinationStationID":"BL02","TravelTime":5,"Fares":[{"TicketType":1,"FareClass":1,"Price":20},{"TicketType":1,"FareClass":1,"Price":25}]}]`
 		err := loadMrtJourneyMatrix(context.Background(), decodeInto(body), &fakeLoadSink{}, "TRTC")
-		if err == nil || !strings.Contains(err.Error(), "duplicate TicketType") {
+		if err == nil || !errMentions(err, "duplicate TicketType") {
 			t.Fatalf("divergent adult fare error = %v", err)
 		}
 	})

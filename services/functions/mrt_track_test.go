@@ -37,52 +37,52 @@ func TestAdvanceMrtTrack(t *testing.T) {
 	}{
 		{
 			name:          "advance one hop, above lead",
-			state:         mrtTestState(1, 4, 1, mrtStatusTracking),
+			state:         mrtTestState(1, 4, 1, _mrtStatusTracking),
 			reading:       mrtReading{nextIndex: 3, resolved: true, gotInfo: true, hasCountdown: true, countdown: 60 * time.Second},
 			wantCurrent:   2,
 			wantRemaining: 2,
 			// lead 1 means "buzz me when the stop before mine is next", which is
 			// remaining 2 — one stop earlier than the pre-ADR-0020 `<= lead`.
-			wantStatus: mrtStatusLeadFired,
-			wantFire:   mrtAlightEventLead,
+			wantStatus: _mrtStatusLeadFired,
+			wantFire:   _mrtAlightEventLead,
 		},
 		{
 			name:          "reach lead, fire once",
-			state:         mrtTestState(1, 4, 2, mrtStatusTracking),
+			state:         mrtTestState(1, 4, 2, _mrtStatusTracking),
 			reading:       mrtReading{nextIndex: 3, resolved: true, gotInfo: true, hasCountdown: true, countdown: 30 * time.Second},
 			wantCurrent:   2,
 			wantRemaining: 2,
-			wantStatus:    mrtStatusLeadFired,
-			wantFire:      mrtAlightEventLead,
+			wantStatus:    _mrtStatusLeadFired,
+			wantFire:      _mrtAlightEventLead,
 		},
 		{
 			// fire is re-requested every tick inside the lead zone; the claim/fired
 			// machinery keeps delivery once-only and lets a released (failed) send
 			// retry on a later tick.
 			name:          "lead_fired keeps requesting fire for claim-level dedup",
-			state:         mrtTestState(2, 4, 2, mrtStatusLeadFired),
+			state:         mrtTestState(2, 4, 2, _mrtStatusLeadFired),
 			reading:       mrtReading{nextIndex: 3, resolved: true, gotInfo: true, hasCountdown: true, countdown: 30 * time.Second},
 			wantCurrent:   2,
 			wantRemaining: 2,
-			wantStatus:    mrtStatusLeadFired,
-			wantFire:      mrtAlightEventLead,
+			wantStatus:    _mrtStatusLeadFired,
+			wantFire:      _mrtAlightEventLead,
 		},
 		{
 			name:          "arrival clamps and fires from tracking",
-			state:         mrtTestState(3, 4, 1, mrtStatusTracking),
+			state:         mrtTestState(3, 4, 1, _mrtStatusTracking),
 			reading:       mrtReading{nextIndex: 5, resolved: true, gotInfo: true},
 			wantCurrent:   4,
 			wantRemaining: 0,
-			wantStatus:    mrtStatusArrived,
-			wantFire:      mrtAlightEventAlight,
+			wantStatus:    _mrtStatusArrived,
+			wantFire:      _mrtAlightEventAlight,
 			wantTerminal:  true,
 		},
 		{
 			name:         "off-path reading is lost",
-			state:        mrtTestState(2, 4, 1, mrtStatusTracking),
+			state:        mrtTestState(2, 4, 1, _mrtStatusTracking),
 			reading:      mrtReading{lost: true},
 			wantCurrent:  2,
-			wantStatus:   mrtStatusLost,
+			wantStatus:   _mrtStatusLost,
 			wantFire:     "",
 			wantTerminal: true,
 		},
@@ -91,21 +91,21 @@ func TestAdvanceMrtTrack(t *testing.T) {
 			// within one stop of the target is the arrival, not a lost binding —
 			// terminal alight stations are common.
 			name:         "lost one stop before target is the arrival",
-			state:        mrtTestState(3, 4, 1, mrtStatusLeadFired),
+			state:        mrtTestState(3, 4, 1, _mrtStatusLeadFired),
 			reading:      mrtReading{lost: true},
 			wantCurrent:  4,
-			wantStatus:   mrtStatusArrived,
-			wantFire:     mrtAlightEventAlight,
+			wantStatus:   _mrtStatusArrived,
+			wantFire:     _mrtAlightEventAlight,
 			wantTerminal: true,
 		},
 		{
 			name:          "no advance never moves backward",
-			state:         mrtTestState(3, 4, 1, mrtStatusTracking),
+			state:         mrtTestState(3, 4, 1, _mrtStatusTracking),
 			reading:       mrtReading{nextIndex: 2, resolved: true, gotInfo: true},
 			wantCurrent:   3,
 			wantRemaining: 1,
-			wantStatus:    mrtStatusLeadFired,
-			wantFire:      mrtAlightEventAlight,
+			wantStatus:    _mrtStatusLeadFired,
+			wantFire:      _mrtAlightEventAlight,
 		},
 	}
 	for _, c := range cases {
@@ -137,12 +137,12 @@ func TestAdvanceMrtTrack(t *testing.T) {
 
 func TestAdvanceMrtTrackStale(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	state := mrtTestState(2, 5, 1, mrtStatusTracking)
+	state := mrtTestState(2, 5, 1, _mrtStatusTracking)
 	state.LastProgressAtUnix = now.Add(-11 * time.Minute).Unix()
 	// A reading that does not advance the position while the stale window has
 	// elapsed ends the session.
 	got, fire := advanceMrtTrack(state, mrtReading{}, now)
-	if got.Status != mrtStatusStale {
+	if got.Status != _mrtStatusStale {
 		t.Errorf("status = %q want stale", got.Status)
 	}
 	if fire != "" {
@@ -155,18 +155,18 @@ func TestAdvanceMrtTrackStale(t *testing.T) {
 
 func TestAdvanceMrtTrackStaleWhileFinishingIsArrival(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	state := mrtTestState(4, 5, 1, mrtStatusLeadFired)
+	state := mrtTestState(4, 5, 1, _mrtStatusLeadFired)
 	state.LastProgressAtUnix = now.Add(-11 * time.Minute).Unix()
 	// A stall within one stop of the target (typically a persistently empty
 	// GetTrainInfo at the end of a run) reports the ride completed, not stale.
 	got, fire := advanceMrtTrack(state, mrtReading{}, now)
-	if got.Status != mrtStatusArrived {
+	if got.Status != _mrtStatusArrived {
 		t.Errorf("status = %q want arrived", got.Status)
 	}
 	if got.CurrentIndex != 5 || got.RemainingStops != 0 {
 		t.Errorf("position = %d/%d want clamped to target", got.CurrentIndex, got.RemainingStops)
 	}
-	if fire != mrtAlightEventAlight {
+	if fire != _mrtAlightEventAlight {
 		t.Errorf("arrival should request the alight buzz (claim dedups), got %q", fire)
 	}
 	if got.NextPollAtUnix != 0 {
@@ -176,7 +176,7 @@ func TestAdvanceMrtTrackStaleWhileFinishingIsArrival(t *testing.T) {
 
 func TestAdvanceMrtTrackProgressAndNextStation(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	state := mrtTestState(0, 4, 1, mrtStatusTracking)
+	state := mrtTestState(0, 4, 1, _mrtStatusTracking)
 	state.LastProgressAtUnix = now.Add(-time.Minute).Unix()
 	got, _ := advanceMrtTrack(state, mrtReading{nextIndex: 2, resolved: true, gotInfo: true}, now)
 	if got.CurrentIndex != 1 {
@@ -233,12 +233,12 @@ func TestMrtResolvePathIndex(t *testing.T) {
 }
 
 func TestMrtIsTerminal(t *testing.T) {
-	for _, s := range []string{mrtStatusArrived, mrtStatusLost, mrtStatusStale, mrtStatusCancelled} {
+	for _, s := range []string{_mrtStatusArrived, _mrtStatusLost, _mrtStatusStale, _mrtStatusCancelled} {
 		if !mrtIsTerminal(s) {
 			t.Errorf("%q should be terminal", s)
 		}
 	}
-	for _, s := range []string{mrtStatusTracking, mrtStatusLeadFired} {
+	for _, s := range []string{_mrtStatusTracking, _mrtStatusLeadFired} {
 		if mrtIsTerminal(s) {
 			t.Errorf("%q should not be terminal", s)
 		}
@@ -275,10 +275,10 @@ func TestMrtAdjacencyRows(t *testing.T) {
 }
 
 func TestMrtCardMoved(t *testing.T) {
-	previous := mrtTestState(2, 5, 1, mrtStatusTracking)
+	previous := mrtTestState(2, 5, 1, _mrtStatusTracking)
 	previous.NextStationName = "c"
 
-	same := mrtTestState(2, 5, 1, mrtStatusTracking)
+	same := mrtTestState(2, 5, 1, _mrtStatusTracking)
 	same.NextStationName = "c"
 	// The poll schedule moving is not a change the rider can see, and pushing on
 	// it would spend the Live Activity budget on a card that says the same thing.
@@ -287,13 +287,13 @@ func TestMrtCardMoved(t *testing.T) {
 		t.Error("mrtCardMoved() = true for a reschedule with no new reading")
 	}
 
-	hopped := mrtTestState(3, 5, 1, mrtStatusTracking)
+	hopped := mrtTestState(3, 5, 1, _mrtStatusTracking)
 	hopped.NextStationName = "d"
 	if !mrtCardMoved(previous, hopped) {
 		t.Error("mrtCardMoved() = false across a station hop")
 	}
 
-	ended := mrtTestState(2, 5, 1, mrtStatusArrived)
+	ended := mrtTestState(2, 5, 1, _mrtStatusArrived)
 	ended.NextStationName = "c"
 	if !mrtCardMoved(previous, ended) {
 		t.Error("mrtCardMoved() = false for an ending, which is the one reading that must land")
@@ -308,16 +308,16 @@ func TestMrtCardPhase(t *testing.T) {
 		lead      int32
 		want      string
 	}{
-		{"far out", mrtStatusTracking, 6, 2, "riding"},
+		{"far out", _mrtStatusTracking, 6, 2, "riding"},
 		// The warm threshold is the rider's own 提前站數 plus the last stop: the
 		// same boundary the bar colours on and the vibration fires on.
-		{"inside the lead", mrtStatusTracking, 3, 2, "approaching"},
-		{"no lead, last stop", mrtStatusTracking, 1, 0, "approaching"},
-		{"arrived", mrtStatusArrived, 0, 2, "arrived"},
-		{"binding lost", mrtStatusLost, 4, 2, "lost"},
+		{"inside the lead", _mrtStatusTracking, 3, 2, "approaching"},
+		{"no lead, last stop", _mrtStatusTracking, 1, 0, "approaching"},
+		{"arrived", _mrtStatusArrived, 0, 2, "arrived"},
+		{"binding lost", _mrtStatusLost, 4, 2, "lost"},
 		// A stale session is a lost binding the tracker could not classify; the
 		// card has one word for both, because the rider's move is the same.
-		{"stale", mrtStatusStale, 4, 2, "lost"},
+		{"stale", _mrtStatusStale, 4, 2, "lost"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -329,7 +329,7 @@ func TestMrtCardPhase(t *testing.T) {
 }
 
 func TestMrtCardCarriesTheDisplayFieldsTheServerCannotDerive(t *testing.T) {
-	state := mrtTestState(1, 4, 1, mrtStatusTracking)
+	state := mrtTestState(1, 4, 1, _mrtStatusTracking)
 	state.RemainingStops = 3
 	state.NextStationName = "c"
 	state.VehicleLabel = "板南線"
@@ -348,7 +348,7 @@ func TestMrtCardCarriesTheDisplayFieldsTheServerCannotDerive(t *testing.T) {
 	if card.Mode != "metro" || card.Phase != "riding" {
 		t.Errorf("mode/phase = %q/%q", card.Mode, card.Phase)
 	}
-	if card.AsOf != now || card.StaleAfter != mrtCardStaleAfter {
+	if card.AsOf != now || card.StaleAfter != _mrtCardStaleAfter {
 		t.Errorf("as-of/stale = %v/%v", card.AsOf, card.StaleAfter)
 	}
 }
@@ -356,7 +356,7 @@ func TestMrtCardCarriesTheDisplayFieldsTheServerCannotDerive(t *testing.T) {
 func TestMrtCardSurvivesAShortPath(t *testing.T) {
 	// A path that does not reach the target index is a broken session, but a
 	// missing string is not a reason to drop the refresh a rider is reading.
-	state := mrtTestState(1, 9, 1, mrtStatusTracking)
+	state := mrtTestState(1, 9, 1, _mrtStatusTracking)
 	card := mrtCard(state, time.Unix(1_700_000_000, 0))
 	if card.TargetStation != "" {
 		t.Errorf("TargetStation = %q, want empty rather than a panic", card.TargetStation)
@@ -364,15 +364,15 @@ func TestMrtCardSurvivesAShortPath(t *testing.T) {
 }
 
 func TestMrtCardAlertOnlyOnACrossing(t *testing.T) {
-	card := mrtCard(mrtTestState(3, 4, 1, mrtStatusTracking), time.Unix(1_700_000_000, 0))
+	card := mrtCard(mrtTestState(3, 4, 1, _mrtStatusTracking), time.Unix(1_700_000_000, 0))
 
 	if alert := mrtCardAlert("", card); alert != nil {
 		t.Errorf("mrtCardAlert() = %v for no crossing, want nil", alert)
 	}
-	if alert := mrtCardAlert(mrtAlightEventAlight, card); alert == nil || alert.Title != "Get Set" {
+	if alert := mrtCardAlert(_mrtAlightEventAlight, card); alert == nil || alert.Title != "Get Set" {
 		t.Errorf("mrtCardAlert() = %v for the 下車站 crossing", alert)
 	}
-	if alert := mrtCardAlert(mrtAlightEventLead, card); alert == nil || alert.Title != "Ready" {
+	if alert := mrtCardAlert(_mrtAlightEventLead, card); alert == nil || alert.Title != "Ready" {
 		t.Errorf("mrtCardAlert() = %v for the 提前提醒站 crossing", alert)
 	}
 }

@@ -21,6 +21,33 @@ package main
 // the service ids, as it reads every schedule entry regardless of how many calls
 // it carries.
 
+// _busStopBoardingSQL is the per-stop boarding restriction TDX states on
+// bus_stopofroute: StopBoarding 1 is board-only and 2 is alight-only (0 is both
+// and -1 unknown, and neither restricts anything, so only 1 and 2 are kept and
+// every other stop falls through the LEFT JOINs as unrestricted).
+//
+// Without it every call in the feed is board-and-alight, and a planner will
+// happily alight a rider from an intercity coach at a stop the coach only picks
+// up at — 9023 before 經國轉運站 is the case this was found on.
+//
+// max() rather than a first-row pick: the same subroute direction can land more
+// than once (a route registered under two cities), and a restriction that any
+// row states is the one to publish.
+const _busStopBoardingSQL = `
+  SELECT
+    r.subrouteuid AS sub_route_uid,
+    COALESCE(r.direction, 0) AS direction,
+    c->>'StopUID' AS stop_uid,
+    max(CASE WHEN (c->>'StopBoarding')::int = 2 THEN 1 ELSE 0 END) AS pickup,
+    max(CASE WHEN (c->>'StopBoarding')::int = 1 THEN 1 ELSE 0 END) AS drop_off
+  FROM raw_tdx.bus_stopofroute r
+  CROSS JOIN LATERAL jsonb_array_elements(r.stops) c
+  WHERE jsonb_typeof(r.stops) = 'array'
+    AND COALESCE(r.subrouteuid, '') <> ''
+    AND COALESCE(c->>'StopUID', '') <> ''
+    AND (c->>'StopBoarding') ~ '^[12]$'
+  GROUP BY 1, 2, 3`
+
 // busPatternSQL is the ordered stop list of every bus route direction, each stop
 // carrying its cumulative seconds from the origin.
 //
@@ -39,7 +66,7 @@ package main
 // sequence makes the surrounding running times describe a journey that omits a
 // stop the bus actually serves. So the direction goes, exactly as it does for a
 // missing segment.
-const busPatternSQL = `
+const _busPatternSQL = `
   WITH known_stop AS (
     SELECT DISTINCT c->>'StopUID' AS stop_uid
     FROM raw_tdx.bus_stopofroute s
@@ -82,7 +109,7 @@ const busPatternSQL = `
 // would give both sources the same trip_id, and stop_times would union a real
 // call list with an accumulated one into a journey neither source describes.
 // The richer entry wins, since it states times rather than deriving them.
-var busOriginTripSource = `
+var _busOriginTripSource = `
   SELECT
     s.routeuid,
     s.subrouteuid,
@@ -129,9 +156,9 @@ var busOriginTripSource = `
         ) > 1
     )`
 
-// busPatternTripsSQL is the trips.txt branch: an origin departure only becomes a
+// _busPatternTripsSQL is the trips.txt branch: an origin departure only becomes a
 // trip when its route direction has a complete pattern to hang on.
-var busPatternTripsSQL = `
+var _busPatternTripsSQL = `
   SELECT
     b.routeuid AS route_id,
     b.service_id,
@@ -147,26 +174,29 @@ var busPatternTripsSQL = `
         AND sh.geometry LIKE 'LINESTRING%'
     ) THEN 'B:' || b.subrouteuid || ':' || b.direction_id::text
     ELSE '' END AS shape_id
-  FROM (` + busOriginTripSource + `) b
+  FROM (` + _busOriginTripSource + `) b
   WHERE EXISTS (
-    SELECT 1 FROM (` + busPatternSQL + `) p
+    SELECT 1 FROM (` + _busPatternSQL + `) p
     WHERE p.sub_route_uid = b.subrouteuid AND p.direction = b.direction_id AND p.complete
   )`
 
 // busPatternStopTimesSQL is the stop_times.txt branch: the origin departure plus
 // each stop's cumulative offset. Arrival and departure are the same instant —
-// the running times carry no dwell, so claiming one would be inventing it. The
-// trailing 0 is the suspended flag the calls CTE carries for rail; a bus call is
-// never suspended.
-var busPatternStopTimesSQL = `
+// the running times carry no dwell, so claiming one would be inventing it.
+var _busPatternStopTimesSQL = `
   SELECT
     b.trip_id,
     p.stop_sequence,
     p.stop_uid AS stop_id,
     b.origin_secs + p.offset_secs AS arr,
     b.origin_secs + p.offset_secs AS dep,
-    0 AS suspended
-  FROM (` + busOriginTripSource + `) b
-  JOIN (` + busPatternSQL + `) p
+    COALESCE(sb.pickup, 0) AS pickup,
+    COALESCE(sb.drop_off, 0) AS drop_off
+  FROM (` + _busOriginTripSource + `) b
+  JOIN (` + _busPatternSQL + `) p
     ON p.sub_route_uid = b.subrouteuid AND p.direction = b.direction_id
+  LEFT JOIN (` + _busStopBoardingSQL + `) sb
+    ON sb.sub_route_uid = p.sub_route_uid
+   AND sb.direction     = p.direction
+   AND sb.stop_uid      = p.stop_uid
   WHERE p.complete`

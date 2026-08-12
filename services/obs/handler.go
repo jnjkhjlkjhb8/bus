@@ -11,6 +11,7 @@ import (
 
 type sentryCore struct {
 	zapcore.Core
+
 	// fields accumulated through With. The embedded core keeps its own copy for
 	// encoding, but does not expose them, and a Sentry event needs every field
 	// the logger carries -- not just the ones passed at the call site.
@@ -45,6 +46,10 @@ func (c *sentryCore) Check(ent zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore
 }
 
 func (c *sentryCore) Write(ent zapcore.Entry, fields []zapcore.Field) error {
+	// Attributes attached to an error with .With() only reach the log line if
+	// something lifts them off the error here; the call site logs the error as
+	// one value.
+	fields = expandOopsFields(fields)
 	if ent.Level >= zapcore.ErrorLevel && sentry.CurrentHub().Client() != nil {
 		c.capture(ent, fields)
 	}
@@ -73,13 +78,16 @@ func (c *sentryCore) capture(ent zapcore.Entry, fields []zapcore.Field) {
 	hub.Scope().SetLevel(sentry.LevelError)
 	hub.Scope().SetTag("source", "zap")
 	for k, v := range enc.Fields {
-		if k == "err" {
+		if k == "err" || strings.HasPrefix(k, _oopsFieldPrefix) {
 			continue
 		}
 		hub.Scope().SetTag(k, valueText(v))
 	}
 	if hasErr {
 		hub.Scope().SetContext("error", sentry.Context{"detail": errText})
+		if err, ok := errVal.(error); ok {
+			applyOopsScope(hub.Scope(), err)
+		}
 	}
 	hub.CaptureMessage(ent.Message)
 }

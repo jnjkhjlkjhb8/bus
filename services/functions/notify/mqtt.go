@@ -25,11 +25,11 @@ type mqttTopicCfg struct {
 	ttl     time.Duration
 }
 
-// mqttTopics is the set of TDX MQTT subscriptions and their cache TTLs. TDX
+// _mqttTopics is the set of TDX MQTT subscriptions and their cache TTLs. TDX
 // publishes only news and alert topics — there is no vehicle-position or
 // near-stop stream — so every subscription here is advisory text on a 5-minute
 // TTL. Bus alerts stay on v2: routeAlerts reads the v2 field names.
-var mqttTopics = []mqttTopicCfg{
+var _mqttTopics = []mqttTopicCfg{
 	{"v2/Bus/News/City/+", 5 * time.Minute},
 	{"v2/Bus/News/InterCity", 5 * time.Minute},
 	{"v2/Bus/Alert/City/+", 5 * time.Minute},
@@ -67,13 +67,13 @@ func StartMQTT(rc *redis.Client, dispatcher *Dispatcher) mqtt.Client {
 			mqttsubscribeall(c, rc, dispatcher)
 		}).
 		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
-			zap.S().Warnw(fmt.Sprintf("connection lost: %v", err), "component", "mqtt")
+			zap.S().Warnw("connection lost", "component", "mqtt", "err", err)
 		})
 	c := mqtt.NewClient(opts)
 	tok := c.Connect()
 	tok.Wait()
 	if err := tok.Error(); err != nil {
-		zap.S().Errorw(fmt.Sprintf("initial connect failed: %v \u2014 will auto-retry", err), "component", "mqtt")
+		zap.S().Errorw("initial connect failed; will auto-retry", "component", "mqtt", "err", err)
 	}
 	return c
 }
@@ -83,7 +83,7 @@ func StartMQTT(rc *redis.Client, dispatcher *Dispatcher) mqtt.Client {
 // subscriptions are restored after a dropped connection. Per-topic subscribe
 // failures are logged.
 func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *Dispatcher) {
-	for _, t := range mqttTopics {
+	for _, t := range _mqttTopics {
 		pattern, ttl := t.pattern, t.ttl
 		tok := c.Subscribe(pattern, 1, func(_ mqtt.Client, msg mqtt.Message) {
 			mqtthandle(rc, msg, ttl, dispatcher)
@@ -148,11 +148,11 @@ func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatche
 	}, dispatcher)
 }
 
-// alertDedupeWindow is how long one alert's push claim is held. It spans a full
+// _alertDedupeWindow is how long one alert's push claim is held. It spans a full
 // day because TDX republishes an ongoing disruption unchanged for as long as it
 // lasts, and every reconnect re-delivers the broker's retained messages; a
 // window shorter than the disruption re-notifies riders who already read it.
-const alertDedupeWindow = 24 * time.Hour
+const _alertDedupeWindow = 24 * time.Hour
 
 // dispatchRouteAlerts pushes each alert whose dedupe key claim succeeds, once
 // per route the alert is scoped to. An alert that names no route dispatches
@@ -166,7 +166,7 @@ func dispatchRouteAlerts(ctx context.Context, items []*pb.Alert_Item, claim func
 			keys = []string{""}
 		}
 		for _, routeKey := range keys {
-			if claim(item.RouteType+"\x00"+routeKey+"\x00"+item.Id, alertDedupeWindow) {
+			if claim(item.RouteType+"\x00"+routeKey+"\x00"+item.Id, _alertDedupeWindow) {
 				dispatcher.routeAlert(ctx, item.RouteType, routeKey, item.Body)
 			}
 		}
@@ -262,17 +262,17 @@ func alertTime(m map[string]any) int64 {
 		return 0
 	}
 	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
-		if parsed, err := time.ParseInLocation(layout, raw, alertLocation); err == nil {
+		if parsed, err := time.ParseInLocation(layout, raw, _alertLocation); err == nil {
 			return parsed.Unix()
 		}
 	}
 	return 0
 }
 
-// alertLocation is the zone TDX timestamps are in when they carry no offset.
+// _alertLocation is the zone TDX timestamps are in when they carry no offset.
 // It falls back to a fixed +08:00 so a container without tzdata still reads
 // those timestamps correctly rather than shifting them to UTC.
-var alertLocation = func() *time.Location {
+var _alertLocation = func() *time.Location {
 	if loc, err := time.LoadLocation("Asia/Taipei"); err == nil {
 		return loc
 	}
@@ -329,10 +329,9 @@ func alertItems(raw any) []map[string]any {
 	case []any:
 		items = v
 	case map[string]any:
+		items = []any{v}
 		if nested, ok := v["Alerts"].([]any); ok {
 			items = nested
-		} else {
-			items = []any{v}
 		}
 	}
 	out := make([]map[string]any, 0, len(items))

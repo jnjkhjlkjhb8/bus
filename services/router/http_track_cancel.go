@@ -30,10 +30,10 @@ import (
 // same way whether or not the session existed, so it cannot be used to probe.
 const TrackCancelPath = "/api/track/cancel"
 
-// httpTrackCancelRateLimit bounds the endpoint. One press ends one ride, so a
+// _httpTrackCancelRateLimit bounds the endpoint. One press ends one ride, so a
 // device has no honest reason to call this more than a handful of times an hour;
 // the limit is set for a retry loop, not for traffic.
-const httpTrackCancelRateLimit = 20
+const _httpTrackCancelRateLimit = 20
 
 type trackCancelRequest struct {
 	TrackID string `json:"track_id"`

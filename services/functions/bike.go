@@ -15,9 +15,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// bikeAvailabilitySkip lists the cities TDX serves no Bike/Availability feed
+// _bikeAvailabilitySkip lists the cities TDX serves no Bike/Availability feed
 // for; bikeEta skips them rather than spending a request per tick on a 404.
-var bikeAvailabilitySkip = map[string]struct{}{
+var _bikeAvailabilitySkip = map[string]struct{}{
 	"Keelung":          {},
 	"HsinchuCounty":    {},
 	"NantouCounty":     {},
@@ -83,7 +83,7 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, sink loadSink, cit
 			return errors.New("StationID is required")
 		}
 		if !validPosition(station.StationPosition.PositionLon, station.StationPosition.PositionLat) {
-			return fmt.Errorf("position is invalid: lon=%v lat=%v", station.StationPosition.PositionLon, station.StationPosition.PositionLat)
+			return _oops.With("position_lon", station.StationPosition.PositionLon).With("position_lat", station.StationPosition.PositionLat).Errorf("position is invalid: lon= lat=")
 		}
 		// ServiceType is stored and served as an opaque smallint, never
 		// switched on, so an operator TDX adds later must not reject the
@@ -108,7 +108,7 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, sink loadSink, cit
 			temp.StationAddress.ZhTw,
 		}
 		if err := appendUniqueLoadRow(&row, seen, temp.StationUID, "StationUID", candidate); err != nil {
-			return fmt.Errorf("bike stations %s: %w", city, err)
+			return _oops.With("city", city).Wrapf(err, "bike stations")
 		}
 	}
 	if len(row) == 0 {
@@ -144,9 +144,9 @@ func loadBikeStations(ctx context.Context, dec *json.Decoder, sink loadSink, cit
 	}, row)
 }
 
-// bikeHistorySampleGate is the process-wide 5-minute-per-station gate shared
+// _bikeHistorySampleGate is the process-wide 5-minute-per-station gate shared
 // across bikeEta rounds, so history sampling survives between 30s ticks.
-var bikeHistorySampleGate bikeHistorySampler
+var _bikeHistorySampleGate bikeHistorySampler
 
 // bikeEta refreshes live bike availability into Redis every 30s. For each
 // non-skipped city it fetches TDX Bike/Availability and pipelines a protobuf
@@ -160,10 +160,12 @@ var bikeHistorySampleGate bikeHistorySampler
 func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.Pool) error {
 	zap.S().Infow("start", "component", "bike_eta", "action", "bike_eta", "event", "start")
 	now := time.Now()
-	var historyRows [][]any
-	var jobErr error
-	for _, city := range cities {
-		if _, skip := bikeAvailabilitySkip[city]; skip {
+	var (
+		historyRows [][]any
+		jobErr      error
+	)
+	for _, city := range _cities {
+		if _, skip := _bikeAvailabilitySkip[city]; skip {
 			continue
 		}
 		zap.S().Infow("city start",
@@ -174,7 +176,7 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 		)
 		result, err := fetch(ctx, fmt.Sprintf("/v2/Bike/Availability/City/%s", city), "bike_availability"+city)
 		if err != nil {
-			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s fetch: %w", city, err))
+			jobErr = errors.Join(jobErr, _oops.With("city", city).Wrapf(err, "bike fetch"))
 			continue
 		}
 		if !result.Modified {
@@ -212,10 +214,10 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 					return err
 				}
 				key := shared.BikeAvailabilityKey(temp.StationUID)
-				pipe.Set(key, pb, bikeLiveTTL)
+				pipe.Set(key, pb, _bikeLiveTTL)
 				ownedKeys = append(ownedKeys, key)
 				// Sample into history at most once per 5 minutes per station.
-				if db != nil && bikeHistorySampleGate.shouldSample(temp.StationUID, now) {
+				if db != nil && _bikeHistorySampleGate.shouldSample(temp.StationUID, now) {
 					historyRows = append(historyRows, []any{
 						temp.StationUID, availableRent, int(temp.AvailableReturnBikes), now,
 					})
@@ -224,14 +226,14 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			}); err != nil {
 				return err
 			}
-			pipe.ReplaceOwnedKeys(shared.LiveOwnedKeysKey("bike", city), ownedKeys, ownedKeysTTL)
+			pipe.ReplaceOwnedKeys(shared.LiveOwnedKeysKey("bike", city), ownedKeys, _ownedKeysTTL)
 			if err := pipe.Exec(ctx); err != nil {
-				return fmt.Errorf("publish bike availability for %s: %w", city, err)
+				return _oops.With("city", city).Wrapf(err, "publish bike availability")
 			}
 			zap.S().Infow("complete", "component", "bike_eta", "action", "bike_eta", "city", city, "event", "complete")
 			return nil
 		}); err != nil {
-			jobErr = errors.Join(jobErr, fmt.Errorf("bike %s process: %w", city, err))
+			jobErr = errors.Join(jobErr, _oops.With("city", city).Wrapf(err, "bike process"))
 		}
 	}
 	if db != nil {

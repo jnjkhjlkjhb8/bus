@@ -2,7 +2,7 @@
 # check-container-hardening.sh
 #
 # Static + compose-config policy checks for container hardening:
-#   - non-root USER in final images we build (router, functions, embed/ollama)
+#   - non-root USER in final images we build (router, functions)
 #   - no-new-privileges, dropped capabilities, read-only root FS, pids/cpu
 #     limits on every long-running compose service
 #   - per-service secret file mounts (never the whole ./secrets directory)
@@ -50,7 +50,6 @@ check_dockerfile_user() {
 }
 check_dockerfile_user "router" services/router/Dockerfile
 check_dockerfile_user "functions" services/functions/Dockerfile
-check_dockerfile_user "embed/ollama" embed/Dockerfile
 
 # ---------------------------------------------------------------------------
 # 2. .dockerignore exists and is allowlist-style (excludes the big/sensitive
@@ -173,8 +172,8 @@ else
     exit 1
   fi
 
-  services="router functions ingestor loader redis powersync cloudflared osrm osrm-fetch osrm-init ollama"
-  long_running="router functions ingestor loader redis powersync cloudflared osrm ollama"
+  services="router functions ingestor loader redis powersync cloudflared osrm osrm-fetch osrm-init"
+  long_running="router functions ingestor loader redis powersync cloudflared osrm"
 
   service_block() {
     # service_block <name> <file> — prints the YAML block for one service.
@@ -233,7 +232,7 @@ else
   note "-- pinned images (digest, not :latest) --"
   for s in $services; do
     blk=$(service_block "$s" "$cfg")
-    # Locally built services (router/functions/ingestor/loader/ollama) have
+    # Locally built services (router/functions/ingestor/loader) have
     # no meaningful pre-build digest to pin -- the digest is an OUTPUT of
     # `docker build`, not an input. What matters for them is that their
     # Dockerfile's FROM base image is pinned; that's covered separately
@@ -254,7 +253,7 @@ else
   done
 
   note "-- Dockerfile FROM base images pinned by digest --"
-  for pair in "router:services/router/Dockerfile" "functions:services/functions/Dockerfile" "embed/ollama:embed/Dockerfile"; do
+  for pair in "router:services/router/Dockerfile" "functions:services/functions/Dockerfile"; do
     name="${pair%%:*}"
     file="${pair#*:}"
     unpinned=$(grep -E '^FROM ' "$file" | grep -v '@sha256:' || true)

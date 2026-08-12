@@ -11,8 +11,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const validObservationJSON = `{"records":{"Station":[{"GeoInfo":{"CountyName":"臺北市"},"ObsTime":{"DateTime":"2026-07-15T03:00:00+08:00"},"WeatherElement":{"AirTemperature":"30","WindSpeed":"2","RelativeHumidity":"70"}}]}}`
-const validRainJSON = `{"records":{"Station":[{"GeoInfo":{"CountyName":"臺北市"},"ObsTime":{"DateTime":"2026-07-15T03:00:00+08:00"},"RainfallElement":{"Now":{"Precipitation":"1.5"}}}]}}`
+const (
+	_validObservationJSON = `{"records":{"Station":[{"GeoInfo":{"CountyName":"臺北市"},"ObsTime":{"DateTime":"2026-07-15T03:00:00+08:00"},"WeatherElement":{"AirTemperature":"30","WindSpeed":"2","RelativeHumidity":"70"}}]}}`
+	_validRainJSON        = `{"records":{"Station":[{"GeoInfo":{"CountyName":"臺北市"},"ObsTime":{"DateTime":"2026-07-15T03:00:00+08:00"},"RainfallElement":{"Now":{"Precipitation":"1.5"}}}]}}`
+)
 
 func weatherServer(t *testing.T, obsStatus int, obsBody, rainBody string, delay time.Duration) *httptest.Server {
 	t.Helper()
@@ -30,7 +32,7 @@ func weatherServer(t *testing.T, obsStatus int, obsBody, rainBody string, delay 
 }
 
 func TestFetchWeatherSnapshotReturnsHTTPStatusError(t *testing.T) {
-	server := weatherServer(t, http.StatusServiceUnavailable, "unavailable", validRainJSON, 0)
+	server := weatherServer(t, http.StatusServiceUnavailable, "unavailable", _validRainJSON, 0)
 	defer server.Close()
 	if _, err := fetchWeatherSnapshot(context.Background(), server.Client(), server.URL, "key"); err == nil {
 		t.Fatal("HTTP 503 returned nil error")
@@ -38,7 +40,7 @@ func TestFetchWeatherSnapshotReturnsHTTPStatusError(t *testing.T) {
 }
 
 func TestFetchWeatherSnapshotReturnsParseError(t *testing.T) {
-	server := weatherServer(t, http.StatusOK, `{"records":`, validRainJSON, 0)
+	server := weatherServer(t, http.StatusOK, `{"records":`, _validRainJSON, 0)
 	defer server.Close()
 	if _, err := fetchWeatherSnapshot(context.Background(), server.Client(), server.URL, "key"); err == nil {
 		t.Fatal("malformed observation JSON returned nil error")
@@ -46,7 +48,7 @@ func TestFetchWeatherSnapshotReturnsParseError(t *testing.T) {
 }
 
 func TestFetchWeatherSnapshotHonorsContext(t *testing.T) {
-	server := weatherServer(t, http.StatusOK, validObservationJSON, validRainJSON, 40*time.Millisecond)
+	server := weatherServer(t, http.StatusOK, _validObservationJSON, _validRainJSON, 40*time.Millisecond)
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 	defer cancel()

@@ -6,10 +6,6 @@
 # docs/config.md.
 DATABASE_URL
 PG_SCHEMA
-# changetovector runs in the loader (registerLoaderCrons -> runVectorRefresh),
-# so the loader needs the embedding endpoint. Empty EMBED_URL => embedding is
-# skipped (changeToVector no-ops) but the pipeline marker is still written.
-EMBED_URL
 LOAD_DB_MAX_CONNS
 LOAD_DB_MIN_CONNS
 RAW_DATABASE_URL

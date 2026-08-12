@@ -1,8 +1,6 @@
 package main
 
 import (
-	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
-
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,27 +11,28 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 )
 
-// cities is the set of TDX city codes iterated by every bus/bike ingestion loop.
+// _cities is the set of TDX city codes iterated by every bus/bike ingestion loop.
 // "InterCity" is the highway coach operator, not a municipality. Order is not
 // significant.
-var cities = []string{
+var _cities = []string{
 	"Taipei", "NewTaipei", "Taoyuan", "Taichung", "Tainan", "Kaohsiung",
 	"InterCity", "Hsinchu", "HsinchuCounty", "MiaoliCounty", "ChanghuaCounty",
 	"NantouCounty", "YunlinCounty", "ChiayiCounty", "Chiayi", "PingtungCounty",
 	"YilanCounty", "HualienCounty", "TaitungCounty", "PenghuCounty", "KinmenCounty", "LienchiangCounty", "Keelung",
 }
 
-// citymap maps a TDX city code to its short prefix used in UID construction and
+// _citymap maps a TDX city code to its short prefix used in UID construction and
 // as the authority_code for operators. Every entry in cities must have a key
 // here: readBusCitySnapshot rejects an unmapped city before the writer can turn
 // its partition-replacement prefix into the destructive pattern "%".
-var citymap = map[string]string{
+var _citymap = map[string]string{
 	"Taipei": "TPE", "NewTaipei": "NWT", "Taoyuan": "TAO", "Taichung": "TXG",
 	"Tainan": "TNN", "Kaohsiung": "KHH", "InterCity": "THB", "Keelung": "KEE",
 	"Hsinchu": "HSZ", "HsinchuCounty": "HSQ", "MiaoliCounty": "MIA", "ChanghuaCounty": "CHA",
@@ -42,9 +41,9 @@ var citymap = map[string]string{
 	"PenghuCounty": "PEN", "KinmenCounty": "KIN", "LienchiangCounty": "LIE",
 }
 
-// citymap2 is the inverse of citymap, resolving a short prefix back to a TDX
+// _citymap2 is the inverse of citymap, resolving a short prefix back to a TDX
 // city code. Used when rail data carries LocationCityCode prefixes.
-var citymap2 = map[string]string{
+var _citymap2 = map[string]string{
 	"TPE": "Taipei", "NWT": "NewTaipei", "TAO": "Taoyuan", "TXG": "Taichung",
 	"TNN": "Tainan", "KHH": "Kaohsiung", "THB": "InterCity", "KEE": "Keelung",
 	"HSZ": "Hsinchu", "HSQ": "HsinchuCounty", "MIA": "MiaoliCounty", "CHA": "ChanghuaCounty",
@@ -53,10 +52,10 @@ var citymap2 = map[string]string{
 	"PEN": "PenghuCounty", "KIN": "KinmenCounty", "LIE": "LienchiangCounty",
 }
 
-// busSubroutesUpsertSQL upserts one subroute per (sub_route_uid, direction) into
+// _busSubroutesUpsertSQL upserts one subroute per (sub_route_uid, direction) into
 // bus_subroutes from the temp_bus staging table, building the stops array from
 // the staged rawstop jsonb. DISTINCT ON dedupes staged duplicates.
-const busSubroutesUpsertSQL = `
+const _busSubroutesUpsertSQL = `
 			INSERT INTO bus_subroutes(
 				sub_route_uid,
 				route_uid,
@@ -99,7 +98,7 @@ const busSubroutesUpsertSQL = `
 				updated_at = NOW();
 			`
 
-// busScheduleInsertSQL inserts the write-ready timetable and frequency rows
+// _busScheduleInsertSQL inserts the write-ready timetable and frequency rows
 // from temp_bus_schedule after the atomic writer has deleted the city's
 // partition in the same transaction. No DISTINCT ON and no ON CONFLICT: the
 // natural key (sub_route_uid, direction, type, service_day, tripid,
@@ -108,7 +107,7 @@ const busSubroutesUpsertSQL = `
 // than be collapsed. The dual-purpose column names (e.g.
 // "stop_uid/MinHeadwayMins") hold either a fixed timetable stop or a
 // frequency-based headway depending on the type flag.
-const busScheduleInsertSQL = `INSERT INTO bus_schedule (sub_route_uid, direction, type, tripid, islowfloor, stopsequence, "stop_uid/MinHeadwayMins", "stop_name/MaxHeadwayMins", "arrival_time/StartTime", "departure_time/EndTime", service_day, updated_at)
+const _busScheduleInsertSQL = `INSERT INTO bus_schedule (sub_route_uid, direction, type, tripid, islowfloor, stopsequence, "stop_uid/MinHeadwayMins", "stop_name/MaxHeadwayMins", "arrival_time/StartTime", "departure_time/EndTime", service_day, updated_at)
 				SELECT uid, dir, type, id, floor, seq, stopuid, stopname, arrival::time, departure::time, sdays, NOW()
 				FROM temp_bus_schedule`
 
@@ -257,6 +256,25 @@ type rawBusEsimated struct {
 	NextBusTime   string `json:"NextBusTime"`
 	StopStatus    uint8  `json:"StopStatus"`
 	SrcUpdateTime string `json:"SrcUpdateTime"`
+	// IsLastBus is 1 only once the source has seen the route's last bus running.
+	// It is 0 both after that bus has gone and when no estimate was ever computed
+	// (no vehicle reporting at all), so on its own it cannot say 末班車已過 — TDX
+	// asks consumers to show 末班資訊 for the ambiguous case.
+	IsLastBus uint8 `json:"IsLastBus"`
+	// DataTime is when the source computed this estimate; SrcUpdateTime and
+	// SrcTransTime are when it published the batch that carried it. Which of the
+	// two publish stamps arrives depends on the city: measured 2026-08-09,
+	// Taoyuan and New Taipei send only SrcUpdateTime, 公總 and the counties it
+	// manages (InterCity, Keelung) send only SrcTransTime, and Tainan sends both.
+	// etaSourceTime picks whichever is there, so a feed without SrcUpdateTime is
+	// still aged rather than published at whatever age it arrived with.
+	//
+	// TDX stops recomputing an estimate once it counts down below 60 seconds, so
+	// DataTime falls behind the publish stamp while a bus is arriving late;
+	// countFrozenEstimates measures how often, which is what decides whether
+	// adjustedEstimate may keep ageing such an entry (FDPL-79).
+	DataTime     string `json:"DataTime"`
+	SrcTransTime string `json:"SrcTransTime"`
 }
 
 // rawBusPosition decodes a TDX Bus/RealTimeByFrequency element: a bus's live GPS
@@ -303,6 +321,11 @@ type busStationmap struct {
 	StopSequence uint8
 	Lat          float64
 	Lon          float64
+	// Other operators' StopUIDs for this same stop on a co-operated route, empty
+	// for every stop only one operator runs. TDX keys an N1 estimate on the
+	// StopID of the operator running that trip, so the ETA join has to try these
+	// before deciding a stop has no reading.
+	AliasStopUIDs []string
 }
 
 // rawBusShape decodes a TDX Bus/Shape element: the WKT geometry of a route or
@@ -337,13 +360,13 @@ type busOperatorJSON struct {
 	URL   string `json:"url"`
 }
 
-var operatorPhoneRun = regexp.MustCompile(`\d[\d\-() ]*\d|\d`)
+var _operatorPhoneRun = regexp.MustCompile(`\d[\d\-() ]*\d|\d`)
 
 func sanitizeOperatorPhone(s string) string {
 	if !strings.ContainsRune(s, '�') {
 		return s
 	}
-	return strings.Join(operatorPhoneRun.FindAllString(s, -1), " / ")
+	return strings.Join(_operatorPhoneRun.FindAllString(s, -1), " / ")
 }
 
 // busDailyTimetableSkip lists cities whose daily-timetable feed TDX does not
@@ -358,7 +381,7 @@ func busDailyTimetableSkip(city string) bool {
 // than TDX: Taipei's partition comes from Data.taipei (datataipei_static.go), so
 // TDX serving nothing for it no longer means there is nothing to load.
 func busDailyTimetableLoadSkip(city string) bool {
-	return busDailyTimetableSkip(city) && city != dataTaipeiCity
+	return busDailyTimetableSkip(city) && city != _dataTaipeiCity
 }
 
 // busDailyOriginFilter indexes each subroute direction's origin stop from the
@@ -599,7 +622,7 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSourc
 		}
 		pb, err := (proto.MarshalOptions{Deterministic: true}).Marshal(pbRoute)
 		if err != nil {
-			return fmt.Errorf("bus daily timetable %s marshal %s: %w", city, subRouteUID, err)
+			return _oops.With("city", city).With("sub_route_uid", subRouteUID).Wrapf(err, "bus daily timetable marshal")
 		}
 		writes = append(writes, redisWrite{key: shared.BusDailyTimetableKey(subRouteUID), value: pb})
 	}
@@ -607,10 +630,10 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSourc
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("bus daily timetable %s context before Redis transaction: %w", city, err)
+		return _oops.With("city", city).Wrapf(err, "bus daily timetable context before Redis transaction")
 	}
 	if rc == nil {
-		return fmt.Errorf("bus daily timetable %s Redis transaction: nil client", city)
+		return _oops.With("city", city).Errorf("bus daily timetable Redis transaction: nil client")
 	}
 	pipe := rc.TxPipeline()
 	defer pipe.Discard()
@@ -619,14 +642,14 @@ func loadBusDailyTimetable(ctx context.Context, dec *json.Decoder, src loadSourc
 	}
 	if err := ctx.Err(); err != nil {
 		pipe.Discard()
-		return fmt.Errorf("bus daily timetable %s context before Redis transaction: %w", city, err)
+		return _oops.With("city", city).Wrapf(err, "bus daily timetable context before Redis transaction")
 	}
 	_, execErr := pipe.Exec(ctx)
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return fmt.Errorf("bus daily timetable %s context during Redis transaction: %w", city, errors.Join(ctxErr, execErr))
+		return _oops.With("city", city).Wrapf(errors.Join(ctxErr, execErr), "bus daily timetable context during Redis transaction")
 	}
 	if execErr != nil {
-		return fmt.Errorf("bus daily timetable %s Redis transaction: %w", city, execErr)
+		return _oops.With("city", city).Wrapf(execErr, "bus daily timetable Redis transaction")
 	}
 	zap.S().Infow("complete", "component", "bus", "action", "bus_dailyroute", "event", "complete", "city", city)
 	return nil
@@ -640,31 +663,31 @@ func validateBusDailyTimetable(timetable rawBusDailytimetable) error {
 		return errors.New("missing Direction")
 	}
 	if *timetable.Direction > 1 {
-		return fmt.Errorf("invalid Direction %d, want 0 or 1", *timetable.Direction)
+		return _oops.With("direction", *timetable.Direction).Errorf("invalid Direction, want 0 or 1")
 	}
 	if len(timetable.Timetables) == 0 {
 		return errors.New("missing Timetables")
 	}
 	for timetableIndex, trip := range timetable.Timetables {
 		if strings.TrimSpace(trip.TripID) == "" {
-			return fmt.Errorf("timetables element %d missing TripID", timetableIndex)
+			return _oops.With("timetable_index", timetableIndex).Errorf("timetables element missing TripID")
 		}
 		if len(trip.StopTimes) == 0 {
-			return fmt.Errorf("timetables element %d missing StopTimes", timetableIndex)
+			return _oops.With("timetable_index", timetableIndex).Errorf("timetables element missing StopTimes")
 		}
 		for stopIndex, stop := range trip.StopTimes {
 			prefix := fmt.Sprintf("Timetables element %d StopTimes element %d", timetableIndex, stopIndex)
 			if stop.StopSequence <= 0 || stop.StopSequence > 1<<31-1 {
-				return fmt.Errorf("%s StopSequence must be between 1 and %d", prefix, int64(1<<31-1))
+				return _oops.With("prefix", prefix).With("max", int64(1<<31-1)).Errorf("StopSequence out of range")
 			}
 			if strings.TrimSpace(stop.StopUID) == "" {
-				return fmt.Errorf("%s StopUID is required", prefix)
+				return _oops.With("prefix", prefix).Errorf("StopUID is required")
 			}
 			if !validClock(stop.ArrivalTime) {
-				return fmt.Errorf("%s ArrivalTime is invalid: %q", prefix, stop.ArrivalTime)
+				return _oops.With("prefix", prefix).With("arrival_time", stop.ArrivalTime).Errorf("ArrivalTime is invalid")
 			}
 			if !validClock(stop.DepartureTime) {
-				return fmt.Errorf("%s DepartureTime is invalid: %q", prefix, stop.DepartureTime)
+				return _oops.With("prefix", prefix).With("departure_time", stop.DepartureTime).Errorf("DepartureTime is invalid")
 			}
 		}
 	}
@@ -672,19 +695,19 @@ func validateBusDailyTimetable(timetable rawBusDailytimetable) error {
 }
 
 func canonicalBusDailyIdentity(city, subRouteUID string, direction uint8) (string, uint8, error) {
-	prefix, ok := citymap[city]
+	prefix, ok := _citymap[city]
 	if !ok || prefix == "" {
-		return "", 0, fmt.Errorf("bus daily timetable %s: authority is unknown", city)
+		return "", 0, _oops.With("city", city).Errorf("bus daily timetable: authority is unknown")
 	}
 	uid, dir := shared.CanonicalSubroute(city, subRouteUID, direction)
 	if strings.TrimSpace(uid) == "" {
-		return "", 0, fmt.Errorf("bus daily timetable %s: canonical SubRouteUID is empty for %q", city, subRouteUID)
+		return "", 0, _oops.With("city", city).With("sub_route_uid", subRouteUID).Errorf("bus daily timetable: canonical SubRouteUID is empty")
 	}
 	if dir > 1 {
-		return "", 0, fmt.Errorf("bus daily timetable %s: canonical Direction must be 0 or 1, got %d", city, dir)
+		return "", 0, _oops.With("city", city).With("dir", dir).Errorf("bus daily timetable: canonical Direction must be 0 or 1")
 	}
 	if !uidBelongsToPrefix(uid, prefix) {
-		return "", 0, fmt.Errorf("bus daily timetable %s: canonical SubRouteUID %q does not belong to authority %s", city, uid, prefix)
+		return "", 0, _oops.With("city", city).With("uid", uid).With("prefix", prefix).Errorf("bus daily timetable: canonical SubRouteUID does not belong to authority")
 	}
 	return uid, dir, nil
 }

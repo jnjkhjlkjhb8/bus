@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sort"
 	"time"
 
@@ -14,10 +13,10 @@ import (
 	"go.uber.org/zap"
 )
 
-// busDailyHourlyTimeout bounds one hourly bus_dailytimetable load. Only the
+// _busDailyHourlyTimeout bounds one hourly bus_dailytimetable load. Only the
 // cities whose landing marker moved are transformed, so a quiet hour costs one
 // landing_state query and the full-refresh hour stays well inside this budget.
-const busDailyHourlyTimeout = 15 * time.Minute
+const _busDailyHourlyTimeout = 15 * time.Minute
 
 // registerBusDailyTimetableCron schedules the hourly bus_dailytimetable load
 // that pairs with the ingestor's hourly landing (:00 lands, :10 loads). The
@@ -33,8 +32,8 @@ const busDailyHourlyTimeout = 15 * time.Minute
 // SkipIfStillRunning keeps one entry from overlapping itself.
 func registerBusDailyTimetableCron(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Client) {
 	src := rawTDXSource{pool: rawPool}
-	runner := newStaticPipelineRunner(rawPool, busDailyHourlyTimeout)
-	loaded := map[string]string{}
+	runner := newStaticPipelineRunner(rawPool, _busDailyHourlyTimeout)
+	loaded := make(map[string]string)
 	_, _ = addStaticCron(r, "0 10 * * * *", func() {
 		err := runner.Run(context.Background(), func(ctx context.Context) error {
 			return loadChangedBusDailyTimetables(ctx, rawPool, src, db, rc, loaded)
@@ -66,19 +65,19 @@ func busDailyLandingMarkers(ctx context.Context, q rawMarkerQuerier) (map[string
 		FROM raw_tdx.landing_state
 		WHERE table_name='bus_dailytimetable' AND partition_column='city'`)
 	if err != nil {
-		return nil, fmt.Errorf("read bus_dailytimetable landing markers: %w", err)
+		return nil, _oops.Wrapf(err, "read bus_dailytimetable landing markers")
 	}
 	defer rows.Close()
 	markers := make(map[string]string, 32)
 	for rows.Next() {
 		var city, marker string
 		if err := rows.Scan(&city, &marker); err != nil {
-			return nil, fmt.Errorf("read bus_dailytimetable landing markers: scan: %w", err)
+			return nil, _oops.Wrapf(err, "read bus_dailytimetable landing markers: scan")
 		}
 		markers[city] = marker
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read bus_dailytimetable landing markers: rows: %w", err)
+		return nil, _oops.Wrapf(err, "read bus_dailytimetable landing markers: rows")
 	}
 	return markers, nil
 }

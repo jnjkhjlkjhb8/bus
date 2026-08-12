@@ -12,7 +12,7 @@ import (
 // GTFS-RT is seconds, and getting that wrong is a feed that under-reports every
 // delay by a factor of sixty without failing anything.
 func TestBuildGTFSRTDelays(t *testing.T) {
-	now := time.Date(2026, 8, 7, 9, 0, 0, 0, taipei)
+	now := time.Date(2026, 8, 7, 9, 0, 0, 0, _taipei)
 	index := map[string]railDelayTrip{
 		"123": {tripID: "TRA:123:20260807", stations: map[string]bool{"1000": true, "1010": true}},
 		"456": {tripID: "TRA:456:20260807", stations: map[string]bool{"2000": true}},

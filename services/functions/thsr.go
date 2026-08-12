@@ -38,11 +38,11 @@ type rawThsrAvailableSeatStatus struct {
 // This is the seat refresh ADR-0005 originally left on the router's read path;
 // moving it here makes the router a pure reader (ADR-0005 amendment).
 func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) error {
-	date := time.Now().In(taipei).Format(time.DateOnly)
+	date := time.Now().In(_taipei).Format(time.DateOnly)
 	zap.S().Infow("start", "component", "thsr_seats", "action", "thsr_seats", "event", "start", "date", date)
 	result, err := fetch(ctx, fmt.Sprintf("/v2/Rail/THSR/AvailableSeatStatus/Train/OD/TrainDate/%s", date), "thsr_availableseats")
 	if err != nil {
-		return fmt.Errorf("fetch THSR available seats for %s: %w", date, err)
+		return _oops.With("date", date).Wrapf(err, "fetch THSR available seats")
 	}
 	if !result.Modified {
 		// A 304 has already re-armed the cached snapshots' TTL via boundFetch.
@@ -84,7 +84,7 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 			if err != nil {
 				return err
 			}
-			pipe.Set(shared.ThsrSeatsKey(date, trainNo), pb, thsrSeatsLiveTTL)
+			pipe.Set(shared.ThsrSeatsKey(date, trainNo), pb, _thsrSeatsLiveTTL)
 			pipe.Publish(channel, string(pb))
 			count++
 		}
@@ -100,7 +100,7 @@ func thsrAvailableSeats(ctx context.Context, fetch boundFetch, sink liveSink) er
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("process THSR available seats for %s: %w", date, err)
+		return _oops.With("date", date).Wrapf(err, "process THSR available seats")
 	}
 	return nil
 }

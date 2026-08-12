@@ -21,7 +21,7 @@ type failFastNearbyStore struct {
 
 func (f *failFastNearbyStore) Find(ctx context.Context, mode NearbyMode, _ NearbyQuery) ([]NearbyCandidate, error) {
 	switch mode {
-	case nearbyBike:
+	case _nearbyBike:
 		close(f.blockedStarted)
 		select {
 		case <-ctx.Done():
@@ -75,7 +75,7 @@ func TestValidateNearbyQuery(t *testing.T) {
 		{
 			name:       "minimum positive radius snaps up to one bucket",
 			query:      NearbyQuery{Origin: GeoPoint{Lon: -180, Lat: -90}, RadiusMeters: 1},
-			wantRadius: nearbyRadiusBucket,
+			wantRadius: _nearbyRadiusBucket,
 		},
 		{
 			name:       "viewport radius snaps up to the next bucket",
@@ -89,8 +89,8 @@ func TestValidateNearbyQuery(t *testing.T) {
 		},
 		{
 			name:       "maximum radius",
-			query:      NearbyQuery{Origin: GeoPoint{Lon: 180, Lat: 90}, RadiusMeters: maxNearbyRadius},
-			wantRadius: maxNearbyRadius,
+			query:      NearbyQuery{Origin: GeoPoint{Lon: 180, Lat: 90}, RadiusMeters: _maxNearbyRadius},
+			wantRadius: _maxNearbyRadius,
 		},
 		{
 			name:    "negative radius",
@@ -179,7 +179,7 @@ func TestNearbyDiscoveryPreservesBusGroupUIDIdentity(t *testing.T) {
 
 func TestNearbyDiscoveryRejectsPartialResponseWhenOneModeFails(t *testing.T) {
 	store := fakeNearbyStore{
-		rows: map[NearbyMode][]NearbyCandidate{nearbyBike: {candidate(nearbyBike, "B-1", "Bike", 160)}},
+		rows: map[NearbyMode][]NearbyCandidate{_nearbyBike: {candidate(_nearbyBike, "B-1", "Bike", 160)}},
 		err:  map[NearbyMode]error{NearbyBus: errors.New("bus query failed")},
 	}
 
@@ -261,7 +261,7 @@ func TestNearbyDiscoveryReturnsUnavailableWhenEveryModeFails(t *testing.T) {
 
 func TestNearbyDiscoveryFallsBackWhenRoutingFails(t *testing.T) {
 	store := fakeNearbyStore{rows: map[NearbyMode][]NearbyCandidate{
-		nearbyTRA: {candidate(nearbyTRA, "T-1", "TRA", 800)},
+		_nearbyTRA: {candidate(_nearbyTRA, "T-1", "TRA", 800)},
 	}, err: map[NearbyMode]error{}}
 
 	got, err := NewNearbyDiscovery(store, &fakeWalkingRouter{err: errors.New("osrm unavailable")}).Discover(context.Background(), NearbyQuery{})
@@ -306,8 +306,8 @@ func (r *indexWalkingRouter) RouteMany(_ context.Context, _ GeoPoint, points []G
 
 func TestNearbyDiscoveryRoutesEveryModeInOneTableRequest(t *testing.T) {
 	store := fakeNearbyStore{rows: map[NearbyMode][]NearbyCandidate{
-		NearbyBus: {candidate(NearbyBus, "G-1", "Bus", 80), candidate(NearbyBus, "G-2", "Bus", 90)},
-		nearbyMRT: {candidate(nearbyMRT, "M-1", "MRT", 300)},
+		NearbyBus:  {candidate(NearbyBus, "G-1", "Bus", 80), candidate(NearbyBus, "G-2", "Bus", 90)},
+		_nearbyMRT: {candidate(_nearbyMRT, "M-1", "MRT", 300)},
 	}, err: map[NearbyMode]error{}}
 	router := &indexWalkingRouter{}
 
@@ -331,7 +331,7 @@ func TestNearbyDiscoveryRoutesEveryModeInOneTableRequest(t *testing.T) {
 
 func TestNearbyDiscoveryServesRepeatQueryFromCache(t *testing.T) {
 	store := fakeNearbyStore{rows: map[NearbyMode][]NearbyCandidate{
-		nearbyTRA: {candidate(nearbyTRA, "T-1", "TRA", 800)},
+		_nearbyTRA: {candidate(_nearbyTRA, "T-1", "TRA", 800)},
 	}, err: map[NearbyMode]error{}}
 	router := &indexWalkingRouter{}
 	discovery := NewNearbyDiscovery(store, router)
@@ -355,7 +355,7 @@ func TestNearbyDiscoveryServesRepeatQueryFromCache(t *testing.T) {
 
 func TestNearbyDiscoveryPropagatesContextCancellation(t *testing.T) {
 	store := fakeNearbyStore{rows: map[NearbyMode][]NearbyCandidate{
-		nearbyMRT: {candidate(nearbyMRT, "M-1", "MRT", 80)},
+		_nearbyMRT: {candidate(_nearbyMRT, "M-1", "MRT", 80)},
 	}, err: map[NearbyMode]error{}}
 
 	_, err := NewNearbyDiscovery(store, &fakeWalkingRouter{err: context.Canceled}).Discover(context.Background(), NearbyQuery{})

@@ -1,32 +1,47 @@
 import 'dart:async';
 
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:geolocator/geolocator.dart';
 
 import 'package:wheres_the_bus/core/errors/app_error.dart';
+import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/data/models/city_names.dart';
 import 'package:wheres_the_bus/data/models/search_models.dart';
+import 'package:wheres_the_bus/data/repositories/favorites_repository.dart';
+import 'package:wheres_the_bus/data/repositories/search_affinity_repository.dart';
 import 'package:wheres_the_bus/data/repositories/search_recent_repository.dart';
 import 'package:wheres_the_bus/data/repositories/search_repository.dart';
 import 'package:wheres_the_bus/features/search/bloc/search_event.dart';
+import 'package:wheres_the_bus/features/search/bloc/search_ranking.dart';
 import 'package:wheres_the_bus/features/search/bloc/search_state.dart';
 
 class SearchBloc extends Bloc<SearchEvent, SearchState> {
   SearchBloc({
     SearchRepository? searchRepository,
     SearchRecentRepository recentRepository = SearchRecentRepository.instance,
+    SearchAffinityRepository affinityRepository =
+        SearchAffinityRepository.instance,
+    FavoritesRepository? favoritesRepository,
+    LocationService? locationService,
+    DateTime Function()? now,
   }) : _searchRepository = searchRepository ?? SearchRepository.instance,
        _recentRepository = recentRepository,
+       _affinityRepository = affinityRepository,
+       _favoritesRepository =
+           favoritesRepository ?? FavoritesRepository.instance,
+       _locationService = locationService ?? LocationService.instance,
+       _now = now ?? DateTime.now,
        super(const SearchState()) {
     on<SearchQueryChanged>(_onQueryChanged);
     on<SearchQuerySubmitted>(_onQuerySubmitted);
     on<SearchCityToggled>(_onCityToggled);
     on<SearchCleared>(_onCleared);
-    on<SearchRecentRequested>(_onRecentRequested);
+    on<SearchSuggestionsRequested>(_onSuggestionsRequested);
     on<SearchRecentRemoved>(_onRecentRemoved);
     on<SearchRecentRestored>(_onRecentRestored);
     on<SearchRecentsCleared>(_onRecentsCleared);
     on<SearchResultSelected>(_onResultSelected);
-    add(const SearchRecentRequested());
+    add(const SearchSuggestionsRequested());
   }
 
   /// Long enough that a steady typist doesn't fire a request per keystroke,
@@ -37,8 +52,17 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
 
   final SearchRepository _searchRepository;
   final SearchRecentRepository _recentRepository;
+  final SearchAffinityRepository _affinityRepository;
+  final FavoritesRepository _favoritesRepository;
+  final LocationService _locationService;
+  final DateTime Function() _now;
   Timer? _debounce;
   int _requestId = 0;
+
+  /// Last known fix, read once when the screen opens rather than per
+  /// keystroke. Null until then, and null forever without permission —
+  /// ranking simply drops the distance signal.
+  Position? _fix;
 
   void _onQueryChanged(
     SearchQueryChanged event,
@@ -103,7 +127,7 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
       if (event.requestId == _requestId && !isClosed) {
         emit(
           state.copyWith(
-            results: results,
+            results: _rank(results, event.query),
             loading: false,
             clearError: true,
             cityOptions: event.city == null ? _cityOptions(results) : null,
@@ -145,21 +169,41 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
     return codes;
   }
 
+  /// Reorders one page of router results by this rider's own signals. The
+  /// router ranks by text relevance alone — it has no idea who is asking —
+  /// so this is where "the stop I use every morning" beats "the stop with the
+  /// marginally better trigram score".
+  List<SearchResult> _rank(List<SearchResult> results, String query) =>
+      rankSearchResults(
+        results,
+        query: query,
+        favorites: _favoritesRepository.isReady
+            ? _favoritesRepository.all()
+            : const [],
+        affinity: _affinityRepository.all(),
+        now: _now(),
+        fix: _fix,
+      );
+
   void _onCleared(SearchCleared _, Emitter<SearchState> emit) {
     _debounce?.cancel();
     _requestId++;
     emit(
-      SearchState(
-        recentResults: state.recentResults,
-      ),
+      SearchState(recentResults: state.recentResults),
     );
   }
 
-  void _onRecentRequested(
-    SearchRecentRequested _,
+  /// Loads the empty-query screen's recents, and takes the position fix that
+  /// [_rank] weights results by. The fix is read here rather than per
+  /// keystroke: it is the OS's cached one, and a search session is short
+  /// enough that re-reading it mid-query would cost more than it corrects.
+  Future<void> _onSuggestionsRequested(
+    SearchSuggestionsRequested _,
     Emitter<SearchState> emit,
-  ) {
+  ) async {
     emit(state.copyWith(recentResults: _recentRepository.all()));
+    final fix = await _locationService.lastKnownPosition();
+    if (fix != null && !isClosed) _fix = fix;
   }
 
   Future<void> _onRecentRemoved(
@@ -178,11 +222,16 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
     emit(state.copyWith(recentResults: _recentRepository.all()));
   }
 
+  /// Clearing history clears the ranking signal with it. Leaving the affinity
+  /// record behind would keep putting the rider's old picks first after they
+  /// asked the app to forget them — the list would say forgotten while the
+  /// order said otherwise.
   Future<void> _onRecentsCleared(
     SearchRecentsCleared _,
     Emitter<SearchState> emit,
   ) async {
     await _recentRepository.clear();
+    await _affinityRepository.clear();
     emit(state.copyWith(recentResults: const []));
   }
 
@@ -191,6 +240,11 @@ class SearchBloc extends Bloc<SearchEvent, SearchState> {
     Emitter<SearchState> emit,
   ) async {
     await _recentRepository.add(event.result);
+    await _affinityRepository.record(
+      event.result,
+      query: state.query,
+      now: _now(),
+    );
     emit(state.copyWith(recentResults: _recentRepository.all()));
   }
 

@@ -32,25 +32,25 @@ package main
 //	         rail  TRA: ':' lineid, THSR
 //	         bus   RouteUID verbatim
 const (
-	// gtfsTimezone and gtfsLang are the whole feed's; every agency is Taiwanese.
-	gtfsTimezone = "Asia/Taipei"
-	gtfsLang     = "zh-TW"
-	// gtfsFallbackAgencyURL stands in for an operator that publishes no URL.
+	// _gtfsTimezone and gtfsLang are the whole feed's; every agency is Taiwanese.
+	_gtfsTimezone = "Asia/Taipei"
+	_gtfsLang     = "zh-TW"
+	// _gtfsFallbackAgencyURL stands in for an operator that publishes no URL.
 	// agency_url is a required GTFS field, so an empty one is a validator error
 	// and would drop the operator's routes with it. The MOTC open-data portal is
 	// where the record actually comes from, which is the most truthful stand-in
 	// available.
-	gtfsFallbackAgencyURL = "https://tdx.transportdata.tw/"
-	// gtfsNameZh and gtfsNameEn are the keys TDX nests its two name variants
+	_gtfsFallbackAgencyURL = "https://tdx.transportdata.tw/"
+	// _gtfsNameZh and gtfsNameEn are the keys TDX nests its two name variants
 	// under. Every name-bearing query takes one of them, which is what lets
 	// translations.txt be the same queries read in the other language. They are
 	// interpolated into SQL, so they are constants here and never widen to a
 	// caller-supplied value.
-	gtfsNameZh = "Zh_tw"
-	gtfsNameEn = "En"
-	// gtfsTranslationLang is the language code translations.txt labels the
+	_gtfsNameZh = "Zh_tw"
+	_gtfsNameEn = "En"
+	// _gtfsTranslationLang is the language code translations.txt labels the
 	// English rows with. GTFS wants an IETF tag, which 'En' is not.
-	gtfsTranslationLang = "en"
+	_gtfsTranslationLang = "en"
 )
 
 // gtfsPhoneSQL normalises one free-text TDX phone column into a single national
@@ -82,7 +82,7 @@ func gtfsPhoneSQL(column string) string {
 		'[^0-9]', '', 'g') ELSE '' END, '')`
 }
 
-// gtfsAgencySQL emits one row per operator.
+// _gtfsAgencySQL emits one row per operator.
 //
 // rail_operator carries a row per ProviderID and repeats operatorcode (TRTC and
 // NTMC each appear twice), so it is collapsed to one row per code — that code is
@@ -94,10 +94,10 @@ func gtfsPhoneSQL(column string) string {
 // bytes in the UTF-8 column, which is an outright validation error. gtfsPhoneSQL
 // takes the first phone-shaped run and reduces it to digits; see its comment for
 // why that also disposes of the mojibake.
-// gtfsAgencySQL is the Chinese feed. gtfsAgencySQLFor("En") is the same query
+// _gtfsAgencySQL is the Chinese feed. gtfsAgencySQLFor("En") is the same query
 // with the name read in English, which is what translations.txt is built from —
 // see gtfsTranslationsSQL for why the query is reused rather than rewritten.
-var gtfsAgencySQL = gtfsAgencySQLFor(gtfsNameZh)
+var _gtfsAgencySQL = gtfsAgencySQLFor(_gtfsNameZh)
 
 func gtfsAgencySQLFor(lang string) string {
 	return `
@@ -122,16 +122,16 @@ WITH rail AS (
 SELECT
   agency_id,
   agency_name,
-  COALESCE(agency_url, '` + gtfsFallbackAgencyURL + `') AS agency_url,
-  '` + gtfsTimezone + `' AS agency_timezone,
-  '` + gtfsLang + `' AS agency_lang,
+  COALESCE(agency_url, '` + _gtfsFallbackAgencyURL + `') AS agency_url,
+  '` + _gtfsTimezone + `' AS agency_timezone,
+  '` + _gtfsLang + `' AS agency_lang,
   COALESCE(agency_phone, '') AS agency_phone
 FROM (SELECT * FROM rail UNION ALL SELECT * FROM bus) a
 WHERE COALESCE(TRIM(agency_name), '') <> ''
 ORDER BY agency_id`
 }
 
-// gtfsStopsSQL emits every boardable point plus the station entrances that lead
+// _gtfsStopsSQL emits every boardable point plus the station entrances that lead
 // to one.
 //
 // Entrances (location_type 2) are the reason StationExit was landed: a rider
@@ -144,7 +144,7 @@ ORDER BY agency_id`
 // is landed-but-never-fetched, so the stop-level records only exist nested in
 // each subroute's stop list. The same StopUID appears on every subroute that
 // calls there, hence DISTINCT ON.
-// gtfsStopsSQL emits the rail-family station hierarchy plus flat bus stops.
+// _gtfsStopsSQL emits the rail-family station hierarchy plus flat bus stops.
 //
 // GTFS requires an entrance (location_type 2) to hang off a station
 // (location_type 1), never off a boarding stop (0) — emitting the station as a
@@ -176,7 +176,7 @@ ORDER BY agency_id`
 // translations.txt. The keying stays on the Chinese name throughout — exit_key's
 // ROW_NUMBER and the filter feeding it — because a stop_id that moved with the
 // language would name rows stops.txt does not contain.
-var gtfsStopsSQL = gtfsStopsSQLFor(gtfsNameZh)
+var _gtfsStopsSQL = gtfsStopsSQLFor(_gtfsNameZh)
 
 func gtfsStopsSQLFor(lang string) string {
 	return `
@@ -195,7 +195,7 @@ WITH served AS (
   -- Rail and metro calls name a platform; a station is what is served. Bus stop
   -- ids carry no suffix and pass through untouched.
   SELECT DISTINCT regexp_replace(stop_id, ':platform$', '') AS ref
-  FROM ` + gtfsStopTimeTable + `
+  FROM ` + _gtfsStopTimeTable + `
 ), rail_station AS (
   SELECT system AS sys, stationid AS sid, stationname->>'` + lang + `' AS nm,
          (stationposition->>'PositionLat')::double precision AS lat,
@@ -231,7 +231,7 @@ WITH served AS (
   -- produce stop_ids stops.txt has no row for.
   SELECT system AS sys, stationid AS sid,
          NULLIF(TRIM(exitid), '') AS exitid,
-         COALESCE(NULLIF(exitname->>'` + gtfsNameZh + `', ''), NULLIF(TRIM(exitid), '')) AS key_name,
+         COALESCE(NULLIF(exitname->>'` + _gtfsNameZh + `', ''), NULLIF(TRIM(exitid), '')) AS key_name,
          COALESCE(NULLIF(exitname->>'` + lang + `', ''), NULLIF(TRIM(exitid), '')) AS exit_name,
          (exitposition->>'PositionLat')::double precision AS lat,
          (exitposition->>'PositionLon')::double precision AS lon
@@ -240,7 +240,7 @@ WITH served AS (
   UNION ALL
   SELECT 'THSR', stationid,
          NULLIF(TRIM(exitid), ''),
-         COALESCE(NULLIF(exitname->>'` + gtfsNameZh + `', ''), NULLIF(TRIM(exitid), '')),
+         COALESCE(NULLIF(exitname->>'` + _gtfsNameZh + `', ''), NULLIF(TRIM(exitid), '')),
          COALESCE(NULLIF(exitname->>'` + lang + `', ''), NULLIF(TRIM(exitid), '')),
          (exitposition->>'PositionLat')::double precision,
          (exitposition->>'PositionLon')::double precision
@@ -289,7 +289,7 @@ WHERE COALESCE(TRIM(stop_name), '') <> ''
 ORDER BY stop_id`
 }
 
-// gtfsRoutesSQL emits one row per route.
+// _gtfsRoutesSQL emits one row per route.
 //
 // Metro routes come from Metro/Route, not Metro/Line: branches and short
 // workings — Xinbeitou, Xiaobitan, the Daan-Beitou short turn — exist only at
@@ -309,13 +309,13 @@ ORDER BY stop_id`
 // branch still selects its train types on the Chinese name being present, so a
 // type with no English translation drops out of translations.txt rather than out
 // of routes.txt.
-var gtfsRoutesSQL = gtfsRoutesSQLFor(gtfsNameZh)
+var _gtfsRoutesSQL = gtfsRoutesSQLFor(_gtfsNameZh)
 
 func gtfsRoutesSQLFor(lang string) string {
 	// The bus terminus names are columns, not jsonb keys, and THSR's route name
 	// is a literal in both languages because TDX states it nowhere.
 	thsrName, departure, destination := "高鐵", "departurestopnamezh", "destinationstopnamezh"
-	if lang == gtfsNameEn {
+	if lang == _gtfsNameEn {
 		thsrName, departure, destination = "THSR", "departurestopnameen", "destinationstopnameen"
 	}
 	return `
@@ -390,7 +390,7 @@ WHERE COALESCE(TRIM(route_short_name), '') <> ''
 ORDER BY route_id`
 }
 
-// gtfsTranslationsSQL is the English name of every record the feed names in
+// _gtfsTranslationsSQL is the English name of every record the feed names in
 // Chinese.
 //
 // The English was always in the landed payload — TDX nests names as
@@ -411,30 +411,30 @@ ORDER BY route_id`
 // Only these three tables are translated, which is also all the official MOTC
 // feed translates. trip_headsign would mean threading the language through all
 // four trip sources for a field no consumer reads.
-var gtfsTranslationsSQL = `
-WITH a AS (` + gtfsAgencySQLFor(gtfsNameEn) + `
-), s AS (` + gtfsStopsSQLFor(gtfsNameEn) + `
-), r AS (` + gtfsRoutesSQLFor(gtfsNameEn) + `
+var _gtfsTranslationsSQL = `
+WITH a AS (` + gtfsAgencySQLFor(_gtfsNameEn) + `
+), s AS (` + gtfsStopsSQLFor(_gtfsNameEn) + `
+), r AS (` + gtfsRoutesSQLFor(_gtfsNameEn) + `
 )
 SELECT 'agency' AS table_name, 'agency_name' AS field_name,
-       '` + gtfsTranslationLang + `' AS language,
+       '` + _gtfsTranslationLang + `' AS language,
        agency_name AS translation, agency_id AS record_id
 FROM a
 UNION ALL
-SELECT 'stops', 'stop_name', '` + gtfsTranslationLang + `', stop_name, stop_id
+SELECT 'stops', 'stop_name', '` + _gtfsTranslationLang + `', stop_name, stop_id
 FROM s
 UNION ALL
-SELECT 'routes', 'route_short_name', '` + gtfsTranslationLang + `', route_short_name, route_id
+SELECT 'routes', 'route_short_name', '` + _gtfsTranslationLang + `', route_short_name, route_id
 FROM r
 UNION ALL
 -- route_long_name is optional and empty on the rail routes, where GTFS wants
 -- exactly one of the two names set.
-SELECT 'routes', 'route_long_name', '` + gtfsTranslationLang + `', route_long_name, route_id
+SELECT 'routes', 'route_long_name', '` + _gtfsTranslationLang + `', route_long_name, route_id
 FROM r
 WHERE COALESCE(TRIM(route_long_name), '') <> ''
 ORDER BY 1, 2, 5`
 
-// gtfsPathwaysSQL connects each station entrance to the platform it leads to,
+// _gtfsPathwaysSQL connects each station entrance to the platform it leads to,
 // one row per way of making the walk.
 //
 // What TDX has and has not. Probed 2026-08-01 against Rail/Metro with a working
@@ -466,8 +466,8 @@ ORDER BY 1, 2, 5`
 // 19 entrances TDX gives no ExitID are keyed there by row number instead and so
 // match nothing here; they fall through to the walkway branch, which is the
 // right answer for them anyway.
-var gtfsPathwaysSQL = `
-WITH stop AS (SELECT * FROM ` + gtfsStopTable + `), entrance AS (
+var _gtfsPathwaysSQL = `
+WITH stop AS (SELECT * FROM ` + _gtfsStopTable + `), entrance AS (
   SELECT stop_id, parent_station FROM stop WHERE location_type = 2
 ), flag AS (
   SELECT system || ':' || stationid || ':exit:' || TRIM(exitid) AS stop_id,
@@ -501,10 +501,10 @@ CROSS JOIN LATERAL (
 ) m
 ORDER BY pathway_id`
 
-// gtfsAttributionsSQL records where the data came from. TDX's terms require the
+// _gtfsAttributionsSQL records where the data came from. TDX's terms require the
 // source to be credited, so this file is a licensing obligation rather than a
 // nicety, and it is a constant because there is exactly one source.
-const gtfsAttributionsSQL = `
+const _gtfsAttributionsSQL = `
 SELECT
   'motc' AS attribution_id,
   '交通部運輸資料流通服務平臺 (TDX)' AS organization_name,
@@ -528,7 +528,7 @@ func gtfsFeedInfoSQL(version string) string {
 SELECT
   '我車呢' AS feed_publisher_name,
   'https://tdx.transportdata.tw/' AS feed_publisher_url,
-  '` + gtfsLang + `' AS feed_lang,
+  '` + _gtfsLang + `' AS feed_lang,
   'https://tdx.transportdata.tw/' AS feed_contact_url,
   ` + sqlStringLiteral(version) + ` AS feed_version`
 }

@@ -27,16 +27,16 @@ func parseRailDate(s string) time.Time {
 const (
 	// A station board is a glance, not a timetable: enough rows to cover the
 	// next stretch at a busy station without making the rider wait for a day.
-	stationBoardDefaultLimit = 20
-	stationBoardMaxLimit     = 50
+	_stationBoardDefaultLimit = 20
+	_stationBoardMaxLimit     = 50
 )
 
 func stationBoardLimit(requested int32) int {
 	switch {
 	case requested <= 0:
-		return stationBoardDefaultLimit
-	case requested > stationBoardMaxLimit:
-		return stationBoardMaxLimit
+		return _stationBoardDefaultLimit
+	case requested > _stationBoardMaxLimit:
+		return _stationBoardMaxLimit
 	default:
 		return int(requested)
 	}
@@ -86,11 +86,11 @@ const (
 	// Boards, timetables and stop times all describe one service day, which only
 	// changes when the nightly load lands, so an hour is a compromise between
 	// staleness and DB load rather than a per-dataset judgement.
-	railDayTTL = 1 * time.Hour
+	_railDayTTL = 1 * time.Hour
 	// Fares change only on a load and are the same for every rider all day, so
 	// they are held far longer. Bump the key's :v prefix, not this TTL, when the
 	// payload shape changes: the old entries would otherwise outlive the deploy.
-	railFareTTL = 8 * time.Hour
+	_railFareTTL = 8 * time.Hour
 )
 
 // railCacheStation normalises a station identifier for cache-key use. Callers
@@ -159,7 +159,7 @@ func railRead(
 // keep serving nothing for an hour after the loader fixes that.
 func (s *TraTimetableServer) traStationBoardDay(ctx context.Context, station string, day time.Time, direction int32) ([]*pb.TraStationDeparture, error) {
 	key := fmt.Sprintf("TRA_StationBoard:%s:%s:%d", day.Format(time.DateOnly), railCacheStation(station), direction)
-	b, err := railRead(ctx, s.rc, "tra_station_board", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+	b, err := railRead(ctx, s.rc, "tra_station_board", key, _railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		items, err := TRAStationBoardPayload(ctx, s.db, station, day, direction)
 		if err != nil || len(items) == 0 {
 			return nil, 0, err
@@ -232,7 +232,7 @@ func (s *TraTimetableServer) StationBoard(ctx context.Context, in *pb.AskStation
 // whole day is cached and why an empty day is not.
 func (s *ThsrServer) thsrStationBoardDay(ctx context.Context, station string, day time.Time, direction int32) ([]*pb.ThsrStationDeparture, error) {
 	key := fmt.Sprintf("THSR_StationBoard:%s:%s:%d", day.Format(time.DateOnly), railCacheStation(station), direction)
-	b, err := railRead(ctx, s.rc, "thsr_station_board", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+	b, err := railRead(ctx, s.rc, "thsr_station_board", key, _railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		items, err := THSRStationBoardPayload(ctx, s.db, station, day, direction)
 		if err != nil || len(items) == 0 {
 			return nil, 0, err
@@ -312,7 +312,7 @@ func (s *TraTimetableServer) traFare(ctx context.Context, in *pb.AskRoute) (*pb.
 	// Key version (:v2) bumped when the payload widened from adult-only to every
 	// 票種; without it the deploy would serve adult-only sets for a further 8h.
 	key := fmt.Sprintf("TRA_Fare:v2:%s:%s", railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
-	b, err := railRead(ctx, s.rc, "tra_fare", key, railFareTTL, func(ctx context.Context) ([]byte, int, error) {
+	b, err := railRead(ctx, s.rc, "tra_fare", key, _railFareTTL, func(ctx context.Context) ([]byte, int, error) {
 		payload, err := TRAFarePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId)
 		return payload, len(payload), err
 	})
@@ -340,7 +340,7 @@ func (s *ThsrServer) thsrFare(ctx context.Context, in *pb.AskRoute) (*pb.Resp_Da
 	// Key version (:v2) bumped for the same reason as TRA_Fare: the payload now
 	// carries every fare class and cabin class, not just the standard adult seat.
 	key := fmt.Sprintf("THSR_Fare:v2:%s:%s", railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
-	b, err := railRead(ctx, s.rc, "thsr_fare", key, railFareTTL, func(ctx context.Context) ([]byte, int, error) {
+	b, err := railRead(ctx, s.rc, "thsr_fare", key, _railFareTTL, func(ctx context.Context) ([]byte, int, error) {
 		items, err := QueryTHSRFares(ctx, s.db, in.OriginStationId, in.DestinationStationId)
 		if err != nil || len(items) == 0 {
 			return nil, 0, err
@@ -376,7 +376,7 @@ func (s *TraTimetableServer) traTimetable(ctx context.Context, in *pb.AskRoute) 
 	)
 	da := parseRailDate(in.Date)
 	key := fmt.Sprintf("TRA_timetable:%s:%s:%s", railCacheDate(in.Date), railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
-	b, err := railRead(ctx, s.rc, "tra_timetable", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+	b, err := railRead(ctx, s.rc, "tra_timetable", key, _railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		return TRATimetablePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId, da)
 	})
 	if err != nil {
@@ -407,7 +407,7 @@ func (s *ThsrServer) thsrTimetable(ctx context.Context, in *pb.AskRoute) (*pb.Re
 	)
 	da := parseRailDate(in.Date)
 	key := fmt.Sprintf("THSR_timetable:%s:%s:%s", railCacheDate(in.Date), railCacheStation(in.OriginStationId), railCacheStation(in.DestinationStationId))
-	b, err := railRead(ctx, s.rc, "thsr_timetable", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+	b, err := railRead(ctx, s.rc, "thsr_timetable", key, _railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		return THSRTimetablePayload(ctx, s.db, in.OriginStationId, in.DestinationStationId, da)
 	})
 	if err != nil {
@@ -432,7 +432,7 @@ func (s *TraDetainServer) traStops(ctx context.Context, in *pb.AskDetain) (*pb.R
 	zap.S().Infow("call", "component", "grpc", "action", "tra_stops", "event", "call", "train", in.Trainno)
 	date := railCacheDate(in.Date)
 	key := fmt.Sprintf("TRA_Stoptimes:%s:%s", date, in.Trainno)
-	b, err := railRead(ctx, s.rc, "tra_stops", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+	b, err := railRead(ctx, s.rc, "tra_stops", key, _railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		return TRAStoptimesPayload(ctx, s.db, in.Trainno, date)
 	})
 	if err != nil {
@@ -457,7 +457,7 @@ func (s *ThsrDetainServer) thsrStops(ctx context.Context, in *pb.ThsrAskDetain) 
 	zap.S().Infow("call", "component", "grpc", "action", "thsr_stops", "event", "call", "train", in.Trainno)
 	date := railCacheDate(in.Date)
 	key := fmt.Sprintf("THSR_Stoptimes:%s:%s", date, in.Trainno)
-	b, err := railRead(ctx, s.rc, "thsr_stops", key, railDayTTL, func(ctx context.Context) ([]byte, int, error) {
+	b, err := railRead(ctx, s.rc, "thsr_stops", key, _railDayTTL, func(ctx context.Context) ([]byte, int, error) {
 		return THSRStoptimesPayload(ctx, s.db, in.Trainno, date)
 	})
 	if err != nil {

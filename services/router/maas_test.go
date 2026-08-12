@@ -906,7 +906,7 @@ func (s *recordingPlanStream) Send(update *pb.MaasPlanUpdate) error {
 	return nil
 }
 
-const maasStreamTDXRoute = `{"result":"success","data":{"routes":[{
+const _maasStreamTDXRoute = `{"result":"success","data":{"routes":[{
   "travel_time":1500,"start_time":"2027-01-01T08:00:00","end_time":"2027-01-01T08:25:00","transfers":0,
   "sections":[{
     "type":"pedestrian","travelSummary":{"duration":600,"length":800},
@@ -923,7 +923,7 @@ func TestPlanStreamSendsRoutesBeforeGeometry(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, maasStreamTDXRoute)
+		_, _ = io.WriteString(w, _maasStreamTDXRoute)
 	}))
 	defer upstream.Close()
 
@@ -931,7 +931,7 @@ func TestPlanStreamSendsRoutesBeforeGeometry(t *testing.T) {
 	cache := newControlledMaasCache()
 	server := NewMaasServerWithCache(cache, nil, tdx, DefaultMaasSharedWorkConfig)
 	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
-	server.osrmClient = osrmClientReturning(200, osrmTransferRoute)
+	server.osrmClient = osrmClientReturning(200, _osrmTransferRoute)
 	defer server.Close()
 
 	req := &pb.MaasPlanRequest{
@@ -978,7 +978,7 @@ func TestPlanStreamCacheHitSendsSingleCompleteUpdate(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, maasStreamTDXRoute)
+		_, _ = io.WriteString(w, _maasStreamTDXRoute)
 	}))
 	defer upstream.Close()
 
@@ -986,7 +986,7 @@ func TestPlanStreamCacheHitSendsSingleCompleteUpdate(t *testing.T) {
 	cache := newControlledMaasCache()
 	server := NewMaasServerWithCache(cache, nil, tdx, DefaultMaasSharedWorkConfig)
 	server.maasClient.SetBaseURL(upstream.URL).SetRetryCount(0)
-	server.osrmClient = osrmClientReturning(200, osrmTransferRoute)
+	server.osrmClient = osrmClientReturning(200, _osrmTransferRoute)
 	defer server.Close()
 
 	req := &pb.MaasPlanRequest{

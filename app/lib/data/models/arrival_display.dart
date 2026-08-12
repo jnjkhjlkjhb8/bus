@@ -24,6 +24,7 @@ class ArrivalDisplay {
     required this.status,
     required this.rank,
     this.crowdLevel = CrowdLevel.unknown,
+    this.isLastBus = false,
   });
 
   /// Maps a bus stop arrival to its display, reproducing the one status/rank
@@ -59,6 +60,7 @@ class ArrivalDisplay {
       status: status,
       rank: rank,
       crowdLevel: a.crowdLevel,
+      isLastBus: a.isLastBus,
     );
   }
 
@@ -88,6 +90,11 @@ class ArrivalDisplay {
   /// its plate. Only Taipei buses report it; metro and every other city leave
   /// it UNKNOWN, and nothing is drawn.
   final CrowdLevel crowdLevel;
+
+  /// Whether the feed confirmed this is the route's last bus of the day (TDX
+  /// IsLastBus). Only 公路總局 and the counties it manages report it; everywhere
+  /// else it stays false and nothing is marked.
+  final bool isLastBus;
 
   /// Whether this arrival is eligible for the coming-soon highlight: only the
   /// soonest ranked row (rank <= 3) qualifies. The caller pairs this with the

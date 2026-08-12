@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -263,7 +262,7 @@ func TestRunCopyUpsertWrapsEveryFailureStage(t *testing.T) {
 				beginner.beginErr = wantErr
 			}
 			err := runCopyUpsert(context.Background(), beginner, spec, [][]any{{1}})
-			if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "probe") || !strings.Contains(err.Error(), tt.wantStage) {
+			if !errors.Is(err, wantErr) || !errMentions(err, "probe") || !errMentions(err, tt.wantStage) {
 				t.Fatalf("runCopyUpsert error = %v, want wrapped probe/%s error", err, tt.wantStage)
 			}
 			if !tt.beginErr && !tx.rolledBack {
@@ -309,7 +308,7 @@ func TestRunCopyUpsertJoinsCommitAndRollbackFailures(t *testing.T) {
 	if !errors.Is(err, commitErr) || !errors.Is(err, rollbackErr) {
 		t.Fatalf("runCopyUpsert error = %v, want joined commit and rollback failures", err)
 	}
-	if !strings.Contains(err.Error(), "commit") || !strings.Contains(err.Error(), "rollback") {
+	if !errMentions(err, "commit") || !errMentions(err, "rollback") {
 		t.Fatalf("runCopyUpsert error = %v, want wrapped commit and rollback stages", err)
 	}
 }
@@ -325,7 +324,7 @@ func TestRunCopyUpsertCommitFailureIgnoresClosedTransactionRollback(t *testing.T
 	if !errors.Is(err, commitErr) {
 		t.Fatalf("runCopyUpsert error = %v, want primary commit failure", err)
 	}
-	if errors.Is(err, pgx.ErrTxClosed) || strings.Contains(err.Error(), "rollback") {
+	if errors.Is(err, pgx.ErrTxClosed) || errMentions(err, "rollback") {
 		t.Fatalf("runCopyUpsert error = %v, closed transaction rollback must not mask the commit outcome", err)
 	}
 }
@@ -381,7 +380,7 @@ func TestCopyUpsertPostgresLateFailureRollsBackAndEmptyReplaceCommits(t *testing
 	}
 	sink := pgLoadSink{db: pool}
 	err = sink.copyUpsert(ctx, spec, [][]any{{2, "new-a"}, {2, "new-b"}})
-	if err == nil || !strings.Contains(err.Error(), "final exec") {
+	if err == nil || !errMentions(err, "final exec") {
 		t.Fatalf("copyUpsert error = %v, want wrapped late INSERT failure", err)
 	}
 	var oldCount, newCount int
@@ -435,10 +434,10 @@ func TestCopyUpsertPostgresCommitFailureReturnsPrimaryErrorOnly(t *testing.T) {
 		insertSQL: `INSERT INTO ` + target + ` SELECT id FROM temp_task5_commit_probe`,
 	}
 	err = (pgLoadSink{db: pool}).copyUpsert(ctx, spec, [][]any{{1}, {1}})
-	if err == nil || !strings.Contains(err.Error(), "commit") {
+	if err == nil || !errMentions(err, "commit") {
 		t.Fatalf("copyUpsert error = %v, want wrapped commit-time constraint failure", err)
 	}
-	if strings.Contains(err.Error(), "rollback") {
+	if errMentions(err, "rollback") {
 		t.Fatalf("copyUpsert error = %v, pgx closed-transaction rollback must be ignored", err)
 	}
 	var rows int

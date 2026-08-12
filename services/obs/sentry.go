@@ -126,6 +126,7 @@ func Capture(name string, err error) {
 	}
 	hub := sentry.CurrentHub().Clone()
 	hub.Scope().SetTag("job", name)
+	applyOopsScope(hub.Scope(), err)
 	hub.CaptureException(err)
 }
 

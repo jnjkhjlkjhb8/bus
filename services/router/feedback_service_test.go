@@ -56,7 +56,7 @@ func (r *recordingNotifier) Notify(notice feedbackNotice) { r.notices = append(r
 func newTestFeedbackServer(store feedbackPersistence, notifier feedbackNotifier) *FeedbackServer {
 	return &FeedbackServer{
 		store:    store,
-		devices:  fakeInstallAuthorizer{installID: "install-1", secret: testInstallSecret},
+		devices:  fakeInstallAuthorizer{installID: "install-1", secret: _testInstallSecret},
 		notifier: notifier,
 	}
 }
@@ -82,7 +82,7 @@ func TestPostFeedbackStoresTrimmedReportAndNotifies(t *testing.T) {
 	notifier := &recordingNotifier{}
 	server := newTestFeedbackServer(store, notifier)
 
-	receipt, err := server.PostFeedback(installationContext("install-1", testInstallSecret), validFeedbackRequest())
+	receipt, err := server.PostFeedback(installationContext("install-1", _testInstallSecret), validFeedbackRequest())
 	if err != nil {
 		t.Fatalf("PostFeedback: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestPostFeedbackDropsEmptyDiagnosticsFields(t *testing.T) {
 	request := validFeedbackRequest()
 	request.Diagnostics = &pb.ReportDiagnostics{AppVersion: "1.4.2", Platform: "android"}
 
-	if _, err := server.PostFeedback(installationContext("install-1", testInstallSecret), request); err != nil {
+	if _, err := server.PostFeedback(installationContext("install-1", _testInstallSecret), request); err != nil {
 		t.Fatalf("PostFeedback: %v", err)
 	}
 	if len(store.record.Diagnostics) != 2 {
@@ -132,7 +132,7 @@ func TestPostFeedbackQuotaIsResourceExhausted(t *testing.T) {
 	notifier := &recordingNotifier{}
 	server := newTestFeedbackServer(store, notifier)
 
-	_, err := server.PostFeedback(installationContext("install-1", testInstallSecret), validFeedbackRequest())
+	_, err := server.PostFeedback(installationContext("install-1", _testInstallSecret), validFeedbackRequest())
 	if status.Code(err) != codes.ResourceExhausted {
 		t.Fatalf("code = %v, want %v", status.Code(err), codes.ResourceExhausted)
 	}
@@ -146,7 +146,7 @@ func TestPostFeedbackStoreFailureIsNotAnnounced(t *testing.T) {
 	notifier := &recordingNotifier{}
 	server := newTestFeedbackServer(store, notifier)
 
-	_, err := server.PostFeedback(installationContext("install-1", testInstallSecret), validFeedbackRequest())
+	_, err := server.PostFeedback(installationContext("install-1", _testInstallSecret), validFeedbackRequest())
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("code = %v, want %v", status.Code(err), codes.Internal)
 	}
@@ -159,7 +159,7 @@ func TestPostFeedbackRejectsUnauthorizedInstallBeforeWriting(t *testing.T) {
 	store := &fakeFeedbackStore{}
 	server := newTestFeedbackServer(store, &recordingNotifier{})
 
-	_, err := server.PostFeedback(installationContext("install-1", wrongInstallSecret), validFeedbackRequest())
+	_, err := server.PostFeedback(installationContext("install-1", _wrongInstallSecret), validFeedbackRequest())
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("code = %v, want %v", status.Code(err), codes.PermissionDenied)
 	}
@@ -171,7 +171,7 @@ func TestPostFeedbackRejectsUnauthorizedInstallBeforeWriting(t *testing.T) {
 func TestPostFeedbackValidation(t *testing.T) {
 	store := &fakeFeedbackStore{}
 	server := newTestFeedbackServer(store, &recordingNotifier{})
-	ctx := installationContext("install-1", testInstallSecret)
+	ctx := installationContext("install-1", _testInstallSecret)
 
 	tests := []struct {
 		name    string
@@ -183,10 +183,10 @@ func TestPostFeedbackValidation(t *testing.T) {
 		{"empty category", func(r *pb.PostFeedbackRequest) { r.Category = "" }, codes.InvalidArgument},
 		{"blank body", func(r *pb.PostFeedbackRequest) { r.Body = "   \n  " }, codes.InvalidArgument},
 		{"oversize body", func(r *pb.PostFeedbackRequest) {
-			r.Body = strings.Repeat("報", feedbackBodyLimit+1)
+			r.Body = strings.Repeat("報", _feedbackBodyLimit+1)
 		}, codes.InvalidArgument},
 		{"oversize diagnostics field", func(r *pb.PostFeedbackRequest) {
-			r.Diagnostics.Screen = strings.Repeat("a", feedbackFieldLimit+1)
+			r.Diagnostics.Screen = strings.Repeat("a", _feedbackFieldLimit+1)
 		}, codes.InvalidArgument},
 	}
 	for _, tc := range tests {
@@ -209,9 +209,9 @@ func TestPostFeedbackAcceptsBodyAtLimit(t *testing.T) {
 	store := &fakeFeedbackStore{}
 	server := newTestFeedbackServer(store, &recordingNotifier{})
 	request := validFeedbackRequest()
-	request.Body = strings.Repeat("報", feedbackBodyLimit)
+	request.Body = strings.Repeat("報", _feedbackBodyLimit)
 
-	if _, err := server.PostFeedback(installationContext("install-1", testInstallSecret), request); err != nil {
+	if _, err := server.PostFeedback(installationContext("install-1", _testInstallSecret), request); err != nil {
 		t.Fatalf("PostFeedback: %v", err)
 	}
 }
@@ -238,14 +238,14 @@ func TestFeedbackWebhookContentStaysUnderDiscordLimit(t *testing.T) {
 	content := feedbackWebhookContent(feedbackNotice{
 		ThreadID: "a1b2c3d4-0000-4000-8000-000000000000",
 		Category: "suggestion",
-		Body:     strings.Repeat("報", feedbackBodyLimit),
+		Body:     strings.Repeat("報", _feedbackBodyLimit),
 		Diagnostics: map[string]string{
 			"app_version": "1.4.2", "platform": "ios", "os_version": "18.2",
 			"locale": "zh-TW", "screen": "/bus/route/:subRouteUid",
 		},
 	})
-	if runes := []rune(content); len(runes) > discordContentLimit {
-		t.Fatalf("content is %d runes, over Discord's %d limit", len(runes), discordContentLimit)
+	if runes := []rune(content); len(runes) > _discordContentLimit {
+		t.Fatalf("content is %d runes, over Discord's %d limit", len(runes), _discordContentLimit)
 	}
 }
 

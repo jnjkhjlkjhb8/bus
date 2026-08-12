@@ -59,8 +59,8 @@ func NewLiveHubWithQueueSize(source LiveSource, maxStreams, queueSize int) *Live
 		source:              source,
 		maxStreams:          int64(maxStreams),
 		subscriberQueueSize: queueSize,
-		entries:             map[string]*liveHubEntry{},
-		closeReasons:        map[<-chan []byte]error{},
+		entries:             make(map[string]*liveHubEntry),
+		closeReasons:        make(map[<-chan []byte]error),
 	}
 }
 
@@ -92,7 +92,7 @@ func (h *LiveHub) subscribe(ctx context.Context, channel string) (<-chan []byte,
 		}
 		entry = &liveHubEntry{
 			upstreamClose: upstreamClose,
-			subscribers:   map[uint64]chan []byte{},
+			subscribers:   make(map[uint64]chan []byte),
 		}
 		h.entries[channel] = entry
 		go h.forward(channel, entry, upstream)

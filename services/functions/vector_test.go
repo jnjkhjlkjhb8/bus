@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -16,17 +13,6 @@ import (
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/redis/go-redis/v9"
 )
-
-type stubEmbeddingClient struct {
-	embeddings [][]float32
-	err        error
-	calls      int
-}
-
-func (c *stubEmbeddingClient) Embed(_ context.Context, _ []string) ([][]float32, error) {
-	c.calls++
-	return c.embeddings, c.err
-}
 
 type testVectorRedis struct {
 	value          string
@@ -50,17 +36,6 @@ func (r *testVectorRedis) Set(_ context.Context, _ string, value any, _ time.Dur
 
 type captureTimeArgs struct {
 	values []time.Time
-}
-
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
-	return f(request)
-}
-
-type trackingReadCloser struct {
-	io.Reader
-	closed bool
 }
 
 type capturingBatchDB struct {
@@ -94,11 +69,6 @@ func (r closeErrorBatchResults) Close() error {
 	return r.err
 }
 
-func (b *trackingReadCloser) Close() error {
-	b.closed = true
-	return nil
-}
-
 func (c *captureTimeArgs) Match(value any) bool {
 	cutoff, ok := value.(time.Time)
 	if ok {
@@ -118,7 +88,7 @@ func newVectorDBMock(t *testing.T) pgxmock.PgxPoolIface {
 }
 
 func expectEmptyVectorQueries(db pgxmock.PgxPoolIface, lower string, cutoff pgxmock.Argument) {
-	for _, dataset := range vectorDatasets {
+	for _, dataset := range _vectorDatasets {
 		db.ExpectQuery(dataset.query).
 			WithArgs(dataset.queryArgs(lower, cutoff)...).
 			WillReturnRows(db.NewRows([]string{"unused"}))
@@ -127,7 +97,7 @@ func expectEmptyVectorQueries(db pgxmock.PgxPoolIface, lower string, cutoff pgxm
 
 func vectorDatasetByType(t *testing.T, vectorType string) vectorDataset {
 	t.Helper()
-	for _, dataset := range vectorDatasets {
+	for _, dataset := range _vectorDatasets {
 		if dataset.vectorType == vectorType {
 			return dataset
 		}
@@ -151,7 +121,7 @@ func TestVectorRegistryIncludesAllSixDatasetsExactlyOnce(t *testing.T) {
 		"thsr_station": 1,
 	}
 	got := make(map[string]int, len(want))
-	for _, dataset := range vectorDatasets {
+	for _, dataset := range _vectorDatasets {
 		got[dataset.vectorType]++
 	}
 	for vectorType, wantCount := range want {
@@ -159,8 +129,8 @@ func TestVectorRegistryIncludesAllSixDatasetsExactlyOnce(t *testing.T) {
 			t.Errorf("vector type %q occurs %d times, want %d", vectorType, got[vectorType], wantCount)
 		}
 	}
-	if len(vectorDatasets) != len(want) {
-		t.Errorf("registry contains %d datasets, want %d", len(vectorDatasets), len(want))
+	if len(_vectorDatasets) != len(want) {
+		t.Errorf("registry contains %d datasets, want %d", len(_vectorDatasets), len(want))
 	}
 }
 
@@ -173,7 +143,7 @@ func TestVectorRegistryUsesCorrectMRTLabels(t *testing.T) {
 			t.Errorf("mrtSystemName(%q) = %q, want %q", code, got, want)
 		}
 	}
-	if _, ok := mrtSystemNames["NTMC"]; !ok {
+	if _, ok := _mrtSystemNames["NTMC"]; !ok {
 		t.Error("mrtSystemNames is missing NTMC")
 	}
 }
@@ -186,17 +156,17 @@ func TestMRTVectorQueryBackfillsLegacyRevisionBeforeLowerWatermark(t *testing.T)
 		"sv.city = CASE ms.system",
 		"sv.depart = ms.system",
 	} {
-		if !strings.Contains(mrtStationsForVectorSQL, want) {
-			t.Errorf("MRT vector query missing %q: %s", want, mrtStationsForVectorSQL)
+		if !strings.Contains(_mrtStationsForVectorSQL, want) {
+			t.Errorf("MRT vector query missing %q: %s", want, _mrtStationsForVectorSQL)
 		}
 	}
 	for _, unwanted := range []string{"ms.updated_at >=", "$2", "current_sv"} {
-		if strings.Contains(mrtStationsForVectorSQL, unwanted) {
-			t.Errorf("MRT vector query contains redundant %q: %s", unwanted, mrtStationsForVectorSQL)
+		if strings.Contains(_mrtStationsForVectorSQL, unwanted) {
+			t.Errorf("MRT vector query contains redundant %q: %s", unwanted, _mrtStationsForVectorSQL)
 		}
 	}
-	if got := strings.Count(mrtStationsForVectorSQL, "NOT EXISTS"); got != 1 {
-		t.Errorf("MRT vector query has %d correlated freshness lookups, want 1: %s", got, mrtStationsForVectorSQL)
+	if got := strings.Count(_mrtStationsForVectorSQL, "NOT EXISTS"); got != 1 {
+		t.Errorf("MRT vector query has %d correlated freshness lookups, want 1: %s", got, _mrtStationsForVectorSQL)
 	}
 	upper := time.Date(2026, 7, 14, 1, 0, 0, 0, time.UTC)
 	args := dataset.queryArgs("ignored lower watermark", upper)
@@ -217,24 +187,7 @@ func TestMRTFailuresDoNotDeleteLegacyVectorsBeforeReplacement(t *testing.T) {
 			WithArgs(dataset.queryArgs(lower, upper)...).
 			WillReturnError(wantErr)
 
-		err := processVectorDataset(context.Background(), db, &stubEmbeddingClient{}, dataset, lower, upper)
-		if !errors.Is(err, wantErr) {
-			t.Fatalf("processVectorDataset() error = %v, want wrapped %v", err, wantErr)
-		}
-		if err := db.ExpectationsWereMet(); err != nil {
-			t.Fatalf("database expectations: %v", err)
-		}
-	})
-
-	t.Run("embed", func(t *testing.T) {
-		db := newVectorDBMock(t)
-		wantErr := errors.New("MRT embed failed")
-		db.ExpectQuery(dataset.query).
-			WithArgs(dataset.queryArgs(lower, upper)...).
-			WillReturnRows(db.NewRows([]string{"station_id", "name", "system", "geom"}).
-				AddRow("KLRT-C01", "籬仔內", "KLRT", "POINT(120 22)"))
-
-		err := processVectorDataset(context.Background(), db, &stubEmbeddingClient{err: wantErr}, dataset, lower, upper)
+		err := processVectorDataset(context.Background(), db, dataset, lower, upper)
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("processVectorDataset() error = %v, want wrapped %v", err, wantErr)
 		}
@@ -252,16 +205,14 @@ func TestMRTFailuresDoNotDeleteLegacyVectorsBeforeReplacement(t *testing.T) {
 				AddRow("KLRT-C01", "籬仔內", "KLRT", "POINT(120 22)"))
 		db := &capturingBatchDB{PgxPoolIface: pool, closeErr: wantErr}
 
-		err := processVectorDataset(context.Background(), db, &stubEmbeddingClient{
-			embeddings: [][]float32{make([]float32, embeddingDimension)},
-		}, dataset, lower, upper)
+		err := processVectorDataset(context.Background(), db, dataset, lower, upper)
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("processVectorDataset() error = %v, want wrapped %v", err, wantErr)
 		}
 		if db.batch == nil || db.batch.Len() != 2 {
 			t.Fatalf("atomic MRT batch length = %v, want upsert plus cleanup", db.batch)
 		}
-		if db.batch.QueuedQueries[0].SQL != searchVectorUpsertSQL || db.batch.QueuedQueries[1].SQL != mrtLegacyVectorCleanupSQL {
+		if db.batch.QueuedQueries[0].SQL != _searchVectorUpsertSQL || db.batch.QueuedQueries[1].SQL != _mrtLegacyVectorCleanupSQL {
 			t.Fatalf("MRT batch order = [%q, %q], want upsert then cleanup",
 				db.batch.QueuedQueries[0].SQL, db.batch.QueuedQueries[1].SQL)
 		}
@@ -278,16 +229,15 @@ func TestMRTFailuresDoNotDeleteLegacyVectorsBeforeReplacement(t *testing.T) {
 			WillReturnRows(db.NewRows([]string{"station_id", "name", "system", "geom"}).
 				AddRow("KLRT-C01", "籬仔內", "KLRT", "POINT(120 22)"))
 		batch := db.ExpectBatch()
-		batch.ExpectExec(searchVectorUpsertSQL).
-			WithArgs("mrt_station", "KLRT-C01", "籬仔內", "高雄輕軌", "KLRT", "", "POINT(120 22)", pgxmock.AnyArg()).
+		batch.ExpectExec(_searchVectorUpsertSQL).
+			WithArgs("mrt_station", "KLRT-C01", "籬仔內", searchAlias("籬仔內"),
+				"高雄輕軌", "KLRT", "", "POINT(120 22)").
 			WillReturnResult(pgxmock.NewResult("INSERT", 1))
-		batch.ExpectExec(mrtLegacyVectorCleanupSQL).
+		batch.ExpectExec(_mrtLegacyVectorCleanupSQL).
 			WithArgs("KLRT-C01", "桃園捷運", "KLRT").
 			WillReturnError(wantErr)
 
-		err := processVectorDataset(context.Background(), db, &stubEmbeddingClient{
-			embeddings: [][]float32{make([]float32, embeddingDimension)},
-		}, dataset, lower, upper)
+		err := processVectorDataset(context.Background(), db, dataset, lower, upper)
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("processVectorDataset() error = %v, want wrapped %v", err, wantErr)
 		}
@@ -307,8 +257,8 @@ func TestMRTLegacyLabelsAreInvalidatedBackfilledAndReembedded(t *testing.T) {
 		"CASE keeper_ms.system",
 		"= stale_sv.city",
 	} {
-		if !strings.Contains(mrtLegacyVectorCleanupSQL, want) {
-			t.Errorf("MRT cleanup SQL missing %q: %s", want, mrtLegacyVectorCleanupSQL)
+		if !strings.Contains(_mrtLegacyVectorCleanupSQL, want) {
+			t.Errorf("MRT cleanup SQL missing %q: %s", want, _mrtLegacyVectorCleanupSQL)
 		}
 	}
 
@@ -321,73 +271,34 @@ func TestMRTLegacyLabelsAreInvalidatedBackfilledAndReembedded(t *testing.T) {
 			AddRow("shared", "輕軌轉乘站", "KLRT", "POINT(120 22)").
 			AddRow("shared", "機捷轉乘站", "TYMC", "POINT(121 25)").
 			AddRow("N01", "新北產業園區", "NTMC", "POINT(121.4 25.1)"))
-	embedder := &stubEmbeddingClient{embeddings: [][]float32{
-		make([]float32, embeddingDimension),
-		make([]float32, embeddingDimension),
-		make([]float32, embeddingDimension),
-	}}
 	batch := db.ExpectBatch()
-	batch.ExpectExec(searchVectorUpsertSQL).
-		WithArgs("mrt_station", "shared", "輕軌轉乘站", "高雄輕軌", "KLRT", "", "POINT(120 22)", pgxmock.AnyArg()).
+	batch.ExpectExec(_searchVectorUpsertSQL).
+		WithArgs("mrt_station", "shared", "輕軌轉乘站", searchAlias("輕軌轉乘站"),
+			"高雄輕軌", "KLRT", "", "POINT(120 22)").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	batch.ExpectExec(mrtLegacyVectorCleanupSQL).
+	batch.ExpectExec(_mrtLegacyVectorCleanupSQL).
 		WithArgs("shared", "桃園捷運", "KLRT").
 		WillReturnResult(pgxmock.NewResult("DELETE", 0))
-	batch.ExpectExec(searchVectorUpsertSQL).
-		WithArgs("mrt_station", "shared", "機捷轉乘站", "桃園捷運", "TYMC", "", "POINT(121 25)", pgxmock.AnyArg()).
+	batch.ExpectExec(_searchVectorUpsertSQL).
+		WithArgs("mrt_station", "shared", "機捷轉乘站", searchAlias("機捷轉乘站"),
+			"桃園捷運", "TYMC", "", "POINT(121 25)").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	batch.ExpectExec(mrtLegacyVectorCleanupSQL).
+	batch.ExpectExec(_mrtLegacyVectorCleanupSQL).
 		WithArgs("shared", "台中捷運", "TYMC").
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
-	batch.ExpectExec(searchVectorUpsertSQL).
-		WithArgs("mrt_station", "N01", "新北產業園區", "新北捷運", "NTMC", "", "POINT(121.4 25.1)", pgxmock.AnyArg()).
+	batch.ExpectExec(_searchVectorUpsertSQL).
+		WithArgs("mrt_station", "N01", "新北產業園區", searchAlias("新北產業園區"),
+			"新北捷運", "NTMC", "", "POINT(121.4 25.1)").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	batch.ExpectExec(mrtLegacyVectorCleanupSQL).
+	batch.ExpectExec(_mrtLegacyVectorCleanupSQL).
 		WithArgs("N01", "NTMC", "NTMC").
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
-	if err := processVectorDataset(context.Background(), db, embedder, dataset, lower, upper); err != nil {
+	if err := processVectorDataset(context.Background(), db, dataset, lower, upper); err != nil {
 		t.Fatalf("processVectorDataset() error = %v", err)
-	}
-	if embedder.calls != 1 {
-		t.Fatalf("Embed() calls = %d, want 1 backfill batch", embedder.calls)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
-	}
-}
-
-func TestProcessVectorBatchRejectsTooManyEmbeddings(t *testing.T) {
-	embedder := &stubEmbeddingClient{embeddings: [][]float32{
-		make([]float32, 1024),
-		make([]float32, 1024),
-	}}
-	err := processVectorBatch(context.Background(), nil, embedder,
-		[]string{"one"}, []resp{{UID: "1"}})
-	if err == nil || !strings.Contains(err.Error(), "embedding count") {
-		t.Fatalf("processVectorBatch() error = %v, want embedding count error", err)
-	}
-}
-
-func TestProcessVectorBatchRejectsTooFewEmbeddings(t *testing.T) {
-	embedder := &stubEmbeddingClient{embeddings: [][]float32{
-		make([]float32, 1024),
-	}}
-	err := processVectorBatch(context.Background(), nil, embedder,
-		[]string{"one", "two"}, []resp{{UID: "1"}, {UID: "2"}})
-	if err == nil || !strings.Contains(err.Error(), "embedding count") {
-		t.Fatalf("processVectorBatch() error = %v, want embedding count error", err)
-	}
-}
-
-func TestProcessVectorBatchRejectsWrongDimension(t *testing.T) {
-	embedder := &stubEmbeddingClient{embeddings: [][]float32{
-		make([]float32, 1023),
-	}}
-	err := processVectorBatch(context.Background(), nil, embedder,
-		[]string{"one"}, []resp{{UID: "1"}})
-	if err == nil || !strings.Contains(err.Error(), "dimension") {
-		t.Fatalf("processVectorBatch() error = %v, want dimension error", err)
 	}
 }
 
@@ -397,13 +308,12 @@ func TestChangeToVectorCapturesCutoffBeforeFirstQuery(t *testing.T) {
 	cutoffs := &captureTimeArgs{}
 	expectEmptyVectorQueries(db, lower, cutoffs)
 	cache := &testVectorRedis{value: lower}
-	embedder := &stubEmbeddingClient{}
 
-	if err := changeToVector(context.Background(), cache, db, embedder); err != nil {
+	if err := changeToVector(context.Background(), cache, db); err != nil {
 		t.Fatalf("changeToVector() error = %v", err)
 	}
-	if len(cutoffs.values) != len(vectorDatasets) {
-		t.Fatalf("captured %d cutoffs, want %d", len(cutoffs.values), len(vectorDatasets))
+	if len(cutoffs.values) != len(_vectorDatasets) {
+		t.Fatalf("captured %d cutoffs, want %d", len(cutoffs.values), len(_vectorDatasets))
 	}
 	for i, got := range cutoffs.values[1:] {
 		if !got.Equal(cutoffs.values[0]) {
@@ -413,9 +323,6 @@ func TestChangeToVectorCapturesCutoffBeforeFirstQuery(t *testing.T) {
 	wantWatermark := cutoffs.values[0].Format(time.RFC3339Nano)
 	if len(cache.setValues) != 1 || cache.setValues[0] != wantWatermark {
 		t.Fatalf("watermark writes = %v, want [%s]", cache.setValues, wantWatermark)
-	}
-	if embedder.calls != 0 {
-		t.Fatalf("Embed() calls = %d, want 0 for empty datasets", embedder.calls)
 	}
 	if err := db.ExpectationsWereMet(); err != nil {
 		t.Fatalf("database expectations: %v", err)
@@ -430,41 +337,33 @@ func TestChangeToVectorDoesNotAdvanceWatermarkOnAnyFailure(t *testing.T) {
 		"query",
 		"scan",
 		"rows",
-		"embed",
 		"batch",
 		"redis set",
 	} {
 		t.Run(failure, func(t *testing.T) {
 			db := newVectorDBMock(t)
 			cache := &testVectorRedis{value: lower}
-			embedder := &stubEmbeddingClient{}
 			switch failure {
 			case "redis get":
 				cache.getErr = wantErr
 			case "query":
-				db.ExpectQuery(vectorDatasets[0].query).
+				db.ExpectQuery(_vectorDatasets[0].query).
 					WithArgs(lower, pgxmock.AnyArg()).
 					WillReturnError(wantErr)
 			case "scan":
-				db.ExpectQuery(vectorDatasets[0].query).
+				db.ExpectQuery(_vectorDatasets[0].query).
 					WithArgs(lower, pgxmock.AnyArg()).
 					WillReturnRows(db.NewRows([]string{"sub_route_uid"}).AddRow("R1"))
 			case "rows":
-				db.ExpectQuery(vectorDatasets[0].query).
+				db.ExpectQuery(_vectorDatasets[0].query).
 					WithArgs(lower, pgxmock.AnyArg()).
 					WillReturnRows(validBusVectorRows(db).RowError(0, wantErr))
-			case "embed":
-				db.ExpectQuery(vectorDatasets[0].query).
-					WithArgs(lower, pgxmock.AnyArg()).
-					WillReturnRows(validBusVectorRows(db))
-				embedder.err = wantErr
 			case "batch":
-				db.ExpectQuery(vectorDatasets[0].query).
+				db.ExpectQuery(_vectorDatasets[0].query).
 					WithArgs(lower, pgxmock.AnyArg()).
 					WillReturnRows(validBusVectorRows(db))
-				embedder.embeddings = [][]float32{make([]float32, 1024)}
 				batch := db.ExpectBatch()
-				batch.ExpectExec(searchVectorUpsertSQL).
+				batch.ExpectExec(_searchVectorUpsertSQL).
 					WithArgs(
 						pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
 						pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
@@ -475,12 +374,12 @@ func TestChangeToVectorDoesNotAdvanceWatermarkOnAnyFailure(t *testing.T) {
 				cache.setErr = wantErr
 			}
 
-			err := changeToVector(context.Background(), cache, db, embedder)
+			err := changeToVector(context.Background(), cache, db)
 			if err == nil {
 				t.Fatal("changeToVector() error = nil, want failure")
 			}
 			if failure == "scan" {
-				if !strings.Contains(err.Error(), "scan") {
+				if !errMentions(err, "scan") {
 					t.Fatalf("changeToVector() error = %v, want scan error", err)
 				}
 			} else if !errors.Is(err, wantErr) {
@@ -496,76 +395,20 @@ func TestChangeToVectorDoesNotAdvanceWatermarkOnAnyFailure(t *testing.T) {
 	}
 }
 
-func TestHTTPEmbedderHonorsContextTimeoutAndHTTPStatus(t *testing.T) {
-	t.Run("context timeout", func(t *testing.T) {
-		release := make(chan struct{})
-		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
-			select {
-			case <-request.Context().Done():
-			case <-release:
-			}
-		}))
-		defer server.Close()
-		defer close(release)
-		embedder := newHTTPEmbedder(server.URL)
-		if timeout := embedder.client.GetClient().Timeout; timeout <= 0 {
-			t.Fatalf("HTTP client timeout = %s, want finite timeout", timeout)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
-		_, err := embedder.Embed(ctx, []string{"台北車站"})
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Embed() error = %v, want context deadline exceeded", err)
-		}
-	})
-
-	t.Run("HTTP status", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-			response.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = response.Write([]byte(`{"embeddings":[]}`))
-		}))
-		defer server.Close()
-		_, err := newHTTPEmbedder(server.URL).Embed(context.Background(), []string{"台北車站"})
-		if err == nil || !strings.Contains(err.Error(), "503") {
-			t.Fatalf("Embed() error = %v, want HTTP 503 error", err)
-		}
-	})
-
-	t.Run("response body close", func(t *testing.T) {
-		body := &trackingReadCloser{Reader: strings.NewReader(`{"embeddings":[]}`)}
-		embedder := newHTTPEmbedder("http://embed.test/api/embed")
-		embedder.client.SetTransport(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
-			return &http.Response{
-				Status:     "200 OK",
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       body,
-				Request:    request,
-			}, nil
-		}))
-		if _, err := embedder.Embed(context.Background(), []string{"台北車站"}); err != nil {
-			t.Fatalf("Embed() error = %v", err)
-		}
-		if !body.closed {
-			t.Fatal("Embed() did not close the response body")
-		}
-	})
-}
-
-func TestVectorQueriesSkipFreshEmbeddings(t *testing.T) {
+func TestVectorQueriesSkipFreshRows(t *testing.T) {
 	queries := map[string]string{
-		"bus_route":    busSubroutesForVectorSQL,
-		"bus_station":  busStationsForVectorSQL,
-		"bike_station": bikeStationsForVectorSQL,
-		"mrt_station":  mrtStationsForVectorSQL,
-		"thsr_station": thsrStationsForVectorSQL,
-		"tra_station":  traStationsForVectorSQL,
+		"bus_route":    _busSubroutesForVectorSQL,
+		"bus_station":  _busStationsForVectorSQL,
+		"bike_station": _bikeStationsForVectorSQL,
+		"mrt_station":  _mrtStationsForVectorSQL,
+		"thsr_station": _thsrStationsForVectorSQL,
+		"tra_station":  _traStationsForVectorSQL,
 	}
 	for vectorType, query := range queries {
 		for _, want := range []string{
 			"NOT EXISTS",
 			"sv.type = '" + vectorType + "'",
-			"sv.embedding IS NOT NULL",
+			"sv.alias IS NOT NULL",
 		} {
 			if !strings.Contains(query, want) {
 				t.Fatalf("%s query missing %q", vectorType, want)
@@ -595,19 +438,5 @@ func TestFreshVectorSkipSQLComparesContent(t *testing.T) {
 	}
 	if strings.Contains(got, "sv.updated_at >=") {
 		t.Fatalf("still compares updated_at: %s", got)
-	}
-}
-
-func TestEmbeddingURLUsesEnvAndTrimSpace(t *testing.T) {
-	t.Setenv("EMBED_URL", " http://embed:11434/api/embed ")
-	if got := embeddingURL(); got != "http://embed:11434/api/embed" {
-		t.Fatalf("embeddingURL() = %q", got)
-	}
-}
-
-func TestEmbeddingURLEmptyDisablesVectorUpdate(t *testing.T) {
-	t.Setenv("EMBED_URL", "")
-	if got := embeddingURL(); got != "" {
-		t.Fatalf("embeddingURL() = %q, want empty", got)
 	}
 }

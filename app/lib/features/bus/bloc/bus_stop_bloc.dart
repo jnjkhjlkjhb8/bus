@@ -54,11 +54,13 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
     await _sub?.cancel();
     try {
       final members = await _repository.stationGroup(id);
+      if (isClosed) return;
       if (members.isNotEmpty) {
         emit(state.copyWith(status: BusStopStatus.loaded, members: members));
       }
     } on Object catch (e, s) {
       CrashReporter.record(e, s);
+      if (isClosed) return;
       // The station-group fetch is the only thing that can move the sheet out
       // of `loading` before the first ETA frame arrives. If it fails and the
       // ETA stream stays silent (no data, no terminal error — see
@@ -71,6 +73,12 @@ class BusStopBloc extends Bloc<BusStopEvent, BusStopState> {
         state.copyWith(status: BusStopStatus.error, error: AppError.from(e)),
       );
     }
+    // `_repository.stationGroup` is the only await above; if the bloc closed
+    // during that gap, close() already ran and cancelled the old `_sub` — a
+    // subscription created past this point would be orphaned (never
+    // cancelled) and its later `add()` would throw on the closed event
+    // controller.
+    if (isClosed) return;
     _sub = _feed
         .watch(
           source: () => _repository.stationEta(city ?? '', id),

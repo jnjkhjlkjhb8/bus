@@ -29,10 +29,10 @@ func TestBusStaticCacheRedisOutageFallsBackOnlyUntilTTL(t *testing.T) {
 	var cache sync.Map
 	now := time.Now()
 	storeBusStaticMapIn(&cache, "TPE", []busStationmap{{StopUID: "old"}}, "7", now)
-	if _, ok := cachedBusStaticMapFrom(&cache, "TPE", "", now.Add(busStaticMapCacheTTL-time.Second)); !ok {
+	if _, ok := cachedBusStaticMapFrom(&cache, "TPE", "", now.Add(_busStaticMapCacheTTL-time.Second)); !ok {
 		t.Fatal("Redis outage should allow the bounded local fallback before TTL")
 	}
-	if _, ok := cachedBusStaticMapFrom(&cache, "TPE", "", now.Add(busStaticMapCacheTTL)); ok {
+	if _, ok := cachedBusStaticMapFrom(&cache, "TPE", "", now.Add(_busStaticMapCacheTTL)); ok {
 		t.Fatal("Redis outage allowed stale cache at/after TTL")
 	}
 }
@@ -69,7 +69,7 @@ func TestStopOffsetCacheRemembersMisses(t *testing.T) {
 	}
 
 	out = map[stopOffsetKey]int{}
-	if missing := cachedStopOffsets(&cache, []string{"A", "B"}, now.Add(stopOffsetCacheTTL), out); len(missing) != 2 {
+	if missing := cachedStopOffsets(&cache, []string{"A", "B"}, now.Add(_stopOffsetCacheTTL), out); len(missing) != 2 {
 		t.Errorf("expired missing = %v, want both re-queried at TTL", missing)
 	}
 }

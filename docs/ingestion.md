@@ -11,7 +11,7 @@ made by claude
 | 每日 03:30 | functions（每個環境）| `load`：`raw_tdx` → 該環境 `PG_SCHEMA` |
 | 每小時 :00 | ingestor | `ingestRaw(…, "bus_dailytimetable")`：只重抓公車每日時刻表（條件式 GET，未變更的城市回 304、不動 `raw_tdx`）|
 | 每小時 :10 | loader（每個環境）| `bus_dailytimetable` 增量 load：只轉換 `landing_state.last_modified` 有變的城市 → Redis |
-| 每日 03:45 | functions | `changetovector`：向量更新（在 load 之後執行） |
+| 每日 03:45 | functions | `changetovector`：搜尋列重建（在 load 之後執行） |
 | 每日 04:00 | functions | `computeSegmentTimesFromEstimates` 等兩個階段：公車站間運行時間統計 |
 | 每日 04:30 | functions | `cleanupBusHistory`：刪除 30 天前的 ETA 歷史 |
 | 每 10 分鐘 | functions | `weatherSync`：CWA 天氣資料同步 |
@@ -233,7 +233,7 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
 - 每筆訊息：`rc.Set(key, payload, ttl)` 存快取 + `rc.Publish(key, payload)` 推送至 Pub/Sub
 - 訊息格式：TDX 標準 JSON，**不解析**，原文儲存
 
-## 向量更新 (changetovector)
+## 搜尋列重建 (changetovector)
 
 在 03:30 load 之後執行（因此讀到的是 loader 剛寫好的表，而非已退役的 03:00 直抓寫入）。
 
@@ -241,6 +241,4 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
   - `bus_subroutes`, `bus_station_groups`, `bike_stations`, `mrt_station`, `tra_stations`, `thsr_stations`
 - 目的表
   - `search_vector`
-- 向量模型
-  - `qwen3-embedding:0.6b`（Ollama 本機服務，`http://ollama:11434/api/embed`）
   - 維度：1024，pgvector `vector(1024)` 欄位，HNSW 索引

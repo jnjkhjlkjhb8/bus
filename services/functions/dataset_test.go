@@ -85,12 +85,12 @@ func TestDatasetRegistryConsistency(t *testing.T) {
 
 	// The whitelist is exactly the set of registry tables.
 	for _, d := range reg {
-		if !rawTDXTables[d.rawTable] {
+		if !_rawTDXTables[d.rawTable] {
 			t.Errorf("registry table %q missing from whitelist", d.rawTable)
 		}
 	}
-	if len(rawTDXTables) != len(reg) {
-		t.Errorf("whitelist has %d tables, registry has %d", len(rawTDXTables), len(reg))
+	if len(_rawTDXTables) != len(reg) {
+		t.Errorf("whitelist has %d tables, registry has %d", len(_rawTDXTables), len(reg))
 	}
 }
 
@@ -142,14 +142,14 @@ func TestFetchURLsRoundTripToTargets(t *testing.T) {
 func TestBusDatasetsCoverIngestBusAPIs(t *testing.T) {
 	got := map[string]bool{}
 	for _, d := range datasetRegistry() {
-		if d.family == familyBusCity {
+		if d.family == _familyBusCity {
 			got[d.apiSeg] = true
 		}
 	}
-	if len(got) != len(ingestBusAPIs) {
-		t.Fatalf("bus datasets = %d apiSegs, ingestBusAPIs = %d", len(got), len(ingestBusAPIs))
+	if len(got) != len(_ingestBusAPIs) {
+		t.Fatalf("bus datasets = %d apiSegs, ingestBusAPIs = %d", len(got), len(_ingestBusAPIs))
 	}
-	for _, api := range ingestBusAPIs {
+	for _, api := range _ingestBusAPIs {
 		if !got[api] {
 			t.Errorf("ingestBusAPIs entry %q has no bus dataset", api)
 		}

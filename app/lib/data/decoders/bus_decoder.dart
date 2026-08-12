@@ -31,6 +31,7 @@ class BusDecoder {
         stopStatus: s.stopStatus,
         arrivalUnix: arrivalUnix,
         plate: s.plateNumb,
+        isLastBus: s.isLastBus,
         vehiclePlates: s.buses.map((b) => b.plateNumb).toList(),
         vehicles: [
           for (final b in s.buses)
@@ -77,6 +78,7 @@ class BusDecoder {
         stopStatus: r.stopStatus,
         arrivalUnix: arrivalUnix,
         crowdLevel: crowdLevelOf(r.crowdLevel),
+        isLastBus: r.isLastBus,
       );
     }).toList();
   }

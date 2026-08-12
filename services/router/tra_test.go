@@ -21,7 +21,7 @@ func TestTraFarePayloadReturnsRows(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery("SELECT ticket_type,price FROM tra_fares").
-		WithArgs("1000", "1040", traTicketTypes).
+		WithArgs("1000", "1040", _traTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}).AddRow("成自", int32(41)))
 
 	payload, err := TRAFarePayload(context.Background(), db, "1000", "1040")
@@ -46,20 +46,20 @@ func TestTraFarePayloadReturnsRows(t *testing.T) {
 // class of train unpriced.
 func TestTraTicketTypesCoverBothAxes(t *testing.T) {
 	present := map[string]bool{}
-	for _, ticketType := range traTicketTypes {
+	for _, ticketType := range _traTicketTypes {
 		present[ticketType] = true
 	}
-	if len(traTicketTypes) != 16 {
-		t.Fatalf("traTicketTypes = %v, want 4 票種 × 4 車種", traTicketTypes)
+	if len(_traTicketTypes) != 16 {
+		t.Fatalf("traTicketTypes = %v, want 4 票種 × 4 車種", _traTicketTypes)
 	}
 	for _, want := range []string{"成自", "成復", "孩自", "敬復", "愛普"} {
 		if !present[want] {
-			t.Fatalf("traTicketTypes = %v, missing %s", traTicketTypes, want)
+			t.Fatalf("traTicketTypes = %v, missing %s", _traTicketTypes, want)
 		}
 	}
 	for _, unwanted := range []string{"折自", "團自"} {
 		if present[unwanted] {
-			t.Fatalf("traTicketTypes = %v, must not carry %s", traTicketTypes, unwanted)
+			t.Fatalf("traTicketTypes = %v, must not carry %s", _traTicketTypes, unwanted)
 		}
 	}
 }
@@ -78,7 +78,7 @@ func TestTraFarePayloadKeepsFarePerTrainClass(t *testing.T) {
 
 	wantQuery := `SELECT ticket_type,price FROM tra_fares WHERE origin_station_id = $1 AND destination_station_id = $2 AND ticket_type = ANY($3) AND price > 0 ORDER BY price DESC, ticket_type;`
 	db.ExpectQuery(regexp.QuoteMeta(wantQuery)).
-		WithArgs("1080", "1000", traTicketTypes).
+		WithArgs("1080", "1000", _traTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}).
 			AddRow("成自", int32(99)).
 			AddRow("成莒", int32(76)).
@@ -123,7 +123,7 @@ func TestTraFarePayloadEmptyOnNoRows(t *testing.T) {
 	defer db.Close()
 
 	db.ExpectQuery("SELECT ticket_type,price FROM tra_fares").
-		WithArgs("1000", "1040", traTicketTypes).
+		WithArgs("1000", "1040", _traTicketTypes).
 		WillReturnRows(pgxmock.NewRows([]string{"ticket_type", "price"}))
 
 	payload, err := TRAFarePayload(context.Background(), db, "1000", "1040")

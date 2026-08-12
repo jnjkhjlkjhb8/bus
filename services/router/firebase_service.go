@@ -14,6 +14,7 @@ import (
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/appcheck"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -22,9 +23,9 @@ import (
 )
 
 const (
-	AppCheckMetadataKey      = "x-firebase-appcheck"
-	InstallIDMetadataKey     = "x-install-id"
-	installSecretMetadataKey = "x-install-secret"
+	AppCheckMetadataKey       = "x-firebase-appcheck"
+	InstallIDMetadataKey      = "x-install-id"
+	_installSecretMetadataKey = "x-install-secret"
 )
 
 type firebasePersistence interface {
@@ -72,6 +73,13 @@ func (s *FirebaseServer) UpsertDevice(ctx context.Context, request *pb.UpsertDev
 	}
 	state, authorized, err := s.store.UpsertDevice(ctx, identity, prefs, secretHash)
 	if err != nil {
+		zap.S().Errorw("store failed",
+			"component", "firebase",
+			"action", "upsert_device",
+			"event", "store_failed",
+			"install", identity.InstallId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to save device")
 	}
 	if !authorized {
@@ -81,11 +89,6 @@ func (s *FirebaseServer) UpsertDevice(ctx context.Context, request *pb.UpsertDev
 	return state, nil
 }
 
-// maxRouteSubscriptions bounds one device's 訂閱範圍. It is far above any
-// plausible 收藏 list and exists only so a malformed or hostile client cannot
-// make the server build an unbounded array.
-const maxRouteSubscriptions = 1000
-
 // ReplaceRouteSubscriptions stores the device's whole 訂閱範圍, replacing
 // whatever was there. The app derives the set from its 收藏 and resends all of
 // it on every change, so this is the only write path — there is no per-route
@@ -93,6 +96,10 @@ const maxRouteSubscriptions = 1000
 // device. The caller is authorized against its install secret before the store
 // is touched.
 func (s *FirebaseServer) ReplaceRouteSubscriptions(ctx context.Context, request *pb.RouteSubscriptionsRequest) (*pb.Ack, error) {
+	// maxRouteSubscriptions bounds one device's 訂閱範圍. It is far above any
+	// plausible 收藏 list and exists only so a malformed or hostile client
+	// cannot make the server build an unbounded array.
+	const maxRouteSubscriptions = 1000
 	if !ValidText(request.GetInstallId(), 128) {
 		return nil, status.Error(codes.InvalidArgument, "install_id is required")
 	}
@@ -109,6 +116,13 @@ func (s *FirebaseServer) ReplaceRouteSubscriptions(ctx context.Context, request 
 		return nil, err
 	}
 	if err := s.store.ReplaceRouteSubscriptions(ctx, request.InstallId, subscriptions); err != nil {
+		zap.S().Errorw("store failed",
+			"component", "firebase",
+			"action", "replace_route_subscriptions",
+			"event", "store_failed",
+			"install", request.InstallId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to save route subscriptions")
 	}
 	return &pb.Ack{Ok: true}, nil
@@ -166,6 +180,13 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 	}
 	reminderID, err := NewUUIDv4()
 	if err != nil {
+		zap.S().Errorw("uuid failed",
+			"component", "firebase",
+			"action", "create_arrival_reminder",
+			"event", "uuid_failed",
+			"install", request.InstallId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to create reminder ID")
 	}
 	stored := FirebaseArrivalReminder{
@@ -181,6 +202,13 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 		stored.FireAt = &fireAt
 	}
 	if err := s.store.CreateArrivalReminder(ctx, stored); err != nil {
+		zap.S().Errorw("store failed",
+			"component", "firebase",
+			"action", "create_arrival_reminder",
+			"event", "store_failed",
+			"install", request.InstallId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to save arrival reminder")
 	}
 	return &pb.ArrivalReminder{
@@ -202,6 +230,14 @@ func (s *FirebaseServer) CancelArrivalReminder(ctx context.Context, request *pb.
 	}
 	cancelled, err := s.store.CancelArrivalReminder(ctx, request.ReminderId, request.InstallId)
 	if err != nil {
+		zap.S().Errorw("store failed",
+			"component", "firebase",
+			"action", "cancel_arrival_reminder",
+			"event", "store_failed",
+			"install", request.InstallId,
+			"reminder", request.ReminderId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to cancel arrival reminder")
 	}
 	if !cancelled {
@@ -225,6 +261,13 @@ func (s *FirebaseServer) ListDeviceState(ctx context.Context, request *pb.Device
 		return nil, status.Error(codes.NotFound, "device not found")
 	}
 	if err != nil {
+		zap.S().Errorw("store failed",
+			"component", "firebase",
+			"action", "list_device_state",
+			"event", "store_failed",
+			"install", request.InstallId,
+			"err", err,
+		)
 		return nil, status.Error(codes.Internal, "failed to load device")
 	}
 	state.Identity.FcmToken = ""
@@ -245,6 +288,13 @@ func authorizeInstallation(ctx context.Context, devices installAuthorizer, insta
 	}
 	authorized, err := devices.AuthorizeInstall(ctx, installID, secretHash)
 	if err != nil {
+		zap.S().Errorw("store failed",
+			"component", "firebase",
+			"action", "authorize_install",
+			"event", "store_failed",
+			"install", installID,
+			"err", err,
+		)
 		return status.Error(codes.Internal, "failed to verify installation credential")
 	}
 	if !authorized {
@@ -255,7 +305,7 @@ func authorizeInstallation(ctx context.Context, devices installAuthorizer, insta
 
 func InstallationSecretHash(ctx context.Context, installID string) ([]byte, error) {
 	metadataInstallID, ok := InstallationCallerID(ctx)
-	secrets := metadata.ValueFromIncomingContext(ctx, installSecretMetadataKey)
+	secrets := metadata.ValueFromIncomingContext(ctx, _installSecretMetadataKey)
 	if !ok || metadataInstallID != installID || len(secrets) != 1 || !ValidText(secrets[0], 256) || len(secrets[0]) < 32 {
 		return nil, status.Error(codes.PermissionDenied, "valid installation credential required")
 	}
@@ -354,11 +404,11 @@ func FirebaseAppCheckFromEnv(ctx context.Context) (AppCheckVerifier, bool, error
 	}
 	app, err := firebase.NewApp(ctx, config)
 	if err != nil {
-		return nil, false, fmt.Errorf("initialize Firebase Admin: %w", err)
+		return nil, false, _oops.Wrapf(err, "initialize Firebase Admin")
 	}
 	client, err := app.AppCheck(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("initialize Firebase App Check: %w", err)
+		return nil, false, _oops.Wrapf(err, "initialize Firebase App Check")
 	}
 	return firebaseAppCheckVerifier{client: client}, true, nil
 }
@@ -388,7 +438,7 @@ func GRPCTLSCredentialsFromEnv() (credentials.TransportCredentials, error) {
 	}
 	certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		return nil, fmt.Errorf("load gRPC TLS certificate: %w", err)
+		return nil, _oops.Wrapf(err, "load gRPC TLS certificate")
 	}
 	return credentials.NewTLS(&tls.Config{
 		Certificates: []tls.Certificate{certificate},
@@ -410,10 +460,11 @@ func AppCheckUnaryInterceptor(verifier AppCheckVerifier, enabled bool) grpc.Unar
 
 func AppCheckStreamInterceptor(verifier AppCheckVerifier, enabled bool) grpc.StreamServerInterceptor {
 	return func(server any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		if enabled && strings.HasPrefix(info.FullMethod, "/Firebase_Service/") {
-			if err := verifyAppCheck(stream.Context(), verifier); err != nil {
-				return err
-			}
+		if !enabled || !strings.HasPrefix(info.FullMethod, "/Firebase_Service/") {
+			return handler(server, stream)
+		}
+		if err := verifyAppCheck(stream.Context(), verifier); err != nil {
+			return err
 		}
 		return handler(server, stream)
 	}

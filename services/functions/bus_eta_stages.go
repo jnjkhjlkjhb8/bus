@@ -16,9 +16,10 @@ import (
 // prediction/fill and proto-emit loop, Redis writes) stay in bus_eta.go where the
 // collaborator handles live.
 
-// parseSrcUpdateTime reads a TDX SrcUpdateTime. Usually RFC3339 with a +08:00
-// offset; some feeds drop the zone, which we read as Taipei local. Empty or
-// unparseable values report false.
+// parseSrcUpdateTime reads a TDX timestamp on an ETA entry (SrcUpdateTime, and
+// DataTime, which carries the same shape). Usually RFC3339 with a +08:00 offset;
+// some feeds drop the zone, which we read as Taipei local. Empty or unparseable
+// values report false.
 func parseSrcUpdateTime(s string) (time.Time, bool) {
 	if s == "" {
 		return time.Time{}, false
@@ -27,16 +28,27 @@ func parseSrcUpdateTime(s string) (time.Time, bool) {
 		return t, true
 	}
 	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
-		if t, err := time.ParseInLocation(layout, s, taipei); err == nil {
+		if t, err := time.ParseInLocation(layout, s, _taipei); err == nil {
 			return t, true
 		}
 	}
 	return time.Time{}, false
 }
 
+// etaSourceTime is the instant an ETA entry was published by its source:
+// SrcUpdateTime where the city sends one, SrcTransTime otherwise. Both are the
+// batch's publish stamp; no city sends neither, but one that did would report
+// false and be used unaged.
+func etaSourceTime(eta rawBusEsimated) (time.Time, bool) {
+	if t, ok := parseSrcUpdateTime(eta.SrcUpdateTime); ok {
+		return t, true
+	}
+	return parseSrcUpdateTime(eta.SrcTransTime)
+}
+
 // adjustedEstimate is the live seconds-to-arrival for one ETA entry, net of the
-// age of its source update: TDX reports EstimatedTime as of SrcUpdateTime, so a
-// stale snapshot is aged forward to now. When SrcUpdateTime does not parse the raw
+// age of its source update: TDX reports EstimatedTime as of that publish stamp,
+// so a stale snapshot is aged forward to now. When neither stamp parses the raw
 // EstimatedTime is used unchanged. A snapshot older than its own estimate (or a
 // negative EstimatedTime from TDX) clamps to 0 — "arriving now"; every consumer
 // gates on est > 0, so 0 and a negative already behaved alike, but the history
@@ -44,21 +56,21 @@ func parseSrcUpdateTime(s string) (time.Time, bool) {
 // the emit loop so both age the estimate identically.
 func adjustedEstimate(eta rawBusEsimated, now time.Time) int32 {
 	est := eta.EstimatedTime
-	if srcT, ok := parseSrcUpdateTime(eta.SrcUpdateTime); ok {
+	if srcT, ok := etaSourceTime(eta); ok {
 		est -= int32(now.Sub(srcT).Seconds())
 	}
 	return max(est, 0)
 }
 
-// busEtaNoReading is the StopStatus published for a stop with no usable TDX
+// _busEtaNoReading is the StopStatus published for a stop with no usable TDX
 // entry at all. Outside TDX's own 0-4 range, so the app falls through to its
 // unknown branch and renders '–' rather than a service state it was never told.
-const busEtaNoReading uint8 = 67
+const _busEtaNoReading uint8 = 67
 
 // How long past its own predicted arrival instant a StopStatus 0 entry still
 // counts as 進站中. One ETA cron period plus a minute of slack for TDX's own
 // publish lag.
-const busEtaArrivingGrace = 90 * time.Second
+const _busEtaArrivingGrace = 90 * time.Second
 
 // arrivingExpired reports whether a StopStatus 0 entry has sat past its
 // arrival instant long enough that "進站中" is no longer a claim we can make.
@@ -66,20 +78,51 @@ const busEtaArrivingGrace = 90 * time.Second
 // adjustedEstimate clamps its elapsed estimate to 0 — the same shape as a bus
 // genuinely at the kerb — so without this every stop on a route whose feed
 // went quiet pins at 進站中 for the rest of the day. Entries with no parseable
-// SrcUpdateTime cannot be aged and are left alone.
+// publish stamp cannot be aged and are left alone.
 func arrivingExpired(eta rawBusEsimated, now time.Time) bool {
-	srcT, ok := parseSrcUpdateTime(eta.SrcUpdateTime)
+	srcT, ok := etaSourceTime(eta)
 	if !ok {
 		return false
 	}
 	arrival := srcT.Add(time.Duration(eta.EstimatedTime) * time.Second)
-	return now.Sub(arrival) > busEtaArrivingGrace
+	return now.Sub(arrival) > _busEtaArrivingGrace
 }
 
-// busEtaDirectionUnknown is TDX's "direction not applicable" marker on an
+// How far SrcUpdateTime may run ahead of DataTime before the entry counts as a
+// frozen countdown rather than a fresh estimate. TDX documents a gap beyond this
+// as normal: below 60 seconds to arrival the source stops recomputing, so it
+// republishes the same estimate until the bus actually pulls in.
+const _busEtaFrozenGap = 90 * time.Second
+
+// countFrozenEstimates counts the entries whose estimate the source has stopped
+// recomputing: DataTime older than the entry's publish stamp by more than the
+// documented gap. Both must parse, so a feed that sends no DataTime at all
+// (Taoyuan, New Taipei) contributes nothing.
+//
+// Measurement only, reported on the tick's completion log. adjustedEstimate ages
+// every entry against SrcUpdateTime and arrivingExpired retires it 90 seconds
+// past its own arrival instant; if these counts turn out to be material, a
+// frozen entry must be exempted from both rather than read as a bus that never
+// arrived (FDPL-79).
+func countFrozenEstimates(eat []rawBusEsimated) int {
+	frozen := 0
+	for _, e := range eat {
+		srcT, srcOK := etaSourceTime(e)
+		dataT, dataOK := parseSrcUpdateTime(e.DataTime)
+		if !srcOK || !dataOK {
+			continue
+		}
+		if srcT.Sub(dataT) > _busEtaFrozenGap {
+			frozen++
+		}
+	}
+	return frozen
+}
+
+// _busEtaDirectionUnknown is TDX's "direction not applicable" marker on an
 // EstimatedTimeOfArrival entry. Tainan sends it on every schedule-only (StopStatus
 // 1) entry, its SubRouteUID already naming the travel direction.
-const busEtaDirectionUnknown uint8 = 255
+const _busEtaDirectionUnknown uint8 = 255
 
 // buildBusEtaMap collapses a city's raw TDX ETA array into one entry per
 // (canonical subroute, derived direction, stop). TDX emits one entry per (stop x
@@ -131,7 +174,7 @@ func buildBusEtaMap(city string, eat []rawBusEsimated, mp []busStationmap) map[e
 		}
 		for _, sub := range subs {
 			dirs := []uint8{dir}
-			if dir == busEtaDirectionUnknown {
+			if dir == _busEtaDirectionUnknown {
 				dirs = dirsBySub[sub]
 			}
 			for _, d := range dirs {
@@ -153,11 +196,28 @@ func parseGPSTimeUnix(s string) int64 {
 		return t.Unix()
 	}
 	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
-		if t, err := time.ParseInLocation(layout, s, taipei); err == nil {
+		if t, err := time.ParseInLocation(layout, s, _taipei); err == nil {
 			return t.Unix()
 		}
 	}
 	return 0
+}
+
+// etaForStop resolves one stop's ETA entry, falling back to the StopUIDs the
+// other operators of a co-operated route use for the same stop. TDX keys each
+// N1 estimate on the StopID of the operator running that trip, and the loader
+// keeps one operator's stop list for ordering, so without the aliases every
+// estimate published under a discarded list would read as no reading at all.
+func etaForStop(etamap map[etaKey]rawBusEsimated, b busStationmap) (rawBusEsimated, bool) {
+	if eta, ok := etamap[etaKey{b.SubRouteUID, b.Direction, b.StopUID}]; ok {
+		return eta, true
+	}
+	for _, alias := range b.AliasStopUIDs {
+		if eta, ok := etamap[etaKey{b.SubRouteUID, b.Direction, alias}]; ok {
+			return eta, true
+		}
+	}
+	return rawBusEsimated{}, false
 }
 
 // buildTotalStops counts the stops per canonical subroute from the static map,
@@ -182,7 +242,7 @@ func collectFillKeys(mp []busStationmap, etamap map[etaKey]rawBusEsimated) ([]ro
 	fillUIDs := make(map[string]bool)
 	for _, b := range mp {
 		uid, dir := b.SubRouteUID, b.Direction
-		etaEnt, ok := etamap[etaKey{uid, dir, b.StopUID}]
+		etaEnt, ok := etaForStop(etamap, b)
 		if !ok {
 			continue
 		}
@@ -217,7 +277,7 @@ func buildUpstreamObs(
 	upstreamByRoute := make(map[routeDirKey][]upstreamObs)
 	for _, b := range mp {
 		uid, cdir := b.SubRouteUID, b.Direction
-		eta, ok := etamap[etaKey{uid, cdir, b.StopUID}]
+		eta, ok := etaForStop(etamap, b)
 		if !ok || eta.StopStatus != 0 {
 			continue
 		}
@@ -238,24 +298,48 @@ func buildUpstreamObs(
 	return upstreamByRoute
 }
 
-// nearestBus picks the vehicle on a route closest to a stop and returns its plate,
-// speed, and distance (metres) as history-row pointers. It returns all-nil when
-// the stop has no coordinate (lat == 0) or the route has no live buses, matching
-// the emit loop's original guard.
+// _busDutyStatusEnded is TDX's DutyStatus 2: the vehicle passed the route's last
+// stop and finished its duty. _busStatusNotInService is BusStatus 99: not
+// serving passengers at all (depot shunting, refuelling, a chartered run). TDX's
+// own system refuses to estimate arrivals from such a vehicle so it cannot
+// distort the dynamic data, and the 99 case always carries DutyStatus 2.
+const (
+	_busDutyStatusEnded    uint8 = 2
+	_busStatusNotInService uint8 = 99
+)
+
+// busInService reports whether a vehicle is serving passengers, and so whether
+// it may be attributed to a stop. Out-of-service vehicles are still published to
+// the app — the map labels them, and seeing a shunting bus is useful — they just
+// cannot be the bus an estimate is about.
+func busInService(bus *models.BusPosition) bool {
+	return bus.DutyStatus != int32(_busDutyStatusEnded) &&
+		bus.BusStatus != int32(_busStatusNotInService)
+}
+
+// nearestBus picks the in-service vehicle on a route closest to a stop and
+// returns its plate, speed, and distance (metres) as history-row pointers. It
+// returns all-nil when the stop has no coordinate (lat == 0) or the route has no
+// in-service buses, matching the emit loop's original guard.
 func nearestBus(lat, lon float64, buses []*models.BusPosition) (plate *string, speed *int16, dist *int) {
-	if len(buses) == 0 || lat == 0 {
+	if lat == 0 {
 		return nil, nil, nil
 	}
-	nearest := buses[0]
-	nearestDist := haversine(lat, lon,
-		float64(nearest.PositionLat), float64(nearest.PositionLon))
-	for _, bus := range buses[1:] {
+	var nearest *models.BusPosition
+	var nearestDist float64
+	for _, bus := range buses {
+		if !busInService(bus) {
+			continue
+		}
 		d := haversine(lat, lon,
 			float64(bus.PositionLat), float64(bus.PositionLon))
-		if d < nearestDist {
+		if nearest == nil || d < nearestDist {
 			nearestDist = d
 			nearest = bus
 		}
+	}
+	if nearest == nil {
+		return nil, nil, nil
 	}
 	pn := nearest.PlateNumb
 	spd := int16(nearest.Speed)
@@ -271,21 +355,42 @@ type busAtStopKey struct {
 	stopUID     string
 }
 
-// buildBusAtStopMap indexes the vehicles a feed places at a named stop. Only
-// Data.taipei fills StopUID (datataipei.go); TDX positions leave it empty and
-// produce an empty map, which is what keeps every other city on nearestBus.
+// stopPresence is one vehicle a feed reports at a named stop. Speed is a
+// pointer because only the position feeds measure it: an A2 arrival/departure
+// event names the vehicle and the stop but carries no speed, and a zero there
+// would be recorded as an observed standstill.
+type stopPresence struct {
+	plate string
+	speed *int16
+}
+
+// buildBusAtStopMap indexes the vehicles a position feed places at a named stop.
+// Only Data.taipei fills StopUID (datataipei.go); TDX positions leave it empty
+// and produce an empty map, which is what keeps every city without an A2 feed
+// (bus_nearstop.go) on nearestBus.
 //
 // Last writer wins on the rare double: two vehicles of one subroute direction
 // reported at the same stop are both legitimately there, and neither is a
 // better answer than the other.
-func buildBusAtStopMap(city string, positions []rawBusPosition) map[busAtStopKey]rawBusPosition {
-	out := make(map[busAtStopKey]rawBusPosition, len(positions))
+func buildBusAtStopMap(city string, positions []rawBusPosition) map[busAtStopKey]stopPresence {
+	out := make(map[busAtStopKey]stopPresence, len(positions))
 	for _, p := range positions {
 		if p.StopUID == "" {
 			continue
 		}
+		// Same rule as nearestBus: a vehicle that ended its duty or is running
+		// out of service is not the bus this stop's estimate is about, even when
+		// the feed places it at the kerb.
+		if p.DutyStatus == _busDutyStatusEnded || p.BusStatus == _busStatusNotInService {
+			continue
+		}
+		plate := normalizeArrivalPlate(p.PlateNumb)
+		if plate == "" {
+			continue
+		}
+		speed := int16(p.Speed)
 		uid, direction := shared.CanonicalSubroute(city, p.SubRouteUID, p.Direction)
-		out[busAtStopKey{uid, direction, p.StopUID}] = p
+		out[busAtStopKey{uid, direction, p.StopUID}] = stopPresence{plate: plate, speed: &speed}
 	}
 	return out
 }
@@ -293,20 +398,16 @@ func buildBusAtStopMap(city string, positions []rawBusPosition) map[busAtStopKey
 // busAtStop resolves the vehicle standing at one stop into the plate, speed and
 // distance triple the emit loop carries. Distance is zero by definition: the
 // feed reported this bus as having entered this stop, so there is nothing to
-// estimate. Absent an entry it reports false and the caller keeps whatever
-// nearestBus guessed.
-func busAtStop(index map[busAtStopKey]rawBusPosition, key busAtStopKey) (*string, *int16, *int, bool) {
+// estimate. Speed is whatever the feed measured, and nil when it measured none.
+// Absent an entry it reports false and the caller keeps whatever nearestBus
+// guessed.
+func busAtStop(index map[busAtStopKey]stopPresence, key busAtStopKey) (*string, *int16, *int, bool) {
 	p, ok := index[key]
 	if !ok {
 		return nil, nil, nil, false
 	}
-	plate := normalizeArrivalPlate(p.PlateNumb)
-	if plate == "" {
-		return nil, nil, nil, false
-	}
-	speed := int16(p.Speed)
 	dist := 0
-	return &plate, &speed, &dist, true
+	return &p.plate, p.speed, &dist, true
 }
 
 // crowdForPlate resolves the crowding of the one vehicle an estimate describes.

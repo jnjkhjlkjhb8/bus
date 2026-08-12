@@ -9,7 +9,7 @@ import (
 
 // busTestMidnight is the service day every case below is expressed against.
 func busTestMidnight() time.Time {
-	return time.Date(2026, 8, 7, 0, 0, 0, 0, taipei)
+	return time.Date(2026, 8, 7, 0, 0, 0, 0, _taipei)
 }
 
 // atClock returns the unix instant of a HH:MM on the test's service day.

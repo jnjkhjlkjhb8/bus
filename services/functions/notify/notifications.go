@@ -45,12 +45,11 @@ type Dispatcher struct {
 	sender              Sender
 	now                 func() time.Time
 	finalizationTimeout time.Duration
+	// isInvalidFCMToken reports whether an FCM send error means the token is
+	// no longer registered and should be invalidated. A field (not a package
+	// var) so tests can substitute the check per-instance.
+	isInvalidFCMToken func(error) bool
 }
-
-// isInvalidFCMToken reports whether an FCM send error means the token is no
-// longer registered and should be invalidated. It is a package var so tests can
-// substitute the check.
-var isInvalidFCMToken = messaging.IsUnregistered
 
 // ArrivalFinalizationTimeout bounds the detached fired/release/invalidate
 // window after a send. Exported so the functions package can assert the
@@ -65,7 +64,7 @@ func NewDispatcher(store notificationStorage, sender Sender) *Dispatcher {
 	if sender == nil {
 		return nil
 	}
-	return &Dispatcher{store: store, sender: sender, now: time.Now, finalizationTimeout: ArrivalFinalizationTimeout}
+	return &Dispatcher{store: store, sender: sender, now: time.Now, finalizationTimeout: ArrivalFinalizationTimeout, isInvalidFCMToken: messaging.IsUnregistered}
 }
 
 // notificationMessage builds an FCM message with both a notification and a data
@@ -131,7 +130,7 @@ func (d *Dispatcher) FireMrtVibrate(ctx context.Context, event MrtVibrateEvent) 
 	now := d.now()
 	claimed, err := d.store.claim(ctx, event.ReminderID, now)
 	if err != nil {
-		return false, fmt.Errorf("claim mrt track %s: %w", event.ReminderID, err)
+		return false, _oops.With("reminder_id", event.ReminderID).Wrapf(err, "claim mrt track")
 	}
 	if !claimed {
 		return false, nil
@@ -140,19 +139,19 @@ func (d *Dispatcher) FireMrtVibrate(ctx context.Context, event MrtVibrateEvent) 
 	finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
 	defer cancelFinalization()
 	if sendErr != nil {
-		if isInvalidFCMToken(sendErr) {
+		if d.isInvalidFCMToken(sendErr) {
 			if invalidateErr := d.store.invalidate(finalizationCtx, event.Token); invalidateErr != nil {
-				return false, errors.Join(fmt.Errorf("send mrt vibrate %s: %w", event.ReminderID, sendErr), invalidateErr)
+				return false, errors.Join(_oops.With("reminder_id", event.ReminderID).Wrapf(sendErr, "send mrt vibrate"), invalidateErr)
 			}
 		}
 		if _, releaseErr := d.store.release(finalizationCtx, event.ReminderID); releaseErr != nil {
-			return false, errors.Join(fmt.Errorf("send mrt vibrate %s: %w", event.ReminderID, sendErr), releaseErr)
+			return false, errors.Join(_oops.With("reminder_id", event.ReminderID).Wrapf(sendErr, "send mrt vibrate"), releaseErr)
 		}
-		return false, fmt.Errorf("send mrt vibrate %s: %w", event.ReminderID, sendErr)
+		return false, _oops.With("reminder_id", event.ReminderID).Wrapf(sendErr, "send mrt vibrate")
 	}
 	fired, err := d.store.fired(finalizationCtx, event.ReminderID, now)
 	if err != nil {
-		return false, fmt.Errorf("mark mrt track %s fired: %w", event.ReminderID, err)
+		return false, _oops.With("reminder_id", event.ReminderID).Wrapf(err, "mark mrt track fired")
 	}
 	return fired, nil
 }
@@ -185,7 +184,7 @@ func (d *Dispatcher) routeAlert(ctx context.Context, routeType, routeKey, body s
 		}
 		seen[v.token] = struct{}{}
 		err = d.sender.Send(ctx, notificationMessage(v.token, alertTitle(routeKey), body, map[string]string{"kind": "route_alert", "route_type": routeType, "route_key": routeKey}))
-		if isInvalidFCMToken(err) {
+		if d.isInvalidFCMToken(err) {
 			_ = d.store.invalidate(ctx, v.token)
 		} else if err != nil {
 			zap.S().Warnw("send failed",
@@ -253,7 +252,7 @@ func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error 
 	now := d.now()
 	matches, err := d.store.activeRemindersForArrivals(ctx, eligible, now)
 	if err != nil {
-		return fmt.Errorf("load arrival reminders: %w", err)
+		return _oops.Wrapf(err, "load arrival reminders")
 	}
 	var dispatchErr error
 	for _, match := range matches {
@@ -270,7 +269,7 @@ func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error 
 		}
 		claimed, claimErr := d.store.claim(ctx, r.id, now)
 		if claimErr != nil {
-			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("claim arrival reminder %s: %w", r.id, claimErr))
+			dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Wrapf(claimErr, "claim arrival reminder"))
 			continue
 		}
 		if !claimed {
@@ -280,18 +279,18 @@ func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error 
 		sendErr := d.sender.Send(ctx, msg)
 		finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
 		if sendErr != nil {
-			if isInvalidFCMToken(sendErr) {
+			if d.isInvalidFCMToken(sendErr) {
 				if invalidateErr := d.store.invalidate(finalizationCtx, r.token); invalidateErr != nil {
-					dispatchErr = errors.Join(dispatchErr, fmt.Errorf("invalidate arrival reminder token: %w", invalidateErr))
+					dispatchErr = errors.Join(dispatchErr, _oops.Wrapf(invalidateErr, "invalidate arrival reminder token"))
 				}
 			}
 			released, releaseErr := d.store.release(finalizationCtx, r.id)
 			if releaseErr != nil {
-				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release arrival reminder %s: %w", r.id, releaseErr))
+				dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Wrapf(releaseErr, "release arrival reminder"))
 			} else if !released {
-				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release arrival reminder %s changed no rows", r.id))
+				dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Errorf("release arrival reminder changed no rows"))
 			}
-			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("send arrival reminder %s: %w", r.id, sendErr))
+			dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Wrapf(sendErr, "send arrival reminder"))
 			cancelFinalization()
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				dispatchErr = errors.Join(dispatchErr, ctxErr)
@@ -302,9 +301,9 @@ func (d *Dispatcher) Arrivals(ctx context.Context, events []ArrivalEvent) error 
 		fired, firedErr := d.store.fired(finalizationCtx, r.id, now)
 		cancelFinalization()
 		if firedErr != nil {
-			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark arrival reminder %s fired: %w", r.id, firedErr))
+			dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Wrapf(firedErr, "mark arrival reminder fired"))
 		} else if !fired {
-			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark arrival reminder %s fired changed no rows", r.id))
+			dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Errorf("mark arrival reminder fired changed no rows"))
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			dispatchErr = errors.Join(dispatchErr, ctxErr)
@@ -330,7 +329,7 @@ func (d *Dispatcher) FireScheduled(ctx context.Context) error {
 	now := d.now()
 	reminders, err := d.store.dueScheduledReminders(ctx, now)
 	if err != nil {
-		return fmt.Errorf("load scheduled reminders: %w", err)
+		return _oops.Wrapf(err, "load scheduled reminders")
 	}
 	var dispatchErr error
 	for _, r := range reminders {
@@ -340,7 +339,7 @@ func (d *Dispatcher) FireScheduled(ctx context.Context) error {
 		}
 		claimed, claimErr := d.store.claim(ctx, r.id, now)
 		if claimErr != nil {
-			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("claim scheduled reminder %s: %w", r.id, claimErr))
+			dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Wrapf(claimErr, "claim scheduled reminder"))
 			continue
 		}
 		if !claimed {
@@ -350,18 +349,18 @@ func (d *Dispatcher) FireScheduled(ctx context.Context) error {
 		sendErr := d.sender.Send(ctx, msg)
 		finalizationCtx, cancelFinalization := context.WithTimeout(context.WithoutCancel(ctx), d.finalizationTimeout)
 		if sendErr != nil {
-			if isInvalidFCMToken(sendErr) {
+			if d.isInvalidFCMToken(sendErr) {
 				if invalidateErr := d.store.invalidate(finalizationCtx, r.token); invalidateErr != nil {
-					dispatchErr = errors.Join(dispatchErr, fmt.Errorf("invalidate scheduled reminder token: %w", invalidateErr))
+					dispatchErr = errors.Join(dispatchErr, _oops.Wrapf(invalidateErr, "invalidate scheduled reminder token"))
 				}
 			}
 			released, releaseErr := d.store.release(finalizationCtx, r.id)
 			if releaseErr != nil {
-				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release scheduled reminder %s: %w", r.id, releaseErr))
+				dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Wrapf(releaseErr, "release scheduled reminder"))
 			} else if !released {
-				dispatchErr = errors.Join(dispatchErr, fmt.Errorf("release scheduled reminder %s changed no rows", r.id))
+				dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Errorf("release scheduled reminder changed no rows"))
 			}
-			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("send scheduled reminder %s: %w", r.id, sendErr))
+			dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Wrapf(sendErr, "send scheduled reminder"))
 			cancelFinalization()
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				dispatchErr = errors.Join(dispatchErr, ctxErr)
@@ -372,9 +371,9 @@ func (d *Dispatcher) FireScheduled(ctx context.Context) error {
 		fired, firedErr := d.store.fired(finalizationCtx, r.id, now)
 		cancelFinalization()
 		if firedErr != nil {
-			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark scheduled reminder %s fired: %w", r.id, firedErr))
+			dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Wrapf(firedErr, "mark scheduled reminder fired"))
 		} else if !fired {
-			dispatchErr = errors.Join(dispatchErr, fmt.Errorf("mark scheduled reminder %s fired changed no rows", r.id))
+			dispatchErr = errors.Join(dispatchErr, _oops.With("r_id", r.id).Errorf("mark scheduled reminder fired changed no rows"))
 		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			dispatchErr = errors.Join(dispatchErr, ctxErr)

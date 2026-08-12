@@ -87,7 +87,7 @@ made by claude
   合理的「查無資料」，不是失敗；5xx 才是失敗）。
 - **測量來源**：`router_http_requests_total{path="/api/search"}` /
   `router_http_errors_total{path="/api/search"}`（同第 1 節機制，見
-  `services/router/search.go` 的 `handleSearch`，所有查詢/embedding 失敗
+  `services/router/search.go` 的 `handleSearch`，所有查詢失敗
   都回 500，因此已完整落在 http error 計數內）。
 - **初始目標**：5xx 錯誤率 < 1%。
 

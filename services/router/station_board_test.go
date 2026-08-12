@@ -18,10 +18,10 @@ func TestStationBoardLimitClamps(t *testing.T) {
 		requested int32
 		want      int
 	}{
-		{requested: 0, want: stationBoardDefaultLimit},
-		{requested: -5, want: stationBoardDefaultLimit},
+		{requested: 0, want: _stationBoardDefaultLimit},
+		{requested: -5, want: _stationBoardDefaultLimit},
 		{requested: 8, want: 8},
-		{requested: 5000, want: stationBoardMaxLimit},
+		{requested: 5000, want: _stationBoardMaxLimit},
 	} {
 		if got := stationBoardLimit(tc.requested); got != tc.want {
 			t.Fatalf("stationBoardLimit(%d) = %d, want %d", tc.requested, got, tc.want)

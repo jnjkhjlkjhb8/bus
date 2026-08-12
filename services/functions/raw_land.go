@@ -18,20 +18,22 @@ import (
 	"go.uber.org/zap"
 )
 
-// ingestDB is the process-wide pool used by the raw_tdx landing path and by
+// _ingestDB is the process-wide pool used by the raw_tdx landing path and by
 // dbSince. It is set once in main and read without locking; dumpRawTDX treats a
-// nil value as a hard error.
-var ingestDB *pgxpool.Pool
+// nil value as a hard error. Tests never reassign this var — they call the
+// *WithDB entry points (dumpRawTDXWithDB, verifyAndTouchRawLandingWithDB,
+// landRawTDXWithDB) with their own pool instead.
+var _ingestDB *pgxpool.Pool
 
-// rawDumpEnabled gates the raw_tdx landing to ROLE=ingestor only, so the default
+// _rawDumpEnabled gates the raw_tdx landing to ROLE=ingestor only, so the default
 // prod transform path never writes raw_tdx.
-var rawDumpEnabled bool
+var _rawDumpEnabled bool
 
 // imsCacheKey is the If-Modified-Since cache key for a fetch target. The ingestor
 // writes namespaced shared:raw:* keys; the default prod path keeps its legacy key
 // so prod behavior is unchanged. Both key forms live in shared/keys.go.
 func imsCacheKey(name string) string {
-	if rawDumpEnabled {
+	if _rawDumpEnabled {
 		return shared.TDXRawIMSKey(name)
 	}
 	return shared.TDXLegacyIMSKey(name)
@@ -43,7 +45,7 @@ func imsCacheKey(name string) string {
 // unknown names, a nil pool, or any query error yield "" (fetch everything). Not
 // used in ingestor mode (see dbSinceFallbackAllowed).
 func dbSince(name string) string {
-	if ingestDB == nil {
+	if _ingestDB == nil {
 		return ""
 	}
 	var q string
@@ -78,9 +80,9 @@ func dbSince(name string) string {
 	var t *time.Time
 	var err error
 	if arg != nil {
-		err = ingestDB.QueryRow(ctx, q, arg).Scan(&t)
+		err = _ingestDB.QueryRow(ctx, q, arg).Scan(&t)
 	} else {
-		err = ingestDB.QueryRow(ctx, q).Scan(&t)
+		err = _ingestDB.QueryRow(ctx, q).Scan(&t)
 	}
 	if err != nil || t == nil {
 		return ""
@@ -91,7 +93,7 @@ func dbSince(name string) string {
 // dbSinceFallbackAllowed reports whether an empty IMS cache may fall back to a
 // prod table's updated_at. Never in ingestor mode: a 304 against an empty
 // raw_tdx would strand the landing table permanently empty.
-func dbSinceFallbackAllowed() bool { return !rawDumpEnabled }
+func dbSinceFallbackAllowed() bool { return !_rawDumpEnabled }
 
 // sinceFallback is the shared TDX client's cold-cache If-Modified-Since source:
 // in the legacy prod path it derives the value from the backing table's
@@ -131,28 +133,28 @@ func rawDumpTarget(url string) (rawTarget, bool) {
 	var key famSeg
 	switch {
 	case seg[1] == "Bus":
-		key, partVal = famSeg{familyBusCity, seg[2]}, cityOf()
+		key, partVal = famSeg{_familyBusCity, seg[2]}, cityOf()
 	case seg[1] == "Bike" && seg[2] == "Station":
-		key, partVal = famSeg{familyBikeCity, "Station"}, cityOf()
+		key, partVal = famSeg{_familyBikeCity, "Station"}, cityOf()
 	case seg[1] == "Rail" && len(seg) >= 4 && seg[2] == "Metro":
-		key, partVal = famSeg{familyMetroSystem, seg[3]}, seg[len(seg)-1]
+		key, partVal = famSeg{_familyMetroSystem, seg[3]}, seg[len(seg)-1]
 	// Bare /v2/Rail/<Dataset> endpoints carry no TRA/THSR/Metro segment, unlike
 	// every other Rail family below: /v2/Rail/Shape (TRA line shapes) and
 	// /v2/Rail/Operator (all rail operators). The segment itself keys the index,
 	// so a new bare endpoint needs only its registry entry.
 	case seg[1] == "Rail" && len(seg) == 3:
-		key = famSeg{familyRailSingle, seg[2]}
+		key = famSeg{_familyRailSingle, seg[2]}
 	case seg[1] == "Rail" && len(seg) >= 4 && (seg[2] == "TRA" || seg[2] == "THSR"):
 		pair := seg[2] + "/" + seg[3]
 		if pair == "TRA/DailyTimetable" || pair == "THSR/DailyTimetable" {
-			key, partVal = famSeg{familyRailDate, pair}, seg[len(seg)-1]
+			key, partVal = famSeg{_familyRailDate, pair}, seg[len(seg)-1]
 		} else {
-			key = famSeg{familyRailSingle, pair}
+			key = famSeg{_familyRailSingle, pair}
 		}
 	default:
 		return rawTarget{}, false
 	}
-	d, found := rawTargetIndex[key]
+	d, found := _rawTargetIndex[key]
 	if !found {
 		return rawTarget{}, false
 	}
@@ -173,9 +175,9 @@ type rawTarget struct {
 // and, crucially, avoid caching a Last-Modified that would mask the failure.
 var errRawDump = errors.New("raw dump failed")
 
-// stalePartitionAfter bounds how long a landing_state partition may go untouched
+// _stalePartitionAfter bounds how long a landing_state partition may go untouched
 // before reportStalePartitions names it.
-const stalePartitionAfter = 7 * 24 * time.Hour
+const _stalePartitionAfter = 7 * 24 * time.Hour
 
 // rawStateQuerier is the read-only slice of the pool reportStalePartitions
 // needs, so the sweep can be exercised without a database.
@@ -205,7 +207,7 @@ func reportStalePartitions(ctx context.Context, db rawStateQuerier) int {
 		SELECT table_name, partition_value, fetched_at
 		FROM raw_tdx.landing_state
 		WHERE fetched_at < $1
-		ORDER BY fetched_at, table_name, partition_value`, time.Now().Add(-stalePartitionAfter))
+		ORDER BY fetched_at, table_name, partition_value`, time.Now().Add(-_stalePartitionAfter))
 	if err != nil {
 		zap.S().Errorw("stale scan error",
 			"component", "ingest",
@@ -254,7 +256,7 @@ func reportStalePartitions(ctx context.Context, db rawStateQuerier) int {
 			"action", "landing_state",
 			"event", "stale_summary",
 			"count", stale,
-			"older_than", stalePartitionAfter,
+			"older_than", _stalePartitionAfter,
 		)
 	}
 	return stale
@@ -286,12 +288,12 @@ type rawLandingBeginner interface {
 	Begin(context.Context) (pgx.Tx, error)
 }
 
-// rawTDXTables is the whitelist of raw_tdx landing tables, derived from the
+// _rawTDXTables is the whitelist of raw_tdx landing tables, derived from the
 // datasetRegistry so it can never drift from the datasets themselves. Table and
 // partition names are interpolated into SQL, so they must come only from this
 // set. It includes the land-only bus_stop and tra_traintype (never fetched, never
 // loaded) whose DDL is kept because the tables may already exist on Azure.
-var rawTDXTables = buildWhitelist()
+var _rawTDXTables = buildWhitelist()
 
 func buildWhitelist() map[string]bool {
 	m := make(map[string]bool)
@@ -307,14 +309,14 @@ func buildWhitelist() map[string]bool {
 // so this is the injection barrier — never relax it to accept caller-supplied
 // identifiers.
 func validateRawTarget(t rawTarget) error {
-	if !rawTDXTables[t.table] {
-		return fmt.Errorf("%w: table %q not whitelisted", errRawDump, t.table)
+	if !_rawTDXTables[t.table] {
+		return _oops.With("table", t.table).Wrapf(errRawDump, "table not whitelisted")
 	}
 	switch t.partCol {
 	case "", "city", "system", "traindate":
 		return nil
 	default:
-		return fmt.Errorf("%w: partition column %q not allowed", errRawDump, t.partCol)
+		return _oops.With("part_col", t.partCol).Wrapf(errRawDump, "partition column not allowed")
 	}
 }
 
@@ -342,10 +344,10 @@ func rawPartitionWhere(t rawTarget) string {
 // missing/emptied partitions without counting millions of rows; partial-row
 // loss requires a full integrity audit.
 func verifyAndTouchRawLanding(ctx context.Context, t rawTarget, marker, landingCycle string) error {
-	if ingestDB == nil {
-		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
+	if _ingestDB == nil {
+		return _oops.Wrapf(errRawDump, "ingestDB is nil")
 	}
-	return verifyAndTouchRawLandingWithDB(ctx, ingestDB, t, marker, landingCycle)
+	return verifyAndTouchRawLandingWithDB(ctx, _ingestDB, t, marker, landingCycle)
 }
 
 func verifyAndTouchRawLandingWithDB(
@@ -365,11 +367,11 @@ func verifyAndTouchRawLandingWithDB(
 		}
 	}
 	if strings.TrimSpace(landingCycle) == "" {
-		return fmt.Errorf("%w: landing cycle is empty", errRawDump)
+		return _oops.Wrapf(errRawDump, "landing cycle is empty")
 	}
 	tx, err := db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("verify raw landing state: begin: %w", err)
+		return _oops.Wrapf(err, "verify raw landing state: begin")
 	}
 	defer func() {
 		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -377,7 +379,7 @@ func verifyAndTouchRawLandingWithDB(
 		_ = tx.Rollback(rbCtx)
 	}()
 	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '20s'"); err != nil {
-		return fmt.Errorf("verify raw landing state: set lock_timeout: %w", err)
+		return _oops.Wrapf(err, "verify raw landing state: set lock_timeout")
 	}
 
 	var stateMarker string
@@ -394,7 +396,7 @@ func verifyAndTouchRawLandingWithDB(
 		}
 	}
 	if err != nil {
-		return fmt.Errorf("verify raw landing state: read state: %w", err)
+		return _oops.Wrapf(err, "verify raw landing state: read state")
 	}
 	if stateMarker != marker {
 		return &rawLandingStateMismatchError{
@@ -412,7 +414,7 @@ func verifyAndTouchRawLandingWithDB(
 	existsSQL += " LIMIT 1)"
 	var hasRows bool
 	if err := tx.QueryRow(ctx, existsSQL, args...).Scan(&hasRows); err != nil {
-		return fmt.Errorf("verify raw landing state: inspect partition: %w", err)
+		return _oops.Wrapf(err, "verify raw landing state: inspect partition")
 	}
 	expectedRows := rowCount > 0
 	if hasRows != expectedRows {
@@ -425,7 +427,7 @@ func verifyAndTouchRawLandingWithDB(
 		UPDATE raw_tdx.landing_state SET fetched_at=now(), landing_cycle=$4
 		WHERE table_name=$1 AND partition_column=$2 AND partition_value=$3`, table, partCol, partVal, landingCycle)
 	if err != nil {
-		return fmt.Errorf("verify raw landing state: touch state: %w", err)
+		return _oops.Wrapf(err, "verify raw landing state: touch state")
 	}
 	if ct.RowsAffected() != 1 {
 		return &rawLandingStateMismatchError{
@@ -434,7 +436,7 @@ func verifyAndTouchRawLandingWithDB(
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("verify raw landing state: commit: %w", err)
+		return _oops.Wrapf(err, "verify raw landing state: commit")
 	}
 	return nil
 }
@@ -467,10 +469,19 @@ SELECT r.* FROM jsonb_array_elements($2::jsonb) elem,
 // the caller must NOT advance the Last-Modified / If-Modified-Since cache unless
 // the dump succeeds, otherwise a later 304 would leave raw_tdx permanently stale.
 func dumpRawTDX(ctx context.Context, t rawTarget, marker, landingCycle string, body []byte) error {
+	if _ingestDB == nil {
+		return _oops.Wrapf(errRawDump, "ingestDB is nil")
+	}
+	return dumpRawTDXWithDB(ctx, _ingestDB, t, marker, landingCycle, body)
+}
+
+// dumpRawTDXWithDB is dumpRawTDX with the pool passed explicitly, so tests can
+// exercise it against a pool they own instead of reassigning _ingestDB.
+func dumpRawTDXWithDB(ctx context.Context, db rawLandingBeginner, t rawTarget, marker, landingCycle string, body []byte) error {
 	if len(body) == 0 {
 		body = []byte("[]")
 	}
-	return dumpRawTDXReader(ctx, t, marker, landingCycle, bytes.NewReader(body))
+	return dumpRawTDXReaderWithDB(ctx, db, t, marker, landingCycle, bytes.NewReader(body))
 }
 
 // dumpRawTDXReader is the streaming landing entrypoint used by the ingestor.
@@ -478,26 +489,36 @@ func dumpRawTDX(ctx context.Context, t rawTarget, marker, landingCycle string, b
 // the reader is rewound before every attempt instead of retaining a second full
 // copy of the payload in memory.
 func dumpRawTDXReader(ctx context.Context, t rawTarget, marker, landingCycle string, body io.ReadSeeker) error {
-	if ingestDB == nil {
-		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
+	if _ingestDB == nil {
+		return _oops.Wrapf(errRawDump, "ingestDB is nil")
 	}
+	return dumpRawTDXReaderWithDB(ctx, _ingestDB, t, marker, landingCycle, body)
+}
+
+func dumpRawTDXReaderWithDB(
+	ctx context.Context,
+	db rawLandingBeginner,
+	t rawTarget,
+	marker, landingCycle string,
+	body io.ReadSeeker,
+) error {
 	if err := validateRawTarget(t); err != nil {
 		return err
 	}
 	if body == nil {
-		return fmt.Errorf("%w: response body is nil", errRawDump)
+		return _oops.Wrapf(errRawDump, "response body is nil")
 	}
 	if strings.TrimSpace(marker) == "" {
-		return fmt.Errorf("%w: last-modified marker is empty", errRawDump)
+		return _oops.Wrapf(errRawDump, "last-modified marker is empty")
 	}
 	if strings.TrimSpace(landingCycle) == "" {
-		return fmt.Errorf("%w: landing cycle is empty", errRawDump)
+		return _oops.Wrapf(errRawDump, "landing cycle is empty")
 	}
 	return obs.Retry(ctx, 3, 2*time.Second, func() error {
 		if _, err := body.Seek(0, io.SeekStart); err != nil {
-			return fmt.Errorf("%w: rewind response: %w", errRawDump, err)
+			return _oops.Wrapf(err, "rewind response")
 		}
-		return obs.Transient(landRawTDX(ctx, t, marker, landingCycle, body))
+		return obs.Transient(landRawTDXWithDB(ctx, db, t, marker, landingCycle, body))
 	})
 }
 
@@ -507,10 +528,10 @@ func dumpRawTDXReader(ctx context.Context, t rawTarget, marker, landingCycle str
 // pgx cancels the query; dumpRawTDX retries, and if all attempts fail the caller
 // leaves the IMS cache un-advanced so this partition refetches next run.
 func landRawTDX(ctx context.Context, t rawTarget, marker, landingCycle string, body io.Reader) error {
-	if ingestDB == nil {
-		return fmt.Errorf("%w: ingestDB is nil", errRawDump)
+	if _ingestDB == nil {
+		return _oops.Wrapf(errRawDump, "ingestDB is nil")
 	}
-	return landRawTDXWithDB(ctx, ingestDB, t, marker, landingCycle, body)
+	return landRawTDXWithDB(ctx, _ingestDB, t, marker, landingCycle, body)
 }
 
 func landRawTDXWithDB(
@@ -525,17 +546,17 @@ func landRawTDXWithDB(
 		return err
 	}
 	if strings.TrimSpace(marker) == "" {
-		return fmt.Errorf("%w: last-modified marker is empty", errRawDump)
+		return _oops.Wrapf(errRawDump, "last-modified marker is empty")
 	}
 	if strings.TrimSpace(landingCycle) == "" {
-		return fmt.Errorf("%w: landing cycle is empty", errRawDump)
+		return _oops.Wrapf(errRawDump, "landing cycle is empty")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
 	tx, err := db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("%w: begin: %w", errRawDump, err)
+		return _oops.Wrapf(err, "begin")
 	}
 	// Roll back on a context independent of ctx: if this attempt was cancelled by
 	// the deadline above, a Rollback(ctx) would be a no-op and the TRUNCATE/DELETE's
@@ -549,18 +570,18 @@ func landRawTDXWithDB(
 	// Bound lock waits so a held lock fails this attempt fast (retryable) instead of
 	// stalling TRUNCATE/DELETE for the full landing deadline.
 	if _, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '20s'"); err != nil {
-		return fmt.Errorf("%w: set lock_timeout: %w", errRawDump, err)
+		return _oops.Wrapf(err, "set lock_timeout")
 	}
 
 	inject := "{}"
 	if partCol != "" {
 		if _, err := tx.Exec(ctx, rawDeleteSQL(t), partVal); err != nil {
-			return fmt.Errorf("%w: delete partition: %w", errRawDump, err)
+			return _oops.Wrapf(err, "delete partition")
 		}
 		b, _ := json.Marshal(map[string]string{partCol: partVal})
 		inject = string(b)
 	} else if _, err := tx.Exec(ctx, fmt.Sprintf("TRUNCATE raw_tdx.%s", table)); err != nil {
-		return fmt.Errorf("%w: truncate: %w", errRawDump, err)
+		return _oops.Wrapf(err, "truncate")
 	}
 	rows, err := insertRawChunks(ctx, func(ctx context.Context, sql string, args ...any) (int64, error) {
 		ct, err := tx.Exec(ctx, sql, args...)
@@ -570,7 +591,7 @@ func landRawTDXWithDB(
 		return ct.RowsAffected(), nil
 	}, table, inject, body)
 	if err != nil {
-		return fmt.Errorf("%w: insert: %w", errRawDump, err)
+		return _oops.Wrapf(err, "insert")
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO raw_tdx.landing_state
@@ -582,21 +603,21 @@ func landRawTDXWithDB(
 			fetched_at=EXCLUDED.fetched_at,
 			landing_cycle=EXCLUDED.landing_cycle`,
 		table, partCol, partVal, marker, rows, landingCycle); err != nil {
-		return fmt.Errorf("%w: upsert landing state: %w", errRawDump, err)
+		return _oops.Wrapf(err, "upsert landing state")
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("%w: commit: %w", errRawDump, err)
+		return _oops.Wrapf(err, "commit")
 	}
 	zap.S().Infow("success", "component", "raw_tdx", "table", table, "rows", rows, "event", "success")
 	return nil
 }
 
-// rawChunkBytes bounds the JSON slice bound to one INSERT during a raw_tdx
+// _rawChunkBytes bounds the JSON slice bound to one INSERT during a raw_tdx
 // landing. The server parses each jsonb bind parameter in backend-private
 // memory (not bounded by work_mem), so binding a whole payload in one
 // statement scales server memory with payload size — which OOM-crashed the
 // 2GB B1ms Azure server. 4MB keeps per-statement parse memory trivial.
-const rawChunkBytes = 4 << 20
+const _rawChunkBytes = 4 << 20
 
 // insertRawChunks streams the landed JSON array into raw_tdx.<table> in
 // rawChunkBytes slices via exec (one INSERT per slice, all inside the caller's
@@ -607,11 +628,18 @@ const rawChunkBytes = 4 << 20
 // error, as it was under jsonb_array_elements.
 func insertRawChunks(ctx context.Context, exec func(context.Context, string, ...any) (int64, error), table, inject string, body io.Reader) (int64, error) {
 	dec := json.NewDecoder(body)
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('[') {
-		return 0, fmt.Errorf("payload is not a JSON array (token %v): %w", tok, err)
+	// Split rather than folded into one condition: a well-formed token that is
+	// simply not "[" carries no error to wrap, and Wrapf(nil) is nil — folding
+	// the two would return a nil error for a non-array payload.
+	tok, err := dec.Token()
+	if err != nil {
+		return 0, _oops.With("table", table).Wrapf(err, "read payload opening token")
+	}
+	if tok != json.Delim('[') {
+		return 0, _oops.With("table", table).With("token", tok).Errorf("payload is not a JSON array")
 	}
 	sql := rawInsertSQL(table)
-	chunk := append(make([]byte, 0, rawChunkBytes+(1<<20)), '[')
+	chunk := append(make([]byte, 0, _rawChunkBytes+(1<<20)), '[')
 	var rows int64
 	flush := func() error {
 		n, err := exec(ctx, sql, inject, append(chunk, ']'))
@@ -626,13 +654,13 @@ func insertRawChunks(ctx context.Context, exec func(context.Context, string, ...
 	for dec.More() {
 		var elem json.RawMessage
 		if err := dec.Decode(&elem); err != nil {
-			return rows, fmt.Errorf("decode array element: %w", err)
+			return rows, _oops.Wrapf(err, "decode array element")
 		}
 		if len(chunk) > 1 {
 			chunk = append(chunk, ',')
 		}
 		chunk = append(chunk, elem...)
-		if len(chunk) >= rawChunkBytes {
+		if len(chunk) >= _rawChunkBytes {
 			if err := flush(); err != nil {
 				return rows, err
 			}
@@ -641,17 +669,17 @@ func insertRawChunks(ctx context.Context, exec func(context.Context, string, ...
 	}
 	closing, err := dec.Token()
 	if err != nil {
-		return rows, fmt.Errorf("decode array closing delimiter: %w", err)
+		return rows, _oops.Wrapf(err, "decode array closing delimiter")
 	}
 	if closing != json.Delim(']') {
-		return rows, fmt.Errorf("payload has invalid array closing token %v", closing)
+		return rows, _oops.With("closing", closing).Errorf("payload has invalid array closing token")
 	}
 	var trailing json.RawMessage
 	switch err := dec.Decode(&trailing); {
 	case errors.Is(err, io.EOF):
 		// Only JSON whitespace may follow the closing array delimiter.
 	case err != nil:
-		return rows, fmt.Errorf("decode data after JSON array: %w", err)
+		return rows, _oops.Wrapf(err, "decode data after JSON array")
 	default:
 		return rows, errors.New("payload contains data after JSON array")
 	}

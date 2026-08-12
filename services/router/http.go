@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -32,47 +31,47 @@ import (
 )
 
 const (
-	metricsCredentialEnv = "ROUTER_METRICS_TOKEN"
-	trustedProxiesEnv    = "ROUTER_TRUSTED_PROXIES"
-	httpTokenRateLimit   = 10
-	httpJWKSRateLimit    = 120
-	httpSearchRateLimit  = 30
-	httpMetricsRateLimit = 60
-	httpBookingRateLimit = 30
-	httpGBFSRateLimit    = 120
+	_metricsCredentialEnv = "ROUTER_METRICS_TOKEN"
+	_trustedProxiesEnv    = "ROUTER_TRUSTED_PROXIES"
+	_httpTokenRateLimit   = 10
+	_httpJWKSRateLimit    = 120
+	_httpSearchRateLimit  = 30
+	_httpMetricsRateLimit = 60
+	_httpBookingRateLimit = 30
+	_httpGBFSRateLimit    = 120
 	// MOTIS polls its realtime endpoints once a minute by default, and the feed
 	// has exactly one authenticated consumer, so this is generous already.
-	httpGTFSRTRateLimit = 10
+	_httpGTFSRTRateLimit = 10
 	// One fetch per app launch, answered from a process-local cache, so this
 	// only has to survive a device relaunching in a loop.
-	httpStaticVersionRateLimit = 60
+	_httpStaticVersionRateLimit = 60
 
 	// Bound every phase of an HTTP request/connection so a slow or hostile
 	// client (or a stalled network path) cannot hold a connection open
 	// indefinitely and exhaust the router's file descriptors or goroutines.
-	httpReadHeaderTimeout = 5 * time.Second
-	httpReadTimeout       = 10 * time.Second
-	httpWriteTimeout      = 15 * time.Second
-	httpIdleTimeout       = 60 * time.Second
+	_httpReadHeaderTimeout = 5 * time.Second
+	_httpReadTimeout       = 10 * time.Second
+	_httpWriteTimeout      = 15 * time.Second
+	_httpIdleTimeout       = 60 * time.Second
 
-	// powersyncTokenTTL bounds how long a leaked/observed PowerSync JWT stays
+	// _powersyncTokenTTL bounds how long a leaked/observed PowerSync JWT stays
 	// usable. Was 24h; narrows this to 1h — short enough to cap exposure, long
 	// enough that PowerSyncService's normal refresh cadence (it re-fetches well
 	// before expiry) never causes a mid-session drop. No revocation/quota on top
 	// of this: single-host scale doesn't justify that machinery (YAGNI; see docs/config.md).
-	powersyncTokenTTL = time.Hour
-	// powersyncAnonymousSubject is the "sub" claim used when the caller sends
+	_powersyncTokenTTL = time.Hour
+	// _powersyncAnonymousSubject is the "sub" claim used when the caller sends
 	// no installation id — either an older app build that predates the header,
 	// or any other caller of this endpoint. Keeps the endpoint working exactly
 	// as before for those callers instead of failing the request.
-	powersyncAnonymousSubject = "powersync-client"
-	// installIDHeaderMaxLen bounds the installation id accepted into the JWT
+	_powersyncAnonymousSubject = "powersync-client"
+	// _installIDHeaderMaxLen bounds the installation id accepted into the JWT
 	// "sub" claim. It is not an authorization credential (no secret is
 	// checked here, unlike the gRPC x-install-id/x-install-secret pair in
 	// firebase_service.go) — only a correlation id an operator can use to
 	// trace a specific token back to an installation — so it only needs
 	// sanity bounds, not the same validation UpsertDevice applies.
-	installIDHeaderMaxLen = 128
+	_installIDHeaderMaxLen = 128
 )
 
 type httpServerConfig struct {
@@ -121,7 +120,7 @@ func httpServerConfigFromEnv() (httpServerConfig, error) {
 }
 
 func trustedProxiesFromEnv() ([]netip.Prefix, error) {
-	raw := strings.TrimSpace(os.Getenv(trustedProxiesEnv))
+	raw := strings.TrimSpace(os.Getenv(_trustedProxiesEnv))
 	if raw == "" {
 		return nil, nil
 	}
@@ -133,7 +132,7 @@ func trustedProxiesFromEnv() ([]netip.Prefix, error) {
 		if err != nil {
 			addr, addrErr := netip.ParseAddr(value)
 			if addrErr != nil {
-				return nil, fmt.Errorf("%s contains invalid IP or CIDR %q", trustedProxiesEnv, value)
+				return nil, _oops.With("_trusted_proxies_env", _trustedProxiesEnv).With("value", value).Errorf("contains invalid IP or CIDR")
 			}
 			prefix = netip.PrefixFrom(addr, addr.BitLen())
 		}
@@ -144,7 +143,7 @@ func trustedProxiesFromEnv() ([]netip.Prefix, error) {
 			Mask: net.CIDRMask(prefix.Bits(), addressBits),
 		}
 		if network.Contains(net.IPv4zero) || network.Contains(net.IPv6zero) {
-			return nil, fmt.Errorf("%s contains unsafe catch-all or unspecified proxy %q", trustedProxiesEnv, value)
+			return nil, _oops.With("_trusted_proxies_env", _trustedProxiesEnv).With("value", value).Errorf("contains unsafe catch-all or unspecified proxy")
 		}
 		proxies = append(proxies, prefix)
 	}
@@ -210,21 +209,21 @@ func prepareHTTPServer(
 ) (preparedHTTPServer, error) {
 	key, err := loadKey()
 	if err != nil {
-		return preparedHTTPServer{}, fmt.Errorf("prepare HTTP signing key: %w", err)
+		return preparedHTTPServer{}, _oops.Wrapf(err, "prepare HTTP signing key")
 	}
 	zap.S().Infow("RS256 key ready", "component", "http")
 	gin.SetMode(gin.ReleaseMode)
 	handlers := newTrackedHTTPHandler(newHTTPRouter(db, live, key, config))
 	server := &http.Server{
 		Handler:           handlers,
-		ReadHeaderTimeout: httpReadHeaderTimeout,
-		ReadTimeout:       httpReadTimeout,
-		WriteTimeout:      httpWriteTimeout,
-		IdleTimeout:       httpIdleTimeout,
+		ReadHeaderTimeout: _httpReadHeaderTimeout,
+		ReadTimeout:       _httpReadTimeout,
+		WriteTimeout:      _httpWriteTimeout,
+		IdleTimeout:       _httpIdleTimeout,
 	}
 	listener, err := listen("tcp", "0.0.0.0:8080")
 	if err != nil {
-		return preparedHTTPServer{}, fmt.Errorf("listen for HTTP: %w", err)
+		return preparedHTTPServer{}, _oops.Wrapf(err, "listen for HTTP")
 	}
 	return preparedHTTPServer{server: server, listener: listener, handlers: handlers}, nil
 }
@@ -238,14 +237,14 @@ func newHTTPRouter(db *pgxpool.Pool, live *LiveHub, key *rsa.PrivateKey, config 
 	if err := r.SetTrustedProxies(trustedProxies); err != nil {
 		panic(fmt.Sprintf("validated trusted proxy configuration rejected: %v", err))
 	}
-	r.Use(safeAccessLogger(gin.DefaultWriter), gin.Recovery())
+	r.Use(safeAccessLogger(), gin.Recovery())
 	r.Use(sentrygin.New(sentrygin.Options{Repanic: true}))
 	limiter := NewRateLimiter()
-	tokenLimit := configuredLimit(config.TokenRateLimit, httpTokenRateLimit)
-	jwksLimit := configuredLimit(config.JWKSRateLimit, httpJWKSRateLimit)
-	searchLimit := configuredLimit(config.SearchRateLimit, httpSearchRateLimit)
-	metricsLimit := configuredLimit(config.MetricsRateLimit, httpMetricsRateLimit)
-	gbfsLimit := configuredLimit(config.GBFSRateLimit, httpGBFSRateLimit)
+	tokenLimit := configuredLimit(config.TokenRateLimit, _httpTokenRateLimit)
+	jwksLimit := configuredLimit(config.JWKSRateLimit, _httpJWKSRateLimit)
+	searchLimit := configuredLimit(config.SearchRateLimit, _httpSearchRateLimit)
+	metricsLimit := configuredLimit(config.MetricsRateLimit, _httpMetricsRateLimit)
+	gbfsLimit := configuredLimit(config.GBFSRateLimit, _httpGBFSRateLimit)
 	r.GET("/api/token/powersync",
 		httpRateLimit(limiter, "GET /api/token/powersync", tokenLimit, time.Minute),
 		handleToken(key))
@@ -256,16 +255,16 @@ func newHTTPRouter(db *pgxpool.Pool, live *LiveHub, key *rsa.PrivateKey, config 
 		httpRateLimit(limiter, "GET /api/search", searchLimit, time.Second),
 		HandleSearch(db))
 	r.GET(StaticVersionPath,
-		httpRateLimit(limiter, "GET "+StaticVersionPath, httpStaticVersionRateLimit, time.Minute),
+		httpRateLimit(limiter, "GET "+StaticVersionPath, _httpStaticVersionRateLimit, time.Minute),
 		HandleStaticVersion(db))
 	r.GET("/api/booking/deeplink",
-		httpRateLimit(limiter, "GET /api/booking/deeplink", httpBookingRateLimit, time.Minute),
+		httpRateLimit(limiter, "GET /api/booking/deeplink", _httpBookingRateLimit, time.Minute),
 		HandleBookingDeeplink(config.booking))
 	// Mounted only with a Redis client: cancelling has to publish the session's
 	// ending, and a cancel a watching app never hears about is half a cancel.
 	if config.redis != nil {
 		r.POST(TrackCancelPath,
-			httpRateLimit(limiter, "POST "+TrackCancelPath, httpTrackCancelRateLimit, time.Minute),
+			httpRateLimit(limiter, "POST "+TrackCancelPath, _httpTrackCancelRateLimit, time.Minute),
 			HandleTrackCancel(trackCancelStoreFor(db), config.redis))
 	}
 	// GBFS is mounted only with a Redis client: station_status is the point of
@@ -278,7 +277,7 @@ func newHTTPRouter(db *pgxpool.Pool, live *LiveHub, key *rsa.PrivateKey, config 
 	// snapshot lives in Redis, and prod's HTTP port is public, so an ungated
 	// route would publish a feed that was scoped as internal (ADR-0019).
 	RegisterGTFSRTRoutes(r, config.redis, config.GTFSRealtimeCredential,
-		httpRateLimit(limiter, "GET "+GTFSRTPath, httpGTFSRTRateLimit, time.Minute))
+		httpRateLimit(limiter, "GET "+GTFSRTPath, _httpGTFSRTRateLimit, time.Minute))
 	r.GET("/metrics",
 		requireMetricsCredential(config.MetricsCredential),
 		httpPrincipalRateLimit(limiter, "GET /metrics", metricsLimit, time.Minute),
@@ -293,7 +292,7 @@ func configuredLimit(configured, fallback int) int {
 	return fallback
 }
 
-func safeAccessLogger(writer io.Writer) gin.HandlerFunc {
+func safeAccessLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		started := time.Now()
 		c.Next()
@@ -309,8 +308,15 @@ func safeAccessLogger(writer io.Writer) gin.HandlerFunc {
 			routePath = "unmatched"
 		}
 		obs.RecordHTTPRequest(routePath, status)
-		_, _ = fmt.Fprintf(writer, "[HTTP] method=%s path=%s status=%d latency=%s\n",
-			c.Request.Method, c.Request.URL.EscapedPath(), status, time.Since(started))
+		// EscapedPath, never RequestURI: the raw query can carry a bearer token
+		// or another credential a client appended, and an access log is the one
+		// place it would be persisted verbatim.
+		zap.S().Infow("http request",
+			"method", c.Request.Method,
+			"path", c.Request.URL.EscapedPath(),
+			"status", status,
+			"latency", time.Since(started),
+		)
 	}
 }
 
@@ -329,11 +335,11 @@ func httpRateLimit(limiter *RateLimiter, scope string, limit int, window time.Du
 	}
 }
 
-const metricsPrincipalContextKey = "metrics-principal"
+const _metricsPrincipalContextKey = "metrics-principal"
 
 func httpPrincipalRateLimit(limiter *RateLimiter, scope string, limit int, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		principal, ok := c.Get(metricsPrincipalContextKey)
+		principal, ok := c.Get(_metricsPrincipalContextKey)
 		caller, valid := principal.(string)
 		if !ok || !valid || caller == "" {
 			c.AbortWithStatus(http.StatusUnauthorized)
@@ -349,12 +355,12 @@ func httpPrincipalRateLimit(limiter *RateLimiter, scope string, limit int, windo
 }
 
 func metricsCredentialFromEnv() (string, error) {
-	credential := os.Getenv(metricsCredentialEnv)
+	credential := os.Getenv(_metricsCredentialEnv)
 	if credential != strings.TrimSpace(credential) {
-		return "", fmt.Errorf("%s must not contain leading or trailing whitespace", metricsCredentialEnv)
+		return "", _oops.With("_metrics_credential_env", _metricsCredentialEnv).Errorf("must not contain leading or trailing whitespace")
 	}
 	if len(credential) < 32 {
-		return "", fmt.Errorf("%s must be configured with at least 32 characters", metricsCredentialEnv)
+		return "", _oops.With("_metrics_credential_env", _metricsCredentialEnv).Errorf("must be configured with at least 32 characters")
 	}
 	return credential, nil
 }
@@ -374,7 +380,7 @@ func requireMetricsCredential(expected string) gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
-		c.Set(metricsPrincipalContextKey, principal)
+		c.Set(_metricsPrincipalContextKey, principal)
 		c.Next()
 	}
 }
@@ -399,7 +405,7 @@ func handleMetrics(live *LiveHub) gin.HandlerFunc {
 // Flutter client) when present, purely so a token can be traced back to an
 // installation after the fact; there is no secret check here and no
 // revocation, so a stolen token is still usable until it expires
-// (powersyncTokenTTL) regardless of whose sub it carries.
+// (_powersyncTokenTTL) regardless of whose sub it carries.
 func handleToken(key *rsa.PrivateKey) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		now := time.Now()
@@ -407,7 +413,7 @@ func handleToken(key *rsa.PrivateKey) gin.HandlerFunc {
 			"sub": tokenSubject(c.GetHeader(InstallIDMetadataKey)),
 			"aud": "powersync",
 			"iat": now.Unix(),
-			"exp": now.Add(powersyncTokenTTL).Unix(),
+			"exp": now.Add(_powersyncTokenTTL).Unix(),
 		})
 		if err != nil {
 			c.JSON(500, gin.H{"error": "sign failed"})
@@ -418,17 +424,17 @@ func handleToken(key *rsa.PrivateKey) gin.HandlerFunc {
 }
 
 // tokenSubject sanitizes the caller-supplied installation id into a "sub"
-// claim, falling back to powersyncAnonymousSubject for an empty, oversized, or
+// claim, falling back to _powersyncAnonymousSubject for an empty, oversized, or
 // otherwise unusable header instead of putting untrusted content straight
 // into a signed token.
 func tokenSubject(installID string) string {
 	installID = strings.TrimSpace(installID)
-	if installID == "" || len(installID) > installIDHeaderMaxLen {
-		return powersyncAnonymousSubject
+	if installID == "" || len(installID) > _installIDHeaderMaxLen {
+		return _powersyncAnonymousSubject
 	}
 	for _, r := range installID {
 		if r < 0x20 || r == 0x7f {
-			return powersyncAnonymousSubject
+			return _powersyncAnonymousSubject
 		}
 	}
 	return installID
@@ -477,7 +483,7 @@ func loadOrGenerateKeyAt(keyFile string) (*rsa.PrivateKey, error) {
 		if block != nil {
 			key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 			if err == nil {
-				zap.S().Infow(fmt.Sprintf("loaded persisted RSA key from %s", keyFile), "component", "http")
+				zap.S().Infow("loaded persisted RSA key", "component", "http", "key_file", keyFile)
 				return key, nil
 			}
 		}
@@ -491,9 +497,9 @@ func loadOrGenerateKeyAt(keyFile string) (*rsa.PrivateKey, error) {
 		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
 	if err := persistKeyAtomically(keyFile, data); err != nil {
-		return nil, fmt.Errorf("persist RSA key: %w", err)
+		return nil, _oops.Wrapf(err, "persist RSA key")
 	}
-	zap.S().Infow(fmt.Sprintf("generated new RSA key and persisted to %s", keyFile), "component", "http")
+	zap.S().Infow("generated new RSA key", "component", "http", "key_file", keyFile)
 	return key, nil
 }
 
@@ -509,7 +515,7 @@ func persistKeyAtomically(keyFile string, data []byte) error {
 	dir := filepath.Dir(keyFile)
 	tmp, err := os.CreateTemp(dir, filepath.Base(keyFile)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("create temp key file: %w", err)
+		return _oops.Wrapf(err, "create temp key file")
 	}
 	tmpName := tmp.Name()
 	renamed := false
@@ -520,20 +526,20 @@ func persistKeyAtomically(keyFile string, data []byte) error {
 	}()
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("write temp key file: %w", err)
+		return _oops.Wrapf(err, "write temp key file")
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("sync temp key file: %w", err)
+		return _oops.Wrapf(err, "sync temp key file")
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp key file: %w", err)
+		return _oops.Wrapf(err, "close temp key file")
 	}
 	if err := os.Chmod(tmpName, 0600); err != nil {
-		return fmt.Errorf("chmod temp key file: %w", err)
+		return _oops.Wrapf(err, "chmod temp key file")
 	}
 	if err := os.Rename(tmpName, keyFile); err != nil {
-		return fmt.Errorf("rename temp key file into place: %w", err)
+		return _oops.Wrapf(err, "rename temp key file into place")
 	}
 	renamed = true
 	return nil

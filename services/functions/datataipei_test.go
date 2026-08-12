@@ -165,8 +165,8 @@ func TestDataTaipeiEstimateDirection(t *testing.T) {
 	}{
 		{"0", 0},
 		{"1", 1},
-		{"2", busEtaDirectionUnknown},
-		{"3", busEtaDirectionUnknown},
+		{"2", _busEtaDirectionUnknown},
+		{"3", _busEtaDirectionUnknown},
 	}
 	for _, tt := range tests {
 		if got := dataTaipeiEstimateDirection(tt.goBack); got != tt.want {
@@ -200,9 +200,9 @@ func TestDataTaipeiRawEstimates(t *testing.T) {
 			live.Direction, live.StopStatus, live.EstimatedTime)
 	}
 	notDeparted := got[1]
-	if notDeparted.Direction != busEtaDirectionUnknown || notDeparted.StopStatus != 1 {
+	if notDeparted.Direction != _busEtaDirectionUnknown || notDeparted.StopStatus != 1 {
 		t.Errorf("not-departed entry = direction %d status %d, want %d/1",
-			notDeparted.Direction, notDeparted.StopStatus, busEtaDirectionUnknown)
+			notDeparted.Direction, notDeparted.StopStatus, _busEtaDirectionUnknown)
 	}
 }
 
@@ -218,15 +218,15 @@ func (s stubEtaSource) estimates(context.Context) ([]rawBusEsimated, error) {
 }
 
 func TestRunCityUsesEtaSourceInsteadOfTDX(t *testing.T) {
-	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, taipei)
-	prefix := citymap["Taipei"]
-	busStaticMapCache.Delete(prefix)
-	storeBusStaticMapIn(&busStaticMapCache, prefix, []busStationmap{{
+	now := time.Date(2026, time.July, 10, 9, 0, 0, 0, _taipei)
+	prefix := _citymap["Taipei"]
+	_busStaticMapCache.Delete(prefix)
+	storeBusStaticMapIn(&_busStaticMapCache, prefix, []busStationmap{{
 		StationUID: "STATION1", StationName: "站牌一", GroupUID: "GROUP1", GroupName: "群組一",
 		RouteUID: prefix + "1", SubRouteUID: prefix + "1", SubRouteName: "一路",
 		Direction: 0, StopUID: "STOP1", StopSequence: 1,
 	}}, "", now)
-	t.Cleanup(func() { busStaticMapCache.Delete(prefix) })
+	t.Cleanup(func() { _busStaticMapCache.Delete(prefix) })
 
 	// A city listed in j.eta must never reach TDX for its ETA: the position
 	// fetch is the only TDX call this test expects.
@@ -319,8 +319,8 @@ func TestOverlayVehicles(t *testing.T) {
 	}{
 		{
 			name:      "covered city takes the richer feed",
-			job:       busLiveJob{vehicles: map[string]vehicleSource{dataTaipeiCity: stubVehicleSource{rows: fresh}}},
-			city:      dataTaipeiCity,
+			job:       busLiveJob{vehicles: map[string]vehicleSource{_dataTaipeiCity: stubVehicleSource{rows: fresh}}},
+			city:      _dataTaipeiCity,
 			wantPlate: "757-FW",
 		},
 		{
@@ -331,18 +331,18 @@ func TestOverlayVehicles(t *testing.T) {
 		},
 		{
 			name: "other cities are untouched",
-			job:  busLiveJob{vehicles: map[string]vehicleSource{dataTaipeiCity: stubVehicleSource{rows: fresh}}},
+			job:  busLiveJob{vehicles: map[string]vehicleSource{_dataTaipeiCity: stubVehicleSource{rows: fresh}}},
 			city: "Taichung",
 		},
 		{
 			name: "a failing feed falls back to TDX",
-			job:  busLiveJob{vehicles: map[string]vehicleSource{dataTaipeiCity: stubVehicleSource{err: errors.New("blob unreachable")}}},
-			city: dataTaipeiCity,
+			job:  busLiveJob{vehicles: map[string]vehicleSource{_dataTaipeiCity: stubVehicleSource{err: errors.New("blob unreachable")}}},
+			city: _dataTaipeiCity,
 		},
 		{
 			name: "no feed configured stays on TDX",
 			job:  busLiveJob{},
-			city: dataTaipeiCity,
+			city: _dataTaipeiCity,
 		},
 	}
 

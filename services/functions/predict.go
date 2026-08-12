@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -87,7 +86,7 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 		GROUP BY b.sub_route_uid, b.direction`,
 		uids, dirs, todTime, dayBit)
 	if err != nil {
-		zap.S().Errorw(fmt.Sprintf("batchNextDepartures error: %v", err), "component", "model")
+		zap.S().Errorw("batchNextDepartures error", "component", "model", "err", err)
 		return out
 	}
 	defer rows.Close()
@@ -110,7 +109,7 @@ func batchNextDepartures(ctx context.Context, db *pgxpool.Pool, keys []routeDirK
 		}
 	}
 	if err := rows.Err(); err != nil {
-		zap.S().Errorw(fmt.Sprintf("batchNextDepartures rows error: %v", err), "component", "model")
+		zap.S().Errorw("batchNextDepartures rows error", "component", "model", "err", err)
 	}
 	for k, v := range best {
 		out[k] = v.dep
@@ -137,17 +136,17 @@ func batchStopOffsets(ctx context.Context, db *pgxpool.Pool, uids []string) map[
 	if len(uids) == 0 {
 		return out
 	}
-	missing := cachedStopOffsets(&stopOffsetCache, uids, time.Now(), out)
+	missing := cachedStopOffsets(&_stopOffsetCache, uids, time.Now(), out)
 	if len(missing) == 0 {
 		return out
 	}
 	rows, err := db.Query(ctx, `
 		SELECT p.sub_route_uid, p.direction, p.stop_uid, p.offset_secs
-		FROM (`+busPatternSQL+`) p
+		FROM (`+_busPatternSQL+`) p
 		WHERE p.complete AND p.sub_route_uid = ANY($1::text[])`,
 		missing)
 	if err != nil {
-		zap.S().Errorw(fmt.Sprintf("batchStopOffsets error: %v", err), "component", "model")
+		zap.S().Errorw("batchStopOffsets error", "component", "model", "err", err)
 		return out
 	}
 	defer rows.Close()
@@ -171,49 +170,57 @@ func batchStopOffsets(ctx context.Context, db *pgxpool.Pool, uids []string) map[
 	if err := rows.Err(); err != nil {
 		// A partial read is not cached: the uids it covered would look complete
 		// and stay that way for the whole TTL.
-		zap.S().Errorw(fmt.Sprintf("batchStopOffsets rows error: %v", err), "component", "model")
+		zap.S().Errorw("batchStopOffsets rows error", "component", "model", "err", err)
 		return out
 	}
-	storeStopOffsets(&stopOffsetCache, fetched, time.Now())
+	storeStopOffsets(&_stopOffsetCache, fetched, time.Now())
 	return out
 }
 
-// etaModel is the loaded XGBoost ensemble that predicts a residual correction on
-// the schedule+running-time ETA. It stays nil when no model file is present,
-// which disables prediction (predictNextBusTime returns "").
-var etaModel *leaves.Ensemble
+// _predictor is the process-wide ETA model, built once at startup by
+// newPredictor and never reassigned afterward. Tests that need a different
+// model build their own local *predictor instead of mutating this one.
+var _predictor *predictor
 
-// modelEncoders holds the categorical-to-integer encodings the model was trained
-// with, so runtime features match training. Only City is currently applied;
-// PlateNumb is loaded but unused at prediction time.
-var modelEncoders struct {
-	City      map[string]int `json:"city"`
-	PlateNumb map[string]int `json:"plate_numb"`
+// predictor holds the loaded XGBoost ensemble that predicts a residual
+// correction on the schedule+running-time ETA, and the categorical-to-integer
+// encodings it was trained with, so runtime features match training. A nil
+// *predictor, or one with a nil model, means no model is loaded, which
+// disables prediction (predictNextBusTime returns ""). Only City is currently
+// applied; PlateNumb is loaded but unused at prediction time.
+type predictor struct {
+	model    *leaves.Ensemble
+	encoders struct {
+		City      map[string]int `json:"city"`
+		PlateNumb map[string]int `json:"plate_numb"`
+	}
 }
 
-// loadModel loads the XGBoost ETA model and its encoders from BUS_ETA_MODEL_PATH
-// (default ./model/bus_eta.json, encoders at <path>_encoders.json). A missing or
-// unreadable model leaves etaModel nil and disables prediction — this is a
-// tolerated state, not a fatal error, so the service runs without the model.
-func loadModel() {
+// newPredictor loads the XGBoost ETA model and its encoders from
+// BUS_ETA_MODEL_PATH (default ./model/bus_eta.json, encoders at
+// <path>_encoders.json). A missing or unreadable model yields a *predictor
+// with a nil model, which disables prediction — this is a tolerated state, not
+// a fatal error, so the service runs without the model.
+func newPredictor() *predictor {
 	path := os.Getenv("BUS_ETA_MODEL_PATH")
 	if path == "" {
 		path = "./model/bus_eta.json"
 	}
-	m, err := leaves.XGEnsembleFromFile(path, true)
+	m, err := leaves.XGEnsembleFromFile(path, true /* loadTransformation */)
 	if err != nil {
-		zap.S().Infow(fmt.Sprintf("not loaded (file: %s): %v", path, err), "component", "model")
-		return
+		zap.S().Infow("not loaded", "component", "model", "path", path, "err", err)
+		return &predictor{}
 	}
+	p := &predictor{model: m}
 	encPath := strings.TrimSuffix(path, ".json") + "_encoders.json"
 	encData, err := os.ReadFile(encPath)
 	if err != nil {
-		zap.S().Infow(fmt.Sprintf("encoders not found at %s: %v", encPath, err), "component", "model")
-	} else if err := json.Unmarshal(encData, &modelEncoders); err != nil {
-		zap.S().Infow(fmt.Sprintf("encoders parse failed at %s: %v", encPath, err), "component", "model")
+		zap.S().Infow("encoders not found", "component", "model", "path", encPath, "err", err)
+	} else if err := json.Unmarshal(encData, &p.encoders); err != nil {
+		zap.S().Infow("encoders parse failed", "component", "model", "path", encPath, "err", err)
 	}
-	etaModel = m
-	zap.S().Infow(fmt.Sprintf("loaded from %s", path), "component", "model")
+	zap.S().Infow("loaded", "component", "model", "path", path)
+	return p
 }
 
 // busStopCtx describes the stop being predicted: its subroute/direction, the
@@ -248,13 +255,21 @@ func baselineArrival(inputs predictionInputs) time.Time {
 	if inputs.nextDep.IsZero() {
 		return time.Time{}
 	}
-	t := inputs.now.In(taipei)
+	t := inputs.now.In(_taipei)
 	dep := time.Date(t.Year(), t.Month(), t.Day(),
-		inputs.nextDep.Hour(), inputs.nextDep.Minute(), inputs.nextDep.Second(), 0, taipei)
+		inputs.nextDep.Hour(), inputs.nextDep.Minute(), inputs.nextDep.Second(), 0, _taipei)
 	if !inputs.hasOffset {
 		return dep
 	}
 	return dep.Add(time.Duration(inputs.offsetSec) * time.Second)
+}
+
+// predictNextBusTime calls _predictor's method of the same name. It exists so
+// callers elsewhere in the package do not need to reference the package-level
+// predictor directly; the prediction logic itself lives on *predictor so tests
+// can exercise it against a local instance instead of the shared global.
+func predictNextBusTime(weather *weatherData, stop busStopCtx, inputs predictionInputs) string {
+	return _predictor.predictNextBusTime(weather, stop, inputs)
 }
 
 // predictNextBusTime estimates a NextBusTime for a stop TDX left blank. It bases
@@ -262,15 +277,16 @@ func baselineArrival(inputs predictionInputs) time.Time {
 // offset from the origin, then adds the XGBoost residual correction. Without an
 // offset it falls back to the bare departure time, uncorrected: the correction is
 // a residual on a journey estimate, and there is no journey estimate to correct.
-// Returns "" when the model is not loaded or there is no upcoming scheduled
+// Returns "" when the model is not loaded (including a nil receiver, which
+// happens before newPredictor has run) or there is no upcoming scheduled
 // departure. Result is an RFC3339 timestamp.
-func predictNextBusTime(weather *weatherData, stop busStopCtx, inputs predictionInputs) string {
-	if etaModel == nil || inputs.nextDep.IsZero() {
+func (p *predictor) predictNextBusTime(weather *weatherData, stop busStopCtx, inputs predictionInputs) string {
+	if p == nil || p.model == nil || inputs.nextDep.IsZero() {
 		return ""
 	}
-	t := inputs.now.In(taipei)
+	t := inputs.now.In(_taipei)
 	dep := time.Date(t.Year(), t.Month(), t.Day(),
-		inputs.nextDep.Hour(), inputs.nextDep.Minute(), inputs.nextDep.Second(), 0, taipei)
+		inputs.nextDep.Hour(), inputs.nextDep.Minute(), inputs.nextDep.Second(), 0, _taipei)
 	if !inputs.hasOffset {
 		return dep.Format(time.RFC3339)
 	}
@@ -285,7 +301,7 @@ func predictNextBusTime(weather *weatherData, stop busStopCtx, inputs prediction
 		wd = *weather
 	}
 	cityEnc := -1.0
-	if v, ok := modelEncoders.City[stop.city]; ok {
+	if v, ok := p.encoders.City[stop.city]; ok {
 		cityEnc = float64(v)
 	}
 	features := []float64{
@@ -305,7 +321,7 @@ func predictNextBusTime(weather *weatherData, stop busStopCtx, inputs prediction
 		-1,
 		-1,
 	}
-	correction := etaModel.PredictSingle(features, 0)
+	correction := p.model.PredictSingle(features, 0)
 	eta := dep.Add(time.Duration(inputs.offsetSec)*time.Second + time.Duration(correction)*time.Second)
 	return eta.Format(time.RFC3339)
 }

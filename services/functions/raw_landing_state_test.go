@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	stateSelectForUpdatePattern = `SELECT last_modified, row_count FROM raw_tdx\.landing_state WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3 FOR UPDATE`
-	stateTouchPattern           = `UPDATE raw_tdx\.landing_state SET fetched_at=now\(\), landing_cycle=\$4 WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3`
-	stateUpsertPattern          = `INSERT INTO raw_tdx\.landing_state .* ON CONFLICT .* DO UPDATE SET .*`
-	stateFreshnessPattern       = `SELECT fetched_at, row_count FROM raw_tdx\.landing_state WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3`
+	_stateSelectForUpdatePattern = `SELECT last_modified, row_count FROM raw_tdx\.landing_state WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3 FOR UPDATE`
+	_stateTouchPattern           = `UPDATE raw_tdx\.landing_state SET fetched_at=now\(\), landing_cycle=\$4 WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3`
+	_stateUpsertPattern          = `INSERT INTO raw_tdx\.landing_state .* ON CONFLICT .* DO UPDATE SET .*`
+	_stateFreshnessPattern       = `SELECT fetched_at, row_count FROM raw_tdx\.landing_state WHERE table_name=\$1 AND partition_column=\$2 AND partition_value=\$3`
 )
 
 func newRawLandingMock(t *testing.T) pgxmock.PgxPoolIface {
@@ -35,7 +35,7 @@ func newRawLandingMock(t *testing.T) pgxmock.PgxPoolIface {
 }
 
 func expectStateRead(db pgxmock.PgxPoolIface, marker string, rows int64) {
-	db.ExpectQuery(stateSelectForUpdatePattern).
+	db.ExpectQuery(_stateSelectForUpdatePattern).
 		WithArgs("bus_route", "city", "Taipei").
 		WillReturnRows(pgxmock.NewRows([]string{"last_modified", "row_count"}).AddRow(marker, rows))
 }
@@ -58,7 +58,7 @@ func TestVerifyAndTouchRawLandingAcceptsMatchingEmptyAndNonEmpty(t *testing.T) {
 			db.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS (SELECT 1 FROM raw_tdx.bus_route WHERE city = $1 LIMIT 1)")).
 				WithArgs("Taipei").
 				WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(tc.hasRows))
-			db.ExpectExec(stateTouchPattern).
+			db.ExpectExec(_stateTouchPattern).
 				WithArgs("bus_route", "city", "Taipei", "cycle-test").
 				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 			db.ExpectCommit()
@@ -78,7 +78,7 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 		db.ExpectBegin()
 		db.ExpectExec(regexp.QuoteMeta("SET LOCAL lock_timeout = '20s'")).
 			WillReturnResult(pgxmock.NewResult("SET", 0))
-		db.ExpectQuery(stateSelectForUpdatePattern).
+		db.ExpectQuery(_stateSelectForUpdatePattern).
 			WithArgs("bus_route", "city", "Taipei").
 			WillReturnRows(pgxmock.NewRows([]string{"last_modified", "row_count"}))
 		db.ExpectRollback()
@@ -138,7 +138,7 @@ func TestVerifyAndTouchRawLandingRejectsMissingMarkerAndPresenceMismatch(t *test
 		db.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS (SELECT 1 FROM raw_tdx.bus_route WHERE city = $1 LIMIT 1)")).
 			WithArgs("Taipei").
 			WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(true))
-		db.ExpectExec(stateTouchPattern).
+		db.ExpectExec(_stateTouchPattern).
 			WithArgs("bus_route", "city", "Taipei", "cycle-test").
 			WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 		db.ExpectRollback()
@@ -175,7 +175,7 @@ func TestLandRawTDXCommitsRowsAndStateAtomically(t *testing.T) {
 	db.ExpectExec(regexp.QuoteMeta(rawInsertSQL("bus_route"))).
 		WithArgs(`{"city":"Taipei"}`, []byte("[]")).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
-	db.ExpectExec(stateUpsertPattern).
+	db.ExpectExec(_stateUpsertPattern).
 		WithArgs("bus_route", "city", "Taipei", "MARKER-EMPTY", int64(0), "cycle-test").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	db.ExpectCommit()
@@ -200,7 +200,7 @@ func TestLandRawTDXRollsBackWhenStateUpsertFails(t *testing.T) {
 	db.ExpectExec(regexp.QuoteMeta(rawInsertSQL("bus_route"))).
 		WithArgs(`{"city":"Taipei"}`, []byte("[]")).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
-	db.ExpectExec(stateUpsertPattern).
+	db.ExpectExec(_stateUpsertPattern).
 		WithArgs("bus_route", "city", "Taipei", "MARKER", int64(0), "cycle-test").
 		WillReturnError(stateErr)
 	db.ExpectRollback()
@@ -266,7 +266,7 @@ func TestRawTDXSourceUsesLandingStateForFreshEmptyAndCountIntegrity(t *testing.T
 		db := newRawLandingMock(t)
 		fresh := time.Now().UTC().Truncate(time.Microsecond)
 		db.ExpectBeginTx(readOptions)
-		db.ExpectQuery(stateFreshnessPattern).
+		db.ExpectQuery(_stateFreshnessPattern).
 			WithArgs("bus_route", "city", "Taipei").
 			WillReturnRows(pgxmock.NewRows([]string{"fetched_at", "row_count"}).AddRow(fresh, int64(0)))
 		db.ExpectQuery(`SELECT .* FROM raw_tdx\.bus_route t WHERE city = \$1`).
@@ -288,7 +288,7 @@ func TestRawTDXSourceUsesLandingStateForFreshEmptyAndCountIntegrity(t *testing.T
 	t.Run("missing state never consumes legacy raw rows", func(t *testing.T) {
 		db := newRawLandingMock(t)
 		db.ExpectBeginTx(readOptions)
-		db.ExpectQuery(stateFreshnessPattern).
+		db.ExpectQuery(_stateFreshnessPattern).
 			WithArgs("bus_route", "city", "Taipei").
 			WillReturnRows(pgxmock.NewRows([]string{"fetched_at", "row_count"}))
 		db.ExpectRollback()
@@ -304,7 +304,7 @@ func TestRawTDXSourceUsesLandingStateForFreshEmptyAndCountIntegrity(t *testing.T
 	t.Run("exact count mismatch fails closed", func(t *testing.T) {
 		db := newRawLandingMock(t)
 		db.ExpectBeginTx(readOptions)
-		db.ExpectQuery(stateFreshnessPattern).
+		db.ExpectQuery(_stateFreshnessPattern).
 			WithArgs("bus_route", "city", "Taipei").
 			WillReturnRows(pgxmock.NewRows([]string{"fetched_at", "row_count"}).AddRow(time.Now(), int64(2)))
 		db.ExpectQuery(`SELECT .* FROM raw_tdx\.bus_route t WHERE city = \$1`).

@@ -24,7 +24,6 @@ router / functions / powersync / osrm / redis
 | loader | bus-functions (Go, `ROLE=loader`) | — | 384 MB |
 | powersync | journeyapps/powersync-service | 8081 | 384 MB |
 | osrm | osrm/osrm-backend | 127.0.0.1:5000 | 2048 MB |
-| ollama | ollama/ollama (custom，`gpu` profile) | 127.0.0.1:11434 | 4 GB |
 
 OSRM 的上限必須高於 `osrm-data/` 的實際大小（目前約 1.2 GB）：`osrm-routed`
 是 mmap 讀取，cgroup 會把那些 page cache 算進容器帳上，上限低於資料量時每次
@@ -59,14 +58,13 @@ Redis 與 OSRM 僅對 localhost 開放，不對外暴露。
 | PostgreSQL | 靜態資料、時刻表、站點、路線等持久化 |
 | TDX REST API | 排程擷取交通靜態與即時資料 |
 | TDX MQTT | 推送式即時告警（`mqtt.transportdata.tw:8883`） |
-| Ollama (本機) | 向量嵌入計算（`qwen3-embedding:0.6b`，Docker 內部服務） |
 
 ## 資料流
 
 ```
 # 靜態資料採兩階段
 TDX REST API ──03:00 ingestor（TDX 憑證僅 prod，無憑證時零請求）──→ raw_tdx（共用 schema）
-raw_tdx ──03:30（每個環境 loader，ROLE=loader）──→ PostgreSQL（該環境 PG_SCHEMA 靜態）──changetovector（同一 loader 進程接續）──→ search_vector 嵌入（經 EMBED_URL/ollama；見 ADR-0013）
+raw_tdx ──03:30（每個環境 loader，ROLE=loader）──→ PostgreSQL（該環境 PG_SCHEMA 靜態）──changetovector（同一 loader 進程接續）──→ search_vector 列（名稱 + 讀音 alias；見 ADR-0013）
 
 TDX REST API ──即時排程──→ functions ──→ Redis（ETA 快取 + Pub/Sub）
 
@@ -77,7 +75,6 @@ Redis Pub/Sub ──→ router ──gRPC stream──→ Flutter App
 # router 為純讀取路徑（含鐵路）：miss 時查 PostgreSQL，不再回抓 TDX
 PostgreSQL ──→ PowerSync ──sync──→ Flutter SQLite（離線搜尋）
 
-Flutter App ──→ router /api/embed ──→ ollama:11434 ──→ 向量
            └──→ router /api/token/powersync ──→ JWT
 ```
 

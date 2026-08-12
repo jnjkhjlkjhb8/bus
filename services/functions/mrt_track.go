@@ -29,33 +29,33 @@ import (
 // Metro session status values carried in MrtTrackState.status. tracking and
 // lead_fired are live; the rest are terminal endings surfaced only on the card.
 const (
-	mrtStatusTracking  = "tracking"
-	mrtStatusLeadFired = "lead_fired"
-	mrtStatusArrived   = "arrived"
-	mrtStatusLost      = "lost"
-	mrtStatusStale     = "stale"
-	mrtStatusCancelled = "cancelled"
+	_mrtStatusTracking  = "tracking"
+	_mrtStatusLeadFired = "lead_fired"
+	_mrtStatusArrived   = "arrived"
+	_mrtStatusLost      = "lost"
+	_mrtStatusStale     = "stale"
+	_mrtStatusCancelled = "cancelled"
 )
 
 const (
-	// mrtTrackActiveTTL keeps a live session's Redis state slightly beyond the
+	// _mrtTrackActiveTTL keeps a live session's Redis state slightly beyond the
 	// reminder's own 3h expiry so a watcher always has state to seed from.
-	mrtTrackActiveTTL = 3 * time.Hour
-	// mrtTrackEndedTTL keeps a terminal state briefly so connected watchers
+	_mrtTrackActiveTTL = 3 * time.Hour
+	// _mrtTrackEndedTTL keeps a terminal state briefly so connected watchers
 	// receive the ending before the key disappears.
-	mrtTrackEndedTTL = 60 * time.Second
-	// mrtTrackStaleAfter ends a session that has not advanced within this window
+	_mrtTrackEndedTTL = 60 * time.Second
+	// _mrtTrackStaleAfter ends a session that has not advanced within this window
 	// (a lost binding the position resolver could not classify as off-path, a
 	// stalled train, or a persistent feed gap).
-	mrtTrackStaleAfter = 10 * time.Minute
-	// mrtTrackPollBuffer pads the parsed countdown so the next poll lands just
+	_mrtTrackStaleAfter = 10 * time.Minute
+	// _mrtTrackPollBuffer pads the parsed countdown so the next poll lands just
 	// after the train is due at its next station, not before.
-	mrtTrackPollBuffer = 10 * time.Second
-	// mrtTrackFallbackRetry is the retry delay after an empty/failed GetTrainInfo
+	_mrtTrackPollBuffer = 10 * time.Second
+	// _mrtTrackFallbackRetry is the retry delay after an empty/failed GetTrainInfo
 	// (including the mrt_live fallback path), where no countdown is available.
-	mrtTrackFallbackRetry = 30 * time.Second
-	// mrtTrackTickTimeout bounds one whole tracker tick under its 15s cadence.
-	mrtTrackTickTimeout = 12 * time.Second
+	_mrtTrackFallbackRetry = 30 * time.Second
+	// _mrtTrackTickTimeout bounds one whole tracker tick under its 15s cadence.
+	_mrtTrackTickTimeout = 12 * time.Second
 )
 
 // trainInfoClient is the GetTrainInfo seam the tracker depends on, satisfied by
@@ -104,8 +104,8 @@ func registerMrtTrackCron(r *cron.Cron, rc *redis.Client, db *pgxpool.Pool, disp
 		pusher:   pusher,
 	}
 	_, _ = addStaticCron(r, "@every 15s", func() {
-		withTimeout(mrtTrackTickTimeout, func(ctx context.Context) {
-			tracker.tick(ctx, time.Now().In(taipei))
+		withTimeout(_mrtTrackTickTimeout, func(ctx context.Context) {
+			tracker.tick(ctx, time.Now().In(_taipei))
 		})
 	})
 }
@@ -184,7 +184,7 @@ func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackRe
 	if fire != "" && track.Token != "" {
 		// Each event owns its own reminder row, so each claims and fires once.
 		reminderID := track.ID
-		if fire == mrtAlightEventLead {
+		if fire == _mrtAlightEventLead {
 			reminderID = track.ID + ":lead"
 		}
 		fired, fireErr := t.vibrator.FireMrtVibrate(ctx, notify.MrtVibrateEvent{
@@ -232,12 +232,12 @@ func (t *mrtTracker) advanceSession(ctx context.Context, track notify.MrtTrackRe
 	}
 }
 
-// mrtCardStaleAfter is how long one metro reading stays true without another.
+// _mrtCardStaleAfter is how long one metro reading stays true without another.
 // A metro card moves once per station hop, so this is a few hops' worth — long
 // enough that a normal inter-station run never reads as stale, short enough that
 // a suspended app's frozen card admits it before the rider trusts a wrong count.
 // It matches the window the local iOS path already uses for this mode.
-const mrtCardStaleAfter = 6 * time.Minute
+const _mrtCardStaleAfter = 6 * time.Minute
 
 // pushCard refreshes the rider's tracking card after the session advanced, so a
 // backgrounded app's card keeps counting (ADR-0018). It is additive: the app's
@@ -332,7 +332,7 @@ func mrtCard(state *models.MrtTrackState, now time.Time) notify.AlightCard {
 		LineCode:       state.LineCode,
 		LineColorHex:   state.LineColorHex,
 		AsOf:           now,
-		StaleAfter:     mrtCardStaleAfter,
+		StaleAfter:     _mrtCardStaleAfter,
 	}
 }
 
@@ -341,9 +341,9 @@ func mrtCard(state *models.MrtTrackState, now time.Time) notify.AlightCard {
 // boundary the app colours the bar on and the vibration fires on.
 func mrtCardPhase(status string, remaining, lead int32) string {
 	switch status {
-	case mrtStatusArrived:
+	case _mrtStatusArrived:
 		return "arrived"
-	case mrtStatusLost, mrtStatusStale, mrtStatusCancelled:
+	case _mrtStatusLost, _mrtStatusStale, _mrtStatusCancelled:
 		return "lost"
 	}
 	if remaining <= lead+1 {
@@ -356,10 +356,10 @@ func mrtCardPhase(status string, remaining, lead int32) string {
 // crossed means no alert: the card still refreshes, it just does so quietly.
 func mrtCardAlert(fire string, card notify.AlightCard) *notify.CardAlert {
 	switch fire {
-	case mrtAlightEventAlight:
+	case _mrtAlightEventAlight:
 		alert := notify.AlightAlert(card.TargetStation)
 		return &alert
-	case mrtAlightEventLead:
+	case _mrtAlightEventLead:
 		alert := notify.LeadAlert(card.RemainingStops, card.TargetStation)
 		return &alert
 	}
@@ -390,9 +390,9 @@ func (t *mrtTracker) publishState(ctx context.Context, state *models.MrtTrackSta
 		)
 		return
 	}
-	ttl := mrtTrackActiveTTL
+	ttl := _mrtTrackActiveTTL
 	if mrtIsTerminal(state.Status) {
-		ttl = mrtTrackEndedTTL
+		ttl = _mrtTrackEndedTTL
 	}
 	rc := t.rc
 	if err := rc.Set(ctx, shared.MrtTrackKey(state.TrackId), pb, ttl).Err(); err != nil {
@@ -525,8 +525,8 @@ type mrtReading struct {
 
 // The two 下車提醒 buzzes, as they travel to the device (ADR-0020).
 const (
-	mrtAlightEventLead   = "lead"
-	mrtAlightEventAlight = "alight"
+	_mrtAlightEventLead   = "lead"
+	_mrtAlightEventAlight = "alight"
 )
 
 // mrtFireEvent names the buzz owed at this position, or "" for none.
@@ -538,9 +538,9 @@ const (
 func mrtFireEvent(remaining, lead int32) string {
 	switch {
 	case remaining <= 1:
-		return mrtAlightEventAlight
+		return _mrtAlightEventAlight
 	case lead > 0 && remaining <= lead+1:
-		return mrtAlightEventLead
+		return _mrtAlightEventLead
 	}
 	return ""
 }
@@ -552,7 +552,12 @@ func mrtFireEvent(remaining, lead int32) string {
 // (tracking / lead_fired) and schedules the next poll. Firing is decided here
 // but performed by the caller (which owns the once-only claim machinery).
 func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.Time) (*models.MrtTrackState, string) {
-	next := proto.Clone(state).(*models.MrtTrackState)
+	next, ok := proto.Clone(state).(*models.MrtTrackState)
+	if !ok {
+		zap.S().Errorw("clone failed",
+			"component", "mrt_track", "action", "advance", "event", "clone_failed")
+		return state, ""
+	}
 	target := next.TargetIndex
 
 	// Within one stop of the alight station, a lost binding IS the arrival: at
@@ -562,7 +567,7 @@ func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.T
 	finishing := state.CurrentIndex >= target-1
 	if reading.lost {
 		if !finishing {
-			next.Status = mrtStatusLost
+			next.Status = _mrtStatusLost
 			next.NextPollAtUnix = 0
 			return next, ""
 		}
@@ -589,10 +594,9 @@ func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.T
 		next.RemainingStops = 0
 	}
 	next.NextStationId, next.NextStationName = mrtNextStation(next)
+	next.Progress = 1
 	if target > 0 {
 		next.Progress = float64(next.CurrentIndex) / float64(target)
-	} else {
-		next.Progress = 1
 	}
 
 	// fire is requested on every tick inside a threshold, not just the first:
@@ -605,7 +609,7 @@ func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.T
 
 	switch {
 	case next.CurrentIndex >= target:
-		next.Status = mrtStatusArrived
+		next.Status = _mrtStatusArrived
 		next.NextPollAtUnix = 0
 		return next, fire
 	case !advanced && mrtStale(state.LastProgressAtUnix, now):
@@ -616,26 +620,25 @@ func advanceMrtTrack(state *models.MrtTrackState, reading mrtReading, now time.T
 			next.RemainingStops = 0
 			next.Progress = 1
 			next.NextStationId, next.NextStationName = mrtNextStation(next)
-			next.Status = mrtStatusArrived
+			next.Status = _mrtStatusArrived
 			next.NextPollAtUnix = 0
 			return next, fire
 		}
-		next.Status = mrtStatusStale
+		next.Status = _mrtStatusStale
 		next.NextPollAtUnix = 0
 		return next, ""
 	case fire != "":
 		// The status is the card's "we are inside the warning window" reading,
 		// so it follows whichever buzz is owed rather than the lead alone —
 		// otherwise a default session (提前站數 0) would never show it.
-		next.Status = mrtStatusLeadFired
+		next.Status = _mrtStatusLeadFired
 	default:
-		next.Status = mrtStatusTracking
+		next.Status = _mrtStatusTracking
 	}
 
+	next.NextPollAtUnix = now.Add(_mrtTrackFallbackRetry).Unix()
 	if reading.gotInfo && reading.hasCountdown && reading.countdown > 0 {
-		next.NextPollAtUnix = now.Add(reading.countdown + mrtTrackPollBuffer).Unix()
-	} else {
-		next.NextPollAtUnix = now.Add(mrtTrackFallbackRetry).Unix()
+		next.NextPollAtUnix = now.Add(reading.countdown + _mrtTrackPollBuffer).Unix()
 	}
 	return next, fire
 }
@@ -661,13 +664,13 @@ func mrtStale(lastProgressUnix int64, now time.Time) bool {
 	if lastProgressUnix <= 0 {
 		return false
 	}
-	return now.Sub(time.Unix(lastProgressUnix, 0)) > mrtTrackStaleAfter
+	return now.Sub(time.Unix(lastProgressUnix, 0)) > _mrtTrackStaleAfter
 }
 
 // mrtIsTerminal reports whether a status is an ending (no further advancement).
 func mrtIsTerminal(status string) bool {
 	switch status {
-	case mrtStatusArrived, mrtStatusLost, mrtStatusStale, mrtStatusCancelled:
+	case _mrtStatusArrived, _mrtStatusLost, _mrtStatusStale, _mrtStatusCancelled:
 		return true
 	}
 	return false
@@ -678,7 +681,7 @@ func mrtIsTerminal(status string) bool {
 // same feed misspellings the live job aliases; an empty or off-path name is -1.
 func mrtResolvePathIndex(names []string, stnName string) int {
 	trimmed := strings.TrimSuffix(stnName, "站")
-	if aliased, ok := trtcAliases[trimmed]; ok {
+	if aliased, ok := _trtcAliases[trimmed]; ok {
 		trimmed = aliased
 	}
 	if strings.TrimSpace(trimmed) == "" {

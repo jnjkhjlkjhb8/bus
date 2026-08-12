@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -82,9 +81,9 @@ type busDailyKey struct {
 	direction   uint8
 }
 
-// dataTaipeiServiceRunning is the serviceStatus for 正常營運. 0 is 停止營運 and 2
+// _dataTaipeiServiceRunning is the serviceStatus for 正常營運. 0 is 停止營運 and 2
 // is 加班營運; only a running trip belongs in a timetable of departures.
-const dataTaipeiServiceRunning = "1"
+const _dataTaipeiServiceRunning = "1"
 
 // busDailyTimetableRow mirrors the TDX Bus/DailyTimeTable element the landing
 // path lowercases into raw_tdx.bus_dailytimetable and loadBusDailyTimetable
@@ -130,7 +129,7 @@ func dataTaipeiDailyTimetableRows(feed dataTaipeiSpecTimeTable, day time.Time) [
 		if !ok || strings.TrimSpace(entry.SubRouteID) == "" {
 			continue
 		}
-		uid := dataTaipeiUIDPrefix + entry.SubRouteID
+		uid := _dataTaipeiUIDPrefix + entry.SubRouteID
 		for _, trip := range entry.TimeTables.TimeTable {
 			if !dataTaipeiRunsOn(trip.SpecialDays.SpecialDay, date) {
 				continue
@@ -145,7 +144,7 @@ func dataTaipeiDailyTimetableRows(feed dataTaipeiSpecTimeTable, day time.Time) [
 				}
 				stopTimes = append(stopTimes, busDailyTimetableStopTime{
 					StopSequence:  st.StopSequence,
-					StopUID:       dataTaipeiUIDPrefix + st.StopID,
+					StopUID:       _dataTaipeiUIDPrefix + st.StopID,
 					ArrivalTime:   st.ArrivalTime,
 					DepartureTime: st.DepartureTime,
 				})
@@ -183,7 +182,7 @@ func dataTaipeiDailyTimetableRows(feed dataTaipeiSpecTimeTable, day time.Time) [
 // in normal service on date.
 func dataTaipeiRunsOn(days []dataTaipeiSpecialDay, date string) bool {
 	for _, d := range days {
-		if d.ServiceStatus != dataTaipeiServiceRunning {
+		if d.ServiceStatus != _dataTaipeiServiceRunning {
 			continue
 		}
 		for _, on := range d.Dates.Date {
@@ -202,13 +201,13 @@ func dataTaipeiRunsOn(days []dataTaipeiSpecialDay, date string) bool {
 func landDataTaipeiDailyTimetable(ctx context.Context, f *dataTaipeiFeed, now func() time.Time) error {
 	var feed dataTaipeiSpecTimeTable
 	if _, err := f.getEnvelope(ctx, "GetSpecTimeTable", &feed); err != nil {
-		return fmt.Errorf("fetch Data.taipei spec timetable: %w", err)
+		return _oops.Wrapf(err, "fetch Data.taipei spec timetable")
 	}
-	day := now().In(taipei)
+	day := now().In(_taipei)
 	rows := dataTaipeiDailyTimetableRows(feed, day)
 	body, err := json.Marshal(rows)
 	if err != nil {
-		return fmt.Errorf("encode Data.taipei daily timetable: %w", err)
+		return _oops.Wrapf(err, "encode Data.taipei daily timetable")
 	}
 	cycle, err := newRawLandingCycle()
 	if err != nil {
@@ -218,7 +217,7 @@ func landDataTaipeiDailyTimetable(ctx context.Context, f *dataTaipeiFeed, now fu
 	// ETag would go stale in the wrong direction: it stays put across midnight
 	// while the rows it produces change.
 	marker := "datataipei:" + day.Format("2006-01-02")
-	target := rawTarget{table: "bus_dailytimetable", partCol: "city", partVal: dataTaipeiCity}
+	target := rawTarget{table: "bus_dailytimetable", partCol: "city", partVal: _dataTaipeiCity}
 	if err := dumpRawTDX(ctx, target, marker, cycle, body); err != nil {
 		return err
 	}
@@ -226,7 +225,7 @@ func landDataTaipeiDailyTimetable(ctx context.Context, f *dataTaipeiFeed, now fu
 		"component", "ingest",
 		"action", "datataipei_dailytimetable",
 		"event", "landed",
-		"city", dataTaipeiCity,
+		"city", _dataTaipeiCity,
 		"date", marker,
 		"subroute_directions", len(rows),
 	)

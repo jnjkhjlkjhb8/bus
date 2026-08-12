@@ -62,6 +62,7 @@ class EtaListTile extends StatelessWidget {
     this.destinationStyle,
     this.bare = false,
     this.crowdLevel = CrowdLevel.unknown,
+    this.isLastBus = false,
   });
 
   /// Builds a tile straight from the shared [ArrivalDisplay] contract. The
@@ -98,6 +99,7 @@ class EtaListTile extends StatelessWidget {
     destinationStyle: destinationStyle,
     bare: bare,
     crowdLevel: display.crowdLevel,
+    isLastBus: display.isLastBus,
   );
 
   final String routeNo;
@@ -126,6 +128,11 @@ class EtaListTile extends StatelessWidget {
   /// How full the vehicle this row describes is. Only Taipei buses carry a
   /// reading; everything else stays UNKNOWN and nothing is drawn.
   final CrowdLevel crowdLevel;
+
+  /// Marks the row as the route's last bus of the day. Sits with the
+  /// destination rather than the time: it qualifies which bus this is, and the
+  /// time column stays the row's one number.
+  final bool isLastBus;
 
   @override
   Widget build(BuildContext context) {
@@ -167,6 +174,12 @@ class EtaListTile extends StatelessWidget {
                   direction!,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
+                  style: AppTextStyles.bodySmall.copyWith(color: destColor),
+                ),
+              if (isLastBus)
+                Text(
+                  AppI18n.of(context).etaLastBusTag,
+                  maxLines: 1,
                   style: AppTextStyles.bodySmall.copyWith(color: destColor),
                 ),
             ],

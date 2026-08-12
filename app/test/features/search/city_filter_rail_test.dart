@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:wheres_the_bus/app/theme/app_theme.dart';
+import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/data/models/search_models.dart';
 import 'package:wheres_the_bus/data/repositories/search_recent_repository.dart';
 import 'package:wheres_the_bus/data/repositories/search_repository.dart';
@@ -124,7 +126,21 @@ SearchBloc _bloc({
 }) => SearchBloc(
   searchRepository: _FakeSearchRepository(results: results, byCity: byCity),
   recentRepository: _FakeSearchRecentRepository(),
+  // Without this the bloc reaches the real geolocator plugin, which has no
+  // implementation under `flutter test` and never answers — these tests are
+  // about the chip row, not about where the rider is.
+  locationService: _FakeLocationService(),
 );
+
+class _FakeLocationService implements LocationService {
+  @override
+  Future<Position?> lastKnownPosition() async => null;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => throw UnimplementedError(
+    '${invocation.memberName} is not used by these tests',
+  );
+}
 
 Future<void> _pump(
   WidgetTester tester,

@@ -27,34 +27,34 @@ import (
 // hours old because nothing noticed the builder died.
 
 const (
-	// gtfsRTCredentialEnv is the shared secret MOTIS sends. Prod binds the HTTP
+	// _gtfsRTCredentialEnv is the shared secret MOTIS sends. Prod binds the HTTP
 	// port to 0.0.0.0 with no reverse proxy, so an ungated route here is a public
 	// route. Unset means the endpoint is not mounted at all: an environment
 	// without a credential serves no feed rather than an open one.
-	gtfsRTCredentialEnv = "GTFS_RT_CREDENTIAL"
-	// gtfsRTCredentialMinLength matches the metrics credential's floor. The value
+	_gtfsRTCredentialEnv = "GTFS_RT_CREDENTIAL"
+	// _gtfsRTCredentialMinLength matches the metrics credential's floor. The value
 	// is a machine-to-machine secret, so there is no reason for it to be short.
-	gtfsRTCredentialMinLength = 32
+	_gtfsRTCredentialMinLength = 32
 	// GTFSRTPath is what MOTIS is pointed at. The extension is part of the name
 	// because the body is protobuf, not JSON like everything else under /api.
 	GTFSRTPath = "/api/gtfs-rt/trip-updates.pb"
-	// gtfsRTContentType is the type GTFS-RT feeds are conventionally served as.
-	gtfsRTContentType = "application/x-protobuf"
+	// _gtfsRTContentType is the type GTFS-RT feeds are conventionally served as.
+	_gtfsRTContentType = "application/x-protobuf"
 )
 
 // GTFSRTCredentialFromEnv reads the endpoint's shared secret. An empty value is
 // not an error — it means "do not mount the endpoint" — but a short or padded
 // one is, because that is a misconfiguration rather than a decision.
 func GTFSRTCredentialFromEnv() (string, error) {
-	credential := os.Getenv(gtfsRTCredentialEnv)
+	credential := os.Getenv(_gtfsRTCredentialEnv)
 	if credential == "" {
 		return "", nil
 	}
 	if credential != strings.TrimSpace(credential) {
-		return "", errors.New(gtfsRTCredentialEnv + " must not contain leading or trailing whitespace")
+		return "", errors.New(_gtfsRTCredentialEnv + " must not contain leading or trailing whitespace")
 	}
-	if len(credential) < gtfsRTCredentialMinLength {
-		return "", errors.New(gtfsRTCredentialEnv + " must be at least 32 characters")
+	if len(credential) < _gtfsRTCredentialMinLength {
+		return "", errors.New(_gtfsRTCredentialEnv + " must be at least 32 characters")
 	}
 	return credential, nil
 }
@@ -109,6 +109,6 @@ func handleGTFSRT(rc *redis.Client) gin.HandlerFunc {
 			c.AbortWithStatus(http.StatusServiceUnavailable)
 			return
 		}
-		c.Data(http.StatusOK, gtfsRTContentType, payload)
+		c.Data(http.StatusOK, _gtfsRTContentType, payload)
 	}
 }

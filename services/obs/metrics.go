@@ -29,7 +29,10 @@ func (s *counterSet) record(label string, failed bool) {
 	if !ok {
 		v, _ = s.entries.LoadOrStore(label, &methodCounter{})
 	}
-	c := v.(*methodCounter)
+	c, ok := v.(*methodCounter)
+	if !ok {
+		return
+	}
 	c.requests.Add(1)
 	if failed {
 		c.errors.Add(1)
@@ -47,8 +50,15 @@ type counterRow struct {
 func (s *counterSet) snapshot() []counterRow {
 	var rows []counterRow
 	s.entries.Range(func(k, v any) bool {
-		c := v.(*methodCounter)
-		rows = append(rows, counterRow{k.(string), c.requests.Load(), c.errors.Load()})
+		c, ok := v.(*methodCounter)
+		if !ok {
+			return true
+		}
+		label, ok := k.(string)
+		if !ok {
+			return true
+		}
+		rows = append(rows, counterRow{label, c.requests.Load(), c.errors.Load()})
 		return true
 	})
 	sort.Slice(rows, func(i, j int) bool { return rows[i].label < rows[j].label })
@@ -56,11 +66,11 @@ func (s *counterSet) snapshot() []counterRow {
 }
 
 var (
-	grpcCounters           counterSet
-	httpCounters           counterSet
-	streamDisconnectsTotal atomic.Int64
-	redisErrorsTotal       atomic.Int64
-	dbErrorsTotal          atomic.Int64
+	_grpcCounters           counterSet
+	_httpCounters           counterSet
+	_streamDisconnectsTotal atomic.Int64
+	_redisErrorsTotal       atomic.Int64
+	_dbErrorsTotal          atomic.Int64
 )
 
 // RecordGRPCRequest tallies one completed gRPC call under fullMethod (e.g.
@@ -68,14 +78,14 @@ var (
 // non-nil. Call once per RPC from the interceptor layer so every method the
 // server exposes is covered without touching individual handlers.
 func RecordGRPCRequest(fullMethod string, err error) {
-	grpcCounters.record(fullMethod, err != nil)
+	_grpcCounters.record(fullMethod, err != nil)
 }
 
 // RecordHTTPRequest tallies one completed HTTP request under path, counting
 // it as an error when status is >= 500 (a server-side failure; 4xx client
 // errors are not infrastructure health signals).
 func RecordHTTPRequest(path string, status int) {
-	httpCounters.record(path, status >= 500)
+	_httpCounters.record(path, status >= 500)
 }
 
 // IncStreamDisconnect counts one gRPC live-stream termination, regardless of
@@ -84,21 +94,21 @@ func RecordHTTPRequest(path string, status int) {
 // unbounded cardinality the method-keyed counters above avoid, since stream
 // channels are keyed by user-supplied route/station/station-group IDs.
 func IncStreamDisconnect() {
-	streamDisconnectsTotal.Add(1)
+	_streamDisconnectsTotal.Add(1)
 }
 
 // IncRedisError counts one failed Redis operation on the live-stream hot
 // path (get, scan, subscribe). Unlabeled for the same cardinality reason as
 // IncStreamDisconnect.
 func IncRedisError() {
-	redisErrorsTotal.Add(1)
+	_redisErrorsTotal.Add(1)
 }
 
 // IncDBError counts one PostgreSQL query failure that is not a plain
 // not-found result (see grpcStatusFor in services/router/main.go, the sole
 // caller): a missing row is expected traffic, not a database health signal.
 func IncDBError() {
-	dbErrorsTotal.Add(1)
+	_dbErrorsTotal.Add(1)
 }
 
 // MetricsText renders every counter registered through this file as
@@ -108,11 +118,11 @@ func IncDBError() {
 // library.
 func MetricsText() string {
 	var b strings.Builder
-	writeLabeled(&b, "router_grpc_requests_total", "router_grpc_errors_total", "method", grpcCounters.snapshot())
-	writeLabeled(&b, "router_http_requests_total", "router_http_errors_total", "path", httpCounters.snapshot())
-	fmt.Fprintf(&b, "router_stream_disconnects_total %d\n", streamDisconnectsTotal.Load())
-	fmt.Fprintf(&b, "router_redis_errors_total %d\n", redisErrorsTotal.Load())
-	fmt.Fprintf(&b, "router_db_errors_total %d\n", dbErrorsTotal.Load())
+	writeLabeled(&b, "router_grpc_requests_total", "router_grpc_errors_total", "method", _grpcCounters.snapshot())
+	writeLabeled(&b, "router_http_requests_total", "router_http_errors_total", "path", _httpCounters.snapshot())
+	fmt.Fprintf(&b, "router_stream_disconnects_total %d\n", _streamDisconnectsTotal.Load())
+	fmt.Fprintf(&b, "router_redis_errors_total %d\n", _redisErrorsTotal.Load())
+	fmt.Fprintf(&b, "router_db_errors_total %d\n", _dbErrorsTotal.Load())
 	return b.String()
 }
 
@@ -127,9 +137,9 @@ func writeLabeled(b *strings.Builder, requestsName, errorsName, labelName string
 // obs has no exported reset because production code never needs one -- the
 // process lifetime is the only scope that matters outside tests.
 func resetMetricsForTest() {
-	grpcCounters = counterSet{}
-	httpCounters = counterSet{}
-	streamDisconnectsTotal.Store(0)
-	redisErrorsTotal.Store(0)
-	dbErrorsTotal.Store(0)
+	_grpcCounters = counterSet{}
+	_httpCounters = counterSet{}
+	_streamDisconnectsTotal.Store(0)
+	_redisErrorsTotal.Store(0)
+	_dbErrorsTotal.Store(0)
 }

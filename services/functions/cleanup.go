@@ -16,11 +16,11 @@ type retentionDB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// cleanupBatchSize bounds each retention DELETE so cleanup never holds a
+// _cleanupBatchSize bounds each retention DELETE so cleanup never holds a
 // single very-large transaction/lock against a live table. It repeats until a
 // batch comes back under this size (nothing left to delete) or ctx is
 // canceled.
-const cleanupBatchSize = 5000
+const _cleanupBatchSize = 5000
 
 // batchDeleteOlderThan repeatedly deletes up to cleanupBatchSize rows from
 // table matching cutoffColumn < NOW() - retention, checking ctx before every
@@ -42,12 +42,12 @@ func batchDeleteOlderThan(ctx context.Context, db retentionDB, table, cutoffColu
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
-		tag, err := db.Exec(ctx, sql, cleanupBatchSize)
+		tag, err := db.Exec(ctx, sql, _cleanupBatchSize)
 		if err != nil {
 			return total, err
 		}
 		total += tag.RowsAffected()
-		if tag.RowsAffected() < cleanupBatchSize {
+		if tag.RowsAffected() < _cleanupBatchSize {
 			return total, nil
 		}
 	}
@@ -61,8 +61,8 @@ func cleanupPredictionErrors(ctx context.Context, db retentionDB) error {
 	deleted, err := batchDeleteOlderThan(ctx, db, "bus_eta_prediction_error", "predicted_at", "30 days")
 	if err != nil {
 		// deleted is the count from the batches that did land before the failure.
-		return obs.Transient(fmt.Errorf("cleanup prediction error after %d rows: %w", deleted, err))
+		return obs.Transient(_oops.With("deleted", deleted).Wrapf(err, "cleanup prediction error after rows"))
 	}
-	zap.S().Infow(fmt.Sprintf("cleanup deleted %d rows", deleted), "component", "eta_error")
+	zap.S().Infow("cleanup deleted rows", "component", "eta_error", "rows", deleted)
 	return nil
 }

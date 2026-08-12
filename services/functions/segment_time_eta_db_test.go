@@ -205,8 +205,8 @@ func TestFillSegmentTimesFromDistance(t *testing.T) {
 		Scan(&secs, &samples); err != nil {
 		t.Fatalf("estimated hop F2->F3 missing: %v", err)
 	}
-	if samples != segmentEstimatedSamples {
-		t.Errorf("estimated sample_count = %d, want %d so readers can tell it apart", samples, segmentEstimatedSamples)
+	if samples != _segmentEstimatedSamples {
+		t.Errorf("estimated sample_count = %d, want %d so readers can tell it apart", samples, _segmentEstimatedSamples)
 	}
 	// Same distance, same route pace: within 10% of the observed hop.
 	if secs < 180 || secs > 220 {

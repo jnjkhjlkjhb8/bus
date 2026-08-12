@@ -11,9 +11,9 @@ import (
 
 func TestIsHolidayFallback(t *testing.T) {
 	storeHolidaySnapshot(nil)
-	sat := time.Date(2026, 6, 13, 12, 0, 0, 0, taipei)
-	sun := time.Date(2026, 6, 14, 12, 0, 0, 0, taipei)
-	mon := time.Date(2026, 6, 15, 12, 0, 0, 0, taipei)
+	sat := time.Date(2026, 6, 13, 12, 0, 0, 0, _taipei)
+	sun := time.Date(2026, 6, 14, 12, 0, 0, 0, _taipei)
+	mon := time.Date(2026, 6, 15, 12, 0, 0, 0, _taipei)
 	if !isHoliday(sat) {
 		t.Error("Saturday should be holiday")
 	}
@@ -37,7 +37,7 @@ func TestRefreshHolidaysKeepsLastGoodOnFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("HTTP 503 returned nil error")
 	}
-	if !isHoliday(time.Date(2026, 1, 1, 12, 0, 0, 0, taipei)) {
+	if !isHoliday(time.Date(2026, 1, 1, 12, 0, 0, 0, _taipei)) {
 		t.Fatal("failed refresh replaced last-good snapshot")
 	}
 }
@@ -67,10 +67,10 @@ func TestRefreshHolidaysSwapsCompleteSnapshot(t *testing.T) {
 	if err := refreshHolidays(context.Background(), server.Client(), server.URL); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	if !isHoliday(time.Date(2026, 1, 1, 12, 0, 0, 0, taipei)) {
+	if !isHoliday(time.Date(2026, 1, 1, 12, 0, 0, 0, _taipei)) {
 		t.Fatal("explicit holiday missing")
 	}
-	if isHoliday(time.Date(2026, 6, 20, 12, 0, 0, 0, taipei)) {
+	if isHoliday(time.Date(2026, 6, 20, 12, 0, 0, 0, _taipei)) {
 		t.Fatal("explicit weekend working day ignored")
 	}
 }
@@ -80,15 +80,15 @@ func TestIsHolidayFromMap(t *testing.T) {
 		"2026-01-01": true,
 		"2026-06-15": false,
 	})
-	newYear := time.Date(2026, 1, 1, 12, 0, 0, 0, taipei)
-	monday := time.Date(2026, 6, 15, 12, 0, 0, 0, taipei)
+	newYear := time.Date(2026, 1, 1, 12, 0, 0, 0, _taipei)
+	monday := time.Date(2026, 6, 15, 12, 0, 0, 0, _taipei)
 	if !isHoliday(newYear) {
 		t.Error("New Year should be holiday")
 	}
 	if isHoliday(monday) {
 		t.Error("Normal Monday should not be holiday")
 	}
-	missingSaturday := time.Date(2026, 6, 20, 12, 0, 0, 0, taipei)
+	missingSaturday := time.Date(2026, 6, 20, 12, 0, 0, 0, _taipei)
 	if !isHoliday(missingSaturday) {
 		t.Error("Saturday absent from loaded snapshot should use weekend fallback")
 	}

@@ -15,6 +15,7 @@ import (
 // state before live updates begin.
 type AlertServer struct {
 	pb.UnimplementedAlert_ServiceServer
+
 	live LiveSource
 }
 

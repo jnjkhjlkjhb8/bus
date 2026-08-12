@@ -131,13 +131,13 @@ func quarantineRatioLimit() float64 {
 			"action", "quarantine",
 			"event", "bad_ratio_env",
 			"value", v,
-			"using", defaultQuarantineRatio,
+			"using", _defaultQuarantineRatio,
 		)
 	}
-	return defaultQuarantineRatio
+	return _defaultQuarantineRatio
 }
 
-const defaultQuarantineRatio = 0.10
+const _defaultQuarantineRatio = 0.10
 
 // exceeded reports the kinds whose drop ratio crossed the limit. The caller
 // fails the partition on a non-nil error, which leaves the previous load's rows
@@ -156,14 +156,19 @@ func (q *loadQuarantine) exceeded() error {
 		}
 		ratio := float64(byKind[kind]) / float64(seen)
 		if ratio > limit {
-			over = append(over, fmt.Errorf("%s dropped %d/%d records (%.1f%% > %.1f%%)",
-				kind, byKind[kind], seen, ratio*100, limit*100))
+			over = append(over, _oops.
+				With("kind", kind).
+				With("dropped", byKind[kind]).
+				With("seen", seen).
+				With("ratio", ratio).
+				With("limit", limit).
+				Errorf("drop ratio exceeded"))
 		}
 	}
 	if len(over) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%s/%s quarantine ratio exceeded: %w", q.dataset, q.part, errors.Join(over...))
+	return _oops.With("dataset", q.dataset).With("part", q.part).Wrapf(errors.Join(over...), "quarantine ratio exceeded")
 }
 
 func sortedKeys[V any](m map[string]V) []string {
@@ -215,14 +220,14 @@ type loadStats struct {
 	skipped int
 }
 
-// staleAfter is the freshness window. Landing runs at 03:00, loads at 03:30; a
+// _staleAfter is the freshness window. Landing runs at 03:00, loads at 03:30; a
 // partition older than 27h means the last landing failed or was skipped, so the
 // loader leaves the env schema untouched (ADR-0005 coordination).
-const staleAfter = 27 * time.Hour
+const _staleAfter = 27 * time.Hour
 
 // isStale reports whether a partition landed at fetchedAt is too old to load.
 func isStale(fetchedAt time.Time) bool {
-	return time.Since(fetchedAt) > staleAfter
+	return time.Since(fetchedAt) > _staleAfter
 }
 
 // runLoad transforms the named datasets from src into db (and rc for the
@@ -261,7 +266,7 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 		for _, part := range parts {
 			body, fetchedAt, err := src.datasetJSON(ctx, spec.table, spec.partCol, part)
 			if err != nil {
-				failures = append(failures, fmt.Errorf("load dataset %s partition %s: read: %w", spec.key, part, err))
+				failures = append(failures, _oops.With("spec_key", spec.key).With("part", part).Wrapf(err, "load dataset partition: read"))
 				stats.failed++
 				continue
 			}
@@ -281,14 +286,13 @@ func runLoadSpecs(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *red
 				continue
 			}
 			if !spec.staleOK && isStale(fetchedAt) {
-				failures = append(failures, fmt.Errorf("load dataset %s partition %s fetched_at %s: %w",
-					spec.key, part, fetchedAt.Format(time.RFC3339), errLoadStale))
+				failures = append(failures, _oops.With("spec_key", spec.key).With("part", part).With("fetched_at", fetchedAt.Format(time.RFC3339)).Wrapf(errLoadStale, "load dataset partition fetched_at"))
 				stats.failed++
 				continue
 			}
 			dec := json.NewDecoder(bytes.NewReader(body))
 			if err := spec.load(ctx, dec, sink, part); err != nil {
-				failures = append(failures, fmt.Errorf("load dataset %s partition %s: transform: %w", spec.key, part, err))
+				failures = append(failures, _oops.With("spec_key", spec.key).With("part", part).Wrapf(err, "load dataset partition: transform"))
 				stats.failed++
 				continue
 			}
@@ -351,17 +355,22 @@ func reportQuality(ctx context.Context, db *pgxpool.Pool, spec loadSpec) {
 			continue
 		}
 		rows := vals[0]
-		var b strings.Builder
-		fmt.Fprintf(&b, "[LOAD] action=quality_report dataset=%s table=%s rows=%d", spec.key, t.table, rows)
+		// One field per column rather than a pre-rendered line, so the empty
+		// ratios stay queryable per column in the log backend.
+		ratios := make(map[string]float64, len(cols))
 		for i, c := range cols {
-			empty := vals[i+1]
-			ratio := 0.0
 			if rows > 0 {
-				ratio = float64(empty) / float64(rows)
+				ratios[c] = float64(vals[i+1]) / float64(rows)
 			}
-			fmt.Fprintf(&b, " %s_empty_ratio=%.3f", c, ratio)
 		}
-		zap.S().Infow(b.String())
+		zap.S().Infow("quality report",
+			"component", "load",
+			"action", "quality_report",
+			"dataset", spec.key,
+			"table", t.table,
+			"rows", rows,
+			"empty_ratios", ratios,
+		)
 	}
 }
 
@@ -397,12 +406,12 @@ type rawTDXSource struct {
 // back into the traindate JSON key so the reconstructed payload matches what the
 // transform historically decoded.
 func (r rawTDXSource) datasetJSON(ctx context.Context, table, partCol, partVal string) ([]byte, time.Time, error) {
-	body, fetchedAt, _, err := r.readDatasetJSON(ctx, table, partCol, partVal, false)
+	body, fetchedAt, _, err := r.readDatasetJSON(ctx, table, partCol, partVal, false /* includeCycle */)
 	return body, fetchedAt, err
 }
 
 func (r rawTDXSource) datasetJSONWithLandingCycle(ctx context.Context, table, partCol, partVal string) ([]byte, time.Time, string, error) {
-	return r.readDatasetJSON(ctx, table, partCol, partVal, true)
+	return r.readDatasetJSON(ctx, table, partCol, partVal, true /* includeCycle */)
 }
 
 func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partVal string, includeCycle bool) ([]byte, time.Time, string, error) {
@@ -415,7 +424,7 @@ func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partV
 		AccessMode: pgx.ReadOnly,
 	})
 	if err != nil {
-		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: begin: %w", table, partVal, err)
+		return nil, time.Time{}, "", _oops.With("table", table).With("part_val", partVal).Wrapf(err, "read raw dataset partition: begin")
 	}
 	defer func() {
 		rbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -446,7 +455,7 @@ func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partV
 		return []byte("[]"), time.Time{}, "", nil
 	}
 	if err != nil {
-		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: landing state: %w", table, partVal, err)
+		return nil, time.Time{}, "", _oops.With("table", table).With("part_val", partVal).Wrapf(err, "read raw dataset partition: landing state")
 	}
 	// Build the per-row jsonb: to_jsonb minus bookkeeping columns (fetched_at and,
 	// when partitioned, the partition column), with the thsr_dailytimetable
@@ -474,7 +483,7 @@ func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partV
 		elem, table, where)
 	rows, err := tx.Query(ctx, q, args...)
 	if err != nil {
-		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: query rows: %w", table, partVal, err)
+		return nil, time.Time{}, "", _oops.With("table", table).With("part_val", partVal).Wrapf(err, "read raw dataset partition: query rows")
 	}
 	defer rows.Close()
 	var buf bytes.Buffer
@@ -483,7 +492,7 @@ func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partV
 	for rows.Next() {
 		var rowJSON []byte
 		if err := rows.Scan(&rowJSON); err != nil {
-			return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: scan row: %w", table, partVal, err)
+			return nil, time.Time{}, "", _oops.With("table", table).With("part_val", partVal).Wrapf(err, "read raw dataset partition: scan row")
 		}
 		if buf.Len() > 1 {
 			buf.WriteByte(',')
@@ -492,7 +501,7 @@ func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partV
 		actualRows++
 	}
 	if err := rows.Err(); err != nil {
-		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: rows: %w", table, partVal, err)
+		return nil, time.Time{}, "", _oops.With("table", table).With("part_val", partVal).Wrapf(err, "read raw dataset partition: rows")
 	}
 	if actualRows != expectedRows {
 		return nil, time.Time{}, "", &rawLandingStateMismatchError{
@@ -503,7 +512,7 @@ func (r rawTDXSource) readDatasetJSON(ctx context.Context, table, partCol, partV
 	buf.WriteByte(']')
 	rows.Close()
 	if err := tx.Commit(ctx); err != nil {
-		return nil, time.Time{}, "", fmt.Errorf("read raw dataset %s partition %s: commit: %w", table, partVal, err)
+		return nil, time.Time{}, "", _oops.With("table", table).With("part_val", partVal).Wrapf(err, "read raw dataset partition: commit")
 	}
 	return buf.Bytes(), fetchedAt, landingCycle, nil
 }
@@ -548,6 +557,7 @@ func loaderTransforms(src loadSource) map[string]loaderBinding {
 		"bus_dailytimetable": {load: func(ctx context.Context, dec *json.Decoder, sink loadSink, part string) error {
 			return sink.loadBusDailyTimetable(ctx, dec, src, part)
 		}},
+		"bus_displaystop": {load: loadBusDisplayStops},
 		"bike": {load: loadBikeStations,
 			report: []qualityTarget{{table: "bike_stations", textCols: []string{"name", "address"}, geoCols: []string{"geom"}}}},
 		"mrt_station": {load: loadMrtStations,
@@ -615,7 +625,7 @@ func loaderRegistry(src loadSource) []loadSpec {
 		key:        "mrt_adjacency",
 		table:      "metro_s2straveltime",
 		partCol:    "system",
-		partitions: func() []string { return ingestMetroS2STravelTime },
+		partitions: func() []string { return _ingestMetroS2STravelTime },
 		load:       loadMrtAdjacency,
 	})
 	return specs

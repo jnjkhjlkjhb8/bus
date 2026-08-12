@@ -8,9 +8,9 @@ import "testing"
 // live only in runLegacyProd).
 func TestResolveRole(t *testing.T) {
 	okCases := map[string]appMode{
-		"":         modeLegacyProd,
-		"ingestor": modeIngestor,
-		"loader":   modeLoader,
+		"":         _modeLegacyProd,
+		"ingestor": _modeIngestor,
+		"loader":   _modeLoader,
 	}
 	for role, want := range okCases {
 		got, err := resolveRole(role)
@@ -28,19 +28,19 @@ func TestResolveRole(t *testing.T) {
 	}
 	// eta/etl must not resolve to the legacy prod mode.
 	for _, role := range []string{"eta", "realtime", "etl"} {
-		if got, _ := resolveRole(role); got == modeLegacyProd {
+		if got, _ := resolveRole(role); got == _modeLegacyProd {
 			t.Errorf("resolveRole(%q) must not be modeLegacyProd", role)
 		}
 	}
 }
 
 func TestDBSinceFallbackAllowed(t *testing.T) {
-	defer func() { rawDumpEnabled = false }()
-	rawDumpEnabled = true
+	defer func() { _rawDumpEnabled = false }()
+	_rawDumpEnabled = true
 	if dbSinceFallbackAllowed() {
 		t.Error("ingestor mode must NOT fall back to dbSince (would 304 an empty raw_tdx)")
 	}
-	rawDumpEnabled = false
+	_rawDumpEnabled = false
 	if !dbSinceFallbackAllowed() {
 		t.Error("legacy prod must allow dbSince fallback")
 	}

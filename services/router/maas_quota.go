@@ -24,11 +24,11 @@ var DefaultMaasResourceConfig = MaasResourceConfig{
 	RateWindow: time.Minute,
 }
 
-// maasQuotaScope is the rate-limiter bucket both plan methods spend from. They
+// _maasQuotaScope is the rate-limiter bucket both plan methods spend from. They
 // share one name deliberately: plan and planStream cost the same TDX call, so
 // billing them separately would hand every caller a second allowance for
 // switching method.
-const maasQuotaScope = "maas:plan"
+const _maasQuotaScope = "maas:plan"
 
 // maasPlanQuota charges one plan against the per-caller TDX quota, returning the
 // error to fail the RPC with, or nil to proceed. Cancellation is checked on both
@@ -38,7 +38,7 @@ func maasPlanQuota(ctx context.Context, rl *RateLimiter, config MaasResourceConf
 	if err := ctx.Err(); err != nil {
 		return status.FromContextError(err).Err()
 	}
-	if !AllowRequest(ctx, rl, maasQuotaScope, config.RateLimit, config.RateWindow) {
+	if !AllowRequest(ctx, rl, _maasQuotaScope, config.RateLimit, config.RateWindow) {
 		return status.Error(codes.ResourceExhausted, "MaaS rate limit exceeded")
 	}
 	if err := ctx.Err(); err != nil {

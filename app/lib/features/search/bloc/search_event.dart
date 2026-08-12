@@ -25,8 +25,10 @@ class SearchResultSelected extends SearchEvent {
   List<Object?> get props => [result];
 }
 
-class SearchRecentRequested extends SearchEvent {
-  const SearchRecentRequested();
+/// Loads everything the empty-query screen offers: recents, most-opened
+/// results, and stations around the current fix.
+class SearchSuggestionsRequested extends SearchEvent {
+  const SearchSuggestionsRequested();
 }
 
 class SearchRecentRemoved extends SearchEvent {

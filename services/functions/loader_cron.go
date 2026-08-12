@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -36,20 +35,20 @@ func rawSourcePool(ctx context.Context, db *pgxpool.Pool) (*pgxpool.Pool, func()
 	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse configured RAW_DATABASE_URL: %w", err)
+		return nil, nil, _oops.Wrapf(err, "parse configured RAW_DATABASE_URL")
 	}
 	cfg.MaxConns = shared.EnvInt32("RAW_DB_MAX_CONNS", 4)
 	cfg.MaxConnLifetime = 30 * time.Minute
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect configured RAW_DATABASE_URL: %w", err)
+		return nil, nil, _oops.Wrapf(err, "connect configured RAW_DATABASE_URL")
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
-		return nil, nil, fmt.Errorf("ping configured RAW_DATABASE_URL: %w", err)
+		return nil, nil, _oops.Wrapf(err, "ping configured RAW_DATABASE_URL")
 	}
 	zap.S().Infow("connected",
 		"component", "load",
@@ -60,7 +59,7 @@ func rawSourcePool(ctx context.Context, db *pgxpool.Pool) (*pgxpool.Pool, func()
 	return pool, pool.Close, nil
 }
 
-const loadTimeout = 60 * time.Minute
+const _loadTimeout = 60 * time.Minute
 
 // registerLoaderCrons schedules the daily 03:30 load: transform raw_tdx into
 // this environment's PG_SCHEMA. It runs 30 minutes after the prod ingestor's
@@ -73,12 +72,12 @@ const loadTimeout = 60 * time.Minute
 // it mid-run on shutdown.
 func registerLoaderCrons(r *cron.Cron, rawPool, db *pgxpool.Pool, rc *redis.Client, boot *sync.WaitGroup) {
 	src := rawTDXSource{pool: rawPool}
-	runner := newStaticPipelineRunner(rawPool, loadTimeout)
+	runner := newStaticPipelineRunner(rawPool, _loadTimeout)
 	// Both entry points share one runner, so the 03:30 tick and a LOAD_ON_BOOT
 	// run contend for the same advisory lock instead of overlapping.
 	_, _ = addStaticCron(r, "0 30 3 * * *", func() {
 		runLoadStage("crontab", "load", src, rawPool, db, rc, func(job func(context.Context) error) error {
-			return runDailyWithRetry(context.Background(), loadTimeout, time.Minute, func(ctx context.Context) error {
+			return runDailyWithRetry(context.Background(), _loadTimeout, time.Minute, func(ctx context.Context) error {
 				return runner.Run(ctx, job)
 			})
 		})
@@ -118,7 +117,7 @@ func runLoadStage(
 	rc *redis.Client,
 	attempt func(job func(context.Context) error) error,
 ) {
-	runDate := time.Now().In(taipei)
+	runDate := time.Now().In(_taipei)
 	var stats loadStats
 	err := attempt(func(ctx context.Context) error {
 		var runErr error
@@ -147,11 +146,11 @@ func runLoadStage(
 	runGTFSExport(rawPool, runDate)
 }
 
-// vectorRefreshTimeout bounds one changetovector attempt in the loader. It
+// _vectorRefreshTimeout bounds one changetovector attempt in the loader. It
 // mirrors the retry/resume budget the functions cron used before this stage
 // moved here: three attempts (runDailyWithRetry), each resumable because
 // freshVectorSkipSQL skips rows already embedded with unchanged content.
-const vectorRefreshTimeout = 10 * time.Minute
+const _vectorRefreshTimeout = 10 * time.Minute
 
 // runVectorRefresh runs changetovector in the loader process immediately after a
 // successful load, then records its pipeline marker. Binding it to the loader
@@ -159,14 +158,11 @@ const vectorRefreshTimeout = 10 * time.Minute
 // service no longer needs to be running (or to poll the "load" marker) for
 // search vectors to refresh. It acquires the static-pipeline advisory lock via
 // its own runner, after the load's runner has released it, so the two stages
-// stay serialized exactly as they were across processes. A run with no EMBED_URL
-// skips embedding but still records the marker (changeToVector returns nil for a
-// nil embedder), so the downstream segment-time stage is never stranded --
-// unchanged from the previous functions-hosted flow.
+// stay serialized exactly as they were across processes.
 func runVectorRefresh(rawPool, db *pgxpool.Pool, rc *redis.Client, runDate time.Time) {
-	job := vectorRefreshJob(rc, db, configuredEmbeddingClient())
-	runner := newStaticPipelineRunner(rawPool, vectorRefreshTimeout)
-	err := runDailyWithRetry(context.Background(), vectorRefreshTimeout, time.Minute, func(ctx context.Context) error {
+	job := vectorRefreshJob(rc, db)
+	runner := newStaticPipelineRunner(rawPool, _vectorRefreshTimeout)
+	err := runDailyWithRetry(context.Background(), _vectorRefreshTimeout, time.Minute, func(ctx context.Context) error {
 		return runner.Run(ctx, job)
 	})
 	if err != nil {

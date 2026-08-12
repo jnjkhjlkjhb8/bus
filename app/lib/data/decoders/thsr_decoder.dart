@@ -77,6 +77,66 @@ class ThsrDecoder {
         .toList();
   }
 
+  /// Seat availability for one rider's journey on one train.
+  ///
+  /// THSR publishes a status per boarding station, not per journey: it says
+  /// whether seats remain *from* that station onward. A journey is therefore
+  /// only buyable when every station from the boarding stop up to — but not
+  /// including — the alighting stop still has seats. The operator's own
+  /// example: 南港 shows O and 板橋 shows O, yet 南港→板橋 has no standard seat,
+  /// because 台北 in between is X and those seats went to riders boarding
+  /// there. The alighting station's own status is irrelevant; the rider is
+  /// getting off.
+  ///
+  /// The seat segments arrive as consecutive legs (each leg's destination is
+  /// the next leg's origin), so the journey is the run of legs between the two
+  /// stations. A station the train does not call at, a reversed pair, or any
+  /// leg whose
+  /// letter is not O/L/X yields [ThsrSeatStatus.unknown] — never a claim that a
+  /// seat exists.
+  ThsrSeatStatus decodeSeatStatus(
+    thsr_available_seats seats, {
+    required String fromStationId,
+    required String toStationId,
+    bool business = false,
+  }) {
+    final from = seats.segments.indexWhere(
+      (s) => s.originStationId == fromStationId,
+    );
+    if (from < 0) return ThsrSeatStatus.unknown;
+    // The journey ends at the leg that arrives at the alighting station, which
+    // covers a terminus and an intermediate stop alike. A station this train
+    // never reaches ends nothing, and stays unknown.
+    final end =
+        seats.segments.indexWhere(
+          (s) => s.destinationStationId == toStationId,
+          from,
+        ) +
+        1;
+    if (end <= from) return ThsrSeatStatus.unknown;
+    // available < limited < soldOut in declaration order, so the worst status
+    // over the journey is the highest index; unknown returns before the
+    // comparison.
+    var worst = ThsrSeatStatus.available;
+    for (final segment in seats.segments.sublist(from, end)) {
+      final status = _seatStatusOf(
+        business ? segment.businessSeatStatus : segment.standardSeatStatus,
+      );
+      if (status == ThsrSeatStatus.unknown) return ThsrSeatStatus.unknown;
+      if (status.index > worst.index) worst = status;
+    }
+    return worst;
+  }
+
+  /// O = 尚有座位, L = 即將售完, X = 已售完. Anything else is a letter this app
+  /// does not know, which is not the same as a seat.
+  ThsrSeatStatus _seatStatusOf(String code) => switch (code.toUpperCase()) {
+    'O' => ThsrSeatStatus.available,
+    'L' => ThsrSeatStatus.limited,
+    'X' => ThsrSeatStatus.soldOut,
+    _ => ThsrSeatStatus.unknown,
+  };
+
   int _parseTravelMinutes(String travel) {
     if (travel.contains(':')) {
       final parts = travel.split(':');

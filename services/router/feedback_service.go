@@ -19,13 +19,13 @@ import (
 )
 
 const (
-	// feedbackBodyLimit is counted in runes, not bytes: the reports are written
+	// _feedbackBodyLimit is counted in runes, not bytes: the reports are written
 	// in Chinese, where a byte limit would cut the usable length to a third.
-	feedbackBodyLimit = 2000
-	// feedbackFieldLimit bounds each diagnostics value. They are short, fixed
+	_feedbackBodyLimit = 2000
+	// _feedbackFieldLimit bounds each diagnostics value. They are short, fixed
 	// strings the client assembles (version, platform, locale, route pattern),
 	// so anything longer is a client defect or an injection attempt.
-	feedbackFieldLimit = 128
+	_feedbackFieldLimit = 128
 )
 
 type feedbackPersistence interface {
@@ -70,8 +70,8 @@ func (s *FeedbackServer) PostFeedback(ctx context.Context, request *pb.PostFeedb
 	if body == "" {
 		return nil, status.Error(codes.InvalidArgument, "body is required")
 	}
-	if utf8.RuneCountInString(body) > feedbackBodyLimit {
-		return nil, status.Errorf(codes.InvalidArgument, "body is limited to %d characters", feedbackBodyLimit)
+	if utf8.RuneCountInString(body) > _feedbackBodyLimit {
+		return nil, status.Errorf(codes.InvalidArgument, "body is limited to %d characters", _feedbackBodyLimit)
 	}
 	diagnostics, err := feedbackDiagnostics(request.GetDiagnostics())
 	if err != nil {
@@ -97,7 +97,7 @@ func (s *FeedbackServer) PostFeedback(ctx context.Context, request *pb.PostFeedb
 	}
 	createdAt, err := s.store.OpenThread(ctx, record, messageID)
 	if errors.Is(err, errFeedbackQuota) {
-		return nil, status.Errorf(codes.ResourceExhausted, "at most %d reports per day", feedbackQuota)
+		return nil, status.Errorf(codes.ResourceExhausted, "at most %d reports per day", _feedbackQuota)
 	}
 	if err != nil {
 		zap.S().Errorw("store failed",
@@ -143,7 +143,7 @@ func feedbackDiagnostics(diagnostics *pb.ReportDiagnostics) (map[string]string, 
 		if value == "" {
 			continue
 		}
-		if !ValidText(value, feedbackFieldLimit) {
+		if !ValidText(value, _feedbackFieldLimit) {
 			return nil, status.Errorf(codes.InvalidArgument, "diagnostics.%s is malformed", name)
 		}
 		kept[name] = value
@@ -220,30 +220,30 @@ func (n *webhookNotifier) post(ctx context.Context, notice feedbackNotice) error
 		"allowed_mentions": map[string]any{"parse": []string{}},
 	})
 	if err != nil {
-		return err
+		return _oops.Wrapf(err, "marshal payload")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, n.url, bytes.NewReader(payload))
 	if err != nil {
-		return err
+		return _oops.Wrapf(err, "build request")
 	}
 	request.Header.Set("Content-Type", "application/json")
 	response, err := n.client.Do(request)
 	if err != nil {
-		return err
+		return _oops.Wrapf(err, "send")
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("webhook responded %s", response.Status)
+		return _oops.With("status", response.Status).Errorf("webhook responded")
 	}
 	return nil
 }
 
 const (
-	// discordContentLimit is Discord's hard cap on a message's content field.
-	discordContentLimit = 2000
-	// feedbackNoticeBodyLimit leaves room for the header and diagnostics line
+	// _discordContentLimit is Discord's hard cap on a message's content field.
+	_discordContentLimit = 2000
+	// _feedbackNoticeBodyLimit leaves room for the header and diagnostics line
 	// once a maximum-length report is quoted into the message.
-	feedbackNoticeBodyLimit = 1500
+	_feedbackNoticeBodyLimit = 1500
 )
 
 // feedbackWebhookContent renders one report as a chat message. Every body line
@@ -254,7 +254,7 @@ const (
 func feedbackWebhookContent(notice feedbackNotice) string {
 	var content strings.Builder
 	fmt.Fprintf(&content, "**新回報** `%s` · `%s`\n", notice.Category, shortThreadReference(notice.ThreadID))
-	for _, line := range strings.Split(truncateRunes(notice.Body, feedbackNoticeBodyLimit), "\n") {
+	for _, line := range strings.Split(truncateRunes(notice.Body, _feedbackNoticeBodyLimit), "\n") {
 		content.WriteString("> ")
 		content.WriteString(line)
 		content.WriteString("\n")
@@ -262,7 +262,7 @@ func feedbackWebhookContent(notice feedbackNotice) string {
 	if summary := feedbackDiagnosticsSummary(notice.Diagnostics); summary != "" {
 		content.WriteString(summary)
 	}
-	return truncateRunes(content.String(), discordContentLimit)
+	return truncateRunes(content.String(), _discordContentLimit)
 }
 
 // feedbackDiagnosticsSummary renders the diagnostics in a fixed order, so two

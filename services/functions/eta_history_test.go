@@ -10,22 +10,22 @@ import (
 // fires a second late records nothing at all; wider and two consecutive ticks
 // both record, which is the redundancy the sampling exists to remove.
 func TestSnapshotTickCoversExactlyOneTickPerInterval(t *testing.T) {
-	interval := int64(historySnapshotInterval.Seconds())
-	tick := int64(busEtaTickInterval.Seconds())
+	interval := int64(_historySnapshotInterval.Seconds())
+	tick := int64(_busEtaTickInterval.Seconds())
 	// One interval's worth of ticks, from an instant aligned to the interval.
 	base := time.Unix(1754110800-1754110800%interval, 0)
 	var recorded int
 	for at := int64(0); at < interval; at += tick {
-		if snapshotTick(base.Add(time.Duration(at)*time.Second), busEtaTickInterval) {
+		if snapshotTick(base.Add(time.Duration(at)*time.Second), _busEtaTickInterval) {
 			recorded++
 		}
 	}
 	if recorded != 1 {
-		t.Errorf("snapshots per %v = %d, want 1", historySnapshotInterval, recorded)
+		t.Errorf("snapshots per %v = %d, want 1", _historySnapshotInterval, recorded)
 	}
 	// Location must not move the boundary: runCity reads the tick instant in
 	// Taipei time and Unix seconds are the same instant either way.
-	if snapshotTick(base, busEtaTickInterval) != snapshotTick(base.In(time.UTC), busEtaTickInterval) {
+	if snapshotTick(base, _busEtaTickInterval) != snapshotTick(base.In(time.UTC), _busEtaTickInterval) {
 		t.Error("snapshotTick disagrees with itself across zones")
 	}
 }
@@ -33,17 +33,17 @@ func TestSnapshotTickCoversExactlyOneTickPerInterval(t *testing.T) {
 // The fast cron (Taipei/NewTaipei, busEtaFastTickInterval) needs the same
 // one-snapshot-per-interval property at its own, narrower tick width.
 func TestSnapshotTickCoversExactlyOneTickPerIntervalAtFastCadence(t *testing.T) {
-	interval := int64(historySnapshotInterval.Seconds())
-	tick := int64(busEtaFastTickInterval.Seconds())
+	interval := int64(_historySnapshotInterval.Seconds())
+	tick := int64(_busEtaFastTickInterval.Seconds())
 	base := time.Unix(1754110800-1754110800%interval, 0)
 	var recorded int
 	for at := int64(0); at < interval; at += tick {
-		if snapshotTick(base.Add(time.Duration(at)*time.Second), busEtaFastTickInterval) {
+		if snapshotTick(base.Add(time.Duration(at)*time.Second), _busEtaFastTickInterval) {
 			recorded++
 		}
 	}
 	if recorded != 1 {
-		t.Errorf("snapshots per %v = %d, want 1", historySnapshotInterval, recorded)
+		t.Errorf("snapshots per %v = %d, want 1", _historySnapshotInterval, recorded)
 	}
 }
 

@@ -12,23 +12,23 @@ import (
 // either that silently loses a city would otherwise surface only as that
 // city's ETA cron simply never running.
 func TestBusEtaCityListsPartitionCities(t *testing.T) {
-	seen := make(map[string]int, len(cities))
-	for _, city := range busEtaFastCities {
+	seen := make(map[string]int, len(_cities))
+	for _, city := range _busEtaFastCities {
 		seen[city]++
 	}
-	for _, city := range busEtaSlowCities {
+	for _, city := range _busEtaSlowCities {
 		seen[city]++
 	}
-	if len(seen) != len(cities) {
-		t.Fatalf("fast+slow cover %d distinct cities, want %d", len(seen), len(cities))
+	if len(seen) != len(_cities) {
+		t.Fatalf("fast+slow cover %d distinct cities, want %d", len(seen), len(_cities))
 	}
-	for _, city := range cities {
+	for _, city := range _cities {
 		if seen[city] != 1 {
 			t.Errorf("city %q appears %d times across fast+slow, want exactly 1", city, seen[city])
 		}
 	}
-	for city := range dataTaipeiDynamicCities {
-		if !slices.Contains(busEtaFastCities, city) {
+	for city := range _dataTaipeiDynamicCities {
+		if !slices.Contains(_busEtaFastCities, city) {
 			t.Errorf("dataTaipeiDynamicCities city %q missing from busEtaFastCities", city)
 		}
 	}
@@ -41,11 +41,11 @@ func TestDecodeBusEtaArray(t *testing.T) {
 		wantLen      int
 		wantComplete bool
 	}{
-		{"full array", `[{"StopUID":"A","EstimateTime":60},{"StopUID":"B","EstimateTime":120}]`, 2, true},
-		{"empty array is complete", `[]`, 0, true},
-		{"truncated mid-element", `[{"StopUID":"A","EstimateTime":60},{"StopUID":"B",`, 1, false},
-		{"missing closing bracket", `[{"StopUID":"A","EstimateTime":60}`, 1, false},
-		{"not an array", `garbage`, 0, false},
+		{name: "full array", body: `[{"StopUID":"A","EstimateTime":60},{"StopUID":"B","EstimateTime":120}]`, wantLen: 2, wantComplete: true},
+		{name: "empty array is complete", body: `[]`, wantLen: 0, wantComplete: true},
+		{name: "truncated mid-element", body: `[{"StopUID":"A","EstimateTime":60},{"StopUID":"B",`, wantLen: 1, wantComplete: false},
+		{name: "missing closing bracket", body: `[{"StopUID":"A","EstimateTime":60}`, wantLen: 1, wantComplete: false},
+		{name: "not an array", body: `garbage`, wantLen: 0, wantComplete: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -108,8 +108,8 @@ func TestDecodeBusEtaArrayFieldNames(t *testing.T) {
 // city. Asserting over `cities` itself, rather than a hand-kept allowlist, is
 // what makes a citymap/cities divergence fail here instead of in production.
 func TestServedCityPrefixesResolve(t *testing.T) {
-	for _, c := range cities {
-		if citymap[c] == "" {
+	for _, c := range _cities {
+		if _citymap[c] == "" {
 			t.Errorf("city %q from cities has no citymap prefix: bus ETA would be skipped for it, and its LIKE '%%' partition delete would wipe every other city's stop-map and schedule rows", c)
 		}
 	}
@@ -118,13 +118,13 @@ func TestServedCityPrefixesResolve(t *testing.T) {
 // citymap and citymap2 must stay a strict inverse pair: citymap2 resolves a
 // prefix back to a TDX city code, so its values have to be keys of citymap.
 func TestCityMapsAreInverse(t *testing.T) {
-	for city, prefix := range citymap {
-		if got := citymap2[prefix]; got != city {
+	for city, prefix := range _citymap {
+		if got := _citymap2[prefix]; got != city {
 			t.Errorf("citymap2[%q] = %q, want %q", prefix, got, city)
 		}
 	}
-	if len(citymap) != len(citymap2) {
-		t.Errorf("citymap has %d entries, citymap2 has %d", len(citymap), len(citymap2))
+	if len(_citymap) != len(_citymap2) {
+		t.Errorf("citymap has %d entries, citymap2 has %d", len(_citymap), len(_citymap2))
 	}
 }
 
@@ -184,11 +184,11 @@ func TestBusArrivalDispatchRequiresUsableETA(t *testing.T) {
 		eta    int32
 		want   bool
 	}{
-		{"missing", false, 0, 60, false},
-		{"unavailable status", true, 1, 60, false},
-		{"zero", true, 0, 0, false},
-		{"negative", true, 0, -1, false},
-		{"usable", true, 0, 60, true},
+		{name: "missing", found: false, status: 0, eta: 60, want: false},
+		{name: "unavailable status", found: true, status: 1, eta: 60, want: false},
+		{name: "zero", found: true, status: 0, eta: 0, want: false},
+		{name: "negative", found: true, status: 0, eta: -1, want: false},
+		{name: "usable", found: true, status: 0, eta: 60, want: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := shouldDispatchBusArrival(tc.found, tc.status, tc.eta); got != tc.want {

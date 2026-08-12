@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
+
+var errBusPostCommitCache = errors.New("bus snapshot post-commit cache invalidation failed")
 
 // loadBus replaces one city only after all eight correlated landing partitions
 // have been read, validated, reconciled, and materialized. Source validation is
@@ -19,17 +20,17 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 	zap.S().Infow("city start", "component", "load", "action", "bus", "event", "city_start", "city", city)
 	snapshot, err := readBusCitySnapshot(ctx, src, city)
 	if err != nil {
-		return fmt.Errorf("load bus city %s: snapshot: %w", city, err)
+		return _oops.With("city", city).Wrapf(err, "load bus city: snapshot")
 	}
 	if err := persistBusCitySnapshot(ctx, pgBusTxBeginner{db: db}, snapshot, func() error {
 		return invalidateBusStaticAfterCommit(ctx, rc, city)
 	}); err != nil {
 		if !errors.Is(err, errBusPostCommitCache) {
-			return fmt.Errorf("load bus city %s: target: %w", city, err)
+			return _oops.With("city", city).Wrapf(err, "load bus city: target")
 		}
 		// PostgreSQL is already committed. Return the post-commit failure so the
 		// daily retry repeats the idempotent write and repairs the generation.
-		return fmt.Errorf("load bus city %s: committed; invalidate cache: %w", city, err)
+		return _oops.With("city", city).Wrapf(err, "load bus city: committed; invalidate cache")
 	}
 	zap.S().Infow("city complete",
 		"component", "load",
@@ -41,8 +42,6 @@ func loadBus(ctx context.Context, src loadSource, db *pgxpool.Pool, rc *redis.Cl
 	return nil
 }
 
-var errBusPostCommitCache = errors.New("bus snapshot post-commit cache invalidation failed")
-
 func persistBusCitySnapshot(
 	ctx context.Context,
 	db busTxBeginner,
@@ -53,7 +52,7 @@ func persistBusCitySnapshot(
 		return err
 	}
 	if invalidate == nil {
-		return fmt.Errorf("%w: nil invalidator", errBusPostCommitCache)
+		return _oops.Wrapf(errBusPostCommitCache, "nil invalidator")
 	}
 	if err := invalidate(); err != nil {
 		return errors.Join(errBusPostCommitCache, err)
@@ -62,7 +61,7 @@ func persistBusCitySnapshot(
 }
 
 func invalidateBusStaticAfterCommit(ctx context.Context, rc *redis.Client, city string) error {
-	prefix := citymap[city]
+	prefix := _citymap[city]
 	invalidateBusStaticMapCity(prefix)
 	if rc == nil {
 		return errors.New("redis client is nil")

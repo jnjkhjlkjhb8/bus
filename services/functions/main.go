@@ -50,7 +50,7 @@ func run() error {
 	defer obs.Recover("main")
 
 	role := os.Getenv("ROLE")
-	rawDumpEnabled = role == "ingestor"
+	_rawDumpEnabled = role == "ingestor"
 	mode, err := resolveRole(role)
 	if err != nil {
 		return err
@@ -72,21 +72,21 @@ func run() error {
 		maxConnsEnv, maxConnsDefault = "LOAD_DB_MAX_CONNS", 5
 	}
 	db := shared.ConnectDB(maxConnsEnv, maxConnsDefault)
-	ingestDB = db
+	_ingestDB = db
+	_health = newHealthFile(defaultHealthFilePath())
 	defer func(rc *redis.Client) {
 		if cerr := rc.Close(); cerr != nil {
 			zap.S().Errorw("failed", "component", "redis", "action", "close", "event", "failed", "err", cerr)
 		}
 	}(rc)
 	defer db.Close()
-	if err := initArchive(context.Background(), os.Getenv("ARCHIVE_MYSQL_DSN")); err != nil {
+	_archive, err = initArchive(context.Background(), os.Getenv("ARCHIVE_MYSQL_DSN"))
+	if err != nil {
 		return err
 	}
 	defer func() {
-		if archiveDB != nil {
-			if cerr := archiveDB.Close(); cerr != nil {
-				zap.S().Errorw("failed", "component", "archive", "action", "close", "event", "failed", "err", cerr)
-			}
+		if cerr := _archive.Close(); cerr != nil {
+			zap.S().Errorw("failed", "component", "archive", "action", "close", "event", "failed", "err", cerr)
 		}
 	}()
 	// Loader and vector coordination must lock the database that owns raw_tdx,
@@ -94,7 +94,7 @@ func run() error {
 	// ingestor always lands into its process DB and therefore locks db directly.
 	rawPool := db
 	closeRawPool := func() {}
-	if mode != modeIngestor {
+	if mode != _modeIngestor {
 		rawPool, closeRawPool, err = rawSourcePool(context.Background(), db)
 		if err != nil {
 			return err
@@ -107,33 +107,33 @@ func run() error {
 		SinceFallback: sinceFallback,
 	})
 	// One-shot manual trigger: `functions run <job>` runs the job once and exits,
-	// bypassing cron so an operator can refresh embeddings on demand. Needs the
-	// same env (DATABASE_URL, REDIS_ADDR, EMBED_URL) as the scheduled run.
+	// bypassing cron so an operator can rebuild the search rows on demand.
+	// Needs the same env (DATABASE_URL, REDIS_ADDR) as the scheduled run.
 	if len(os.Args) > 2 && os.Args[1] == "run" {
 		switch os.Args[2] {
 		case "changetovector":
-			job := vectorRefreshJob(rc, db, configuredEmbeddingClient())
-			runner := newStaticPipelineRunner(rawPool, manualBackfillTimeout)
+			job := vectorRefreshJob(rc, db)
+			runner := newStaticPipelineRunner(rawPool, _manualBackfillTimeout)
 			if err := runner.Run(context.Background(), job); err != nil {
-				return fmt.Errorf("changetovector failed: %w", err)
+				return _oops.Wrapf(err, "changetovector failed")
 			}
 		case "gtfs":
 			// Same builder the loader runs after a load, on demand: a feed can be
 			// republished without waiting for 03:30 or forcing a reload.
-			runGTFSExport(rawPool, time.Now().In(taipei))
+			runGTFSExport(rawPool, time.Now().In(_taipei))
 		case "gtfs-rt":
 			// The snapshot the router serves, built once. The daily timetables the
 			// diff reads are loaded into Redis first: on a cron they arrive from the
 			// hourly loader, and a one-shot run has no such producer behind it.
-			ctx, cancel := context.WithTimeout(context.Background(), gtfsRTIndexTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), _gtfsRTIndexTimeout)
 			defer cancel()
 			daily := map[string]string{}
 			if err := loadChangedBusDailyTimetables(ctx, rawPool, rawTDXSource{pool: rawPool}, db, rc, daily); err != nil {
-				return fmt.Errorf("bus daily timetable load failed: %w", err)
+				return _oops.Wrapf(err, "bus daily timetable load failed")
 			}
 			builder := &gtfsRTBuilder{db: rawPool, rc: rc}
-			if err := builder.run(ctx, time.Now().In(taipei)); err != nil {
-				return fmt.Errorf("gtfs-rt failed: %w", err)
+			if err := builder.run(ctx, time.Now().In(_taipei)); err != nil {
+				return _oops.Wrapf(err, "gtfs-rt failed")
 			}
 		case "bikeeta", "traeta", "buseta":
 			// Refreshes what the published feeds read out of Redis: bike
@@ -146,7 +146,7 @@ func run() error {
 			// refresh writes no history rows. Bus does record its prediction
 			// errors — that is not separable from the job, and it is the same
 			// observation the scheduled run would have made.
-			ctx, cancel := context.WithTimeout(context.Background(), manualBackfillTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), _manualBackfillTimeout)
 			defer cancel()
 			job := map[string]string{"bikeeta": "bike", "traeta": "tra", "buseta": "bus"}[os.Args[2]]
 			var pool *pgxpool.Pool
@@ -155,31 +155,31 @@ func run() error {
 			}
 			runLive(ctx, restLiveSource{tdx: tdx}, redisLiveSink{rc: rc}, liveRegistry(pool, nil), []string{job})
 		default:
-			return fmt.Errorf("unknown job: %s", os.Args[2])
+			return _oops.With("args", os.Args[2]).Errorf("unknown job")
 		}
 		return nil
 	}
 
 	switch mode {
-	case modeIngestor:
+	case _modeIngestor:
 		var boot sync.WaitGroup
 		registerIngestorCrons(r, tdx, db, &boot)
 		r.Start()
-		touchHealthFile()
+		_health.touch()
 		waitForShutdown()
-		drainShutdown(r.Stop(), &boot, shutdownGrace)
-	case modeLoader:
+		drainShutdown(r.Stop(), &boot, _shutdownGrace)
+	case _modeLoader:
 		var boot sync.WaitGroup
 		registerLoaderCrons(r, rawPool, db, rc, &boot)
 		r.Start()
-		touchHealthFile()
+		_health.touch()
 		waitForShutdown()
-		drainShutdown(r.Stop(), &boot, shutdownGrace)
-	case modeLegacyProd:
+		drainShutdown(r.Stop(), &boot, _shutdownGrace)
+	case _modeLegacyProd:
 		if err := runLegacyProd(r, tdx, rc, rawPool, db); err != nil {
 			return err
 		}
-	case modeInvalid:
+	case _modeInvalid:
 		// Unreachable: resolveRole returns modeInvalid only with an error,
 		// which already returned above.
 	}
@@ -192,10 +192,10 @@ type appMode int
 // Run modes returned by resolveRole. modeInvalid is the zero value and only
 // accompanies an error; it must never reach the run dispatch.
 const (
-	modeInvalid appMode = iota
-	modeLegacyProd
-	modeIngestor
-	modeLoader
+	_modeInvalid appMode = iota
+	_modeLegacyProd
+	_modeIngestor
+	_modeLoader
 )
 
 // resolveRole maps the ROLE env to a run mode. Unimplemented (eta/realtime) and
@@ -205,15 +205,15 @@ const (
 func resolveRole(role string) (appMode, error) {
 	switch role {
 	case "":
-		return modeLegacyProd, nil
+		return _modeLegacyProd, nil
 	case "ingestor":
-		return modeIngestor, nil
+		return _modeIngestor, nil
 	case "loader":
-		return modeLoader, nil
+		return _modeLoader, nil
 	case "eta", "realtime":
-		return modeInvalid, fmt.Errorf("ROLE=%s not implemented yet (Phase 2)", role)
+		return _modeInvalid, _oops.With("role", role).Errorf("ROLE= not implemented yet (Phase 2)")
 	default:
-		return modeInvalid, fmt.Errorf("unknown ROLE: %q", role)
+		return _modeInvalid, _oops.With("role", role).Errorf("unknown ROLE")
 	}
 }
 
@@ -259,14 +259,14 @@ func runDaily(name string, d time.Duration, job func(context.Context) error) {
 
 const (
 	// Stable, repo-specific signed 64-bit key shared by every functions role.
-	staticPipelineAdvisoryKey    int64 = 0x6275737374617469
-	staticPipelineReleaseTimeout       = 5 * time.Second
+	_staticPipelineAdvisoryKey    int64 = 0x6275737374617469
+	_staticPipelineReleaseTimeout       = 5 * time.Second
 )
 
-// manualBackfillTimeout bounds the `functions run changetovector` one-shot. It
+// _manualBackfillTimeout bounds the `functions run changetovector` one-shot. It
 // is deliberately far larger than the cron's per-attempt 10m budget so a cold
 // full-corpus backfill on a CPU/small-GPU embedder completes in one pass.
-const manualBackfillTimeout = 2 * time.Hour
+const _manualBackfillTimeout = 2 * time.Hour
 
 // staticPipelineLocker holds a cross-process lock until its release callback.
 // The PostgreSQL implementation below uses a transaction-scoped advisory lock;
@@ -309,7 +309,7 @@ func (c pgStaticPipelineConnector) Connect(ctx context.Context) (staticPipelineT
 	}
 	conn, err := connect(ctx, c.pool.Config().ConnConfig.Copy())
 	if err != nil {
-		return nil, nil, fmt.Errorf("connect static pipeline advisory database: %w", err)
+		return nil, nil, _oops.Wrapf(err, "connect static pipeline advisory database")
 	}
 	if conn == nil {
 		return nil, nil, errors.New("connect static pipeline advisory database returned nil connection")
@@ -318,10 +318,10 @@ func (c pgStaticPipelineConnector) Connect(ctx context.Context) (staticPipelineT
 	var closeErr error
 	closeConnection := func() error {
 		once.Do(func() {
-			releaseCtx, cancel := context.WithTimeout(context.Background(), staticPipelineReleaseTimeout)
+			releaseCtx, cancel := context.WithTimeout(context.Background(), _staticPipelineReleaseTimeout)
 			defer cancel()
 			if err := conn.Close(releaseCtx); err != nil {
-				closeErr = fmt.Errorf("close static pipeline advisory connection: %w", err)
+				closeErr = _oops.Wrapf(err, "close static pipeline advisory connection")
 			}
 		})
 		return closeErr
@@ -348,12 +348,12 @@ func (l pgStaticPipelineLocker) Acquire(ctx context.Context) (func() error, erro
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return nil, errors.Join(
-			fmt.Errorf("begin static pipeline advisory transaction: %w", err),
+			_oops.Wrapf(err, "begin static pipeline advisory transaction"),
 			closeConnection(),
 		)
 	}
 	rollback := func() error {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), staticPipelineReleaseTimeout)
+		releaseCtx, cancel := context.WithTimeout(context.Background(), _staticPipelineReleaseTimeout)
 		defer cancel()
 		err := tx.Rollback(releaseCtx)
 		if errors.Is(err, pgx.ErrTxClosed) {
@@ -361,9 +361,9 @@ func (l pgStaticPipelineLocker) Acquire(ctx context.Context) (func() error, erro
 		}
 		return err
 	}
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", staticPipelineAdvisoryKey); err != nil {
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", _staticPipelineAdvisoryKey); err != nil {
 		return nil, errors.Join(
-			fmt.Errorf("acquire static pipeline advisory lock: %w", err),
+			_oops.Wrapf(err, "acquire static pipeline advisory lock"),
 			rollback(),
 			closeConnection(),
 		)
@@ -372,11 +372,11 @@ func (l pgStaticPipelineLocker) Acquire(ctx context.Context) (func() error, erro
 	var releaseErr error
 	return func() error {
 		once.Do(func() {
-			releaseCtx, cancel := context.WithTimeout(context.Background(), staticPipelineReleaseTimeout)
+			releaseCtx, cancel := context.WithTimeout(context.Background(), _staticPipelineReleaseTimeout)
 			defer cancel()
 			if err := tx.Commit(releaseCtx); err != nil {
 				releaseErr = errors.Join(
-					fmt.Errorf("release static pipeline advisory lock: %w", err),
+					_oops.Wrapf(err, "release static pipeline advisory lock"),
 					rollback(),
 				)
 			}
@@ -388,7 +388,7 @@ func (l pgStaticPipelineLocker) Acquire(ctx context.Context) (func() error, erro
 
 // One process-wide gate serializes boot, cron, and manual static work. Separate
 // containers have separate gates and are serialized by pgStaticPipelineLocker.
-var staticPipelineProcessGate = make(chan struct{}, 1)
+var _staticPipelineProcessGate = make(chan struct{}, 1)
 
 type staticPipelineRunner struct {
 	gate    chan struct{}
@@ -398,7 +398,7 @@ type staticPipelineRunner struct {
 
 func newStaticPipelineRunner(rawLockPool *pgxpool.Pool, timeout time.Duration) staticPipelineRunner {
 	return staticPipelineRunner{
-		gate: staticPipelineProcessGate,
+		gate: _staticPipelineProcessGate,
 		locker: pgStaticPipelineLocker{connector: pgStaticPipelineConnector{
 			pool: rawLockPool,
 		}},
@@ -439,7 +439,7 @@ func (r staticPipelineRunner) Run(parent context.Context, job func(context.Conte
 		releaseErr := release()
 		if recovered := recover(); recovered != nil {
 			if releaseErr != nil {
-				panic(errors.Join(fmt.Errorf("static pipeline job panic: %v", recovered), releaseErr))
+				panic(errors.Join(_oops.With("recovered", recovered).Errorf("static pipeline job panic"), releaseErr))
 			}
 			panic(recovered)
 		}
@@ -457,13 +457,13 @@ func (r staticPipelineRunner) Run(parent context.Context, job func(context.Conte
 // entry and different static job names can otherwise overlap.
 //
 // Every job registered this way also touches the liveness marker
-// (touchHealthFile) once it returns, success or failure -- see that
-// function's doc comment for why the container healthcheck cares about
-// scheduler liveness, not per-job business success.
+// (_health.touch) once it returns, success or failure -- see healthFile's
+// doc comment for why the container healthcheck cares about scheduler
+// liveness, not per-job business success.
 func addStaticCron(r *cron.Cron, spec string, job func()) (cron.EntryID, error) {
 	guarded := cron.NewChain(cron.SkipIfStillRunning(cron.DefaultLogger)).Then(cron.FuncJob(func() {
 		job()
-		touchHealthFile()
+		_health.touch()
 	}))
 	return r.AddJob(spec, guarded)
 }
@@ -521,10 +521,10 @@ func runStaticJob(
 	backoff time.Duration,
 ) {
 	if spec.waitFor != "" {
-		waitCtx, cancel := context.WithTimeout(context.Background(), pipelineMarkerPollDeadline+time.Minute)
+		waitCtx, cancel := context.WithTimeout(context.Background(), _pipelineMarkerPollDeadline+time.Minute)
 		defer cancel()
-		err := waitForPipelineMarker(waitCtx, marker, spec.waitFor, now().In(taipei),
-			pipelineMarkerPollInterval, pipelineMarkerPollDeadline, now, sleep)
+		err := waitForPipelineMarker(waitCtx, marker, spec.waitFor, now().In(_taipei),
+			_pipelineMarkerPollInterval, _pipelineMarkerPollDeadline, now, sleep)
 		if err != nil {
 			zap.S().Errorw("marker wait failed",
 				"component", "pipeline",
@@ -550,9 +550,9 @@ func runStaticJob(
 	}
 }
 
-func vectorRefreshJob(rc vectorRedis, db vectorDB, embedder embeddingClient) func(context.Context) error {
+func vectorRefreshJob(rc vectorRedis, db vectorDB) func(context.Context) error {
 	return func(ctx context.Context) error {
-		return changeToVector(ctx, rc, db, embedder)
+		return changeToVector(ctx, rc, db)
 	}
 }
 
@@ -581,7 +581,7 @@ func runBootBusDailyTimetable(
 func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPool, db *pgxpool.Pool) error {
 	sender, err := notify.NewFirebaseSender(context.Background())
 	if err != nil {
-		return fmt.Errorf("init Firebase sender: %w", err)
+		return _oops.Wrapf(err, "init Firebase sender")
 	}
 	dispatcher := notify.NewDispatcher(notify.NewStore(db), sender)
 	// The card-refresh transports (ADR-0018). Absent APNs credentials disable the
@@ -589,31 +589,33 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	// downgrade, because credentials that are present but unusable are a mistake.
 	apns, err := notify.NewAPNSSender()
 	if err != nil {
-		return fmt.Errorf("init APNs sender: %w", err)
+		return _oops.Wrapf(err, "init APNs sender")
 	}
 	pusher := notify.NewTrackPusher(sender, apns)
-	bootLoadRunner := newStaticPipelineRunner(rawPool, loadTimeout)
+	bootLoadRunner := newStaticPipelineRunner(rawPool, _loadTimeout)
 	if err := runBootBusDailyTimetable(
 		context.Background(), bootLoadRunner, rawTDXSource{pool: rawPool}, db, rc,
 	); err != nil {
 		zap.S().Errorw("error", "component", "bus", "action", "bus_dailyroute", "event", "error", "err", err)
 	}
-	holidayCtx, holidayCancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
+	holidayCtx, holidayCancel := context.WithTimeout(context.Background(), _holidayHTTPTimeout)
 	if err := loadHolidays(holidayCtx); err != nil {
-		zap.S().Warnw(fmt.Sprintf("initial refresh failed; weekend/last-good fallback active: %v", err),
+		zap.S().Warnw("initial refresh failed; weekend/last-good fallback active",
 			"component", "holiday",
+			"err", err,
 		)
 	}
 	holidayCancel()
-	loadModel()
+	_predictor = newPredictor()
 	// Prime the weather cache at boot: the @every 10m cron below does not fire until
 	// 10 minutes in, so without this every bus_eta_history row written in that window
 	// after a restart would carry null weather features. The bounded context keeps
 	// startup delay finite while avoiding a detached refresh goroutine.
-	weatherCtx, weatherCancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
+	weatherCtx, weatherCancel := context.WithTimeout(context.Background(), _weatherHTTPTimeout)
 	if err := weatherSync(weatherCtx, rc); err != nil {
-		zap.S().Warnw(fmt.Sprintf("initial sync failed; keeping last good Redis snapshot: %v", err),
+		zap.S().Warnw("initial sync failed; keeping last good Redis snapshot",
 			"component", "weather",
+			"err", err,
 		)
 	}
 	weatherCancel()
@@ -636,19 +638,20 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	// liveSpec — it never touches TDX. Nil-safe dispatcher when push is disabled.
 	registerMrtTrackCron(r, rc, db, dispatcher, pusher)
 	_, _ = addStaticCron(r, "@every 10m", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), weatherHTTPTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), _weatherHTTPTimeout)
 		defer cancel()
 		if err := weatherSync(ctx, rc); err != nil {
-			zap.S().Warnw(fmt.Sprintf("sync failed; keeping last good Redis snapshot: %v", err),
+			zap.S().Warnw("sync failed; keeping last good Redis snapshot",
 				"component", "weather",
+				"err", err,
 			)
 		}
 	})
 	_, _ = addStaticCron(r, "@every 24h", func() {
-		ctx, cancel := context.WithTimeout(context.Background(), holidayHTTPTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), _holidayHTTPTimeout)
 		defer cancel()
 		if err := loadHolidays(ctx); err != nil {
-			zap.S().Warnw(fmt.Sprintf("refresh failed; keeping last good snapshot: %v", err), "component", "holiday")
+			zap.S().Warnw("refresh failed; keeping last good snapshot", "component", "holiday", "err", err)
 		}
 	})
 	registerStaticJob(r, markerReader, staticJobSpec{
@@ -690,7 +693,7 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		},
 	})
 	r.Start()
-	touchHealthFile()
+	_health.touch()
 	mqttClient := notify.StartMQTT(rc, dispatcher)
 	waitForShutdown()
 	// Stop intake first: MQTT (no more messages dispatched) then cron (no
@@ -698,7 +701,7 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 	if mqttClient != nil {
 		mqttClient.Disconnect(500)
 	}
-	drainShutdown(r.Stop(), &sync.WaitGroup{}, shutdownGrace)
+	drainShutdown(r.Stop(), &sync.WaitGroup{}, _shutdownGrace)
 	return nil
 }
 
@@ -711,12 +714,12 @@ func waitForShutdown() {
 	zap.S().Infow("signal received", "component", "boot", "action", "shutdown", "event", "signal_received")
 }
 
-// shutdownGrace bounds how long drainShutdown waits for in-flight cron/boot
+// _shutdownGrace bounds how long drainShutdown waits for in-flight cron/boot
 // work to finish before the caller proceeds to close shared Redis/DB
 // connections. A job that outlives it is abandoned mid-flight (its own
 // per-job timeout is expected to have fired well before this), but the
 // process still exits instead of hanging forever on a stuck job.
-const shutdownGrace = 30 * time.Second
+const _shutdownGrace = 30 * time.Second
 
 // drainShutdown waits, bounded by grace, for both cronDone (the context
 // returned by cron.Cron.Stop — its own intake must already be stopped before
@@ -768,8 +771,16 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 	                 bssm.sub_route_uid, COALESCE(bst.route_uid, ''), bssm.route_name,
 	                 COALESCE(bsr.destin, bst.destin, ''),
 	                 bssm.direction, bssm.stop_uid, bssm.stop_sequence,
-	                 COALESCE(ST_Y(bs.position), 0), COALESCE(ST_X(bs.position), 0)
+	                 COALESCE(ST_Y(bs.position), 0), COALESCE(ST_X(bs.position), 0),
+	                 COALESCE(alias.uids, ARRAY[]::text[])
 	          FROM bus_station_stop_map bssm
+	          LEFT JOIN LATERAL (
+	            SELECT array_agg(a.alias_stop_uid) AS uids
+	            FROM bus_stop_alias a
+	            WHERE a.sub_route_uid = bssm.sub_route_uid
+	              AND a.direction = bssm.direction
+	              AND a.stop_uid = bssm.stop_uid
+	          ) alias ON true
 	          LEFT JOIN bus_static bst ON bst.sub_route_uid = bssm.sub_route_uid
 	          LEFT JOIN bus_subroutes bsr ON bsr.sub_route_uid = bssm.sub_route_uid
 	                                     AND bsr.direction = bssm.direction
@@ -787,7 +798,7 @@ func busstaticmp(ctx context.Context, db *pgxpool.Pool, city string) ([]busStati
 		var temp busStationmap
 		err := rows.Scan(&temp.StationUID, &temp.StationName, &temp.GroupUID,
 			&temp.GroupName, &temp.SubRouteUID, &temp.RouteUID, &temp.SubRouteName, &temp.Destination, &temp.Direction, &temp.StopUID, &temp.StopSequence,
-			&temp.Lat, &temp.Lon)
+			&temp.Lat, &temp.Lon, &temp.AliasStopUIDs)
 		if err != nil {
 			zap.S().Errorw("scan error",
 				"component", "bus_static",

@@ -129,8 +129,8 @@ func TestGBFSDiscoveryAdvertisesServedFiles(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode gbfs.json: %v", err)
 	}
-	if body.Version != gbfsVersion {
-		t.Errorf("version = %q, want %q", body.Version, gbfsVersion)
+	if body.Version != _gbfsVersion {
+		t.Errorf("version = %q, want %q", body.Version, _gbfsVersion)
 	}
 	if body.TTL <= 0 {
 		t.Errorf("ttl = %d, want positive: a consumer uses it to schedule re-polls", body.TTL)
@@ -139,8 +139,8 @@ func TestGBFSDiscoveryAdvertisesServedFiles(t *testing.T) {
 	if !ok {
 		t.Fatalf("no zh-TW feed set in %v", body.Data)
 	}
-	if len(language.Feeds) != len(gbfsFeedNames) {
-		t.Fatalf("advertised %d feeds, want %d", len(language.Feeds), len(gbfsFeedNames))
+	if len(language.Feeds) != len(_gbfsFeedNames) {
+		t.Fatalf("advertised %d feeds, want %d", len(language.Feeds), len(_gbfsFeedNames))
 	}
 
 	routed := map[string]bool{}

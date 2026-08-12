@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"time"
 
@@ -42,7 +41,7 @@ type railDelayTrip struct {
 	stations map[string]bool
 }
 
-// railDelayIndexSQL is today's TRA trains reduced to what a delay needs.
+// _railDelayIndexSQL is today's TRA trains reduced to what a delay needs.
 //
 // It reads railTripSource and applies the same "more than one call" test
 // gtfsTripsSQL's rail branch applies, so the trip_ids here are trip_ids the
@@ -51,11 +50,11 @@ type railDelayTrip struct {
 //
 // THSR is excluded by the operator filter rather than by omission: TDX serves no
 // delay feed for it, so an index entry could never be used.
-var railDelayIndexSQL = `
+var _railDelayIndexSQL = `
 SELECT t.train_no,
        t.operator || ':' || t.train_no || ':' || to_char(t.service_date, 'YYYYMMDD') AS trip_id,
        array_agg(DISTINCT c->>'StationID') AS stations
-FROM (` + railTripSource + `) t
+FROM (` + _railTripSource + `) t
 CROSS JOIN LATERAL jsonb_array_elements(t.stoptimes) c
 WHERE t.operator = 'TRA'
   AND t.service_date = $1::date
@@ -79,9 +78,9 @@ type gtfsRTRailDelayStats struct {
 // cadence as the bus index: a train number is reused across days, so an index
 // built for yesterday would name yesterday's trip.
 func loadRailDelayIndex(ctx context.Context, db *pgxpool.Pool, today string) (map[string]railDelayTrip, error) {
-	rows, err := db.Query(ctx, railDelayIndexSQL, today)
+	rows, err := db.Query(ctx, _railDelayIndexSQL, today)
 	if err != nil {
-		return nil, fmt.Errorf("gtfs-rt: load rail delay index: %w", err)
+		return nil, _oops.Wrapf(err, "gtfs-rt: load rail delay index")
 	}
 	defer rows.Close()
 	index := make(map[string]railDelayTrip, 2048)
@@ -89,7 +88,7 @@ func loadRailDelayIndex(ctx context.Context, db *pgxpool.Pool, today string) (ma
 		var trainNo, tripID string
 		var stations []string
 		if err := rows.Scan(&trainNo, &tripID, &stations); err != nil {
-			return nil, fmt.Errorf("gtfs-rt: load rail delay index: scan: %w", err)
+			return nil, _oops.Wrapf(err, "gtfs-rt: load rail delay index: scan")
 		}
 		set := make(map[string]bool, len(stations))
 		for _, station := range stations {
@@ -98,7 +97,7 @@ func loadRailDelayIndex(ctx context.Context, db *pgxpool.Pool, today string) (ma
 		index[trainNo] = railDelayTrip{tripID: tripID, stations: set}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("gtfs-rt: load rail delay index: rows: %w", err)
+		return nil, _oops.Wrapf(err, "gtfs-rt: load rail delay index: rows")
 	}
 	return index, nil
 }
@@ -109,11 +108,11 @@ func loadRailDelayIndex(ctx context.Context, db *pgxpool.Pool, today string) (ma
 func readRailDelays(ctx context.Context, rc *redis.Client) (map[string]string, map[string]string, error) {
 	minutes, err := rc.HGetAll(ctx, shared.TraDelayHashKey).Result()
 	if err != nil {
-		return nil, nil, fmt.Errorf("gtfs-rt: read TRA delays: %w", err)
+		return nil, nil, _oops.Wrapf(err, "gtfs-rt: read TRA delays")
 	}
 	stations, err := rc.HGetAll(ctx, shared.TraDelayStationKey).Result()
 	if err != nil {
-		return nil, nil, fmt.Errorf("gtfs-rt: read TRA delay stations: %w", err)
+		return nil, nil, _oops.Wrapf(err, "gtfs-rt: read TRA delay stations")
 	}
 	return minutes, stations, nil
 }

@@ -54,11 +54,16 @@ class _BoardList extends StatelessWidget {
     final today = departures.first.serviceDate;
     final firstTomorrow = departures.indexWhere((d) => d.serviceDate != today);
 
+    // Only TRA carries live delays, so only its board owes the rider the
+    // caveat that they lag the platform displays.
+    final notice = system == RailSystem.tra;
+
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
       physics: const AlwaysScrollableScrollPhysics(),
-      itemCount: departures.length,
+      itemCount: departures.length + (notice ? 1 : 0),
       itemBuilder: (context, index) {
+        if (index == departures.length) return const _BoardLiveNotice();
         final departure = departures[index];
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -91,6 +96,26 @@ class _BoardList extends StatelessWidget {
       },
     );
   }
+}
+
+/// The lag disclaimer under a TRA board. TDX's live train data shares the TRA
+/// website's source, which runs about two minutes behind the TIDS displays on
+/// the platform; the operator asks that riders be told the in-station displays
+/// win once they are inside.
+class _BoardLiveNotice extends StatelessWidget {
+  const _BoardLiveNotice();
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+    child: Text(
+      AppI18n.of(context).railBoardLiveNotice,
+      textAlign: TextAlign.center,
+      style: AppTextStyles.bodySmall.copyWith(
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    ),
+  );
 }
 
 /// Marks where the board crosses midnight into the next service date.

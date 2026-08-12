@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -30,12 +29,12 @@ import (
 // sample: a pass that differences within one recorded instant is indifferent to
 // how far apart those instants are (historySnapshotInterval).
 const (
-	// segmentDiffMinSecs / segmentDiffMaxSecs match segmentMinSecs/segmentMaxSecs:
+	// _segmentDiffMinSecs / segmentDiffMaxSecs match segmentMinSecs/segmentMaxSecs:
 	// both bound one hop's running time, and a disagreement would put two
 	// different definitions of "plausible" in one table.
-	segmentDiffMinSecs = segmentMinSecs
-	segmentDiffMaxSecs = segmentMaxSecs
-	// segmentDiffWindow is deliberately wider than segmentWindow. The cumulative
+	_segmentDiffMinSecs = _segmentMinSecs
+	_segmentDiffMaxSecs = _segmentMaxSecs
+	// _segmentDiffWindow is deliberately wider than segmentWindow. The cumulative
 	// pass has to match each observation to a departure, so old rows buy it
 	// little; this pass only needs a route to have run once, and TDX reports
 	// StopStatus 0 for the whole remainder of a route — a median of 32 consecutive
@@ -44,17 +43,17 @@ const (
 	// not since: 7 days yields 131,507 hops, 14 yields 156,156. Beyond 14 adds
 	// almost nothing today (156,478 for all of it) because the retained history
 	// does not reach further, and 30-day cleanup bounds it regardless.
-	segmentDiffWindow = 14 * 24 * time.Hour
-	// segmentRateMinHops is how many observed hops a route direction needs before
+	_segmentDiffWindow = 14 * 24 * time.Hour
+	// _segmentRateMinHops is how many observed hops a route direction needs before
 	// its own pace is used instead of its city's. Below it the median is drawn
 	// from too few segments to describe the route.
-	segmentRateMinHops = 5
-	// segmentEstimatedSamples marks a row as estimated rather than observed.
+	_segmentRateMinHops = 5
+	// _segmentEstimatedSamples marks a row as estimated rather than observed.
 	// bus_segment_time carries no source column, and sample_count already means
 	// "how many observations back this figure" — so zero says the honest thing,
 	// and the sample-count conflict rule then lets any real observation replace
 	// it. Readers wanting observed data only filter on sample_count > 0.
-	segmentEstimatedSamples = 0
+	_segmentEstimatedSamples = 0
 )
 
 // computeSegmentTimesFromEstimates fills bus_segment_time from adjacent-stop
@@ -75,13 +74,13 @@ func computeSegmentTimesFromEstimates(ctx context.Context, db *pgxpool.Pool, his
 	}
 	zap.S().Infow("start", "component", "segment_time_eta")
 	started := time.Now()
-	segs, err := hist.segmentsByEstimate(ctx, segmentDiffWindow)
+	segs, err := hist.segmentsByEstimate(ctx, _segmentDiffWindow)
 	if err != nil {
-		return obs.Transient(fmt.Errorf("read estimate segments: %w", err))
+		return obs.Transient(_oops.Wrapf(err, "read estimate segments"))
 	}
 	n, err := upsertSegmentTimes(ctx, db, segs)
 	if err != nil {
-		return obs.Transient(fmt.Errorf("rebuild bus segment times from estimates: %w", err))
+		return obs.Transient(_oops.Wrapf(err, "rebuild bus segment times from estimates"))
 	}
 	zap.S().Infow("complete",
 		"component", "segment_time_eta",
@@ -170,9 +169,9 @@ func fillSegmentTimesFromDistance(ctx context.Context, db *pgxpool.Pool) error {
 		-- Only genuinely empty hops. An existing row, observed or estimated, is
 		-- left exactly as it is.
 		ON CONFLICT (sub_route_uid, direction, from_stop_uid, to_stop_uid) DO NOTHING`,
-		segmentRateMinHops, segmentDiffMinSecs, segmentDiffMaxSecs, segmentEstimatedSamples)
+		_segmentRateMinHops, _segmentDiffMinSecs, _segmentDiffMaxSecs, _segmentEstimatedSamples)
 	if err != nil {
-		return obs.Transient(fmt.Errorf("fill bus segment times from distance: %w", err))
+		return obs.Transient(_oops.Wrapf(err, "fill bus segment times from distance"))
 	}
 	zap.S().Infow("complete",
 		"component", "segment_time_fill",

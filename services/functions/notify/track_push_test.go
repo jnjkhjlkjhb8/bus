@@ -72,8 +72,8 @@ func TestTrackPusherSendsBothTransports(t *testing.T) {
 	if message.Notification != nil {
 		t.Error("the card push carries a notification payload; it must be data-only or the shade gets a second, plain card")
 	}
-	if message.Data["type"] != trackPushType {
-		t.Errorf("data type = %q, want %q", message.Data["type"], trackPushType)
+	if message.Data["type"] != _trackPushType {
+		t.Errorf("data type = %q, want %q", message.Data["type"], _trackPushType)
 	}
 	if message.Data["remainingStops"] != "6" || message.Data["hopCount"] != "8" {
 		t.Errorf("numbers did not survive as strings: %v", message.Data)
@@ -173,7 +173,7 @@ func TestTrackPusherReportsBothLegsWhenOneFails(t *testing.T) {
 	err := NewTrackPusher(fcm, apns).PushCard(context.Background(), testCard(), CardTarget{
 		FCMToken: "device-token", ActivityToken: "activity-token",
 	}, nil)
-	if err == nil || !strings.Contains(err.Error(), "fcm down") {
+	if err == nil || !errMentions(err, "fcm down") {
 		t.Fatalf("PushCard() error = %v, want the FCM failure reported", err)
 	}
 	// The other leg still ran: two devices can share one session, and one being

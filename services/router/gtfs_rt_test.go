@@ -10,7 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const gtfsRTTestCredential = "0123456789abcdef0123456789abcdef"
+const _gtfsRTTestCredential = "0123456789abcdef0123456789abcdef"
 
 func gtfsRTTestEngine(t *testing.T, rc *redis.Client, credential string) *gin.Engine {
 	t.Helper()
@@ -55,19 +55,19 @@ func TestGTFSRTRouteIsNotMountedWithoutACredential(t *testing.T) {
 }
 
 func TestGTFSRTRouteIsNotMountedWithoutRedis(t *testing.T) {
-	engine := gtfsRTTestEngine(t, nil, gtfsRTTestCredential)
-	if got := gtfsRTRequest(t, engine, "Bearer "+gtfsRTTestCredential).Code; got != http.StatusNotFound {
+	engine := gtfsRTTestEngine(t, nil, _gtfsRTTestCredential)
+	if got := gtfsRTRequest(t, engine, "Bearer "+_gtfsRTTestCredential).Code; got != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 (route should not exist)", got)
 	}
 }
 
 func TestGTFSRTRejectsAMissingOrWrongCredential(t *testing.T) {
-	engine := gtfsRTTestEngine(t, gtfsRTUnreachableRedis(t), gtfsRTTestCredential)
+	engine := gtfsRTTestEngine(t, gtfsRTUnreachableRedis(t), _gtfsRTTestCredential)
 	for name, authorization := range map[string]string{
 		"absent":     "",
 		"wrong":      "Bearer fedcba9876543210fedcba9876543210",
-		"not bearer": "Basic " + gtfsRTTestCredential,
-		"bare token": gtfsRTTestCredential,
+		"not bearer": "Basic " + _gtfsRTTestCredential,
+		"bare token": _gtfsRTTestCredential,
 	} {
 		recorder := gtfsRTRequest(t, engine, authorization)
 		if recorder.Code != http.StatusUnauthorized {
@@ -83,8 +83,8 @@ func TestGTFSRTServes503WhenTheSnapshotIsAbsent(t *testing.T) {
 	// An empty FeedMessage would be a valid claim that nothing is cancelled,
 	// which is the wrong thing to say when the truth is that the builder is not
 	// running. The endpoint must fail instead, so MOTIS keeps the static plan.
-	engine := gtfsRTTestEngine(t, gtfsRTUnreachableRedis(t), gtfsRTTestCredential)
-	recorder := gtfsRTRequest(t, engine, "Bearer "+gtfsRTTestCredential)
+	engine := gtfsRTTestEngine(t, gtfsRTUnreachableRedis(t), _gtfsRTTestCredential)
+	recorder := gtfsRTRequest(t, engine, "Bearer "+_gtfsRTTestCredential)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", recorder.Code)
 	}
@@ -96,22 +96,22 @@ func TestGTFSRTServes503WhenTheSnapshotIsAbsent(t *testing.T) {
 func TestGTFSRTCredentialFromEnvRejectsWeakValues(t *testing.T) {
 	for name, value := range map[string]string{
 		"too short": "short",
-		"padded":    " " + gtfsRTTestCredential + " ",
+		"padded":    " " + _gtfsRTTestCredential + " ",
 	} {
-		t.Setenv(gtfsRTCredentialEnv, value)
+		t.Setenv(_gtfsRTCredentialEnv, value)
 		if _, err := GTFSRTCredentialFromEnv(); err == nil {
 			t.Errorf("%s credential was accepted", name)
 		}
 	}
 	// Empty is a decision, not a misconfiguration: it means "do not mount".
-	t.Setenv(gtfsRTCredentialEnv, "")
+	t.Setenv(_gtfsRTCredentialEnv, "")
 	credential, err := GTFSRTCredentialFromEnv()
 	if err != nil || credential != "" {
 		t.Errorf("empty credential = %q, %v; want \"\", nil", credential, err)
 	}
-	t.Setenv(gtfsRTCredentialEnv, gtfsRTTestCredential)
+	t.Setenv(_gtfsRTCredentialEnv, _gtfsRTTestCredential)
 	credential, err = GTFSRTCredentialFromEnv()
-	if err != nil || credential != gtfsRTTestCredential {
+	if err != nil || credential != _gtfsRTTestCredential {
 		t.Errorf("valid credential = %q, %v", credential, err)
 	}
 }

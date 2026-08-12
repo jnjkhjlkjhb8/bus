@@ -6,12 +6,12 @@ import (
 	"time"
 )
 
-// specTimeTableJSON is the GetSpecTimeTable shape as the blob actually serves it
+// _specTimeTableJSON is the GetSpecTimeTable shape as the blob actually serves it
 // (singular-named wrapper objects around every list), trimmed to the cases the
 // reshaping has to decide: a filed trip for the day, one for another day, one
 // the operator filed as 停止營運, and an entry with the "null" direction the feed
 // uses when it does not know.
-const specTimeTableJSON = `{
+const _specTimeTableJSON = `{
   "updateTime": 1785950118247,
   "authorityCode": "TPE",
   "specificTimeTables": {"specificTimeTable": [
@@ -48,14 +48,14 @@ const specTimeTableJSON = `{
 func decodeSpecTimeTable(t *testing.T) dataTaipeiSpecTimeTable {
 	t.Helper()
 	var feed dataTaipeiSpecTimeTable
-	if err := json.Unmarshal([]byte(specTimeTableJSON), &feed); err != nil {
+	if err := json.Unmarshal([]byte(_specTimeTableJSON), &feed); err != nil {
 		t.Fatalf("decode spec timetable: %v", err)
 	}
 	return feed
 }
 
 func TestDataTaipeiDailyTimetableRows(t *testing.T) {
-	day := time.Date(2026, 8, 6, 11, 20, 0, 0, taipei)
+	day := time.Date(2026, 8, 6, 11, 20, 0, 0, _taipei)
 
 	rows := dataTaipeiDailyTimetableRows(decodeSpecTimeTable(t), day)
 
@@ -85,7 +85,7 @@ func TestDataTaipeiDailyTimetableRows(t *testing.T) {
 }
 
 func TestDataTaipeiDailyTimetableRowsOtherDay(t *testing.T) {
-	day := time.Date(2026, 8, 9, 0, 0, 0, 0, taipei)
+	day := time.Date(2026, 8, 9, 0, 0, 0, 0, _taipei)
 	if rows := dataTaipeiDailyTimetableRows(decodeSpecTimeTable(t), day); len(rows) != 0 {
 		t.Fatalf("rows = %d for a day nothing is filed for, want 0", len(rows))
 	}
@@ -94,7 +94,7 @@ func TestDataTaipeiDailyTimetableRowsOtherDay(t *testing.T) {
 // The reshaped rows must survive the loader's own validation, or the landing
 // would take the whole city down at load time instead of here.
 func TestDataTaipeiDailyTimetableRowsPassLoaderValidation(t *testing.T) {
-	day := time.Date(2026, 8, 6, 0, 0, 0, 0, taipei)
+	day := time.Date(2026, 8, 6, 0, 0, 0, 0, _taipei)
 	rows := dataTaipeiDailyTimetableRows(decodeSpecTimeTable(t), day)
 
 	encoded, err := json.Marshal(rows)

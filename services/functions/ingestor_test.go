@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -176,18 +177,24 @@ func TestIngestRaw_FetchesAllBusCityAPIs(t *testing.T) {
 
 	_ = ingestRaw(context.Background(), testTDXClient(srv.URL))
 
-	for _, city := range cities {
-		for _, api := range ingestBusAPIs {
+	for _, city := range _cities {
+		for _, api := range _ingestBusAPIs {
 			var path string
 			if city == "InterCity" {
 				path = "/v2/Bus/" + api + "/InterCity"
 			} else {
 				path = "/v2/Bus/" + api + "/City/" + city
 			}
-			// DailyTimeTable is the one bus API TDX does not serve for every
-			// city; landing the unserved ones only yields HTTP 400.
+			// Two bus APIs are not served for every city, and landing the
+			// unserved partitions only yields an HTTP error: DailyTimeTable
+			// answers 400 for the cities in busDailyTimetableSkip, and
+			// DisplayStopOfRoute is served for five cities only (400 elsewhere,
+			// 404 for InterCity).
 			want := 1
 			if api == "DailyTimeTable" && busDailyTimetableSkip(city) {
+				want = 0
+			}
+			if api == "DisplayStopOfRoute" && !slices.Contains(displayStopCities(), city) {
 				want = 0
 			}
 			if got := seen[path]; got != want {
@@ -357,7 +364,8 @@ func TestFetchRawForcesOneEndpointRefetchOnLandingStateMismatch(t *testing.T) {
 	}
 
 	err := fetchRawWithVerifier(
-		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", false, verify,
+		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+		false /* forceReland */, verify,
 	)
 	if err != nil {
 		t.Fatalf("fetchRawWithVerifier: %v", err)
@@ -384,8 +392,8 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			}, nil
 		}}
 		err := fetchRawWithVerifier(
-			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", false,
-			func(context.Context, rawTarget, string, string) error { return mismatch },
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+			false /* forceReland */, func(context.Context, rawTarget, string, string) error { return mismatch },
 		)
 		if !errors.Is(err, errRawLandingStateMismatch) {
 			t.Fatalf("error = %v, want state mismatch", err)
@@ -408,8 +416,8 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			}, nil
 		}}
 		err := fetchRawWithVerifier(
-			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", false,
-			func(context.Context, rawTarget, string, string) error { return mismatch },
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+			false /* forceReland */, func(context.Context, rawTarget, string, string) error { return mismatch },
 		)
 		if !errors.Is(err, invalidateErr) || !errors.Is(err, errRawLandingStateMismatch) {
 			t.Fatalf("error = %v, want invalidation and mismatch", err)
@@ -434,8 +442,8 @@ func TestFetchRawBoundedRefetchFailsClosed(t *testing.T) {
 			}, nil
 		}}
 		err := fetchRawWithVerifier(
-			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", false,
-			func(context.Context, rawTarget, string, string) error { return dbErr },
+			context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+			false /* forceReland */, func(context.Context, rawTarget, string, string) error { return dbErr },
 		)
 		if !errors.Is(err, dbErr) {
 			t.Fatalf("error = %v, want %v", err, dbErr)
@@ -471,7 +479,8 @@ func TestFetchRawFullReland(t *testing.T) {
 	}
 
 	err := fetchRawWithVerifier(
-		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test", true, verify,
+		context.Background(), fetcher, "/v2/Bus/Route/City/Taipei", "bus_route_Taipei", "cycle-test",
+		true /* forceReland */, verify,
 	)
 	if err != nil {
 		t.Fatalf("fetchRawWithVerifier: %v", err)

@@ -440,7 +440,7 @@ class _SearchViewState extends State<_SearchView> {
     }
 
     if (state.query.isEmpty) {
-      return const _RecentSearches();
+      return const _ZeroInputSuggestions();
     }
 
     return Column(

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -176,7 +175,7 @@ func THSRTimetablePayload(ctx context.Context, db railDB, start, end string, dat
 	}
 	mp := make(map[string]*models.ThsaTimetable)
 	startSeq := make(map[string]int)
-	arr := []*models.ThsaTimetable{}
+	arr := make([]*models.ThsaTimetable, 0, len(row))
 	for _, temp := range row {
 		if temp.Stationid != start {
 			continue
@@ -208,12 +207,12 @@ func THSRTimetablePayload(ctx context.Context, db railDB, start, end string, dat
 		}
 		w, err := time.Parse(time.TimeOnly, seed.Starting_Time)
 		if err != nil {
-			zap.S().Errorw(fmt.Sprintf("parse time error: %v", err))
+			zap.S().Errorw("parse time error", "err", err)
 			continue
 		}
 		t, err := time.Parse(time.TimeOnly, temp.Arrivaltime)
 		if err != nil {
-			zap.S().Errorw(fmt.Sprintf("parse time error: %v", err))
+			zap.S().Errorw("parse time error", "err", err)
 			continue
 		}
 		duration := t.Sub(w)

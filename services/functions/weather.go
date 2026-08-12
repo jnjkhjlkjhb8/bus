@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -17,9 +16,10 @@ import (
 	"go.uber.org/zap"
 )
 
-const cwaBase = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
-
-const weatherHTTPTimeout = 30 * time.Second
+const (
+	_cwaBase            = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
+	_weatherHTTPTimeout = 30 * time.Second
+)
 
 type weatherData struct {
 	Temperature   float64 `json:"temperature"`
@@ -28,7 +28,7 @@ type weatherData struct {
 	Humidity      float64 `json:"humidity"`
 }
 
-var countyToCity = map[string]string{
+var _countyToCity = map[string]string{
 	"臺北市": "Taipei", "新北市": "NewTaipei", "桃園市": "Taoyuan",
 	"臺中市": "Taichung", "臺南市": "Tainan", "高雄市": "Kaohsiung",
 	"基隆市": "Keelung", "新竹市": "Hsinchu", "新竹縣": "HsinchuCounty",
@@ -48,8 +48,8 @@ func weatherSync(ctx context.Context, rc *redis.Client) error {
 	if rc == nil {
 		return errors.New("weather Redis client is nil")
 	}
-	client := &http.Client{Timeout: weatherHTTPTimeout}
-	snapshot, err := fetchWeatherSnapshot(ctx, client, cwaBase, apiKey)
+	client := &http.Client{Timeout: _weatherHTTPTimeout}
+	snapshot, err := fetchWeatherSnapshot(ctx, client, _cwaBase, apiKey)
 	if err != nil {
 		return err
 	}
@@ -61,14 +61,14 @@ func writeWeatherSnapshot(ctx context.Context, rc *redis.Client, snapshot map[st
 	for city, data := range snapshot {
 		encoded, err := json.Marshal(data)
 		if err != nil {
-			return fmt.Errorf("marshal weather for %s: %w", city, err)
+			return _oops.With("city", city).Wrapf(err, "marshal weather")
 		}
 		pipe.Set(ctx, shared.WeatherKey(city), encoded, time.Hour)
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("write weather snapshot to Redis: %w", err)
+		return _oops.Wrapf(err, "write weather snapshot to Redis")
 	}
-	zap.S().Infow(fmt.Sprintf("synced %d cities", len(snapshot)), "component", "weather")
+	zap.S().Infow("synced cities", "component", "weather", "cities", len(snapshot))
 	return nil
 }
 
@@ -81,19 +81,19 @@ func fetchWeatherSnapshot(ctx context.Context, client *http.Client, baseURL, api
 	}
 	obsBody, err := fetchCWA(ctx, client, baseURL+"/O-A0003-001", apiKey)
 	if err != nil {
-		return nil, fmt.Errorf("fetch observations: %w", err)
+		return nil, _oops.Wrapf(err, "fetch observations")
 	}
 	rainBody, err := fetchCWA(ctx, client, baseURL+"/O-A0002-001", apiKey)
 	if err != nil {
-		return nil, fmt.Errorf("fetch rainfall: %w", err)
+		return nil, _oops.Wrapf(err, "fetch rainfall")
 	}
 	observations, err := parseObservations(obsBody)
 	if err != nil {
-		return nil, fmt.Errorf("parse observations: %w", err)
+		return nil, _oops.Wrapf(err, "parse observations")
 	}
 	rainfall, err := parseRainfall(rainBody)
 	if err != nil {
-		return nil, fmt.Errorf("parse rainfall: %w", err)
+		return nil, _oops.Wrapf(err, "parse rainfall")
 	}
 	for city, precipitation := range rainfall {
 		data, ok := observations[city]
@@ -112,20 +112,20 @@ func fetchWeatherSnapshot(ctx context.Context, client *http.Client, baseURL, api
 func fetchCWA(ctx context.Context, client *http.Client, url, apiKey string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, _oops.Wrapf(err, "create request")
 	}
 	req.Header.Set("Authorization", apiKey)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request %s: %w", url, err)
+		return nil, _oops.With("url", url).Wrapf(err, "request")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		return nil, fmt.Errorf("read %s body: %w", url, readErr)
+		return nil, _oops.With("url", url).Wrapf(readErr, "read body")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("request %s: HTTP status %d", url, resp.StatusCode)
+		return nil, _oops.With("url", url).With("status_code", resp.StatusCode).Errorf("request: HTTP status")
 	}
 	return body, nil
 }
@@ -159,28 +159,28 @@ func parseObservations(body []byte) (map[string]weatherData, error) {
 	}
 	latest := make(map[string]best)
 	for _, station := range payload.Records.Station {
-		city, ok := countyToCity[station.GeoInfo.CountyName]
+		city, ok := _countyToCity[station.GeoInfo.CountyName]
 		if !ok {
 			continue
 		}
 		observedAt, err := time.Parse(time.RFC3339, station.ObsTime.DateTime)
 		if err != nil {
-			return nil, fmt.Errorf("city %s observation time: %w", city, err)
+			return nil, _oops.With("city", city).Wrapf(err, "city observation time")
 		}
 		if previous, exists := latest[city]; exists && !observedAt.After(previous.time) {
 			continue
 		}
 		temperature, err := parseCWAValue(station.WeatherElement.AirTemperature, "temperature")
 		if err != nil {
-			return nil, fmt.Errorf("city %s: %w", city, err)
+			return nil, _oops.With("city", city).Wrapf(err, "city")
 		}
 		wind, err := parseCWAValue(station.WeatherElement.WindSpeed, "wind speed")
 		if err != nil {
-			return nil, fmt.Errorf("city %s: %w", city, err)
+			return nil, _oops.With("city", city).Wrapf(err, "city")
 		}
 		humidity, err := parseCWAValue(station.WeatherElement.RelativeHumidity, "humidity")
 		if err != nil {
-			return nil, fmt.Errorf("city %s: %w", city, err)
+			return nil, _oops.With("city", city).Wrapf(err, "city")
 		}
 		if temperature < -90 || wind < -90 || humidity < -90 {
 			continue
@@ -223,17 +223,17 @@ func parseRainfall(body []byte) (map[string]float64, error) {
 	}
 	latest := make(map[string]best)
 	for _, station := range payload.Records.Station {
-		city, ok := countyToCity[station.GeoInfo.CountyName]
+		city, ok := _countyToCity[station.GeoInfo.CountyName]
 		if !ok {
 			continue
 		}
 		observedAt, err := time.Parse(time.RFC3339, station.ObsTime.DateTime)
 		if err != nil {
-			return nil, fmt.Errorf("city %s rainfall time: %w", city, err)
+			return nil, _oops.With("city", city).Wrapf(err, "city rainfall time")
 		}
 		value, err := parseCWAValue(station.RainfallElement.Now.Precipitation, "precipitation")
 		if err != nil {
-			return nil, fmt.Errorf("city %s: %w", city, err)
+			return nil, _oops.With("city", city).Wrapf(err, "city")
 		}
 		if value < 0 {
 			continue
@@ -252,7 +252,7 @@ func parseRainfall(body []byte) (map[string]float64, error) {
 func parseCWAValue(raw, field string) (float64, error) {
 	value, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return 0, fmt.Errorf("parse %s %q: %w", field, raw, err)
+		return 0, _oops.With("field", field).With("raw", raw).Wrapf(err, "parse")
 	}
 	return value, nil
 }
@@ -260,14 +260,14 @@ func parseCWAValue(raw, field string) (float64, error) {
 func decodeWeatherJSON(body []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("decode JSON body: %w", err)
+		return _oops.Wrapf(err, "decode JSON body")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return errors.New("JSON body contains trailing data")
 		}
-		return fmt.Errorf("decode JSON body trailer: %w", err)
+		return _oops.Wrapf(err, "decode JSON body trailer")
 	}
 	return nil
 }

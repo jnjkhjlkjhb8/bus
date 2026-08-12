@@ -42,7 +42,7 @@ func (s *busSnapshotSource) datasetJSONWithLandingCycle(_ context.Context, table
 
 func validBusSnapshotSource(city string) *busSnapshotSource {
 	now := time.Now()
-	prefix := citymap[city]
+	prefix := _citymap[city]
 	bodies := map[string][]byte{
 		"bus_route|" + city:        []byte(`[{"RouteUID":"TPE1","RouteName":{"Zh_tw":"1路"},"Operators":[{"OperatorID":"OP1"}],"SubRoutes":[{"SubRouteUID":"TPE100","SubRouteID":"100","SubRouteName":{"Zh_tw":"1路"},"Direction":0,"DepartureStopNameZh":"甲","DestinationStopNameZh":"乙","FirstBusTime":"06:00","LastBusTime":"23:00"}]}]`),
 		"bus_stopofroute|" + city:  []byte(`[{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Stops":[{"StopUID":"TPE_S1","StopName":{"Zh_tw":"甲站"},"StopSequence":1,"StationID":"ST1","StopPosition":{"PositionLon":121.5,"PositionLat":25.0}}]}]`),
@@ -77,16 +77,16 @@ func TestReadBusCitySnapshotAcceptsVerifiedEmptyOptionalDatasets(t *testing.T) {
 }
 
 func TestReadBusCitySnapshotRejectsMissingOrStaleCorrelatedDataset(t *testing.T) {
-	for _, test := range []struct {
+	for _, tt := range []struct {
 		name string
 		when time.Time
 	}{
 		{name: "missing landing state", when: time.Time{}},
-		{name: "stale landing state", when: time.Now().Add(-staleAfter - time.Hour)},
+		{name: "stale landing state", when: time.Now().Add(-_staleAfter - time.Hour)},
 	} {
-		t.Run(test.name, func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			src := validBusSnapshotSource("Taipei")
-			src.times["bus_shape|Taipei"] = test.when
+			src.times["bus_shape|Taipei"] = tt.when
 			_, err := readBusCitySnapshot(context.Background(), src, "Taipei")
 			if !errors.Is(err, errBusSnapshotIncomplete) {
 				t.Fatalf("error = %v, want errBusSnapshotIncomplete", err)
@@ -103,10 +103,10 @@ func TestReadBusCitySnapshotRequiresOneDurableLandingCycleBeforeBegin(t *testing
 		{name: "mixed cycle", cycle: "cycle-prior"},
 		{name: "legacy state without cycle", cycle: ""},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			src := validBusSnapshotSource("Taipei")
-			src.cycles["bus_shape|Taipei"] = test.cycle
+			src.cycles["bus_shape|Taipei"] = tt.cycle
 			beginner := &recordingBusBeginner{tx: &recordingBusTx{}}
 			snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
 			if err == nil {
@@ -191,12 +191,12 @@ func TestReadBusCitySnapshotRejectsForeignUIDsAndParentMismatchBeforeBegin(t *te
 			body:  `[{"stationgroupuid":"NWTG1","stationgroupid":"G1","stationgroupname":{"Zh_tw":"甲站"},"stationgroupposition":{"PositionLon":121.5,"PositionLat":25}}]`,
 		},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			src := validBusSnapshotSource(test.city)
-			src.bodies[test.table+"|"+test.city] = []byte(test.body)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src := validBusSnapshotSource(tt.city)
+			src.bodies[tt.table+"|"+tt.city] = []byte(tt.body)
 			beginner := &recordingBusBeginner{tx: &recordingBusTx{}}
-			snapshot, err := readBusCitySnapshot(context.Background(), src, test.city)
+			snapshot, err := readBusCitySnapshot(context.Background(), src, tt.city)
 			if err == nil {
 				err = writeBusCitySnapshot(context.Background(), beginner, snapshot)
 			}
@@ -245,17 +245,17 @@ func TestReadBusCitySnapshotRejectsMalformedOrDivergentOperatorsBeforeBegin(t *t
 			{"OperatorID":"OP1","OperatorName":{"Zh_tw":"乙"},"AuthorityCode":"TPE"}
 		]`, want: errBusSnapshotConflict},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			src := validBusSnapshotSource("Taipei")
-			src.bodies["bus_operator|Taipei"] = []byte(test.body)
+			src.bodies["bus_operator|Taipei"] = []byte(tt.body)
 			beginner := &recordingBusBeginner{tx: &recordingBusTx{}}
 			snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
 			if err == nil {
 				err = writeBusCitySnapshot(context.Background(), beginner, snapshot)
 			}
-			if !errors.Is(err, test.want) {
-				t.Fatalf("error = %v, want %v", err, test.want)
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("error = %v, want %v", err, tt.want)
 			}
 			if beginner.begins != 0 {
 				t.Fatalf("target transaction began %d times for invalid operators", beginner.begins)
@@ -408,6 +408,66 @@ func TestReadBusCitySnapshotDeduplicatesIdenticalStopsAndTakesFirstOnDivergence(
 	stops := snapshot.subroutes["TPE100"].Directions[0].Stops
 	if len(stops) != 1 || stops[0].StopUID != "S1" {
 		t.Fatalf("stops = %+v, want only the first variant (S1)", stops)
+	}
+}
+
+// A co-operated route ships one stop list per operator, and N1 keys each
+// estimate on the StopID of the operator running it. The discarded list's UIDs
+// have to survive as aliases or those estimates match nothing.
+func TestReadBusCitySnapshotKeepsDiscardedOperatorStopUIDsAsAliases(t *testing.T) {
+	t.Setenv("LOAD_QUARANTINE_MAX_RATIO", "1")
+	src := validBusSnapshotSource("Taipei")
+	src.bodies["bus_stopofroute|Taipei"] = []byte(`[
+		{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Stops":[
+			{"StopUID":"TPE_S1","StopName":{"Zh_tw":"甲"},"StopSequence":1,"StationID":"ST1","StopPosition":{"PositionLon":121.5,"PositionLat":25}},
+			{"StopUID":"TPE_S2","StopName":{"Zh_tw":"乙"},"StopSequence":2,"StationID":"ST1","StopPosition":{"PositionLon":121.6,"PositionLat":25}}]},
+		{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Stops":[
+			{"StopUID":"TPE_S1","StopName":{"Zh_tw":"甲"},"StopSequence":1,"StationID":"ST1","StopPosition":{"PositionLon":121.5,"PositionLat":25}},
+			{"StopUID":"TPE_OP2_S2","StopName":{"Zh_tw":"乙"},"StopSequence":2,"StationID":"ST1","StopPosition":{"PositionLon":121.6,"PositionLat":25}},
+			{"StopUID":"TPE_OP2_S3","StopName":{"Zh_tw":"丙"},"StopSequence":3,"StationID":"ST1","StopPosition":{"PositionLon":121.7,"PositionLat":25}}]}
+	]`)
+	snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
+	if err != nil {
+		t.Fatalf("readBusCitySnapshot: %v", err)
+	}
+	// Sequence 1 is identical in both lists (no alias needed) and sequence 3 has
+	// no counterpart in the kept list (nothing to point at), so exactly one row.
+	if len(snapshot.aliasRows) != 1 {
+		t.Fatalf("alias rows = %#v, want only the sequence-2 pair", snapshot.aliasRows)
+	}
+	want := []any{"TPE100", int16(0), "TPE_OP2_S2", "TPE_S2"}
+	for i, got := range snapshot.aliasRows[0] {
+		if got != want[i] {
+			t.Fatalf("alias row = %#v, want %#v", snapshot.aliasRows[0], want)
+		}
+	}
+}
+
+// TDX publishes (0,0) for stops and stations whose survey has not finished
+// (Keelung is the documented case). It is source state, not a broken record, so
+// the city still loads and keeps the stop.
+func TestReadBusCitySnapshotKeepsUnsurveyedPositions(t *testing.T) {
+	src := validBusSnapshotSource("Taipei")
+	src.bodies["bus_stopofroute|Taipei"] = []byte(`[{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Stops":[{"StopUID":"TPE_S1","StopName":{"Zh_tw":"甲站"},"StopSequence":1,"StationID":"ST1","StopPosition":{"PositionLon":0,"PositionLat":0}}]}]`)
+	src.bodies["bus_station|Taipei"] = []byte(`[{"stationuid":"TPEST1","stationid":"ST1","stationname":{"Zh_tw":"甲站"},"stationposition":{"PositionLon":0,"PositionLat":0},"stationgroupid":"G1"}]`)
+	snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
+	if err != nil {
+		t.Fatalf("unsurveyed position failed the city: %v", err)
+	}
+	stops := snapshot.subroutes["TPE100"].Directions[0].Stops
+	if len(stops) != 1 || stops[0].StopUID != "TPE_S1" {
+		t.Fatalf("stops = %+v, want the unsurveyed stop kept", stops)
+	}
+	if len(snapshot.stationRows) != 1 {
+		t.Fatalf("station rows = %d, want the unsurveyed station kept", len(snapshot.stationRows))
+	}
+
+	// Identity is still fatal: a stop with no name is a broken record, not a
+	// pending survey.
+	src = validBusSnapshotSource("Taipei")
+	src.bodies["bus_stopofroute|Taipei"] = []byte(`[{"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Stops":[{"StopUID":"TPE_S1","StopName":{"Zh_tw":""},"StopSequence":1,"StationID":"ST1","StopPosition":{"PositionLon":121.7,"PositionLat":25.1}}]}]`)
+	if _, err := readBusCitySnapshot(context.Background(), src, "Taipei"); err == nil {
+		t.Fatal("a nameless stop loaded, want the city rejected")
 	}
 }
 
@@ -704,11 +764,11 @@ func TestWriteBusCitySnapshotClearsEmptyScheduleAndPrunesInDependencyOrder(t *te
 
 func TestBusSubrouteUpsertRefreshesMutableFieldsAndUsesStationID(t *testing.T) {
 	for _, field := range []string{"route_uid = EXCLUDED.route_uid", "route_name = EXCLUDED.route_name", "sub_route_name = EXCLUDED.sub_route_name", "s ->> 'StationID'"} {
-		if !strings.Contains(busSubroutesUpsertSQL, field) {
+		if !strings.Contains(_busSubroutesUpsertSQL, field) {
 			t.Fatalf("busSubroutesUpsertSQL missing %q", field)
 		}
 	}
-	if strings.Contains(busSubroutesUpsertSQL, "s ->> 'StationUID'") {
+	if strings.Contains(_busSubroutesUpsertSQL, "s ->> 'StationUID'") {
 		t.Fatal("busSubroutesUpsertSQL still extracts nonexistent StationUID")
 	}
 }
@@ -736,7 +796,7 @@ func TestWriteBusCitySnapshotReturnsBeginAndCommitFailures(t *testing.T) {
 func TestWriteBusCitySnapshotReturnsEveryStageFailure(t *testing.T) {
 	for _, temp := range []string{
 		"temp_bus", "temp_bus_operators", "temp_bus_stations", "temp_bus_groups", "temp_bus_members",
-		"temp_bus_schedule", "temp_bus_static", "temp_bus_stop_map",
+		"temp_bus_schedule", "temp_bus_static", "temp_bus_stop_map", "temp_bus_stop_alias",
 	} {
 		t.Run("create "+temp, func(t *testing.T) {
 			tx := &recordingBusTx{failSQL: "CREATE TEMP TABLE " + temp + " "}
@@ -756,6 +816,7 @@ func TestWriteBusCitySnapshotReturnsEveryStageFailure(t *testing.T) {
 		"INSERT INTO bus_subroutes", "INSERT INTO bus_operators", "INSERT INTO bus_stations", "INSERT INTO bus_station_groups",
 		"INSERT INTO bus_station_group_members", "DELETE FROM bus_schedule", "INSERT INTO bus_schedule",
 		"INSERT INTO bus_static", "DELETE FROM bus_station_stop_map", "INSERT INTO bus_station_stop_map",
+		"DELETE FROM bus_stop_alias", "INSERT INTO bus_stop_alias",
 		"DELETE FROM bus_station_group_members", "DELETE FROM bus_station_groups current",
 		"DELETE FROM bus_stations", "DELETE FROM bus_subroutes", "DELETE FROM bus_static", "DELETE FROM bus_operators",
 	} {
@@ -830,16 +891,16 @@ func TestWriteBusCitySnapshotNeverReadsRawTDXFromTarget(t *testing.T) {
 }
 
 func TestInvalidateBusStaticAfterCommitReturnsRedisFailureAndDropsOnlyCity(t *testing.T) {
-	storeBusStaticMapIn(&busStaticMapCache, "TPE", []busStationmap{{StopUID: "old-tpe"}}, "1", time.Now())
-	storeBusStaticMapIn(&busStaticMapCache, "NWT", []busStationmap{{StopUID: "old-nwt"}}, "1", time.Now())
+	storeBusStaticMapIn(&_busStaticMapCache, "TPE", []busStationmap{{StopUID: "old-tpe"}}, "1", time.Now())
+	storeBusStaticMapIn(&_busStaticMapCache, "NWT", []busStationmap{{StopUID: "old-nwt"}}, "1", time.Now())
 	t.Cleanup(invalidateBusStaticMap)
 	if err := invalidateBusStaticAfterCommit(context.Background(), nil, "Taipei"); err == nil {
 		t.Fatal("nil Redis returned nil post-commit invalidation error")
 	}
-	if _, ok := busStaticMapCache.Load("TPE"); ok {
+	if _, ok := _busStaticMapCache.Load("TPE"); ok {
 		t.Fatal("Taipei local cache was not invalidated")
 	}
-	if _, ok := busStaticMapCache.Load("NWT"); !ok {
+	if _, ok := _busStaticMapCache.Load("NWT"); !ok {
 		t.Fatal("Taipei invalidation cleared unrelated NewTaipei cache")
 	}
 }
@@ -947,10 +1008,10 @@ func TestReadBusCitySnapshotQuarantinesRecordDefects(t *testing.T) {
 			        {"RouteUID":"TPE1","SubRouteUID":"TPE100","Direction":0,"Frequencys":[{"StartTime":"06:00","EndTime":"08:00","MinHeadwayMins":9,"MaxHeadwayMins":20}]}]`,
 		},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			src := validBusSnapshotSource("Taipei")
-			src.bodies[test.table+"|Taipei"] = []byte(test.body)
+			src.bodies[tt.table+"|Taipei"] = []byte(tt.body)
 			snapshot, err := readBusCitySnapshot(context.Background(), src, "Taipei")
 			if err != nil {
 				t.Fatalf("error = %v, want the city to load with the record dropped", err)

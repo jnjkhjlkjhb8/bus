@@ -7,12 +7,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type postgresNearbyStore struct {
+type PostgresNearbyStore struct {
 	db CoreDB
 }
 
-func NewPostgresNearbyStore(db CoreDB) *postgresNearbyStore {
-	return &postgresNearbyStore{db: db}
+func NewPostgresNearbyStore(db CoreDB) *PostgresNearbyStore {
+	return &PostgresNearbyStore{db: db}
 }
 
 type nearbyDBRow struct {
@@ -24,7 +24,7 @@ type nearbyDBRow struct {
 	Lat            float64 `db:"lat"`
 }
 
-func (s *postgresNearbyStore) Find(ctx context.Context, mode NearbyMode, query NearbyQuery) ([]NearbyCandidate, error) {
+func (s *PostgresNearbyStore) Find(ctx context.Context, mode NearbyMode, query NearbyQuery) ([]NearbyCandidate, error) {
 	statement, err := nearbySQL(mode)
 	if err != nil {
 		return nil, err
@@ -57,16 +57,16 @@ func nearbySQL(mode NearbyMode) (string, error) {
 			FROM bus_station_groups g WHERE ST_DWithin(position::geography, ST_SetSRID(ST_MakePoint($1,$2), 4326)::geography, $3)
 			AND EXISTS (SELECT 1 FROM bus_station_group_members m WHERE m.group_uid = g.group_uid)
 			ORDER BY geodesic_meters LIMIT $4`, nil
-	case nearbyBike:
+	case _nearbyBike:
 		return nearbyPointSQL("station_uid", "name", "bike_stations", "geom"), nil
-	case nearbyMRT:
+	case _nearbyMRT:
 		return nearbyPointSQL("station_id", "name", "mrt_station", "stationposition"), nil
-	case nearbyTRA:
+	case _nearbyTRA:
 		return nearbyPointSQL("station_id", "name", "tra_stations", "geom"), nil
-	case nearbyTHSR:
+	case _nearbyTHSR:
 		return nearbyPointSQL("station_id", "name", "thsr_stations", "geom"), nil
 	default:
-		return "", fmt.Errorf("unknown nearby mode %d", mode)
+		return "", _oops.With("mode", mode).Errorf("unknown nearby mode")
 	}
 }
 

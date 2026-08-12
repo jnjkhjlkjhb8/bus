@@ -3,7 +3,6 @@ package main
 import (
 	"archive/zip"
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,25 +28,25 @@ import (
 // allocation this process makes.
 
 const (
-	// gtfsExportTimeout bounds one build.
+	// _gtfsExportTimeout bounds one build.
 	//
 	// 15 minutes was not enough and the export had been failing on it: measured
 	// against prod on 2026-08-06, stop_times.txt alone streams for ten of them
 	// and shapes.txt for two more. The budget is the whole nightly window, not a
 	// request, so this is set well clear of the ~20 minutes a build takes rather
 	// than close to it — a slow night must not cost the feed.
-	gtfsExportTimeout = 45 * time.Minute
-	// gtfsOutputDirEnv overrides where feeds are written. The default is a path
+	_gtfsExportTimeout = 45 * time.Minute
+	// _gtfsOutputDirEnv overrides where feeds are written. The default is a path
 	// a volume can be mounted at, since the consumer of these files is another
 	// container.
-	gtfsOutputDirEnv     = "GTFS_OUT_DIR"
-	gtfsDefaultOutputDir = "/data/gtfs"
-	// gtfsLatestName is the stable path a planner is pointed at. It is a symlink
+	_gtfsOutputDirEnv     = "GTFS_OUT_DIR"
+	_gtfsDefaultOutputDir = "/data/gtfs"
+	// _gtfsLatestName is the stable path a planner is pointed at. It is a symlink
 	// so that publishing a new feed is one atomic rename rather than a copy.
-	gtfsLatestName = "gtfs.zip"
-	// gtfsKeepFeeds is how many dated builds survive a prune. Enough to roll back
+	_gtfsLatestName = "gtfs.zip"
+	// _gtfsKeepFeeds is how many dated builds survive a prune. Enough to roll back
 	// to a known-good feed after a bad one ships, not enough to fill the disk.
-	gtfsKeepFeeds = 3
+	_gtfsKeepFeeds = 3
 )
 
 // gtfsFile is one entry in the archive. sql must be a complete SELECT; the
@@ -89,22 +88,17 @@ func gtfsTempTables() []gtfsTempTable {
 		// what is in here: trips.txt is restricted to the trips that have calls
 		// (gtfsStopTimesSQL drops the ones whose times it cannot state), and
 		// stops.txt to the stops those calls name.
-		{name: gtfsStopTimeTable, sql: gtfsStopTimesSQL, indexOn: "trip_id"},
+		{name: _gtfsStopTimeTable, sql: _gtfsStopTimesSQL, indexOn: "trip_id"},
 		// stop_areas.txt looks a stop up per fare area, so this one is indexed
 		// even though every other reader of it scans.
-		{name: gtfsStopTable, sql: gtfsStopsSQL, indexOn: "stop_id"},
-		// Rail geometry: the clipped segments first, then the trip-to-shape
-		// mapping shapes.txt and trips.txt both read. Both are joined to per stop
-		// pair and per trip rather than scanned, hence the indexes.
-		{name: gtfsRailSegTable, sql: gtfsRailSegSQL, indexOn: "from_stop, to_stop"},
-		{name: gtfsRailTripShapeTable, sql: gtfsRailTripShapeSQL, indexOn: "trip_id"},
-		{name: gtfsFareSrcTable, sql: busFareSourceSQL, indexOn: "city, routeid"},
-		{name: gtfsStopUIDTable, sql: busStopUIDSQL, indexOn: "city, stop_id"},
-		{name: gtfsStopSeqTable, sql: busStopSeqSQL, indexOn: "subrouteuid, direction, stop_id"},
-		{name: gtfsFarePairTable, sql: busFarePairSQL, indexOn: "routeuid, from_uid, to_uid"},
-		{name: gtfsFareLegTable, sql: busFareLegSQL},
-		{name: gtfsFarePricedTable, sql: gtfsFarePricedSQL},
-		{name: gtfsFareZoneTable, sql: gtfsFareZoneSQL},
+		{name: _gtfsStopTable, sql: _gtfsStopsSQL, indexOn: "stop_id"},
+		{name: _gtfsFareSrcTable, sql: _busFareSourceSQL, indexOn: "city, routeid"},
+		{name: _gtfsStopUIDTable, sql: _busStopUIDSQL, indexOn: "city, stop_id"},
+		{name: _gtfsStopSeqTable, sql: _busStopSeqSQL, indexOn: "subrouteuid, direction, stop_id"},
+		{name: _gtfsFarePairTable, sql: _busFarePairSQL, indexOn: "routeuid, from_uid, to_uid"},
+		{name: _gtfsFareLegTable, sql: _busFareLegSQL},
+		{name: _gtfsFarePricedTable, sql: _gtfsFarePricedSQL},
+		{name: _gtfsFareZoneTable, sql: _gtfsFareZoneSQL},
 	}
 }
 
@@ -116,33 +110,33 @@ func gtfsTempTables() []gtfsTempTable {
 // running times the ETA history does not yet cover (FDPL-23, FDPL-26).
 func gtfsFiles(version string) []gtfsFile {
 	return []gtfsFile{
-		{"agency.txt", gtfsAgencySQL},
+		{"agency.txt", _gtfsAgencySQL},
 		// stops.txt is the materialized set itself, not a second evaluation of
 		// the query behind it: the fare files filter against these exact ids.
-		{"stops.txt", "SELECT * FROM " + gtfsStopTable},
-		{"routes.txt", gtfsRoutesSQL},
-		{"calendar_dates.txt", gtfsCalendarDatesSQL},
-		{"trips.txt", gtfsTripsSQL},
-		{"stop_times.txt", "SELECT * FROM " + gtfsStopTimeTable},
-		{"frequencies.txt", gtfsFrequenciesSQL},
-		{"transfers.txt", gtfsTransfersSQL},
-		{"pathways.txt", gtfsPathwaysSQL},
-		{"shapes.txt", gtfsShapesSQL},
-		{"areas.txt", gtfsAreasSQL},
-		{"stop_areas.txt", gtfsStopAreasSQL},
-		{"fare_products.txt", gtfsFareProductsSQL},
-		{"fare_leg_rules.txt", gtfsFareLegRulesSQL},
-		{"translations.txt", gtfsTranslationsSQL},
+		{"stops.txt", "SELECT * FROM " + _gtfsStopTable},
+		{"routes.txt", _gtfsRoutesSQL},
+		{"calendar_dates.txt", _gtfsCalendarDatesSQL},
+		{"trips.txt", _gtfsTripsSQL},
+		{"stop_times.txt", "SELECT * FROM " + _gtfsStopTimeTable},
+		{"frequencies.txt", _gtfsFrequenciesSQL},
+		{"transfers.txt", _gtfsTransfersSQL},
+		{"pathways.txt", _gtfsPathwaysSQL},
+		{"shapes.txt", _gtfsShapesSQL},
+		{"areas.txt", _gtfsAreasSQL},
+		{"stop_areas.txt", _gtfsStopAreasSQL},
+		{"fare_products.txt", _gtfsFareProductsSQL},
+		{"fare_leg_rules.txt", _gtfsFareLegRulesSQL},
+		{"translations.txt", _gtfsTranslationsSQL},
 		{"feed_info.txt", gtfsFeedInfoSQL(version)},
-		{"attributions.txt", gtfsAttributionsSQL},
+		{"attributions.txt", _gtfsAttributionsSQL},
 	}
 }
 
 func gtfsOutputDir() string {
-	if dir := strings.TrimSpace(os.Getenv(gtfsOutputDirEnv)); dir != "" {
+	if dir := strings.TrimSpace(os.Getenv(_gtfsOutputDirEnv)); dir != "" {
 		return dir
 	}
-	return gtfsDefaultOutputDir
+	return _gtfsDefaultOutputDir
 }
 
 // runGTFSExport builds one feed and publishes it, logging rather than returning
@@ -150,7 +144,7 @@ func gtfsOutputDir() string {
 // this process depends on it, so a failed export must not fail the load that
 // already succeeded.
 func runGTFSExport(db *pgxpool.Pool, runDate time.Time) {
-	ctx, cancel := context.WithTimeout(context.Background(), gtfsExportTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), _gtfsExportTimeout)
 	defer cancel()
 	started := time.Now()
 	path, rows, err := buildGTFSFeed(ctx, db, gtfsOutputDir(), runDate)
@@ -175,14 +169,14 @@ func runGTFSExport(db *pgxpool.Pool, runDate time.Time) {
 // consumer polling the directory never observes a half-written zip.
 func buildGTFSFeed(ctx context.Context, db *pgxpool.Pool, dir string, runDate time.Time) (string, int64, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", 0, fmt.Errorf("gtfs export: create %s: %w", dir, err)
+		return "", 0, _oops.With("dir", dir).Wrapf(err, "gtfs export: create")
 	}
 	version := runDate.Format("20060102-1504")
 	final := filepath.Join(dir, "gtfs-"+version+".zip")
 
 	temp, err := os.CreateTemp(dir, ".gtfs-*.zip.tmp")
 	if err != nil {
-		return "", 0, fmt.Errorf("gtfs export: create temp: %w", err)
+		return "", 0, _oops.Wrapf(err, "gtfs export: create temp")
 	}
 	tempName := temp.Name()
 	// Removing the temp file is a no-op once it has been renamed away.
@@ -198,18 +192,18 @@ func buildGTFSFeed(ctx context.Context, db *pgxpool.Pool, dir string, runDate ti
 	// fsync before the rename: a crash between the two would otherwise publish a
 	// name that points at unflushed content.
 	if err := temp.Sync(); err != nil {
-		return "", 0, fmt.Errorf("gtfs export: sync: %w", err)
+		return "", 0, _oops.Wrapf(err, "gtfs export: sync")
 	}
 	if err := temp.Close(); err != nil {
-		return "", 0, fmt.Errorf("gtfs export: close: %w", err)
+		return "", 0, _oops.Wrapf(err, "gtfs export: close")
 	}
 	if err := os.Rename(tempName, final); err != nil {
-		return "", 0, fmt.Errorf("gtfs export: publish %s: %w", final, err)
+		return "", 0, _oops.With("final", final).Wrapf(err, "gtfs export: publish")
 	}
 	if err := linkLatestGTFS(dir, filepath.Base(final)); err != nil {
 		return "", 0, err
 	}
-	if err := pruneGTFSFeeds(dir, gtfsKeepFeeds); err != nil {
+	if err := pruneGTFSFeeds(dir, _gtfsKeepFeeds); err != nil {
 		// A failed prune leaves extra files behind; the feed itself is published
 		// and usable, so this is reported without failing the build.
 		zap.S().Warnw("failed", "component", "gtfs", "action", "prune", "event", "failed", "err", err)
@@ -225,13 +219,13 @@ func buildGTFSFeed(ctx context.Context, db *pgxpool.Pool, dir string, runDate ti
 func writeGTFSArchive(ctx context.Context, db *pgxpool.Pool, w io.Writer, version string) (int64, error) {
 	conn, err := db.Acquire(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("gtfs export: acquire connection: %w", err)
+		return 0, _oops.Wrapf(err, "gtfs export: acquire connection")
 	}
 	defer conn.Release()
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("gtfs export: begin: %w", err)
+		return 0, _oops.Wrapf(err, "gtfs export: begin")
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	// REPEATABLE READ is what makes the files agree with each other. READ ONLY
@@ -240,7 +234,7 @@ func writeGTFSArchive(ctx context.Context, db *pgxpool.Pool, w io.Writer, versio
 	// shared sets into temp tables. Nothing here writes anything else — every
 	// file is a COPY of a SELECT.
 	if _, err := tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"); err != nil {
-		return 0, fmt.Errorf("gtfs export: set snapshot: %w", err)
+		return 0, _oops.Wrapf(err, "gtfs export: set snapshot")
 	}
 	if err := createGTFSTempTables(ctx, tx, true /* withData */); err != nil {
 		return 0, err
@@ -251,12 +245,12 @@ func writeGTFSArchive(ctx context.Context, db *pgxpool.Pool, w io.Writer, versio
 	for _, file := range gtfsFiles(version) {
 		entry, err := zw.Create(file.name)
 		if err != nil {
-			return 0, fmt.Errorf("gtfs export: create %s: %w", file.name, err)
+			return 0, _oops.With("file_name", file.name).Wrapf(err, "gtfs export: create")
 		}
 		tag, err := conn.Conn().PgConn().CopyTo(ctx, entry,
 			"COPY ("+file.sql+") TO STDOUT WITH (FORMAT csv, HEADER true)")
 		if err != nil {
-			return 0, fmt.Errorf("gtfs export: copy %s: %w", file.name, err)
+			return 0, _oops.With("file_name", file.name).Wrapf(err, "gtfs export: copy")
 		}
 		zap.S().Infow("written",
 			"component", "gtfs",
@@ -268,7 +262,7 @@ func writeGTFSArchive(ctx context.Context, db *pgxpool.Pool, w io.Writer, versio
 		total += tag.RowsAffected()
 	}
 	if err := zw.Close(); err != nil {
-		return 0, fmt.Errorf("gtfs export: finish archive: %w", err)
+		return 0, _oops.Wrapf(err, "gtfs export: finish archive")
 	}
 	return total, nil
 }
@@ -287,22 +281,22 @@ func createGTFSTempTables(ctx context.Context, tx pgx.Tx, withData bool) error {
 		create := "CREATE TEMP TABLE " + table.name + " ON COMMIT DROP AS " + table.sql
 		if !withData {
 			if _, err := tx.Exec(ctx, create+" WITH NO DATA"); err != nil {
-				return fmt.Errorf("gtfs export: declare %s: %w", table.name, err)
+				return _oops.With("table_name", table.name).Wrapf(err, "gtfs export: declare")
 			}
 			continue
 		}
 		if _, err := tx.Exec(ctx, create); err != nil {
-			return fmt.Errorf("gtfs export: materialize %s: %w", table.name, err)
+			return _oops.With("table_name", table.name).Wrapf(err, "gtfs export: materialize")
 		}
 		if table.indexOn != "" {
 			if _, err := tx.Exec(ctx, "CREATE INDEX ON "+table.name+" ("+table.indexOn+")"); err != nil {
-				return fmt.Errorf("gtfs export: index %s: %w", table.name, err)
+				return _oops.With("table_name", table.name).Wrapf(err, "gtfs export: index")
 			}
 		}
 		// Without this the temp table is as opaque to the planner as the
 		// expansion it replaced, and the whole point is lost.
 		if _, err := tx.Exec(ctx, "ANALYZE "+table.name); err != nil {
-			return fmt.Errorf("gtfs export: analyze %s: %w", table.name, err)
+			return _oops.With("table_name", table.name).Wrapf(err, "gtfs export: analyze")
 		}
 		zap.S().Infow("materialized",
 			"component", "gtfs",
@@ -322,11 +316,11 @@ func linkLatestGTFS(dir, target string) error {
 	temp := filepath.Join(dir, ".gtfs.zip.link")
 	_ = os.Remove(temp)
 	if err := os.Symlink(target, temp); err != nil {
-		return fmt.Errorf("gtfs export: link latest: %w", err)
+		return _oops.Wrapf(err, "gtfs export: link latest")
 	}
-	if err := os.Rename(temp, filepath.Join(dir, gtfsLatestName)); err != nil {
+	if err := os.Rename(temp, filepath.Join(dir, _gtfsLatestName)); err != nil {
 		_ = os.Remove(temp)
-		return fmt.Errorf("gtfs export: publish latest: %w", err)
+		return _oops.Wrapf(err, "gtfs export: publish latest")
 	}
 	return nil
 }
@@ -337,7 +331,7 @@ func linkLatestGTFS(dir, target string) error {
 func pruneGTFSFeeds(dir string, keep int) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", dir, err)
+		return _oops.With("dir", dir).Wrapf(err, "read")
 	}
 	var feeds []string
 	for _, entry := range entries {
@@ -358,7 +352,7 @@ func pruneGTFSFeeds(dir string, keep int) error {
 		}
 	}
 	if len(failures) > 0 {
-		return fmt.Errorf("remove %s", strings.Join(failures, ", "))
+		return _oops.With("failures", strings.Join(failures, ", ")).Errorf("remove")
 	}
 	return nil
 }

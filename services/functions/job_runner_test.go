@@ -317,7 +317,7 @@ func TestPGStaticPipelineLockerUsesTransactionScopedAdvisoryLock(t *testing.T) {
 	defer db.Close()
 	db.ExpectBegin()
 	db.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_xact_lock($1)")).
-		WithArgs(staticPipelineAdvisoryKey).
+		WithArgs(_staticPipelineAdvisoryKey).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	db.ExpectCommit()
 	var closes atomic.Int64
@@ -359,7 +359,7 @@ func TestStaticPipelineDedicatedLockLeavesMaxOneJobPoolSlotAvailable(t *testing.
 	defer db.Close()
 	db.ExpectBegin()
 	db.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_xact_lock($1)")).
-		WithArgs(staticPipelineAdvisoryKey).
+		WithArgs(_staticPipelineAdvisoryKey).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	db.ExpectCommit()
 	var connects, closes atomic.Int64
@@ -440,7 +440,7 @@ func TestPGStaticPipelineLockerClosesDedicatedConnectionOnBeginAndLockFailure(t 
 		lockErr := errors.New("lock failed")
 		db.ExpectBegin()
 		db.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_xact_lock($1)")).
-			WithArgs(staticPipelineAdvisoryKey).
+			WithArgs(_staticPipelineAdvisoryKey).
 			WillReturnError(lockErr)
 		db.ExpectRollback()
 		var closes atomic.Int64
@@ -481,7 +481,7 @@ func TestPGStaticPipelineLockerReturnsConnectCommitAndCloseErrors(t *testing.T) 
 	closeErr := errors.New("dedicated close failed")
 	db.ExpectBegin()
 	db.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_xact_lock($1)")).
-		WithArgs(staticPipelineAdvisoryKey).
+		WithArgs(_staticPipelineAdvisoryKey).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	db.ExpectCommit().WillReturnError(commitErr)
 	db.ExpectRollback()

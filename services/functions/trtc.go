@@ -6,7 +6,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
-
 	"os"
 	"strconv"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
-
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/models"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
@@ -30,12 +28,12 @@ import (
 // untouched. Empty TRTC_USERNAME/TRTC_PASSWORD skips the job entirely, issuing
 // zero requests (same convention as TDX/MQTT credentials).
 
-const trtcAPIBase = "https://api.metro.taipei/metroapi/"
+const _trtcAPIBase = "https://api.metro.taipei/metroapi/"
 
-// trtcClient is shared across ticks for connection reuse; per-tick deadlines
+// _trtcClient is shared across ticks for connection reuse; per-tick deadlines
 // come from the live runner's context.
-var trtcClient = resty.New().
-	SetBaseURL(trtcAPIBase).
+var _trtcClient = resty.New().
+	SetBaseURL(_trtcAPIBase).
 	SetHeader("Content-Type", "application/soap+xml; charset=utf-8")
 
 // trtcTrack is one getTrackInfo element: the nearest train approaching a
@@ -76,9 +74,9 @@ type trtcWeightBR struct {
 	Car4      string `json:"Car4"`
 }
 
-// trtcAliases absorbs known misspellings in the official feed before station
+// _trtcAliases absorbs known misspellings in the official feed before station
 // lookup. Extend as new dirty names surface in resolve-failure logs.
-var trtcAliases = map[string]string{
+var _trtcAliases = map[string]string{
 	"港漧":   "港墘",
 	"松山機楊": "松山機場",
 }
@@ -125,9 +123,9 @@ func trtcLinePrefix(stationID string) string {
 	return stationID
 }
 
-// trtcTrainLine maps a getTrackInfo TrainNumber's hundreds digit to its line;
+// _trtcTrainLine maps a getTrackInfo TrainNumber's hundreds digit to its line;
 // Wenhu trains never carry numbers.
-var trtcTrainLine = map[byte]string{'1': "R", '2': "BL", '3': "G", '4': "O"}
+var _trtcTrainLine = map[byte]string{'1': "R", '2': "BL", '3': "G", '4': "O"}
 
 // resolveTrtcStation resolves a feed's Chinese station+destination names to
 // (stationID, destStationID, line). A name can map to several IDs (transfer
@@ -156,8 +154,8 @@ func resolveTrtcStation(names map[string][]string, station, dest, trainNumber st
 		return "", "", "", false
 	case len(lines) == 1:
 		line = lines[0]
-	case trainNumber != "" && trtcTrainLine[trainNumber[0]] != "" && byLine[trtcTrainLine[trainNumber[0]]] != pair{}:
-		line = trtcTrainLine[trainNumber[0]]
+	case trainNumber != "" && _trtcTrainLine[trainNumber[0]] != "" && byLine[_trtcTrainLine[trainNumber[0]]] != pair{}:
+		line = _trtcTrainLine[trainNumber[0]]
 	case byLine["BR"] != pair{}:
 		line = "BR"
 	default:
@@ -171,7 +169,7 @@ func resolveTrtcStation(names map[string][]string, station, dest, trainNumber st
 // suffix (the feed writes 動物園站; mrt_station stores 動物園 but also names
 // that legitimately end in 站, like 台北車站).
 func trtcLookup(names map[string][]string, name string) []string {
-	if a, ok := trtcAliases[name]; ok {
+	if a, ok := _trtcAliases[name]; ok {
 		name = a
 	}
 	if ids, ok := names[name]; ok {
@@ -197,7 +195,7 @@ func trtcStationNames(ctx context.Context, db *pgxpool.Pool) (map[string][]strin
 		if err := rows.Scan(&id, &name); err != nil {
 			return nil, err
 		}
-		if a, ok := trtcAliases[name]; ok {
+		if a, ok := _trtcAliases[name]; ok {
 			name = a
 		}
 		names[name] = append(names[name], id)
@@ -233,7 +231,7 @@ func trtcSOAP(ctx context.Context, page, method, user, pass string) ([]byte, err
 	}
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><soap12:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap12="http://www.w3.org/2003/05/soap-envelope"><soap12:Body><%s xmlns="http://tempuri.org/"><userName>%s</userName><passWord>%s</passWord></%s></soap12:Body></soap12:Envelope>`,
 		method, esc(user), esc(pass), method)
-	resp, err := trtcClient.R().
+	resp, err := _trtcClient.R().
 		SetContext(ctx).
 		SetBody(body).
 		Post(page + ".asmx")
@@ -242,12 +240,12 @@ func trtcSOAP(ctx context.Context, page, method, user, pass string) ([]byte, err
 	}
 	raw := resp.Body()
 	if resp.StatusCode() != http.StatusOK {
-		return nil, fmt.Errorf("%s: status %d", method, resp.StatusCode())
+		return nil, _oops.With("method", method).With("status_code", resp.StatusCode()).Errorf("status")
 	}
 	start := strings.IndexByte(string(raw), '[')
 	end := strings.LastIndexByte(string(raw), ']')
 	if start < 0 || end <= start {
-		return nil, fmt.Errorf("%s: no JSON array in response", method)
+		return nil, _oops.With("method", method).Errorf("no JSON array in response")
 	}
 	return raw[start : end+1], nil
 }
@@ -282,7 +280,7 @@ func trtcEta(ctx context.Context, sink liveSink, db *pgxpool.Pool) error {
 		}
 		if err != nil {
 			if fatal != nil {
-				*fatal = fmt.Errorf("%s: %w", method, err)
+				*fatal = _oops.With("method", method).Wrapf(err, "TRTC call")
 				return
 			}
 			zap.S().Warnw("weight fetch failed",
@@ -305,10 +303,10 @@ func trtcEta(ctx context.Context, sink liveSink, db *pgxpool.Pool) error {
 
 	names, err := trtcStationNames(ctx, db)
 	if err != nil {
-		return fmt.Errorf("trtc station names: %w", err)
+		return _oops.Wrapf(err, "trtc station names")
 	}
 	windows := mrtServiceWindows(ctx, db)
-	return trtcPublish(ctx, sink, names, windows, time.Now().In(taipei), tracks, exRows, brRows)
+	return trtcPublish(ctx, sink, names, windows, time.Now().In(_taipei), tracks, exRows, brRows)
 }
 
 // trtcPublish is the pure pairing+publish core: it maps arrivals to Redis
@@ -382,13 +380,13 @@ func trtcPublish(ctx context.Context, sink liveSink, names map[string][]string, 
 			return err
 		}
 		key := shared.MrtLiveKey("TRTC", stationID, line, destID)
-		pipe.Set(key, pb, mrtLiveTTL)
+		pipe.Set(key, pb, _mrtLiveTTL)
 		ownedKeys = append(ownedKeys, key)
 		pipe.Publish(shared.MrtLiveChannel("TRTC", stationID), string(pb))
 	}
-	pipe.ReplaceOwnedKeys(shared.LiveOwnedKeysKey("mrt", "TRTC"), ownedKeys, ownedKeysTTL)
+	pipe.ReplaceOwnedKeys(shared.LiveOwnedKeysKey("mrt", "TRTC"), ownedKeys, _ownedKeysTTL)
 	if err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("publish TRTC live board: %w", err)
+		return _oops.Wrapf(err, "publish TRTC live board")
 	}
 	zap.S().Infow("complete",
 		"component", "trtc_eta",

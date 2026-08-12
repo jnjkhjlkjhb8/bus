@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -853,12 +852,11 @@ func TestArrivalsContinuesBatchAfterTransientSendFailure(t *testing.T) {
 
 func TestInvalidTokenCleanupAndAtMostOnce(t *testing.T) {
 	sendErr := errors.New("invalid token")
-	old := isInvalidFCMToken
-	isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
-	t.Cleanup(func() { isInvalidFCMToken = old })
 	store := &fakeNotificationStore{claimed: map[string]bool{}, reminders: []arrivalReminder{{id: "r1", token: "bad", leadMinutes: 5}}, wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0"}
 	sender := &fakeFCM{err: sendErr}
-	err := NewDispatcher(store, sender).Arrivals(context.Background(), []ArrivalEvent{{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1}})
+	d := NewDispatcher(store, sender)
+	d.isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
+	err := d.Arrivals(context.Background(), []ArrivalEvent{{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1}})
 	if !errors.Is(err, sendErr) {
 		t.Fatalf("Arrivals() error = %v, want invalid-token send error %v", err, sendErr)
 	}
@@ -869,9 +867,6 @@ func TestInvalidTokenCleanupAndAtMostOnce(t *testing.T) {
 
 func TestInvalidTokenFinalizesWithDetachedContextAfterParentCancel(t *testing.T) {
 	sendErr := errors.New("invalid token")
-	old := isInvalidFCMToken
-	isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
-	t.Cleanup(func() { isInvalidFCMToken = old })
 	ctx, cancel := context.WithCancel(context.Background())
 	first := ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S1", Direction: "0", ETASeconds: 60}
 	second := ArrivalEvent{RouteType: "bus", RouteKey: "R", StopKey: "S2", Direction: "0", ETASeconds: 120}
@@ -887,7 +882,9 @@ func TestInvalidTokenFinalizesWithDetachedContextAfterParentCancel(t *testing.T)
 		return sendErr
 	}}
 
-	err := NewDispatcher(store, sender).Arrivals(ctx, []ArrivalEvent{first, second})
+	d := NewDispatcher(store, sender)
+	d.isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
+	err := d.Arrivals(ctx, []ArrivalEvent{first, second})
 	if !errors.Is(err, sendErr) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("Arrivals() error = %v, want invalid token and context canceled", err)
 	}
@@ -911,15 +908,14 @@ func TestInvalidTokenReturnsInvalidateAndReleaseFailures(t *testing.T) {
 	sendErr := errors.New("invalid token")
 	invalidateErr := errors.New("invalidate failed")
 	releaseErr := errors.New("release failed")
-	old := isInvalidFCMToken
-	isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
-	t.Cleanup(func() { isInvalidFCMToken = old })
 	store := &fakeNotificationStore{
 		claimed: map[string]bool{}, invalidateErr: invalidateErr, releaseErr: releaseErr,
 		reminders:     []arrivalReminder{{id: "r1", token: "bad", leadMinutes: 5}},
 		wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0",
 	}
-	err := NewDispatcher(store, &fakeFCM{err: sendErr}).Arrivals(context.Background(), []ArrivalEvent{{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1}})
+	d := NewDispatcher(store, &fakeFCM{err: sendErr})
+	d.isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
+	err := d.Arrivals(context.Background(), []ArrivalEvent{{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1}})
 	if !errors.Is(err, sendErr) || !errors.Is(err, invalidateErr) || !errors.Is(err, releaseErr) {
 		t.Fatalf("Arrivals() error = %v, want send/invalidate/release failures", err)
 	}
@@ -928,16 +924,15 @@ func TestInvalidTokenReturnsInvalidateAndReleaseFailures(t *testing.T) {
 func TestInvalidTokenReturnsZeroRowReleaseFailure(t *testing.T) {
 	sendErr := errors.New("invalid token")
 	changed := false
-	old := isInvalidFCMToken
-	isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
-	t.Cleanup(func() { isInvalidFCMToken = old })
 	store := &fakeNotificationStore{
 		claimed: map[string]bool{}, releaseChanged: &changed,
 		reminders:     []arrivalReminder{{id: "r1", token: "bad", leadMinutes: 5}},
 		wantRouteType: "bus", wantRouteKey: "R", wantStopKey: "S", wantDirection: "0",
 	}
-	err := NewDispatcher(store, &fakeFCM{err: sendErr}).Arrivals(context.Background(), []ArrivalEvent{{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1}})
-	if !errors.Is(err, sendErr) || !strings.Contains(err.Error(), "release arrival reminder r1 changed no rows") {
+	d := NewDispatcher(store, &fakeFCM{err: sendErr})
+	d.isInvalidFCMToken = func(err error) bool { return errors.Is(err, sendErr) }
+	err := d.Arrivals(context.Background(), []ArrivalEvent{{RouteType: "bus", RouteKey: "R", StopKey: "S", Direction: "0", ETASeconds: 1}})
+	if !errors.Is(err, sendErr) || !errMentions(err, "release arrival reminder r1 changed no rows") {
 		t.Fatalf("Arrivals() error = %v, want send and zero-row release failures", err)
 	}
 }

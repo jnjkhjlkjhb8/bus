@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -19,12 +18,21 @@ import (
 // Azure server. ARCHIVE_MYSQL_DSN empty disables the path entirely, which is
 // how test runs; on prod an unreachable archive means the ETA training loop
 // stops collecting, so initArchive refuses to start rather than degrade quietly.
-var archiveDB *sql.DB
+//
+// archiver holds the single process-wide MySQL pool. initArchive constructs
+// one; main.go stores the result here once at startup. Tests never reassign
+// this var — they exercise the pure helpers and the archiveExecer/historySource
+// seams directly instead.
+type archiver struct {
+	db *sql.DB
+}
 
-// archiveRowsPerInsert bounds one multi-row INSERT. MySQL caps a statement at
+var _archive *archiver
+
+// _archiveRowsPerInsert bounds one multi-row INSERT. MySQL caps a statement at
 // 65535 placeholders, so bus_eta_history's 20 columns put the hard ceiling at
 // 3276 rows; 1000 stays clear of that and of max_allowed_packet.
-const archiveRowsPerInsert = 1000
+const _archiveRowsPerInsert = 1000
 
 // archiveExecer is the write seam. *sql.DB satisfies it; tests substitute a
 // recorder to assert batching without a live MySQL.
@@ -66,7 +74,7 @@ type historySource interface {
 // session time zone.
 type mysqlHistory struct{ db *sql.DB }
 
-// segmentMedianTail reduces a `kept` CTE of (key..., secs) observations to one
+// _segmentMedianTail reduces a `kept` CTE of (key..., secs) observations to one
 // median row per key, and is the tail of the segment query.
 //
 // MySQL has no percentile_cont, so the middle one or two values are picked by
@@ -80,7 +88,7 @@ type mysqlHistory struct{ db *sql.DB }
 // ORDER BY, because a counting window that carries one produces a running total
 // rather than the group size — sample_count would then be wrong on every row
 // while still looking like a plausible number.
-const segmentMedianTail = `
+const _segmentMedianTail = `
 	), ranked AS (
 		SELECT sub_route_uid, direction, from_stop_uid, to_stop_uid, secs,
 		       ROW_NUMBER() OVER gs AS rn,
@@ -131,10 +139,10 @@ func (m mysqlHistory) segmentsByEstimate(ctx context.Context, window time.Durati
 			  -- Adjacent stops only, matching segmentsByPlate: a gap would record
 			  -- several hops' running time as one.
 			  AND next_stop_sequence = stop_sequence + 1
-			  AND next_estimate - estimate BETWEEN ? AND ?`+segmentMedianTail,
-		int64(window.Seconds()), segmentDiffMinSecs, segmentDiffMaxSecs)
+			  AND next_estimate - estimate BETWEEN ? AND ?`+_segmentMedianTail,
+		int64(window.Seconds()), _segmentDiffMinSecs, _segmentDiffMaxSecs)
 	if err != nil {
-		return nil, fmt.Errorf("query estimate segments: %w", err)
+		return nil, _oops.Wrapf(err, "query estimate segments")
 	}
 	return scanSegmentObs(rows)
 }
@@ -146,7 +154,7 @@ func scanSegmentObs(rows *sql.Rows) ([]segmentObs, error) {
 		var s segmentObs
 		if err := rows.Scan(&s.subRouteUID, &s.direction, &s.fromStopUID,
 			&s.toStopUID, &s.secs, &s.sampleCount); err != nil {
-			return nil, fmt.Errorf("scan segment observation: %w", err)
+			return nil, _oops.Wrapf(err, "scan segment observation")
 		}
 		out = append(out, s)
 	}
@@ -161,40 +169,41 @@ func (m mysqlHistory) arrivals(ctx context.Context, since time.Time) ([]arrivalE
 		FROM bus_eta_history
 		WHERE estimate <= 0 AND recorded_at >= ?`, since.UTC())
 	if err != nil {
-		return nil, fmt.Errorf("query arrivals: %w", err)
+		return nil, _oops.Wrapf(err, "query arrivals")
 	}
 	defer func() { _ = rows.Close() }()
 	var out []arrivalEvent
 	for rows.Next() {
 		var a arrivalEvent
 		if err := rows.Scan(&a.subRouteUID, &a.direction, &a.stopUID, &a.arrivedAt); err != nil {
-			return nil, fmt.Errorf("scan arrival: %w", err)
+			return nil, _oops.Wrapf(err, "scan arrival")
 		}
 		out = append(out, a)
 	}
 	return out, rows.Err()
 }
 
-// initArchive opens the MySQL history pool. An empty DSN leaves archiveDB nil,
-// which every archive call treats as "disabled" rather than an error; a DSN that
-// is set but unusable is fatal, since bus_eta_history has no other home and
-// silently not recording is the one outcome worth refusing to start over. The
-// pool is deliberately small: the writers are the 30s ETA job and two daily
-// readers, none of them concurrent with each other.
-func initArchive(ctx context.Context, dsn string) error {
+// initArchive opens the MySQL history pool. An empty DSN reports the path
+// disabled by returning a nil *archiver, which every archive call treats as
+// "disabled" rather than an error; a DSN that is set but unusable is fatal,
+// since bus_eta_history has no other home and silently not recording is the
+// one outcome worth refusing to start over. The pool is deliberately small:
+// the writers are the 30s ETA job and two daily readers, none of them
+// concurrent with each other.
+func initArchive(ctx context.Context, dsn string) (*archiver, error) {
 	if strings.TrimSpace(dsn) == "" {
 		zap.S().Infow("disabled", "component", "archive", "event", "disabled", "reason", "empty_dsn")
-		return nil
+		return nil, nil
 	}
 	// Without parseTime the driver hands DATETIME back as []byte and every
 	// history read fails at scan time — at 04:00, in a cron, a day after the
 	// deploy. Refuse at startup instead.
 	if !strings.Contains(dsn, "parseTime=true") {
-		return errors.New("archive DSN must set parseTime=true (DATETIME columns are scanned into time.Time)")
+		return nil, errors.New("archive DSN must set parseTime=true (DATETIME columns are scanned into time.Time)")
 	}
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return fmt.Errorf("open archive: %w", err)
+		return nil, _oops.Wrapf(err, "open archive")
 	}
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(2)
@@ -202,29 +211,47 @@ func initArchive(ctx context.Context, dsn string) error {
 	pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
-		return fmt.Errorf("ping archive: %w", errors.Join(err, db.Close()))
+		return nil, _oops.Wrapf(errors.Join(err, db.Close()), "ping archive")
 	}
-	archiveDB = db
 	zap.S().Infow("ready", "component", "archive", "event", "ready")
-	return nil
+	return &archiver{db: db}, nil
 }
 
-// archiveTarget and archiveHistory return the write and read seams, or a true nil
-// interface when archiving is disabled. Handing callers archiveDB directly would
-// give them a non-nil interface wrapping a nil *sql.DB, so every `== nil` guard
-// downstream would silently read false.
-func archiveTarget() archiveExecer {
-	if archiveDB == nil {
+// Close closes the pool, or is a no-op on a disabled (nil) archiver.
+func (a *archiver) Close() error {
+	if a == nil {
 		return nil
 	}
-	return archiveDB
+	return a.db.Close()
+}
+
+// target and history return the write and read seams, or a true nil interface
+// when archiving is disabled. Handing callers a.db directly would give them a
+// non-nil interface wrapping a nil *sql.DB, so every `== nil` guard downstream
+// would silently read false — these stay nil-safe on a nil *archiver receiver
+// instead.
+func (a *archiver) target() archiveExecer {
+	if a == nil {
+		return nil
+	}
+	return a.db
+}
+
+func (a *archiver) history() historySource {
+	if a == nil {
+		return nil
+	}
+	return mysqlHistory{db: a.db}
+}
+
+// archiveTarget and archiveHistory expose the process-wide archiver to this
+// package's free-function call sites (cron jobs registered in main.go).
+func archiveTarget() archiveExecer {
+	return _archive.target()
 }
 
 func archiveHistory() historySource {
-	if archiveDB == nil {
-		return nil
-	}
-	return mysqlHistory{db: archiveDB}
+	return _archive.history()
 }
 
 // resolveHistory returns where observations are read from, or nil when there is
@@ -269,18 +296,18 @@ func archiveInsert(ctx context.Context, db archiveExecer, table string, cols []s
 	if db == nil || len(rows) == 0 {
 		return nil
 	}
-	for start := 0; start < len(rows); start += archiveRowsPerInsert {
-		end := min(start+archiveRowsPerInsert, len(rows))
+	for start := 0; start < len(rows); start += _archiveRowsPerInsert {
+		end := min(start+_archiveRowsPerInsert, len(rows))
 		batch := rows[start:end]
 		args := make([]any, 0, len(batch)*len(cols))
 		for _, r := range batch {
 			if len(r) != len(cols) {
-				return fmt.Errorf("archive %s: row has %d values, want %d", table, len(r), len(cols))
+				return _oops.With("table", table).With("values", len(r)).With("cols", len(cols)).Errorf("row width does not match column count")
 			}
 			args = append(args, archiveUTC(r)...)
 		}
 		if _, err := db.ExecContext(ctx, archiveInsertSQL(table, cols, len(batch)), args...); err != nil {
-			return fmt.Errorf("archive %s rows %d..%d: %w", table, start, end, err)
+			return _oops.With("table", table).With("start", start).With("end", end).Wrapf(err, "archive rows ..")
 		}
 	}
 	return nil

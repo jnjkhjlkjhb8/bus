@@ -55,6 +55,7 @@ class BusStopEtaViewModel extends Equatable {
     this.arrivalUnix = 0,
     this.vehicles = const [],
     this.plate = '',
+    this.isLastBus = false,
   });
 
   final String stopUid;
@@ -71,6 +72,10 @@ class BusStopEtaViewModel extends Equatable {
   /// Empty when TDX sent no plate. Distinct from [vehiclePlates], which is
   /// the whole route's live fleet and is identical on every stop.
   final String plate;
+
+  /// TDX IsLastBus: the feed confirmed the route's last bus is running. False
+  /// also means "never computed", so it may not be read as 末班車已過 on its own.
+  final bool isLastBus;
 
   int get estimateMinutes => etaCeilMinutes(estimateSeconds);
 
@@ -100,6 +105,7 @@ class BusStopEtaViewModel extends Equatable {
     arrivalUnix: arrivalUnix,
     vehicles: vehicles,
     plate: plate,
+    isLastBus: isLastBus,
   );
 
   String? displayLabelOf(AppI18n i18n) => busStopDisplayLabel(
@@ -132,6 +138,7 @@ class BusStopEtaViewModel extends Equatable {
     arrivalUnix,
     vehicles,
     plate,
+    isLastBus,
   ];
 }
 
@@ -178,6 +185,7 @@ class BusStopArrival extends Equatable {
     this.stopStatus = 0,
     this.arrivalUnix = 0,
     this.crowdLevel = CrowdLevel.unknown,
+    this.isLastBus = false,
   });
 
   final String stationId;
@@ -198,6 +206,9 @@ class BusStopArrival extends Equatable {
   /// could not pair a reading to this estimate's plate, which is every city but
   /// Taipei.
   final CrowdLevel crowdLevel;
+
+  /// TDX IsLastBus; see [BusStopEtaViewModel.isLastBus].
+  final bool isLastBus;
 
   /// Remaining whole minutes (ceil), or null when no positive estimate exists.
   int? get minutes {
@@ -239,6 +250,8 @@ class BusStopArrival extends Equatable {
       nextBusTime: nextBusTime,
       stopStatus: stopStatus,
       arrivalUnix: arrivalUnix,
+      crowdLevel: crowdLevel,
+      isLastBus: isLastBus,
     );
   }
 
@@ -252,6 +265,8 @@ class BusStopArrival extends Equatable {
     nextBusTime,
     stopStatus,
     arrivalUnix,
+    crowdLevel,
+    isLastBus,
   ];
 }
 

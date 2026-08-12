@@ -87,7 +87,7 @@ func TestGetTrainInfoNoCredentials(t *testing.T) {
 }
 
 func TestExtractJSONObject(t *testing.T) {
-	cases := []struct {
+	tests := []struct {
 		in   string
 		want string
 		ok   bool
@@ -97,10 +97,10 @@ func TestExtractJSONObject(t *testing.T) {
 		{`no json here`, "", false},
 		{`}{`, "", false},
 	}
-	for _, c := range cases {
-		got, ok := extractJSONObject([]byte(c.in))
-		if ok != c.ok || string(got) != c.want {
-			t.Errorf("extractJSONObject(%q) = %q,%v want %q,%v", c.in, got, ok, c.want, c.ok)
+	for _, tt := range tests {
+		got, ok := extractJSONObject([]byte(tt.in))
+		if ok != tt.ok || string(got) != tt.want {
+			t.Errorf("extractJSONObject(%q) = %q,%v want %q,%v", tt.in, got, ok, tt.want, tt.ok)
 		}
 	}
 }

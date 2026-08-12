@@ -12,7 +12,7 @@ func TestLoadBikeStationsRejectsMalformedElement(t *testing.T) {
 		{"StationUID":"TPE001","StationID":"001","StationPosition":{"PositionLon":121.5,"PositionLat":25.0},"ServiceType":2},
 		{"StationUID":
 	]`), sink, "Taipei")
-	if err == nil || !strings.Contains(err.Error(), "element 1") {
+	if err == nil || !errMentions(err, "element 1") {
 		t.Fatalf("loadBikeStations error = %v, want wrapped element 1 decode error", err)
 	}
 	if len(sink.calls) != 0 {
@@ -41,7 +41,7 @@ func TestLoadBikeStationsRejectsInvalidIdentityOrPosition(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sink := &fakeLoadSink{}
 			err := loadBikeStations(context.Background(), decodeInto(tt.body), sink, "Taipei")
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("loadBikeStations error = %v, want %q validation error", err, tt.want)
 			}
 			if len(sink.calls) != 0 {
@@ -116,7 +116,7 @@ func TestLoadBikeStationsDuplicatePolicy(t *testing.T) {
 		sink := &fakeLoadSink{}
 		other := `{"StationUID":"TPE001","StationID":"001","StationPosition":{"PositionLon":121.6,"PositionLat":25.0},"ServiceType":2}`
 		err := loadBikeStations(context.Background(), decodeInto(`[`+station+`,`+other+`]`), sink, "Taipei")
-		if err == nil || !strings.Contains(err.Error(), "duplicate StationUID") {
+		if err == nil || !errMentions(err, "duplicate StationUID") {
 			t.Fatalf("loadBikeStations error = %v, want divergent duplicate error", err)
 		}
 		if len(sink.calls) != 0 {

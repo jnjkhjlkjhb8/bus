@@ -90,7 +90,7 @@ func TestLinkLatestGTFSReplaces(t *testing.T) {
 		if err := linkLatestGTFS(dir, target); err != nil {
 			t.Fatalf("link %s: %v", target, err)
 		}
-		body, err := os.ReadFile(filepath.Join(dir, gtfsLatestName))
+		body, err := os.ReadFile(filepath.Join(dir, _gtfsLatestName))
 		if err != nil {
 			t.Fatalf("read latest after linking %s: %v", target, err)
 		}
@@ -130,30 +130,6 @@ func TestGTFSFilesAreWellFormed(t *testing.T) {
 		if !seen[required] {
 			t.Errorf("%s missing: GTFS requires it", required)
 		}
-	}
-}
-
-// TestGTFSTempTablesAreDeclaredBeforeUse asserts the materialized sets are
-// listed in dependency order.
-//
-// createGTFSTempTables walks the list once, so a set reading one declared after
-// it fails at the CREATE — during the nightly export, where runGTFSExport logs
-// the failure rather than returning it and the feed is simply not rebuilt. The
-// order is a property of the list, so it is checked here rather than against a
-// database.
-func TestGTFSTempTablesAreDeclaredBeforeUse(t *testing.T) {
-	tables := gtfsTempTables()
-	declared := make(map[string]bool, len(tables))
-	for _, table := range tables {
-		for _, other := range tables {
-			if other.name == table.name || declared[other.name] {
-				continue
-			}
-			if strings.Contains(table.sql, other.name) {
-				t.Errorf("%s reads %s, which is materialized after it", table.name, other.name)
-			}
-		}
-		declared[table.name] = true
 	}
 }
 

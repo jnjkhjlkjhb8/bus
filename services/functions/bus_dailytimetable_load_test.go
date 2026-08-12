@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -114,7 +113,7 @@ func TestLoadBusDailyTimetableRejectsInvalidIdentityTimeOrDirection(t *testing.T
 			rc := unavailableRedisClient()
 			defer func() { _ = rc.Close() }()
 			err := loadBusDailyTimetable(context.Background(), decodeInto(tt.body), nil, nil, rc, "Kaohsiung")
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("loadBusDailyTimetable error = %v, want %q", err, tt.want)
 			}
 		})
@@ -146,7 +145,7 @@ func TestLoadBusDailyTimetableRejectsInvalidCanonicalIdentityBeforeRedis(t *test
 			rc := unavailableRedisClient()
 			defer func() { _ = rc.Close() }()
 			err := loadBusDailyTimetable(context.Background(), decodeInto(tt.body), nil, nil, rc, tt.city)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("loadBusDailyTimetable error = %v, want pre-Redis %q validation", err, tt.want)
 			}
 		})
@@ -166,7 +165,7 @@ func TestLoadBusDailyTimetableMalformedSuffixWritesNoKeys(t *testing.T) {
 		{"SubRouteUID":
 	]`
 	err := loadBusDailyTimetable(context.Background(), decodeInto(body), nil, nil, rc, "Kaohsiung")
-	if err == nil || !strings.Contains(err.Error(), "element 1") {
+	if err == nil || !errMentions(err, "element 1") {
 		t.Fatalf("loadBusDailyTimetable error = %v, want wrapped element 1 decode error", err)
 	}
 	if exists := rc.Exists(context.Background(), key).Val(); exists != 0 {
@@ -179,7 +178,7 @@ func TestLoadBusDailyTimetableReturnsPipelineError(t *testing.T) {
 	defer func() { _ = rc.Close() }()
 	body := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S1","ArrivalTime":"08:00","DepartureTime":"08:01"}]}]}]`
 	err := loadBusDailyTimetable(context.Background(), decodeInto(body), nil, nil, rc, "Kaohsiung")
-	if err == nil || !strings.Contains(err.Error(), "Redis transaction") {
+	if err == nil || !errMentions(err, "Redis transaction") {
 		t.Fatalf("loadBusDailyTimetable error = %v, want wrapped Redis transaction error", err)
 	}
 }
@@ -212,7 +211,7 @@ func TestLoadBusDailyTimetableDuplicateTripPolicy(t *testing.T) {
 	other := `{"TripID":"T1","StopTimes":[{"StopSequence":1,"StopUID":"S2","ArrivalTime":"08:00","DepartureTime":"08:01"}]}`
 	divergent := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[` + trip + `,` + other + `]}]`
 	err = loadBusDailyTimetable(context.Background(), decodeInto(divergent), nil, nil, rc, "Kaohsiung")
-	if err == nil || !strings.Contains(err.Error(), "quarantine ratio exceeded") {
+	if err == nil || !errMentions(err, "quarantine ratio exceeded") {
 		t.Fatalf("divergent duplicate error = %v, want quarantine ratio exceeded error", err)
 	}
 	after, err := rc.Get(context.Background(), key).Bytes()
@@ -250,7 +249,7 @@ func TestLoadBusDailyTimetableDuplicateStopSequencePolicy(t *testing.T) {
 	other := `{"StopSequence":1,"StopUID":"S2","ArrivalTime":"08:00","DepartureTime":"08:01"}`
 	divergent := `[{"SubRouteUID":"KHH1","Direction":0,"Timetables":[{"TripID":"T1","StopTimes":[` + stop + `,` + other + `]}]}]`
 	err = loadBusDailyTimetable(context.Background(), decodeInto(divergent), nil, nil, rc, "Kaohsiung")
-	if err == nil || !strings.Contains(err.Error(), "quarantine ratio exceeded") {
+	if err == nil || !errMentions(err, "quarantine ratio exceeded") {
 		t.Fatalf("divergent duplicate stop error = %v, want quarantine ratio exceeded", err)
 	}
 	after, err := rc.Get(context.Background(), key).Bytes()
@@ -371,7 +370,7 @@ func TestLoadBusDailyTimetableObservesCancellationDuringRedisExec(t *testing.T) 
 	close(release)
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "context during Redis transaction") {
+		if !errors.Is(err, context.Canceled) || !errMentions(err, "context during Redis transaction") {
 			t.Fatalf("loadBusDailyTimetable error = %v, want wrapped in-Exec cancellation", err)
 		}
 	case <-time.After(time.Second):

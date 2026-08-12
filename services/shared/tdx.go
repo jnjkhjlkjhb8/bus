@@ -30,9 +30,9 @@ import (
 
 // TDX endpoints and token lifetime.
 const (
-	tdxBasicBaseURL = "https://tdx.transportdata.tw/api/basic"
-	tdxTokenURL     = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
-	tdxTokenTTL     = 6 * time.Hour
+	_tdxBasicBaseURL = "https://tdx.transportdata.tw/api/basic"
+	_tdxTokenURL     = "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token"
+	_tdxTokenTTL     = 6 * time.Hour
 )
 
 // TDXStore is the small Redis surface the TDX client needs: the auth-token cache
@@ -97,7 +97,7 @@ type TDXClient struct {
 	maxRetries    int
 	retryWait     time.Duration
 	retryMaxWait  time.Duration
-	// tokenURL is the OAuth token endpoint. It defaults to tdxTokenURL and is a
+	// tokenURL is the OAuth token endpoint. It defaults to _tdxTokenURL and is a
 	// field only so unit tests can point the client_credentials exchange at an
 	// httptest server; production never overrides it.
 	tokenURL string
@@ -110,13 +110,13 @@ type TDXClient struct {
 func NewTDXClient(cfg TDXConfig) *TDXClient {
 	base := cfg.BaseURL
 	if base == "" {
-		base = tdxBasicBaseURL
+		base = _tdxBasicBaseURL
 	}
 	c := &TDXClient{
 		store:         cfg.Store,
 		imsKey:        cfg.IMSKey,
 		sinceFallback: cfg.SinceFallback,
-		tokenURL:      tdxTokenURL,
+		tokenURL:      _tdxTokenURL,
 		tokenHTTP:     &http.Client{Timeout: 30 * time.Second},
 		maxRetries:    5,
 		retryWait:     time.Second,
@@ -219,14 +219,14 @@ func (c *TDXClient) Token(ctx context.Context) (string, error) {
 func (c *TDXClient) cachedToken(ctx context.Context) (string, error) {
 	token, err := c.store.Get(ctx, TDXTokenKey)
 	if err != nil {
-		return "", fmt.Errorf("read cached TDX token: %w", err)
+		return "", _oops.Wrapf(err, "read cached TDX token")
 	}
 	if token != "" {
 		return token, nil
 	}
 	token, err = c.store.Get(ctx, TDXTokenKeyLegacy)
 	if err != nil {
-		return "", fmt.Errorf("read legacy cached TDX token: %w", err)
+		return "", _oops.Wrapf(err, "read legacy cached TDX token")
 	}
 	return token, nil
 }
@@ -239,12 +239,12 @@ func (c *TDXClient) exchangeToken(ctx context.Context) (string, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", fmt.Errorf("build TDX token request: %w", err)
+		return "", _oops.Wrapf(err, "build TDX token request")
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.tokenHTTP.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("exchange TDX token: %w", err)
+		return "", _oops.Wrapf(err, "exchange TDX token")
 	}
 	body, readErr := io.ReadAll(resp.Body)
 	closeErr := resp.Body.Close()
@@ -252,19 +252,19 @@ func (c *TDXClient) exchangeToken(ctx context.Context) (string, error) {
 		return "", errors.Join(readErr, closeErr)
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
-		return "", fmt.Errorf("exchange TDX token: status %d", resp.StatusCode)
+		return "", _oops.With("status_code", resp.StatusCode).Errorf("exchange TDX token: status")
 	}
 	var payload struct {
 		AccessToken string `json:"access_token"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", fmt.Errorf("decode TDX token response: %w", err)
+		return "", _oops.Wrapf(err, "decode TDX token response")
 	}
 	if payload.AccessToken == "" {
 		return "", errors.New("TDX token response is missing access_token")
 	}
-	if err := c.store.Set(ctx, TDXTokenKey, payload.AccessToken, tdxTokenTTL); err != nil {
-		return "", fmt.Errorf("cache TDX token: %w", err)
+	if err := c.store.Set(ctx, TDXTokenKey, payload.AccessToken, _tdxTokenTTL); err != nil {
+		return "", _oops.Wrapf(err, "cache TDX token")
 	}
 	return payload.AccessToken, nil
 }
@@ -275,7 +275,7 @@ func (c *TDXClient) exchangeToken(ctx context.Context) (string, error) {
 func (c *TDXClient) since(ctx context.Context, name string) (string, error) {
 	v, err := c.store.Get(ctx, c.imsKey(name))
 	if err != nil {
-		return "", fmt.Errorf("read TDX marker %s: %w", name, err)
+		return "", _oops.With("name", name).Wrapf(err, "read TDX marker")
 	}
 	if v == "" && c.sinceFallback != nil {
 		v = c.sinceFallback(name)
@@ -304,7 +304,7 @@ func (c *TDXClient) retryDecision(resp *resty.Response, requestErr error) (bool,
 	switch resp.StatusCode() {
 	case http.StatusUnauthorized:
 		if err := c.store.Del(resp.Request.Context(), TDXTokenKey, TDXTokenKeyLegacy); err != nil {
-			return false, fmt.Errorf("invalidate rejected TDX token: %w", err)
+			return false, _oops.Wrapf(err, "invalidate rejected TDX token")
 		}
 		return true, nil
 	case http.StatusTooManyRequests:
@@ -388,6 +388,7 @@ type TDXFetch struct {
 
 type tdxResponseBody struct {
 	io.Reader
+
 	close func() error
 }
 
@@ -414,7 +415,7 @@ func decodedTDXBody(resp *resty.Response) (io.ReadCloser, error) {
 		}, nil
 	default:
 		return nil, errors.Join(
-			fmt.Errorf("unsupported TDX content encoding %q", resp.Header().Get("Content-Encoding")),
+			_oops.With("resp", resp.Header().Get("Content-Encoding")).Errorf("unsupported TDX content encoding"),
 			drainAndCloseResponse(resp),
 		)
 	}
@@ -450,7 +451,7 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 		zap.S().Infow("not modified", "component", "tdx", "action", "fetch", "event", "not_modified", "name", name)
 		return noopTDXFetch(func() error {
 			if err := c.store.Del(ctx, c.imsKey(name)); err != nil {
-				return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
+				return _oops.With("name", name).Wrapf(err, "invalidate TDX marker")
 			}
 			return nil
 		}), nil
@@ -462,7 +463,7 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 	responseMarker := strings.TrimSpace(resp.Header().Get("Last-Modified"))
 	if responseMarker == "" {
 		return nil, errors.Join(
-			fmt.Errorf("tdx %s: successful response missing Last-Modified", name),
+			_oops.With("name", name).Errorf("tdx: successful response missing Last-Modified"),
 			drainAndCloseResponse(resp),
 		)
 	}
@@ -475,14 +476,14 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 		Modified: true,
 		Ack: func() error {
 			if err := c.store.Set(ctx, c.imsKey(name), responseMarker, 0); err != nil {
-				return fmt.Errorf("ack TDX marker %s: %w", name, err)
+				return _oops.With("name", name).Wrapf(err, "ack TDX marker")
 			}
 			return nil
 		},
 		Close: body.Close,
 		Invalidate: func() error {
 			if err := c.store.Del(ctx, c.imsKey(name)); err != nil {
-				return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
+				return _oops.With("name", name).Wrapf(err, "invalidate TDX marker")
 			}
 			return nil
 		},
@@ -525,7 +526,7 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(T
 	}
 	invalidate := func() error {
 		if err := c.store.Del(ctx, c.imsKey(name)); err != nil {
-			return fmt.Errorf("invalidate TDX marker %s: %w", name, err)
+			return _oops.With("name", name).Wrapf(err, "invalidate TDX marker")
 		}
 		return nil
 	}
@@ -547,7 +548,7 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(T
 	responseMarker := strings.TrimSpace(resp.Header().Get("Last-Modified"))
 	if responseMarker == "" {
 		return result, errors.Join(
-			fmt.Errorf("tdx %s: successful response missing Last-Modified", name),
+			_oops.With("name", name).Errorf("tdx: successful response missing Last-Modified"),
 			drainAndCloseResponse(resp),
 		)
 	}
@@ -558,7 +559,7 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(T
 	}
 	spool, err := os.CreateTemp("", "tdx-response-*.json")
 	if err != nil {
-		return result, errors.Join(fmt.Errorf("create TDX response spool: %w", err), responseBody.Close())
+		return result, errors.Join(_oops.Wrapf(err, "create TDX response spool"), responseBody.Close())
 	}
 	spoolName := spool.Name()
 	spoolOpen := true
@@ -576,7 +577,7 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(T
 		return result, errors.Join(copyErr, closeErr)
 	}
 	if _, err := spool.Seek(0, io.SeekStart); err != nil {
-		return result, fmt.Errorf("rewind TDX response spool: %w", err)
+		return result, _oops.Wrapf(err, "rewind TDX response spool")
 	}
 	if commit != nil {
 		if cerr := commit(TDXIntoCommit{Body: spool, Marker: responseMarker}); cerr != nil {
@@ -584,11 +585,11 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(T
 		}
 	}
 	if closeErr := spool.Close(); closeErr != nil {
-		return result, fmt.Errorf("close TDX response spool: %w", closeErr)
+		return result, _oops.Wrapf(closeErr, "close TDX response spool")
 	}
 	spoolOpen = false
 	if removeErr := os.Remove(spoolName); removeErr != nil {
-		return result, fmt.Errorf("remove TDX response spool: %w", removeErr)
+		return result, _oops.Wrapf(removeErr, "remove TDX response spool")
 	}
 	spoolPresent = false
 	return result, c.cacheIMS(ctx, name, responseMarker)
@@ -598,7 +599,7 @@ func (c *TDXClient) GetInto(ctx context.Context, url, name string, commit func(T
 // next request can send it as If-Modified-Since.
 func (c *TDXClient) cacheIMS(ctx context.Context, name, marker string) error {
 	if err := c.store.Set(ctx, c.imsKey(name), marker, 0); err != nil {
-		return fmt.Errorf("cache TDX marker %s: %w", name, err)
+		return _oops.With("name", name).Wrapf(err, "cache TDX marker")
 	}
 	return nil
 }

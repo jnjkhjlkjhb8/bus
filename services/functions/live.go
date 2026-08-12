@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -102,10 +101,10 @@ func bindFetch(src liveSource, sink liveSink, spec liveSpec) boundFetch {
 			if refreshErr := sink.refreshOwnedTTL(ctx, spec.ownedKey(name), spec.ownedTTL); refreshErr != nil {
 				invalidateErr := invalidateTDXFetch(fetch)
 				if invalidateErr != nil {
-					invalidateErr = fmt.Errorf("invalidate %s marker after owned-key refresh failure: %w", name, invalidateErr)
+					invalidateErr = _oops.With("name", name).Wrapf(invalidateErr, "invalidate marker after owned-key refresh failure")
 				}
 				return nil, errors.Join(
-					fmt.Errorf("refresh %s owned live keys: %w", name, refreshErr),
+					_oops.With("name", name).Wrapf(refreshErr, "refresh owned live keys"),
 					invalidateErr,
 				)
 			}
@@ -113,7 +112,7 @@ func bindFetch(src liveSource, sink liveSink, spec liveSpec) boundFetch {
 			// 304 Not-Modified: the cached live data is still valid, so re-arm its
 			// TTL instead of letting it expire mid-validity (CONTEXT.md).
 			if refreshErr := sink.refreshTTL(ctx, spec.ttlPatterns(name)); refreshErr != nil {
-				return nil, fmt.Errorf("refresh %s live TTLs: %w", name, refreshErr)
+				return nil, _oops.With("name", name).Wrapf(refreshErr, "refresh live TTLs")
 			}
 		}
 		return fetch, err
@@ -145,7 +144,7 @@ func decodeLiveItems[T any](dec *json.Decoder, fn func(T) error) error {
 		// The token alone ("{") does not say whether TDX wrapped the array in an
 		// envelope or returned an error object, and the body is gone by the time
 		// the error is read. Carry a bounded prefix of what is still buffered.
-		return fmt.Errorf("TDX payload starts with %v, want array: %s", opening, bufferedPrefix(dec))
+		return _oops.With("opening", opening).With("prefix", bufferedPrefix(dec)).Errorf("TDX payload is not a JSON array")
 	}
 	for dec.More() {
 		var value T
@@ -161,13 +160,13 @@ func decodeLiveItems[T any](dec *json.Decoder, fn func(T) error) error {
 		return err
 	}
 	if closing != json.Delim(']') {
-		return fmt.Errorf("TDX payload ends with %v, want array", closing)
+		return _oops.With("closing", closing).Errorf("TDX payload ends with, want array")
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); errors.Is(err, io.EOF) {
 		return nil
 	} else if err != nil {
-		return fmt.Errorf("decode TDX payload trailer: %w", err)
+		return _oops.Wrapf(err, "decode TDX payload trailer")
 	}
 	return errors.New("TDX payload contains trailing data")
 }
@@ -185,12 +184,12 @@ func commitTDXFetch(fetch *shared.TDXFetch, process func(*json.Decoder) error) e
 	if err := process(fetch.Decoder); err != nil {
 		closeErr := fetch.Close()
 		if closeErr != nil {
-			closeErr = fmt.Errorf("close TDX fetch: %w", closeErr)
+			closeErr = _oops.Wrapf(closeErr, "close TDX fetch")
 		}
 		return errors.Join(err, closeErr)
 	}
 	if err := fetch.Close(); err != nil {
-		return fmt.Errorf("close TDX fetch: %w", err)
+		return _oops.Wrapf(err, "close TDX fetch")
 	}
 	return acknowledgeTDXFetch(fetch)
 }
@@ -200,7 +199,7 @@ func acknowledgeTDXFetch(fetch *shared.TDXFetch) error {
 		return errors.New("modified TDX fetch has no acknowledgement")
 	}
 	if err := fetch.Ack(); err != nil {
-		return fmt.Errorf("acknowledge TDX fetch: %w", err)
+		return _oops.Wrapf(err, "acknowledge TDX fetch")
 	}
 	return nil
 }
@@ -259,6 +258,8 @@ type restLiveSource struct {
 	tdx *shared.TDXClient
 }
 
+var _ liveSource = restLiveSource{}
+
 // fetch delegates to the shared TDX client's context-aware conditional Get.
 func (s restLiveSource) fetch(ctx context.Context, url, name string) (*shared.TDXFetch, error) {
 	return s.tdx.Get(ctx, url, name)
@@ -270,6 +271,8 @@ func (s restLiveSource) fetch(ctx context.Context, url, name string) (*shared.TD
 type redisLiveSink struct {
 	rc *redis.Client
 }
+
+var _ liveSink = redisLiveSink{}
 
 func (s redisLiveSink) pipeline() livePipe {
 	options := s.rc.Options()
@@ -305,7 +308,7 @@ func (s redisLiveSink) refreshTTL(ctx context.Context, patterns []ttlPattern) er
 		for {
 			keys, next, err := rc.Scan(ctx, cursor, p.pattern, 500).Result()
 			if err != nil {
-				refreshErr = errors.Join(refreshErr, fmt.Errorf("scan TTL pattern %s: %w", p.pattern, err))
+				refreshErr = errors.Join(refreshErr, _oops.With("pattern", p.pattern).Wrapf(err, "scan TTL pattern"))
 				break
 			}
 			if len(keys) > 0 {
@@ -314,7 +317,7 @@ func (s redisLiveSink) refreshTTL(ctx context.Context, patterns []ttlPattern) er
 					pipe.Expire(ctx, k, p.ttl)
 				}
 				if _, err := pipe.Exec(ctx); err != nil {
-					refreshErr = errors.Join(refreshErr, fmt.Errorf("expire TTL pattern %s: %w", p.pattern, err))
+					refreshErr = errors.Join(refreshErr, _oops.With("pattern", p.pattern).Wrapf(err, "expire TTL pattern"))
 					break
 				}
 				total += len(keys)
@@ -336,7 +339,7 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 	rc := s.rc
 	members, err := rc.SMembers(ctx, key).Result()
 	if err != nil {
-		return fmt.Errorf("read ownership set %s: %w", key, err)
+		return _oops.With("key", key).Wrapf(err, "read ownership set")
 	}
 	if len(members) == 0 {
 		return nil
@@ -347,13 +350,13 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 		expires = append(expires, pipe.Expire(ctx, member, ttl))
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		return fmt.Errorf("refresh ownership set %s: %w", key, err)
+		return _oops.With("key", key).Wrapf(err, "refresh ownership set")
 	}
-	missing := make([]string, 0)
+	var missing []string
 	for i, command := range expires {
 		exists, err := command.Result()
 		if err != nil {
-			return fmt.Errorf("inspect owned key %s: %w", members[i], err)
+			return _oops.With("members", members[i]).Wrapf(err, "inspect owned key")
 		}
 		if !exists {
 			missing = append(missing, members[i])
@@ -363,14 +366,14 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 		// Keep the stale membership until marker invalidation succeeds and the
 		// resulting full fetch atomically replaces it. Deleting it here would make
 		// a failed invalidation invisible to the next 304, preventing a retry.
-		return fmt.Errorf("ownership set %s contains missing live keys %v", key, missing)
+		return _oops.With("key", key).With("missing", missing).Errorf("ownership set contains missing live keys")
 	}
-	renewed, err := rc.Expire(ctx, key, ownedKeysTTL).Result()
+	renewed, err := rc.Expire(ctx, key, _ownedKeysTTL).Result()
 	if err != nil {
-		return fmt.Errorf("refresh ownership metadata %s: %w", key, err)
+		return _oops.With("key", key).Wrapf(err, "refresh ownership metadata")
 	}
 	if !renewed {
-		return fmt.Errorf("refresh ownership metadata %s: key disappeared", key)
+		return _oops.With("key", key).Errorf("refresh ownership metadata: key disappeared")
 	}
 	return nil
 }
@@ -385,6 +388,8 @@ type redisLivePipe struct {
 	pipe       redis.Pipeliner
 	finiteWait bool
 }
+
+var _ livePipe = (*redisLivePipe)(nil)
 
 func (p *redisLivePipe) Set(key string, value any, ttl time.Duration) {
 	p.pipe.Set(context.Background(), key, value, ttl)
@@ -437,12 +442,12 @@ func (p *redisLivePipe) Exec(ctx context.Context) error {
 // by exactly one more validity window: bus 180s, mrt/bike 2min, tra 3min, thsr
 // seats 15min (a slow 10min cadence, so the snapshot outlives one missed refresh).
 const (
-	busLiveTTL       = 180 * time.Second
-	mrtLiveTTL       = 2 * time.Minute
-	bikeLiveTTL      = 2 * time.Minute
-	traLiveTTL       = 3 * time.Minute
-	thsrSeatsLiveTTL = 15 * time.Minute
-	ownedKeysTTL     = 24 * time.Hour
+	_busLiveTTL       = 180 * time.Second
+	_mrtLiveTTL       = 2 * time.Minute
+	_bikeLiveTTL      = 2 * time.Minute
+	_traLiveTTL       = 3 * time.Minute
+	_thsrSeatsLiveTTL = 15 * time.Minute
+	_ownedKeysTTL     = 24 * time.Hour
 )
 
 // liveRegistry lists every realtime dataset the runner knows how to refresh, in
@@ -459,19 +464,19 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 	}
 	traPatterns := func(string) []ttlPattern {
 		return []ttlPattern{
-			{pattern: shared.TraDelayAllKey, ttl: traLiveTTL},
-			{pattern: shared.TraDelayHashKey, ttl: traLiveTTL},
-			{pattern: shared.TraDelayStationKey, ttl: traLiveTTL},
-			{pattern: shared.TraDelayTrainChannel("*"), ttl: traLiveTTL},
+			{pattern: shared.TraDelayAllKey, ttl: _traLiveTTL},
+			{pattern: shared.TraDelayHashKey, ttl: _traLiveTTL},
+			{pattern: shared.TraDelayStationKey, ttl: _traLiveTTL},
+			{pattern: shared.TraDelayTrainChannel("*"), ttl: _traLiveTTL},
 		}
 	}
 	thsrSeatsPatterns := func(string) []ttlPattern {
 		// Re-arm today's per-train seat keys on a 304; the date is resolved when the
 		// 304 fires so the pattern always targets the current service day.
-		return []ttlPattern{{pattern: shared.ThsrSeatsPattern(time.Now().In(taipei).Format(time.DateOnly)), ttl: thsrSeatsLiveTTL}}
+		return []ttlPattern{{pattern: shared.ThsrSeatsPattern(time.Now().In(_taipei).Format(time.DateOnly)), ttl: _thsrSeatsLiveTTL}}
 	}
 	return []liveSpec{
-		{key: "bike", cadence: "@every 30s", ownedKey: bikeOwnedKey, ownedTTL: bikeLiveTTL,
+		{key: "bike", cadence: "@every 30s", ownedKey: bikeOwnedKey, ownedTTL: _bikeLiveTTL,
 			run: func(ctx context.Context, fetch boundFetch, sink liveSink) error {
 				return bikeEta(ctx, fetch, sink, db)
 			}},
@@ -520,7 +525,7 @@ func liveRegistry(db *pgxpool.Pool, dispatcher *notify.Dispatcher) []liveSpec {
 // period, matching liveTickDeadline's own margin for that cadence. Kept as a
 // named constant because it is also used for the reminders tick, which has no
 // liveRegistry cadence entry of its own.
-const liveJobTimeout = 25 * time.Second
+const _liveJobTimeout = 25 * time.Second
 
 // liveTickDeadline returns a deadline strictly under cadence's period, leaving
 // a one-sixth margin so a full tick's jobs cannot bleed past the next tick and
@@ -531,7 +536,7 @@ const liveJobTimeout = 25 * time.Second
 func liveTickDeadline(cadence string) time.Duration {
 	d, err := time.ParseDuration(strings.TrimPrefix(cadence, "@every "))
 	if err != nil || d <= 0 {
-		return liveJobTimeout
+		return _liveJobTimeout
 	}
 	return d - d/6
 }
@@ -599,7 +604,7 @@ func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db
 	// than off a live ETA, so they dispatch on their own tick. Nil-safe when push
 	// is disabled.
 	_, _ = addStaticCron(r, "@every 30s", func() {
-		withTimeout(liveJobTimeout, func(ctx context.Context) {
+		withTimeout(_liveJobTimeout, func(ctx context.Context) {
 			if err := dispatcher.FireScheduled(ctx); err != nil {
 				zap.S().Errorw("error",
 					"component", "live",

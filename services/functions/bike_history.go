@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -12,12 +11,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// bikeHistorySampleInterval is the minimum spacing between persisted history
+// _bikeHistorySampleInterval is the minimum spacing between persisted history
 // rows for a single station. The bikeEta cron runs every 30s, but availability
 // changes slowly, so history is sampled once per 5 minutes per station to keep
 // the table small while still capturing the daily/weekly demand shape needed for
 // future rentable/returnable prediction.
-const bikeHistorySampleInterval = 5 * time.Minute
+const _bikeHistorySampleInterval = 5 * time.Minute
 
 // bikeHistorySampler decides, per station, whether enough time has elapsed since
 // the last persisted sample to record another. It is the 5-minute sampling gate
@@ -39,7 +38,7 @@ func (s *bikeHistorySampler) shouldSample(stationUID string, now time.Time) bool
 		s.last = make(map[string]time.Time)
 	}
 	prev, seen := s.last[stationUID]
-	if seen && now.Sub(prev) < bikeHistorySampleInterval {
+	if seen && now.Sub(prev) < _bikeHistorySampleInterval {
 		return false
 	}
 	s.last[stationUID] = now
@@ -59,7 +58,7 @@ func saveBikeAvailabilityHistory(ctx context.Context, db *pgxpool.Pool, rows [][
 	if err != nil {
 		zap.S().Errorw("copy error", "component", "bike_history", "rows", len(rows), "err", err)
 	} else {
-		zap.S().Infow(fmt.Sprintf("inserted %d rows", len(rows)), "component", "bike_history")
+		zap.S().Infow("inserted rows", "component", "bike_history", "rows", len(rows))
 	}
 }
 
@@ -69,8 +68,8 @@ func saveBikeAvailabilityHistory(ctx context.Context, db *pgxpool.Pool, rows [][
 func cleanupBikeHistory(ctx context.Context, db *pgxpool.Pool) error {
 	tag, err := db.Exec(ctx, `DELETE FROM bike_availability_history WHERE recorded_at < NOW() - INTERVAL '30 days'`)
 	if err != nil {
-		return obs.Transient(fmt.Errorf("cleanup bike history: %w", err))
+		return obs.Transient(_oops.Wrapf(err, "cleanup bike history"))
 	}
-	zap.S().Infow(fmt.Sprintf("cleanup deleted %d rows", tag.RowsAffected()), "component", "bike_history")
+	zap.S().Infow("cleanup deleted rows", "component", "bike_history", "rows", tag.RowsAffected())
 	return nil
 }

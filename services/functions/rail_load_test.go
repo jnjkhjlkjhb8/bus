@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -37,7 +36,7 @@ func TestLoadThsrStationRejectsMalformedElement(t *testing.T) {
 		{"StationID":"0990","StationCode":"NAK","LocationCityCode":"TPE","StationPosition":{"PositionLon":121.6,"PositionLat":25.05}},
 		{"StationID":
 	]`), &fakeLoadSink{}, "")
-	if err == nil || !strings.Contains(err.Error(), "element 1") {
+	if err == nil || !errMentions(err, "element 1") {
 		t.Fatalf("loadThsrStation error = %v, want wrapped element 1 decode error", err)
 	}
 }
@@ -95,7 +94,7 @@ func TestLoadRailTimetablesRejectInvalidTimeDateIdentityOrFlag(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sink := &fakeLoadSink{}
 			err := tt.load(context.Background(), sink, tt.name)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("load error = %v, want %q", err, tt.want)
 			}
 			if len(sink.calls) != 0 {
@@ -113,14 +112,18 @@ func TestLoadRailTimetablesRequirePresenceOfScalarFields(t *testing.T) {
 	for _, field := range traFields {
 		t.Run("TRA missing "+field, func(t *testing.T) {
 			payload := validTraPresencePayload()
-			delete(payload["DailyTrainInfo"].(map[string]any), field)
+			dailyTrainInfo, ok := payload["DailyTrainInfo"].(map[string]any)
+			if !ok {
+				t.Fatalf("DailyTrainInfo is not a map[string]any")
+			}
+			delete(dailyTrainInfo, field)
 			body, err := json.Marshal([]any{payload})
 			if err != nil {
 				t.Fatal(err)
 			}
 			sink := &fakeLoadSink{}
 			err = loadTraTimetable(context.Background(), decodeInto(string(body)), sink, "2026-07-15")
-			if err == nil || !strings.Contains(err.Error(), field) {
+			if err == nil || !errMentions(err, field) {
 				t.Fatalf("loadTraTimetable error = %v, want missing %s", err, field)
 			}
 			if len(sink.calls) != 0 {
@@ -131,14 +134,22 @@ func TestLoadRailTimetablesRequirePresenceOfScalarFields(t *testing.T) {
 
 	t.Run("TRA missing stop SuspendedFlag", func(t *testing.T) {
 		payload := validTraPresencePayload()
-		delete(payload["StopTimes"].([]any)[0].(map[string]any), "SuspendedFlag")
+		stopTimes, ok := payload["StopTimes"].([]any)
+		if !ok || len(stopTimes) == 0 {
+			t.Fatalf("StopTimes is not a non-empty []any")
+		}
+		stop, ok := stopTimes[0].(map[string]any)
+		if !ok {
+			t.Fatalf("StopTimes[0] is not a map[string]any")
+		}
+		delete(stop, "SuspendedFlag")
 		body, err := json.Marshal([]any{payload})
 		if err != nil {
 			t.Fatal(err)
 		}
 		sink := &fakeLoadSink{}
 		err = loadTraTimetable(context.Background(), decodeInto(string(body)), sink, "2026-07-15")
-		if err == nil || !strings.Contains(err.Error(), "SuspendedFlag") {
+		if err == nil || !errMentions(err, "SuspendedFlag") {
 			t.Fatalf("loadTraTimetable error = %v, want missing stop SuspendedFlag", err)
 		}
 		if len(sink.calls) != 0 {
@@ -149,14 +160,18 @@ func TestLoadRailTimetablesRequirePresenceOfScalarFields(t *testing.T) {
 	for _, field := range []string{"Direction", "Overnight"} {
 		t.Run("THSR missing "+field, func(t *testing.T) {
 			payload := validThsrPresencePayload()
-			delete(payload["DailyTrainInfo"].(map[string]any), field)
+			dailyTrainInfo, ok := payload["DailyTrainInfo"].(map[string]any)
+			if !ok {
+				t.Fatalf("DailyTrainInfo is not a map[string]any")
+			}
+			delete(dailyTrainInfo, field)
 			body, err := json.Marshal([]any{payload})
 			if err != nil {
 				t.Fatal(err)
 			}
 			sink := &fakeLoadSink{}
 			err = loadThsrTimetable(context.Background(), decodeInto(string(body)), sink, "2026-07-15")
-			if err == nil || !strings.Contains(err.Error(), field) {
+			if err == nil || !errMentions(err, field) {
 				t.Fatalf("loadThsrTimetable error = %v, want missing %s", err, field)
 			}
 			if len(sink.calls) != 0 {
@@ -222,7 +237,7 @@ func TestLoadRailStationsRejectInvalidIdentityCityOrPosition(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sink := &fakeLoadSink{}
 			err := tt.load(context.Background(), sink)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("load error = %v, want %q", err, tt.want)
 			}
 			if len(sink.calls) != 0 {
@@ -264,7 +279,7 @@ func TestLoadRailFaresRejectInvalidIdentity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			sink := &fakeLoadSink{}
 			err := tt.load(context.Background(), sink)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
+			if err == nil || !errMentions(err, tt.want) {
 				t.Fatalf("load error = %v, want %q", err, tt.want)
 			}
 			if len(sink.calls) != 0 {
@@ -310,7 +325,7 @@ func TestLoadRailDuplicatePolicies(t *testing.T) {
 		}
 		other := `{"StationID":"1000","StationName":{"Zh_tw":"臺北"},"LocationCityCode":"TPE","StationPosition":{"PositionLon":121.5,"PositionLat":25.0}}`
 		err := loadTraStation(context.Background(), decodeInto(`[`+station+`,`+other+`]`), &fakeLoadSink{}, "")
-		if err == nil || !strings.Contains(err.Error(), "duplicate station") {
+		if err == nil || !errMentions(err, "duplicate station") {
 			t.Fatalf("divergent error = %v", err)
 		}
 	})
@@ -325,7 +340,7 @@ func TestLoadRailDuplicatePolicies(t *testing.T) {
 		}
 		other := `{"StationID":"0990","StationCode":"0990","StationName":{"Zh_tw":"南港站"},"LocationCityCode":"TPE","StationPosition":{"PositionLon":121.6,"PositionLat":25.05}}`
 		err := loadThsrStation(context.Background(), decodeInto(`[`+station+`,`+other+`]`), &fakeLoadSink{}, "")
-		if err == nil || !strings.Contains(err.Error(), "duplicate station") {
+		if err == nil || !errMentions(err, "duplicate station") {
 			t.Fatalf("divergent error = %v", err)
 		}
 	})
@@ -340,7 +355,7 @@ func TestLoadRailDuplicatePolicies(t *testing.T) {
 		}
 		other := `{"OriginStationID":"1000","DestinationStationID":"1001","Fares":[{"TicketType":"Adult","Price":41}]}`
 		err := loadTraFare(context.Background(), decodeInto(`[`+fare+`,`+other+`]`), &fakeLoadSink{}, "")
-		if err == nil || !strings.Contains(err.Error(), "duplicate fare") {
+		if err == nil || !errMentions(err, "duplicate fare") {
 			t.Fatalf("divergent error = %v", err)
 		}
 	})
@@ -355,7 +370,7 @@ func TestLoadRailDuplicatePolicies(t *testing.T) {
 		}
 		other := `{"OriginStationID":"0990","DestinationStationID":"1070","Fares":[{"TicketType":1,"FareClass":1,"CabinClass":1,"Price":41}]}`
 		err := loadThsrFare(context.Background(), decodeInto(`[`+fare+`,`+other+`]`), &fakeLoadSink{}, "")
-		if err == nil || !strings.Contains(err.Error(), "duplicate fare") {
+		if err == nil || !errMentions(err, "duplicate fare") {
 			t.Fatalf("divergent error = %v", err)
 		}
 	})
@@ -370,7 +385,7 @@ func TestLoadRailDuplicatePolicies(t *testing.T) {
 		}
 		other := `{"DailyTrainInfo":{"TrainNo":"123","Direction":0,"StartingStationID":"1000","EndingStationID":"1001","WheelchairFlag":0,"PackageServiceFlag":0,"DiningFlag":0,"BikeFlag":0,"BreastFeedingFlag":0,"DailyFlag":0,"ServiceAddedFlag":0,"SuspendedFlag":0},"StopTimes":[{"StopSequence":1,"StationID":"1000","ArrivalTime":"08:02","DepartureTime":"08:03","SuspendedFlag":0}]}`
 		err := loadTraTimetable(context.Background(), decodeInto(`[`+row+`,`+other+`]`), &fakeLoadSink{}, "2026-07-15")
-		if err == nil || !strings.Contains(err.Error(), "duplicate timetable") {
+		if err == nil || !errMentions(err, "duplicate timetable") {
 			t.Fatalf("divergent error = %v", err)
 		}
 	})
@@ -385,7 +400,7 @@ func TestLoadRailDuplicatePolicies(t *testing.T) {
 		}
 		other := `{"TrainDate":"2026-07-15","DailyTrainInfo":{"TrainNo":"0101","Direction":0,"StartingStationID":"0990","EndingStationID":"1070","Overnight":false},"StopTimes":[{"StopSequence":1,"StationID":"0990","ArrivalTime":"08:02","DepartureTime":"08:03"}]}`
 		err := loadThsrTimetable(context.Background(), decodeInto(`[`+row+`,`+other+`]`), &fakeLoadSink{}, "2026-07-15")
-		if err == nil || !strings.Contains(err.Error(), "duplicate timetable") {
+		if err == nil || !errMentions(err, "duplicate timetable") {
 			t.Fatalf("divergent error = %v", err)
 		}
 	})

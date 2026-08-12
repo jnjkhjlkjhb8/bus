@@ -45,9 +45,9 @@ func TestFlushBudgetScalesWithRows(t *testing.T) {
 	}{
 		{rows: 0, want: floor},
 		{rows: 1, want: floor},
-		{rows: archiveRowsPerInsert - 1, want: floor},
-		{rows: archiveRowsPerInsert, want: floor + busEtaFlushPerBatch},
-		{rows: 21353, want: floor + 21*busEtaFlushPerBatch},
+		{rows: _archiveRowsPerInsert - 1, want: floor},
+		{rows: _archiveRowsPerInsert, want: floor + _busEtaFlushPerBatch},
+		{rows: 21353, want: floor + 21*_busEtaFlushPerBatch},
 	} {
 		if got := flushBudget(floor, tc.rows); got != tc.want {
 			t.Errorf("flushBudget(%v, %d) = %v, want %v", floor, tc.rows, got, tc.want)

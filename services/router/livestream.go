@@ -112,6 +112,8 @@ type RedisLiveSource struct {
 	rc *redis.Client
 }
 
+var _ LiveSource = RedisLiveSource{}
+
 func (r RedisLiveSource) get(ctx context.Context, key string) ([]byte, bool) {
 	val, err := r.rc.Get(ctx, key).Bytes()
 	if err != nil {

@@ -138,6 +138,7 @@ message Bus_RouteEstimate{
   // Crowding of the vehicle this estimate describes, resolved server-side from
   // plate_numb so the client never has to join Buses itself.
   BusCrowdLevel crowd_level = 11;
+  bool is_last_bus = 12;
 }
 message Bus_StopEstimate{
   string stop_uid = 1;
@@ -152,6 +153,7 @@ message Bus_StopEstimate{
   int64 arrival_unix = 10;
   string destination = 11;
   BusCrowdLevel crowd_level = 12;
+  bool is_last_bus = 13;
 }
 // 車上擁擠度. UNKNOWN is the zero value because most vehicles have no reading:
 // only Data.taipei publishes crowding for buses, and only for Taipei, so every

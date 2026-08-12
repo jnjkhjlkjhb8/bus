@@ -41,7 +41,7 @@ func searchExplainPool(t *testing.T) *pgxpool.Pool {
 }
 
 // TestTextSearchQueryPlanHasIndexableExactBranch runs EXPLAIN (no ANALYZE,
-// so the query is planned but never executed) against textSearchSQL and
+// so the query is planned but never executed) against _textSearchSQL and
 // requires the exact-uid branch (WHERE uid = $1) to reach the plan through
 // an index rather than a sequential scan, and every other branch to stay
 // bounded (a Limit node) rather than degrading into one unbounded
@@ -53,7 +53,7 @@ func TestTextSearchQueryPlanHasIndexableExactBranch(t *testing.T) {
 
 	var planJSON []byte
 	err := pool.QueryRow(context.Background(),
-		"EXPLAIN (FORMAT JSON) "+textSearchSQL,
+		"EXPLAIN (FORMAT JSON) "+_textSearchSQL,
 		"placeholder-query", textSearchBranchLimit(20),
 	).Scan(&planJSON)
 	if err != nil {

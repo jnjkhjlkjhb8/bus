@@ -69,7 +69,7 @@ func TestStaticVersionFailsLoudlyAndCachesNothing(t *testing.T) {
 	}
 	// A failure must never be cached: the client keeps its existing cache on a
 	// 503, so a cached error would extend a blip into five minutes of it.
-	if _, ok := cache.get(staticVersionCacheKey); ok {
+	if _, ok := cache.get(_staticVersionCacheKey); ok {
 		t.Fatal("error response was cached")
 	}
 	fail = false

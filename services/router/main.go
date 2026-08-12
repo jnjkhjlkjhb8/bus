@@ -55,19 +55,26 @@ func grpcStatusFor(err error, notFoundMsg string) error {
 	return status.Error(codes.Internal, "internal error")
 }
 
-func logPoolStats(pool *pgxpool.Pool) {
+// logPoolStats logs the DB pool's stats once a minute until stop is closed.
+func logPoolStats(pool *pgxpool.Pool, stop <-chan struct{}) {
 	t := time.NewTicker(1 * time.Minute)
-	for range t.C {
-		s := pool.Stat()
-		zap.S().Infow("log",
-			"component", "db",
-			"action", "pool_stat",
-			"total", s.TotalConns(),
-			"acquired", s.AcquiredConns(),
-			"idle", s.IdleConns(),
-			"empty_acquires", s.EmptyAcquireCount(),
-			"max", s.MaxConns(),
-		)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			s := pool.Stat()
+			zap.S().Infow("log",
+				"component", "db",
+				"action", "pool_stat",
+				"total", s.TotalConns(),
+				"acquired", s.AcquiredConns(),
+				"idle", s.IdleConns(),
+				"empty_acquires", s.EmptyAcquireCount(),
+				"max", s.MaxConns(),
+			)
+		case <-stop:
+			return
+		}
 	}
 }
 
@@ -75,6 +82,7 @@ func logPoolStats(pool *pgxpool.Pool) {
 // PostgreSQL (memoized in cache) and live ETA streamed from Redis Pub/Sub.
 type BusRouteserver struct {
 	pb.UnimplementedBus_Route_ServiceServer
+
 	db    *pgxpool.Pool
 	rc    *redis.Client
 	cache *TTLCache
@@ -85,6 +93,7 @@ type BusRouteserver struct {
 // PostgreSQL and per-station live ETA streamed from Redis Pub/Sub.
 type BusStationserver struct {
 	pb.UnimplementedBus_Station_ServiceServer
+
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live LiveSource
@@ -94,6 +103,7 @@ type BusStationserver struct {
 // cache) and live availability streamed from Redis Pub/Sub.
 type BikeServer struct {
 	pb.UnimplementedBike_ServiceServer
+
 	db    *pgxpool.Pool
 	rc    *redis.Client
 	cache *TTLCache
@@ -107,6 +117,7 @@ type BikeServer struct {
 // at creation, and now is an injectable clock for tests.
 type MrtServer struct {
 	pb.UnimplementedMrt_ServiceServer
+
 	rc    *redis.Client
 	db    *pgxpool.Pool
 	live  LiveSource
@@ -122,6 +133,7 @@ type MrtServer struct {
 // fetch (ADR-0005), so the server holds no TDX client.
 type ThsrServer struct {
 	pb.UnimplementedThsrTimetableServiceServer
+
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live LiveSource
@@ -132,6 +144,7 @@ type ThsrServer struct {
 // loaded env schema; empty results return NotFound (no TDX fetch, ADR-0005).
 type TraTimetableServer struct {
 	pb.UnimplementedTRATimetableServiceServer
+
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live LiveSource
@@ -142,6 +155,7 @@ type TraTimetableServer struct {
 // schema; empty results return NotFound (no TDX fetch, ADR-0005).
 type TraDetainServer struct {
 	pb.UnimplementedTRA_DetainServiceServer
+
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live LiveSource
@@ -152,6 +166,7 @@ type TraDetainServer struct {
 // (no TDX fetch, ADR-0005).
 type ThsrDetainServer struct {
 	pb.UnimplementedThsr_DetainServiceServer
+
 	db   *pgxpool.Pool
 	rc   *redis.Client
 	live LiveSource
@@ -160,6 +175,7 @@ type ThsrDetainServer struct {
 // NearServer streams results from the nearby discovery module.
 type NearServer struct {
 	pb.UnimplementedNear_Station_ServiceServer
+
 	discovery *NearbyDiscovery
 }
 
@@ -254,9 +270,9 @@ func (c serverCoordinator) serve(grpcListener, httpListener net.Listener) error 
 
 func unexpectedServeError(result serverResult) error {
 	if result.err == nil || (result.name == "HTTP" && errors.Is(result.err, http.ErrServerClosed)) {
-		return fmt.Errorf("%s server stopped unexpectedly", result.name)
+		return _oops.With("result_name", result.name).Errorf("server stopped unexpectedly")
 	}
-	return fmt.Errorf("%s server failed: %w", result.name, result.err)
+	return _oops.With("result_name", result.name).Wrapf(result.err, "server failed")
 }
 
 func (c serverCoordinator) stopServers() {
@@ -320,7 +336,7 @@ func run() error {
 		runtime.addCleanup(func() { signal.Stop(shutdownSignal) })
 		httpConfig, err := httpServerConfigFromEnv()
 		if err != nil {
-			return fmt.Errorf("HTTP configuration failed before startup: %w", err)
+			return _oops.Wrapf(err, "HTTP configuration failed before startup")
 		}
 		rc := shared.ConnectRedis()
 		runtime.addCleanup(func() {
@@ -335,7 +351,16 @@ func run() error {
 		)
 		db := shared.ConnectDB("ROUTER_DB_MAX_CONNS", 20)
 		runtime.addCleanup(db.Close)
-		go logPoolStats(db)
+		poolStatsStop := make(chan struct{})
+		poolStatsDone := make(chan struct{})
+		go func() {
+			defer close(poolStatsDone)
+			logPoolStats(db, poolStatsStop)
+		}()
+		runtime.addCleanup(func() {
+			close(poolStatsStop)
+			<-poolStatsDone
+		})
 		// MaaS route planning is the router's sole, deliberate TDX carve-out: it is a
 		// request/response proxy, not cacheable live data, so it stays on the read
 		// path (ADR-0005 amendment). Every other live TDX fetch, including the THSR
@@ -356,7 +381,7 @@ func run() error {
 		})
 		lis, err := net.Listen("tcp", "0.0.0.0:50051")
 		if err != nil {
-			return fmt.Errorf("listen for gRPC: %w", err)
+			return _oops.Wrapf(err, "listen for gRPC")
 		}
 		runtime.addCleanup(func() { _ = lis.Close() })
 		httpRuntime, err := prepareHTTPServer(db, live, httpConfig, loadOrGenerateKey, net.Listen)
@@ -367,14 +392,14 @@ func run() error {
 		rl := NewRateLimiter()
 		tlsCredentials, err := GRPCTLSCredentialsFromEnv()
 		if err != nil {
-			return fmt.Errorf("gRPC TLS initialization failed: %w", err)
+			return _oops.Wrapf(err, "gRPC TLS initialization failed")
 		}
 		appCheckVerifier, enforceAppCheck, err := FirebaseAppCheckFromEnv(context.Background())
 		if err != nil {
-			return fmt.Errorf("initialize Firebase Admin: %w", err)
+			return _oops.Wrapf(err, "initialize Firebase Admin")
 		}
 		// One limiter across both chains so the TDX quota is spent per caller,
-		// not per method (see maasQuotaScope).
+		// not per method (see _maasQuotaScope).
 		maasRL := NewRateLimiter()
 		serverOptions := []grpc.ServerOption{
 			// Stop is the bounded GracefulStop fallback. Waiting for handlers here
@@ -420,7 +445,7 @@ func run() error {
 			devices:  NewFirebaseStore(db),
 			notifier: NewFeedbackNotifier(),
 		})
-		zap.S().Infow(fmt.Sprintf("gRPC server is running on port %d", 50051))
+		zap.S().Infow("gRPC server is running", "port", 50051)
 		zap.S().Infow("server running on 0.0.0.0:8080", "component", "http")
 		coordinator := serverCoordinator{
 			grpcServer:       grpcServer,

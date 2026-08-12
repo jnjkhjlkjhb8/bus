@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -106,7 +105,7 @@ func (c *TRTCTrainInfoClient) GetTrainInfo(ctx context.Context, carID string) (*
 		return nil, false, err
 	}
 	if resp.StatusCode() != http.StatusOK {
-		return nil, false, fmt.Errorf("GetTrainInfo: status %d", resp.StatusCode())
+		return nil, false, _oops.With("status_code", resp.StatusCode()).Errorf("GetTrainInfo: status")
 	}
 	raw, ok := extractJSONObject(resp.Body())
 	if !ok {
@@ -116,7 +115,7 @@ func (c *TRTCTrainInfoClient) GetTrainInfo(ctx context.Context, carID string) (*
 	}
 	var info TRTCTrainInfo
 	if err := json.Unmarshal(raw, &info); err != nil {
-		return nil, false, fmt.Errorf("GetTrainInfo: decode: %w", err)
+		return nil, false, _oops.Wrapf(err, "GetTrainInfo: decode")
 	}
 	if info.TripID == "" {
 		return nil, false, nil

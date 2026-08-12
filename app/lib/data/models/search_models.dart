@@ -31,6 +31,46 @@ class SearchResult extends Equatable {
   final double? lat;
   final double? lon;
 
+  /// Identity of the place this result points at, independent of the
+  /// coordinates or subtitle a given response happened to carry. Local
+  /// history and ranking key on this so the same stop reached through two
+  /// queries is one entry, not two.
+  String get storageKey => '${type.name}:$uid';
+
+  /// Round-trips through the settings box. Shared by every local store that
+  /// remembers results (history, affinity) so one shape is written and one
+  /// parser has to stay in step with this class.
+  Map<String, Object?> toStorageMap() => {
+    'type': type.name,
+    'uid': uid,
+    'name': name,
+    'subtitle': subtitle,
+    'city': city,
+    'lat': lat,
+    'lon': lon,
+  };
+
+  /// Null when the map is missing the fields that make a result navigable —
+  /// a partial entry left by an older build is dropped rather than rendered
+  /// as a row that goes nowhere.
+  static SearchResult? fromStorageMap(Map<dynamic, dynamic> map) {
+    final typeName = map['type'] as String?;
+    final type = SearchResultType.values.where((t) => t.name == typeName);
+    if (type.isEmpty) return null;
+    final uid = map['uid'] as String? ?? '';
+    final name = map['name'] as String? ?? '';
+    if (uid.isEmpty || name.isEmpty) return null;
+    return SearchResult(
+      type: type.first,
+      uid: uid,
+      name: name,
+      subtitle: map['subtitle'] as String? ?? '',
+      city: map['city'] as String?,
+      lat: (map['lat'] as num?)?.toDouble(),
+      lon: (map['lon'] as num?)?.toDouble(),
+    );
+  }
+
   @override
   List<Object?> get props => [type, uid, name, subtitle, city, lat, lon];
 }

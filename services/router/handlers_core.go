@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -44,7 +43,7 @@ func (s *BusRouteserver) Eta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_Service_E
 // and the router does no normalization. Results are memoized in the in-process
 // cache for an hour; a missing row maps to NotFound via grpcStatusFor.
 func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.Resp_BusStatic, error) {
-	zap.S().Infow(fmt.Sprintf("call bus_static %s", in.SubRouteUID))
+	zap.S().Infow("call", "component", "grpc", "action", "bus_static", "event", "call", "sub_route_uid", in.SubRouteUID)
 	route := in.SubRouteUID
 	if s.cache != nil {
 		if data, ok := s.cache.get("bus_static:" + route); ok {
@@ -80,7 +79,7 @@ func (s *BusRouteserver) BusRouteStatic(ctx context.Context, in *pb.Bus_Ask_Rout
 // client sees state immediately, and forwards each published update until the
 // client disconnects. Payloads failing usableBusEtaPayload are skipped.
 func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_Service_EtaServer) error {
-	zap.S().Infow(fmt.Sprintf("call Bus_route_eta %s", in.SubRouteUID))
+	zap.S().Infow("call", "component", "grpc", "action", "bus_route_eta", "event", "call", "sub_route_uid", in.SubRouteUID)
 	key := shared.BusRouteEtaKey(in.SubRouteUID)
 	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
 		channel:  key,
@@ -103,7 +102,7 @@ func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_S
 // It lives as a free function over the query seam rather than as a method on
 // either bus server, so it carries no server state beyond db and rc.
 func streamBusStationEta(db CoreDB, live LiveSource, in *pb.Bus_Ask_StationGroup, stream pb.Bus_Station_Service_EtaServer) error {
-	zap.S().Infow(fmt.Sprintf("call Bus_station_eta %s:%s", in.City, in.GroupUid))
+	zap.S().Infow("call", "component", "grpc", "action", "bus_station_eta", "event", "call", "city", in.City, "group_uid", in.GroupUid)
 	groupUID := in.GroupUid
 	if groupUID == "" {
 		return status.Error(codes.InvalidArgument, "station eta key must include group_uid")
@@ -136,7 +135,7 @@ func streamBusStationEta(db CoreDB, live LiveSource, in *pb.Bus_Ask_StationGroup
 // the 03:30 load (ADR-0006), so requests arrive already canonical. A missing key
 // maps to NotFound via grpcStatusFor.
 func (s *BusRouteserver) BusDailytable(ctx context.Context, in *pb.Bus_Ask_Route) (*pb.Resp_BusDailyTimetable, error) {
-	zap.S().Infow(fmt.Sprintf("call Bus_dailytable %s", in.SubRouteUID))
+	zap.S().Infow("call", "component", "grpc", "action", "bus_dailytable", "event", "call", "sub_route_uid", in.SubRouteUID)
 	route := in.SubRouteUID
 	val, err := s.rc.Get(ctx, shared.BusDailyTimetableKey(route)).Result()
 	if err != nil {
@@ -208,7 +207,7 @@ func (s *BikeServer) Eta(in *pb.BikeRequest, stream pb.Bike_Service_EtaServer) e
 // that fails to unmarshal is ignored and re-fetched. A missing station maps to
 // NotFound via grpcStatusFor.
 func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.BikeStatic, error) {
-	zap.S().Infow(fmt.Sprintf("call bike_static %s", in.StationUID))
+	zap.S().Infow("call", "component", "grpc", "action", "bike_static", "event", "call", "station_uid", in.StationUID)
 	if s.cache != nil {
 		if data, ok := s.cache.get("bike_static:" + in.StationUID); ok {
 			var resp pb.BikeStatic
@@ -253,7 +252,7 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 // forwards published updates until the client disconnects. Empty payloads are
 // skipped, so a client with no cached value receives no seed frame.
 func (s *BikeServer) bikeEta(in *pb.BikeRequest, stream pb.Bike_Service_EtaServer) error {
-	zap.S().Infow(fmt.Sprintf("call bike_eta %s", in.StationUID))
+	zap.S().Infow("call", "component", "grpc", "action", "bike_eta", "event", "call", "station_uid", in.StationUID)
 	key := shared.BikeAvailabilityKey(in.StationUID)
 	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
 		channel:  key,
@@ -285,7 +284,7 @@ func (s *MrtServer) Eta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
 // ID would otherwise seed and subscribe to a keyspace nothing ever writes, and the
 // client would sit on an empty stream forever.
 func (s *MrtServer) MrtEta(in *pb.AskMrt, stream pb.Mrt_Service_EtaServer) error {
-	zap.S().Infow(fmt.Sprintf("call Mrt_eta %s %s", in.System, in.StationID))
+	zap.S().Infow("call", "component", "grpc", "action", "mrt_eta", "event", "call", "system", in.System, "station_id", in.StationID)
 
 	// stream.Send is not safe for concurrent use, so the per-station streams
 	// serialize their sends through one mutex.
@@ -372,7 +371,7 @@ func (s *TraTimetableServer) Timetable(ctx context.Context, in *pb.AskRoute) (*p
 // published updates until the client disconnects. An empty cached value is
 // skipped rather than sent as a seed frame.
 func (s *TraTimetableServer) traDelay(stream pb.TRATimetableService_DelayServer) error {
-	zap.S().Infow("call tra_delay")
+	zap.S().Infow("call", "component", "grpc", "action", "tra_delay", "event", "call")
 	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
 		channel:  shared.TraDelayAllKey,
 		seedKeys: []string{shared.TraDelayAllKey},
@@ -410,7 +409,7 @@ func (s *TraDetainServer) Stops(ctx context.Context, in *pb.AskDetain) (*pb.TraS
 // cached value, then forwards published updates until the client disconnects. An
 // empty cached value is skipped rather than sent as a seed frame.
 func (s *TraDetainServer) traDdelay(in *pb.AskDetain, stream pb.TRA_DetainService_DelayServer) error {
-	zap.S().Infow(fmt.Sprintf("call tra_delay %s", in.Trainno))
+	zap.S().Infow("call", "component", "grpc", "action", "tra_train_delay", "event", "call", "trainno", in.Trainno)
 	// The realtime TRA job sets and publishes this key per train (traEta), so a
 	// train absent from the current delay feed simply has no cached value and
 	// the stream stays silent until one lands.
@@ -558,6 +557,11 @@ func (s *NearServer) FindNear(stream pb.Near_Station_Service_NearServer) error {
 		var in *pb.Ask_Near
 		select {
 		case <-ctx.Done():
+			// The drain goroutine's only exit signal is requests closing; wait
+			// for it here rather than returning while it is still running, per
+			// "Wait for goroutines to exit" (docs/go-style/goroutine-exit.md).
+			for range requests {
+			}
 			return ctx.Err()
 		case next, ok := <-requests:
 			if !ok {

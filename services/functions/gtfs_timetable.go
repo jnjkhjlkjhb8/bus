@@ -13,16 +13,16 @@ import (
 // Timetable files: trips, calls, service days and metro headways.
 // ---------------------------------------------------------------------------
 
-// gtfsMidnightGap is the longest wait between two consecutive calls that a
+// _gtfsMidnightGap is the longest wait between two consecutive calls that a
 // midnight rollover may imply. Beyond it a time that moves backwards is read as
 // bad data rather than as a new day (gtfsStopTimesSQL).
-const gtfsMidnightGap = 3 * time.Hour
+const _gtfsMidnightGap = 3 * time.Hour
 
-// gtfsMidnightGapSecs is gtfsMidnightGap in the units the calls are compared in,
+// _gtfsMidnightGapSecs is gtfsMidnightGap in the units the calls are compared in,
 // which is what the statement can splice.
-var gtfsMidnightGapSecs = strconv.Itoa(int(gtfsMidnightGap / time.Second))
+var _gtfsMidnightGapSecs = strconv.Itoa(int(_gtfsMidnightGap / time.Second))
 
-// gtfsCalendarDays is how many days of service the feed states, counting from
+// _gtfsCalendarDays is how many days of service the feed states, counting from
 // the day it is built.
 //
 // Rail is the only mode landed as a per-date expansion, so before this bound
@@ -32,9 +32,9 @@ var gtfsMidnightGapSecs = strconv.Itoa(int(gtfsMidnightGap / time.Second))
 // (ADR-0005), and this feed exists to plan journeys, which nobody does three
 // months out. The feed is rebuilt nightly, so the window always carries a
 // fortnight of slack against a run that fails.
-const gtfsCalendarDays = 15
+const _gtfsCalendarDays = 15
 
-// railTripRows flattens both daily-timetable tables to one shape.
+// _railTripRows flattens both daily-timetable tables to one shape.
 //
 // The two differ in ways that have to be reconciled before anything else can be
 // shared: tra_dailytimetable.traindate is text while thsr_dailytimetable's is
@@ -43,13 +43,10 @@ const gtfsCalendarDays = 15
 // flags and wheelchair flags.
 //
 // Read railTripSource, not this: every consumer wants the windowed set.
-const railTripRows = `
+const _railTripRows = `
   SELECT
     'TRA' AS operator,
     dailytraininfo->>'TrainNo' AS train_no,
-    -- The type a rider names the train by. THSR has one, so it is stated rather
-    -- than carried: its payload has no train type at all.
-    COALESCE(dailytraininfo->'TrainTypeName'->>'` + gtfsNameZh + `', '') AS train_type,
     traindate::date AS service_date,
     'TRA:' || (dailytraininfo->>'TrainTypeID') AS route_id,
     dailytraininfo->'EndingStationName'->>'Zh_tw' AS headsign,
@@ -65,7 +62,6 @@ const railTripRows = `
   SELECT
     'THSR',
     dailytraininfo->>'TrainNo',
-    '高鐵',
     (traindate AT TIME ZONE 'Asia/Taipei')::date,
     'THSR',
     dailytraininfo->'EndingStationName'->>'Zh_tw',
@@ -75,7 +71,7 @@ const railTripRows = `
   FROM raw_tdx.thsr_dailytimetable
   WHERE COALESCE(dailytraininfo->>'TrainNo', '') <> ''`
 
-// railTripSource is railTripRows cut to the feed's window.
+// _railTripSource is railTripRows cut to the feed's window.
 //
 // The bound lives here rather than on calendar_dates because trips.txt and
 // stop_times.txt read this set too and derive their service_id from the date in
@@ -85,13 +81,13 @@ const railTripRows = `
 // now() is stable for the length of a transaction, and the whole archive is
 // written inside one (writeGTFSArchive), so every file resolves the window to
 // the same fortnight however long the build runs.
-var railTripSource = `
-  SELECT * FROM (` + railTripRows + `) w
+var _railTripSource = `
+  SELECT * FROM (` + _railTripRows + `) w
   WHERE w.service_date >= (now() AT TIME ZONE 'Asia/Taipei')::date
     AND w.service_date < (now() AT TIME ZONE 'Asia/Taipei')::date + ` +
-	strconv.Itoa(gtfsCalendarDays)
+	strconv.Itoa(_gtfsCalendarDays)
 
-// gtfsCalendarDatesSQL emits one service per date the timetable covers.
+// _gtfsCalendarDatesSQL emits one service per date the timetable covers.
 //
 // calendar.txt is not used: rail is landed as a per-date expansion, so its
 // services are single dates and there is no weekly pattern to state. Expanding
@@ -103,7 +99,7 @@ var railTripSource = `
 // railTripSource has already cut to gtfsCalendarDays. Rail is what sets it
 // because it is the only mode landed per date — the bus daily timetable lands
 // one day and is published here as a weekday mask.
-var gtfsCalendarDatesSQL = `
+var _gtfsCalendarDatesSQL = `
 WITH day AS (
   -- The feed's calendar range: every date any timetable covers. Only rail
   -- carries dates — every bus trip now runs on a weekday mask — so rail alone
@@ -115,11 +111,11 @@ WITH day AS (
   -- few thousand times over. It made calendar_dates.txt 3,178,308 rows where
   -- 3,204 say the same thing, and every one of the repeats is a duplicate
   -- primary key a validator rejects.
-  SELECT DISTINCT service_date FROM (` + railTripSource + `) r
+  SELECT DISTINCT service_date FROM (` + _railTripSource + `) r
 ), svc AS (
-  SELECT * FROM (` + metroServiceSQL + `) m
+  SELECT * FROM (` + _metroServiceSQL + `) m
   UNION
-  SELECT * FROM (` + busScheduleServiceSQL + `) b
+  SELECT * FROM (` + _busScheduleServiceSQL + `) b
 )
 -- Rail runs to a date TDX already resolved.
 SELECT DISTINCT
@@ -137,12 +133,12 @@ FROM day CROSS JOIN svc
 WHERE svc.week[EXTRACT(DOW FROM day.service_date)::int + 1]
 ORDER BY 1, 2`
 
-// gtfsTripsSQL emits one trip per train per service date.
+// _gtfsTripsSQL emits one trip per train per service date.
 //
 // trip_id embeds the train number and the date rather than being a surrogate:
 // it has to stay stable across nightly rebuilds so a GTFS-RT TripUpdate can name
 // it, and TrainNo is the identifier the realtime delay feed reports against.
-var gtfsTripsSQL = `
+var _gtfsTripsSQL = `
 -- DISTINCT ON collapses the handful of subroutes that run two departures in the
 -- same minute, which would otherwise share a trip_id. Merging them loses one
 -- departure; emitting both would make the file invalid and interleave their
@@ -161,20 +157,15 @@ FROM (
   SELECT
     route_id,
     'D' || to_char(service_date, 'YYYYMMDD') AS service_id,
-    t.operator || ':' || t.train_no || ':' || to_char(t.service_date, 'YYYYMMDD') AS trip_id,
-    COALESCE(t.headsign, '') AS trip_headsign,
-    -- Type then number, the way a rider reads a train off a departure board:
-    -- route_short_name is the type alone, so a planner showing the trip on its
-    -- own would otherwise name every 自強 identically.
-    TRIM(COALESCE(t.train_type, '') || ' ' || t.train_no) AS trip_short_name,
-    t.direction_id,
-    t.wheelchair AS wheelchair_accessible,
-    COALESCE(ts.shape_id, '') AS shape_id
-  FROM (` + railTripSource + `) t
-  -- The stitched shape, when this trip's calls made one (gtfs_rail_shape.go).
-  LEFT JOIN ` + gtfsRailTripShapeTable + ` ts
-    ON ts.trip_id = t.operator || ':' || t.train_no || ':' || to_char(t.service_date, 'YYYYMMDD')
-  WHERE jsonb_typeof(t.stoptimes) = 'array' AND jsonb_array_length(t.stoptimes) > 1
+    operator || ':' || train_no || ':' || to_char(service_date, 'YYYYMMDD') AS trip_id,
+    COALESCE(headsign, '') AS trip_headsign,
+    train_no AS trip_short_name,
+    direction_id,
+    wheelchair AS wheelchair_accessible,
+    -- No shape: rail_shapes is per line and a train crosses lines.
+    '' AS shape_id
+  FROM (` + _railTripSource + `) t
+  WHERE jsonb_typeof(stoptimes) = 'array' AND jsonb_array_length(stoptimes) > 1
   UNION ALL
   SELECT
     routeuid,
@@ -191,7 +182,7 @@ FROM (
         AND sh.geometry LIKE 'LINESTRING%'
     ) THEN 'B:' || split_part(trip_id, ':', 1) || ':' || direction_id::text
     ELSE '' END
-  FROM (` + busScheduleSource + `) w
+  FROM (` + _busScheduleSource + `) w
   UNION ALL
   -- One template trip per metro route direction. A frequency-based trip states
   -- the shape of the journey once; frequencies.txt says how often it repeats.
@@ -210,26 +201,26 @@ FROM (
               JOIN raw_tdx.metro_shape m ON m.system = r.system AND m.lineid = r.lineid
               WHERE r.system = p.system AND r.routeid = p.routeid
                 AND m.geometry LIKE 'LINESTRING%' LIMIT 1), '')
-  FROM (` + metroPatternSQL + `) p
+  FROM (` + _metroPatternSQL + `) p
   JOIN raw_tdx.metro_frequency f ON f.system = p.system AND f.routeid = p.routeid
-  JOIN (` + metroServiceSQL + `) svc
+  JOIN (` + _metroServiceSQL + `) svc
     ON svc.service_id = ` + gtfsWeekMaskSQL("f.serviceday") + `
   WHERE p.complete
   UNION ALL
   -- Most cities publish an origin departure and nothing else, so the schedule
   -- source above filters every one of their trips out. These are laid out from
   -- bus_segment_time instead (gtfs_bus_pattern.go).
-  SELECT * FROM (` + busPatternTripsSQL + `) bp
+  SELECT * FROM (` + _busPatternTripsSQL + `) bp
 ) t
 WHERE trip_id <> ''
   -- A trip is only published if its calls are: gtfsStopTimesSQL drops the ones
   -- whose times it cannot state, and a trip row with no stop_times is one a
   -- planner can board and never leave. Reading the materialized calls rather
   -- than deriving them again is what makes this affordable.
-  AND trip_id IN (SELECT trip_id FROM ` + gtfsStopTimeTable + `)
+  AND trip_id IN (SELECT trip_id FROM ` + _gtfsStopTimeTable + `)
 ORDER BY trip_id`
 
-// gtfsStopTimesSQL emits each trip's calls.
+// _gtfsStopTimesSQL emits each trip's calls.
 //
 // Times cross midnight and GTFS requires them to increase within a trip, so a
 // train that departs 23:50 and arrives 00:20 must be written 24:20:00, not
@@ -242,11 +233,7 @@ ORDER BY trip_id`
 // A stop flagged suspended stays in the sequence with pickup and drop-off
 // disabled rather than being removed: the train still passes through, and
 // deleting the row would make the surrounding times look like a direct run.
-//
-// Bus calls carry the two flags separately, from _busStopBoardingSQL: an
-// intercity coach picks up but does not set down over the first half of its
-// run, and a feed that does not say so plans riders off it there.
-var gtfsStopTimesSQL = `
+var _gtfsStopTimesSQL = `
 WITH calls AS (
   -- Rail and bus share a shape: a per-call list with wall-clock HH:MM.
   SELECT
@@ -257,9 +244,8 @@ WITH calls AS (
       + split_part(c->>'ArrivalTime', ':', 2)::int * 60 AS arr,
     split_part(c->>'DepartureTime', ':', 1)::int * 3600
       + split_part(c->>'DepartureTime', ':', 2)::int * 60 AS dep,
-    COALESCE((c->>'SuspendedFlag')::int, 0) AS pickup,
-    COALESCE((c->>'SuspendedFlag')::int, 0) AS drop_off
-  FROM (` + railTripSource + `) t
+    COALESCE((c->>'SuspendedFlag')::int, 0) AS suspended
+  FROM (` + _railTripSource + `) t
   CROSS JOIN LATERAL jsonb_array_elements(t.stoptimes) c
   WHERE jsonb_typeof(t.stoptimes) = 'array'
     AND (c->>'ArrivalTime') ~ '^[0-9]{1,2}:[0-9]{2}$'
@@ -273,24 +259,17 @@ WITH calls AS (
       + split_part(c->>'ArrivalTime', ':', 2)::int * 60,
     split_part(c->>'DepartureTime', ':', 1)::int * 3600
       + split_part(c->>'DepartureTime', ':', 2)::int * 60,
-    COALESCE(sb.pickup, 0),
-    COALESCE(sb.drop_off, 0)
-  FROM (` + busScheduleSource + `) w
+    0
+  FROM (` + _busScheduleSource + `) w
   CROSS JOIN LATERAL jsonb_array_elements(w.stop_times) c
-  -- trip_id's first field is the subroute it was built from (busScheduleSource),
-  -- which is the key the boarding flags are stated against.
-  LEFT JOIN (` + _busStopBoardingSQL + `) sb
-    ON sb.sub_route_uid = split_part(w.trip_id, ':', 1)
-   AND sb.direction     = w.direction_id
-   AND sb.stop_uid      = c->>'StopUID'
   WHERE (c->>'ArrivalTime') ~ '^[0-9]{1,2}:[0-9]{2}$'
     AND (c->>'DepartureTime') ~ '^[0-9]{1,2}:[0-9]{2}$'
     AND COALESCE(c->>'StopUID', '') <> ''
   UNION ALL
   -- The origin-only networks: departure plus each stop's accumulated running
   -- time, rather than a call list the source never published.
-  SELECT trip_id, stop_sequence, stop_id, arr, dep, pickup, drop_off
-  FROM (` + busPatternStopTimesSQL + `) bps
+  SELECT trip_id, stop_sequence, stop_id, arr, dep, suspended
+  FROM (` + _busPatternStopTimesSQL + `) bps
 ), deduped AS (
   -- stop_sequence is renumbered rather than copied. TDX repeats StopSequence
   -- within a trip on some subroutes — 445 bus trips collapsed to a single call
@@ -302,7 +281,7 @@ WITH calls AS (
   -- the same minute and therefore share a trip_id: one trip is better than two
   -- interleaved into a journey that does not exist.
   SELECT DISTINCT ON (trip_id, stop_id)
-    trip_id, stop_id, arr, dep, pickup, drop_off,
+    trip_id, stop_id, arr, dep, suspended,
     ROW_NUMBER() OVER (PARTITION BY trip_id ORDER BY stop_sequence, arr, stop_id)::int AS stop_sequence
   FROM calls
   ORDER BY trip_id, stop_id, stop_sequence
@@ -323,7 +302,7 @@ WITH calls AS (
   -- sits in an empty band rather than through a distribution.
   SELECT *,
     SUM(CASE WHEN prev_arr IS NOT NULL AND arr < prev_arr
-                  AND arr + 86400 - prev_arr <= ` + gtfsMidnightGapSecs + ` THEN 1 ELSE 0 END)
+                  AND arr + 86400 - prev_arr <= ` + _gtfsMidnightGapSecs + ` THEN 1 ELSE 0 END)
       OVER (PARTITION BY trip_id ORDER BY stop_sequence
             ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS day_offset,
     -- One unexplainable step condemns the whole trip. The calls after it are a
@@ -331,11 +310,11 @@ WITH calls AS (
     -- keeping: published either way round, this trip tells a planner a bus
     -- arrives a day late.
     MAX(CASE WHEN prev_arr IS NOT NULL AND arr < prev_arr
-                  AND arr + 86400 - prev_arr > ` + gtfsMidnightGapSecs + ` THEN 1 ELSE 0 END)
+                  AND arr + 86400 - prev_arr > ` + _gtfsMidnightGapSecs + ` THEN 1 ELSE 0 END)
       OVER (PARTITION BY trip_id) AS broken
   FROM lagged
 ), timed AS (
-  SELECT trip_id, stop_id, stop_sequence, pickup, drop_off,
+  SELECT trip_id, stop_id, stop_sequence, suspended,
     day_offset * 86400 + arr AS arr_s,
     day_offset * 86400 + CASE WHEN dep < arr THEN dep + 86400 ELSE dep END AS dep_s
   FROM rolled
@@ -349,12 +328,11 @@ WITH calls AS (
     p.system || ':' || p.station_id || ':platform',
     p.stop_sequence,
     0,
-    0,
     p.offset_secs,
     p.offset_secs
-  FROM (` + metroPatternSQL + `) p
+  FROM (` + _metroPatternSQL + `) p
   JOIN raw_tdx.metro_frequency f ON f.system = p.system AND f.routeid = p.routeid
-  JOIN (` + metroServiceSQL + `) svc
+  JOIN (` + _metroServiceSQL + `) svc
     ON svc.service_id = ` + gtfsWeekMaskSQL("f.serviceday") + `
   WHERE p.complete
 )
@@ -371,12 +349,12 @@ SELECT DISTINCT
     lpad((dep_s % 60)::text, 2, '0') AS departure_time,
   stop_id,
   stop_sequence,
-  pickup AS pickup_type,
-  drop_off AS drop_off_type
+  suspended AS pickup_type,
+  suspended AS drop_off_type
 FROM timed
 ORDER BY trip_id, stop_sequence`
 
-// gtfsFrequenciesSQL states how often each metro template trip repeats.
+// _gtfsFrequenciesSQL states how often each metro template trip repeats.
 //
 // exact_times is 0: the headway is a band ("a train every 4 to 6 minutes"), not
 // a schedule, so a planner should treat departures as evenly spread rather than
@@ -386,7 +364,7 @@ ORDER BY trip_id, stop_sequence`
 //
 // A headway row carries no direction while a trip does, so each band applies to
 // both directions of its route.
-var gtfsFrequenciesSQL = `
+var _gtfsFrequenciesSQL = `
 SELECT DISTINCT ON (trip_id, start_time, end_time)
   trip_id, start_time, end_time, headway_secs, exact_times
 FROM (
@@ -398,9 +376,9 @@ SELECT
   0 AS exact_times
 FROM raw_tdx.metro_frequency f
 CROSS JOIN LATERAL jsonb_array_elements(f.headways) h
-JOIN (SELECT DISTINCT system, routeid, direction FROM (` + metroPatternSQL + `) q WHERE q.complete) p
+JOIN (SELECT DISTINCT system, routeid, direction FROM (` + _metroPatternSQL + `) q WHERE q.complete) p
   ON p.system = f.system AND p.routeid = f.routeid
-JOIN (` + metroServiceSQL + `) svc
+JOIN (` + _metroServiceSQL + `) svc
   ON svc.service_id = ` + gtfsWeekMaskSQL("f.serviceday") + `
 WHERE jsonb_typeof(f.headways) = 'array'
   AND (h->>'StartTime') ~ '^[0-9]{2}:[0-9]{2}$'
@@ -416,7 +394,7 @@ WHERE jsonb_typeof(f.headways) = 'array'
 -- best service on offer.
 ORDER BY trip_id, start_time, end_time, headway_secs`
 
-// metroPatternSQL is the ordered station list of every metro route direction,
+// _metroPatternSQL is the ordered station list of every metro route direction,
 // with each station's cumulative seconds from the route's origin.
 //
 // Metro stop_times are derived rather than read. StationTimeTable has no train
@@ -428,7 +406,7 @@ ORDER BY trip_id, start_time, end_time, headway_secs`
 // the segment times and the departure list only anchors it.
 //
 // StopTime is added to RunTime because a rider's clock includes the dwell.
-const metroPatternSQL = `
+const _metroPatternSQL = `
   WITH system_size AS (
     -- The longest route each system runs, in hops. Used to reject segment rows
     -- that cannot describe that system's network.
@@ -517,7 +495,7 @@ func gtfsWeekArraySQL(col string) string {
 		(` + col + `->>'Saturday')::boolean]`
 }
 
-// busScheduleSource is the weekly bus timetable, and with busOriginTripSource
+// _busScheduleSource is the weekly bus timetable, and with busOriginTripSource
 // the only thing the static feed is built from.
 //
 // bus_dailytimetable is deliberately not a source here. It is a single-day
@@ -535,7 +513,7 @@ func gtfsWeekArraySQL(col string) string {
 // origin and nothing else. Those go through busOriginTripSource instead, which
 // takes exactly the entries this one rejects, so the two never emit the same
 // departure twice.
-var busScheduleSource = `
+var _busScheduleSource = `
   SELECT
     s.routeuid,
     s.subrouteuid || ':' || COALESCE(s.direction, 0)::text || ':'
@@ -565,10 +543,10 @@ var busScheduleSource = `
       FROM jsonb_array_elements(t.value->'StopTimes') c
     )`
 
-// busScheduleServiceSQL is the weekday-mask service set the bus schedule needs,
+// _busScheduleServiceSQL is the weekday-mask service set the bus schedule needs,
 // in the same shape metroServiceSQL produces so calendar_dates expands both the
 // same way.
-var busScheduleServiceSQL = `
+var _busScheduleServiceSQL = `
   SELECT DISTINCT
     ` + gtfsWeekMaskSQL("t.value->'ServiceDay'") + ` AS service_id,
     ` + gtfsWeekArraySQL("t.value->'ServiceDay'") + ` AS week
@@ -577,12 +555,12 @@ var busScheduleServiceSQL = `
   WHERE jsonb_typeof(s.timetables) = 'array'
     AND jsonb_typeof(t.value->'ServiceDay') = 'object'`
 
-// metroServiceSQL turns each headway row's weekday mask into a service id.
+// _metroServiceSQL turns each headway row's weekday mask into a service id.
 //
 // The mask is spelled out rather than hashed so a service id says what it means:
 // M:1111100 is Monday to Friday. Two routes with the same mask share a service,
 // which is what keeps the count at a handful rather than one per route.
-var metroServiceSQL = `
+var _metroServiceSQL = `
   SELECT DISTINCT
     ` + gtfsWeekMaskSQL("serviceday") + ` AS service_id,
     ` + gtfsWeekArraySQL("serviceday") + ` AS week
@@ -590,7 +568,7 @@ var metroServiceSQL = `
   WHERE jsonb_typeof(serviceday) = 'object'
     AND system IN (SELECT DISTINCT system FROM raw_tdx.metro_s2straveltime)`
 
-// gtfsTransfersSQL states the interchanges a planner cannot work out for itself.
+// _gtfsTransfersSQL states the interchanges a planner cannot work out for itself.
 //
 // Only metro line-to-line transfers are emitted. TDX measured these — the walk
 // from one platform to another inside a station — and no amount of street data
@@ -613,7 +591,7 @@ var metroServiceSQL = `
 // The direction TDX states is the direction emitted. Thirty-one of the
 // forty-one rows already carry their reverse, and synthesising the rest would
 // assert a symmetry that platform layouts do not always have.
-var gtfsTransfersSQL = `
+var _gtfsTransfersSQL = `
 SELECT
   t.system || ':' || t.fromstationid AS from_stop_id,
   t.system || ':' || t.tostationid AS to_stop_id,
@@ -623,13 +601,13 @@ SELECT
 FROM raw_tdx.metro_linetransfer t
 WHERE t.transfertime > 0
   AND t.fromstationid <> t.tostationid
-  AND EXISTS (SELECT 1 FROM (` + metroPatternSQL + `) p
+  AND EXISTS (SELECT 1 FROM (` + _metroPatternSQL + `) p
               WHERE p.complete AND p.system = t.system AND p.station_id = t.fromstationid)
-  AND EXISTS (SELECT 1 FROM (` + metroPatternSQL + `) p
+  AND EXISTS (SELECT 1 FROM (` + _metroPatternSQL + `) p
               WHERE p.complete AND p.system = t.system AND p.station_id = t.tostationid)
 ORDER BY from_stop_id, to_stop_id`
 
-// gtfsShapesSQL emits the drawn path of each route.
+// _gtfsShapesSQL emits the drawn path of each route.
 //
 // Geometry is passed through unsimplified. It was briefly reduced with a
 // five-metre Douglas-Peucker tolerance, which cut 6,044,458 points to 1,500,775,
@@ -643,9 +621,11 @@ ORDER BY from_stop_id, to_stop_id`
 // assignable to a trip: a bus trip runs one subroute in one direction, and a
 // metro route belongs to one line.
 //
-// TRA and THSR are stitched rather than stored: rail_shapes is keyed by line and
-// a train crosses lines freely, so their geometry is assembled per stop sequence
-// in gtfs_rail_shape.go and appended here.
+// TRA and THSR are absent. rail_shapes is keyed by line, but a train crosses
+// lines freely — a 自強 runs the 西部幹線 into the 南迴線 — so no single shape
+// describes a train's path, and stitching them per trip is a different job from
+// this one. Their trips carry no shape_id, which GTFS permits; a planner draws
+// straight lines between their stops.
 //
 // A trip claims a shape only when one exists, checked on the trips side. The
 // check has to live in exactly one place: when both files filtered independently
@@ -657,7 +637,7 @@ ORDER BY from_stop_id, to_stop_id`
 // skipped rather than fanned out: the fan-out would repeat a few thousand points
 // per subroute for geometry that is already approximate, and a missing shape
 // costs only a straight line on a map.
-var gtfsShapesSQL = `
+var _gtfsShapesSQL = `
 WITH shape AS (
   SELECT
     'B:' || s.subrouteuid || ':' || COALESCE(s.direction, 0)::text AS shape_id,
@@ -670,10 +650,10 @@ WITH shape AS (
     -- 14,334 trips pointing at shapes that were never written, and adding the
     -- pattern source without adding it here left another 1,410. A new bus source
     -- belongs in this list on the same commit that introduces it.
-    AND (EXISTS (SELECT 1 FROM (` + busScheduleSource + `) w
+    AND (EXISTS (SELECT 1 FROM (` + _busScheduleSource + `) w
                  WHERE split_part(w.trip_id, ':', 1) = s.subrouteuid
                    AND w.direction_id = COALESCE(s.direction, 0))
-      OR EXISTS (SELECT 1 FROM (` + busOriginTripSource + `) o
+      OR EXISTS (SELECT 1 FROM (` + _busOriginTripSource + `) o
                  WHERE o.subrouteuid = s.subrouteuid
                    AND o.direction_id = COALESCE(s.direction, 0)))
   UNION ALL
@@ -685,17 +665,12 @@ WITH shape AS (
 ), deduped AS (
   SELECT DISTINCT ON (shape_id) shape_id, geom FROM shape ORDER BY shape_id, ST_NPoints(geom) DESC
 )
-SELECT shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence
-FROM (
-  SELECT
-    d.shape_id,
-    ST_Y(p.geom)::numeric(9,6) AS shape_pt_lat,
-    ST_X(p.geom)::numeric(9,6) AS shape_pt_lon,
-    p.path[1] AS shape_pt_sequence
-  FROM deduped d
-  CROSS JOIN LATERAL ST_DumpPoints(d.geom) p
-  WHERE ST_Y(p.geom) BETWEEN 21 AND 26.5 AND ST_X(p.geom) BETWEEN 118 AND 122.5
-  UNION ALL
-  ` + gtfsRailShapePointsSQL + `
-) s
-ORDER BY shape_id, shape_pt_sequence`
+SELECT
+  d.shape_id,
+  ST_Y(p.geom)::numeric(9,6) AS shape_pt_lat,
+  ST_X(p.geom)::numeric(9,6) AS shape_pt_lon,
+  p.path[1] AS shape_pt_sequence
+FROM deduped d
+CROSS JOIN LATERAL ST_DumpPoints(d.geom) p
+WHERE ST_Y(p.geom) BETWEEN 21 AND 26.5 AND ST_X(p.geom) BETWEEN 118 AND 122.5
+ORDER BY d.shape_id, p.path[1]`

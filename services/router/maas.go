@@ -14,14 +14,14 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/jackc/pgx/v5"
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
-	redisv9 "github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
-	"go.uber.org/zap"
 )
 
 // MaasServer answers multimodal route-planning requests by proxying the TDX
@@ -31,6 +31,7 @@ import (
 // in db.
 type MaasServer struct {
 	pb.UnimplementedMaasServiceServer
+
 	cache       MaasCache
 	db          maasDB
 	maasClient  *resty.Client
@@ -72,15 +73,15 @@ type MaasCache interface {
 	Set(context.Context, string, []byte, time.Duration) error
 }
 
-type RedisMaasCache struct{ client *redisv9.Client }
+type RedisMaasCache struct{ client *redis.Client }
 
 // NewRedisMaasCache gives the MaaS plan cache its own connection pool, built
 // from the shared client's settings, so a slow plan lookup cannot occupy a
 // connection the live streams need. NewClient fills defaults into the Options
 // it is handed, so it gets a copy rather than the live client's own struct.
-func NewRedisMaasCache(opts *redisv9.Options) *RedisMaasCache {
+func NewRedisMaasCache(opts *redis.Options) *RedisMaasCache {
 	cloned := *opts
-	return &RedisMaasCache{client: redisv9.NewClient(&cloned)}
+	return &RedisMaasCache{client: redis.NewClient(&cloned)}
 }
 
 func redisContextError(ctx context.Context, err error) error {
@@ -123,11 +124,11 @@ var DefaultMaasSharedWorkConfig = maasSharedWorkConfig{
 	Timeout:       20 * time.Second,
 }
 
-const maasOSRMConcurrency = 4
+const _maasOSRMConcurrency = 4
 
 // How long a finished plan stays in Redis. Short: an itinerary quotes live
 // departure times, so a stale hit would hand a rider a bus that has left.
-const maasCacheTTL = 90 * time.Second
+const _maasCacheTTL = 90 * time.Second
 
 func shouldRetryMaas(resp *resty.Response, err error) bool {
 	if err != nil {
@@ -274,7 +275,11 @@ func (s *MaasServer) Plan(ctx context.Context, req *pb.MaasPlanRequest) (*pb.Maa
 		if completed.Err != nil {
 			return nil, maasPlanError(completed.Err)
 		}
-		return completed.Val.(*pb.MaasPlanResponse), nil
+		resp, ok := completed.Val.(*pb.MaasPlanResponse)
+		if !ok {
+			return nil, status.Error(codes.Internal, "unexpected plan result type")
+		}
+		return resp, nil
 	}
 }
 
@@ -286,7 +291,7 @@ func maasPlanError(err error) error {
 		zap.S().Warnw("no route", "component", "maas", "action", "plan", "event", "no_route", "err", err)
 		return status.Error(codes.NotFound, "no route for this origin/destination")
 	}
-	zap.S().Errorw(fmt.Sprintf("plan error: %v", err), "component", "maas")
+	zap.S().Errorw("plan error", "component", "maas", "err", err)
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return status.FromContextError(err).Err()
 	}
@@ -364,8 +369,8 @@ func (s *MaasServer) cachePlan(ctx context.Context, cacheKey string, response *p
 	if err != nil {
 		return
 	}
-	if err := s.cache.Set(ctx, cacheKey, encoded, maasCacheTTL); err != nil && ctx.Err() == nil {
-		zap.S().Errorw(fmt.Sprintf("cache set failed: %v", err), "component", "maas")
+	if err := s.cache.Set(ctx, cacheKey, encoded, _maasCacheTTL); err != nil && ctx.Err() == nil {
+		zap.S().Errorw("cache set failed", "component", "maas", "err", err)
 	}
 }
 
@@ -401,11 +406,11 @@ func (s *MaasServer) runSharedPlan(cacheKey string, req *pb.MaasPlanRequest) (*p
 	if err != nil {
 		return response, nil
 	}
-	if err := s.cache.Set(workCtx, cacheKey, encoded, maasCacheTTL); err != nil {
+	if err := s.cache.Set(workCtx, cacheKey, encoded, _maasCacheTTL); err != nil {
 		if contextErr := workCtx.Err(); contextErr != nil {
 			return nil, contextErr
 		}
-		zap.S().Errorw(fmt.Sprintf("cache set failed: %v", err), "component", "maas")
+		zap.S().Errorw("cache set failed", "component", "maas", "err", err)
 	}
 	return response, nil
 }
@@ -491,10 +496,9 @@ func (s *MaasServer) fetch(ctx context.Context, req *pb.MaasPlanRequest) (*tdxAP
 		return nil, err
 	}
 	if !resp.IsSuccess() {
-		err := fmt.Errorf("TDX MaaS HTTP %d for %s: %s",
-			resp.StatusCode(), resp.Request.URL, strings.TrimSpace(resp.String()))
+		err := _oops.With("status_code", resp.StatusCode()).With("url", resp.Request.URL).With("string", strings.TrimSpace(resp.String())).Errorf("TDX MaaS HTTP")
 		if resp.StatusCode() == http.StatusNotFound {
-			return nil, fmt.Errorf("%w: %w", errMaasNoRoute, err)
+			return nil, _oops.Join(errMaasNoRoute, err)
 		}
 		return nil, err
 	}

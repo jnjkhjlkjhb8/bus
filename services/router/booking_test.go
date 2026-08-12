@@ -116,7 +116,7 @@ func TestBookingExchangeErrorCarriesUpstreamDetail(t *testing.T) {
 	// `result` stays empty here: resty only unmarshals SetResult on 2xx, which
 	// is precisely why the raw body has to be logged alongside it.
 	for _, want := range []string{"status=403", "no such train"} {
-		if !strings.Contains(err.Error(), want) {
+		if !errMentions(err, want) {
 			t.Errorf("error %q is missing %q", err, want)
 		}
 	}

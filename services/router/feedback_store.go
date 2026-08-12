@@ -15,12 +15,12 @@ import (
 // or looping client, not a fault, so it never reaches Sentry.
 var errFeedbackQuota = errors.New("feedback quota exhausted")
 
-// feedbackQuota bounds one installation's threads inside feedbackQuotaWindow.
+// _feedbackQuota bounds one installation's threads inside _feedbackQuotaWindow.
 // It is set where a determined rider reporting several genuine problems in one
 // commute never reaches it, but a stuck client cannot fill the table.
 const (
-	feedbackQuota       = 10
-	feedbackQuotaWindow = 24 * time.Hour
+	_feedbackQuota       = 10
+	_feedbackQuotaWindow = 24 * time.Hour
 )
 
 type feedbackThreadRecord struct {
@@ -69,7 +69,7 @@ func (s *feedbackStore) OpenThread(ctx context.Context, record feedbackThreadRec
 		SELECT created_at FROM thread
 	`,
 		record.ThreadID, record.InstallID, record.Category, diagnostics,
-		feedbackQuotaWindow.Seconds(), feedbackQuota,
+		_feedbackQuotaWindow.Seconds(), _feedbackQuota,
 		messageID, record.Body,
 	).Scan(&createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {

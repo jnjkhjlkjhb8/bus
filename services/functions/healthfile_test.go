@@ -9,31 +9,30 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-// TestTouchHealthFileCreatesAndRefreshes covers both paths in
-// touchHealthFile: the first call creates the marker (Chtimes on a
-// nonexistent file fails, falling back to Create), and a second call
-// updates its mtime instead of erroring on an existing file.
+// TestTouchHealthFileCreatesAndRefreshes covers both paths in healthFile.touch:
+// the first call creates the marker (Chtimes on a nonexistent file fails,
+// falling back to Create), and a second call updates its mtime instead of
+// erroring on an existing file.
 func TestTouchHealthFileCreatesAndRefreshes(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "healthy")
-	t.Setenv("HEALTH_FILE", path)
-	healthFilePath = path
+	h := newHealthFile(path)
 
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("marker must not exist before the first touch, stat err = %v", err)
 	}
 
-	touchHealthFile()
+	h.touch()
 	info, err := os.Stat(path)
 	if err != nil {
-		t.Fatalf("expected marker to exist after touchHealthFile, stat err = %v", err)
+		t.Fatalf("expected marker to exist after touch, stat err = %v", err)
 	}
 	firstMtime := info.ModTime()
 
 	// mtime resolution on some filesystems is coarse; sleep past it so a
 	// refreshed touch is provably later, not just equal.
 	time.Sleep(10 * time.Millisecond)
-	touchHealthFile()
+	h.touch()
 	info, err = os.Stat(path)
 	if err != nil {
 		t.Fatalf("expected marker to still exist after second touch, stat err = %v", err)
@@ -46,12 +45,16 @@ func TestTouchHealthFileCreatesAndRefreshes(t *testing.T) {
 // TestAddStaticCronTouchesHealthFileAfterJob proves the addStaticCron wiring
 // itself, not just the helper in isolation: a registered job's tick must
 // refresh the marker even though the job function never calls
-// touchHealthFile directly.
+// _health.touch directly.
 func TestAddStaticCronTouchesHealthFileAfterJob(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "healthy")
-	t.Setenv("HEALTH_FILE", path)
-	healthFilePath = path
+	// addStaticCron reaches the marker through the package-level _health
+	// instance (set once at startup in run(), same pattern as _archive/
+	// _ingestDB); point it at a test-local file for the duration of this test.
+	prev := _health
+	_health = newHealthFile(path)
+	defer func() { _health = prev }()
 
 	r := cron.New(cron.WithSeconds())
 	ran := make(chan struct{}, 1)

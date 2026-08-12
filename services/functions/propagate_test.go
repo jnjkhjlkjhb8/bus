@@ -13,12 +13,12 @@ func TestDecayDelay(t *testing.T) {
 		seqGap int
 		want   float64
 	}{
-		{"zero gap unchanged", 100, 0, 100},
-		{"negative gap unchanged", 100, -2, 100},
-		{"one stop", 100, 1, 90},
-		{"two stops", 100, 2, 81},
-		{"three stops", 100, 3, 72.9},
-		{"negative delay decays too", -50, 2, -40.5},
+		{name: "zero gap unchanged", delay: 100, seqGap: 0, want: 100},
+		{name: "negative gap unchanged", delay: 100, seqGap: -2, want: 100},
+		{name: "one stop", delay: 100, seqGap: 1, want: 90},
+		{name: "two stops", delay: 100, seqGap: 2, want: 81},
+		{name: "three stops", delay: 100, seqGap: 3, want: 72.9},
+		{name: "negative delay decays too", delay: -50, seqGap: 2, want: -40.5},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -31,7 +31,7 @@ func TestDecayDelay(t *testing.T) {
 }
 
 func TestLatestUpstreamDelay(t *testing.T) {
-	now := time.Date(2026, 7, 6, 8, 0, 0, 0, taipei)
+	now := time.Date(2026, 7, 6, 8, 0, 0, 0, _taipei)
 	fresh := now.Add(-1 * time.Minute)
 	stale := now.Add(-5 * time.Minute)
 
@@ -120,7 +120,7 @@ func TestLatestUpstreamDelay(t *testing.T) {
 }
 
 func TestPropagateDelay(t *testing.T) {
-	now := time.Date(2026, 7, 6, 8, 0, 0, 0, taipei)
+	now := time.Date(2026, 7, 6, 8, 0, 0, 0, _taipei)
 	baseline := now.Add(10 * time.Minute) // downstream schedule+avg arrival
 
 	t.Run("zero baseline returns not ok", func(t *testing.T) {

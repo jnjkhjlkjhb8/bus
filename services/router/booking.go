@@ -42,10 +42,10 @@ type tdxBookingResponse struct {
 	} `json:"data"`
 }
 
-// bookingDetailLimit caps how much of an upstream error body reaches the log.
+// _bookingDetailLimit caps how much of an upstream error body reaches the log.
 // TDX failure envelopes are short; a cap keeps a surprise HTML error page from
 // flooding the line.
-const bookingDetailLimit = 240
+const _bookingDetailLimit = 240
 
 // bookingDetail renders an upstream failure as a single log-safe token: status,
 // the envelope's `result`, and a truncated body. Without it a failed exchange
@@ -54,19 +54,19 @@ const bookingDetailLimit = 240
 func bookingDetail(res *resty.Response, body tdxBookingResponse) string {
 	raw := strings.TrimSpace(string(res.Body()))
 	raw = strings.Join(strings.Fields(raw), " ")
-	if len(raw) > bookingDetailLimit {
-		raw = raw[:bookingDetailLimit] + "…"
+	if len(raw) > _bookingDetailLimit {
+		raw = raw[:_bookingDetailLimit] + "…"
 	}
 	return fmt.Sprintf("status=%d result=%q body=%q", res.StatusCode(), body.Result, raw)
 }
 
 var (
-	trainDatePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-	trainTimePattern = regexp.MustCompile(`^\d{2}:\d{2}$`)
+	_trainDatePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	_trainTimePattern = regexp.MustCompile(`^\d{2}:\d{2}$`)
 )
 
-// maxTicketsPerCategory is TDX's documented per-category ceiling.
-const maxTicketsPerCategory = 10
+// _maxTicketsPerCategory is TDX's documented per-category ceiling.
+const _maxTicketsPerCategory = 10
 
 // queryIntInRange reads an integer query parameter, returning fallback when it
 // is absent and an error when it is present but outside [lo, hi]. An
@@ -79,7 +79,7 @@ func queryIntInRange(c *gin.Context, name string, fallback, lo, hi int) (int, er
 	}
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < lo || n > hi {
-		return 0, fmt.Errorf("%s must be an integer between %d and %d", name, lo, hi)
+		return 0, _oops.With("name", name).With("min", lo).With("max", hi).Errorf("must be an integer")
 	}
 	return n, nil
 }
@@ -89,16 +89,16 @@ func queryIntInRange(c *gin.Context, name string, fallback, lo, hi int) (int, er
 // reject the whole exchange, and requires at least one passenger so a booking
 // for nobody never reaches upstream.
 func parseTicketCounts(c *gin.Context) (map[string]int, error) {
-	counts := make(map[string]int, len(thsrTicketParams))
+	counts := make(map[string]int, len(_thsrTicketParams))
 	total := 0
-	for category := range thsrTicketParams {
+	for category := range _thsrTicketParams {
 		raw := strings.TrimSpace(c.Query(category + "_ticket"))
 		if raw == "" {
 			continue
 		}
 		n, err := strconv.Atoi(raw)
-		if err != nil || n < 0 || n > maxTicketsPerCategory {
-			return nil, fmt.Errorf("%s_ticket must be an integer between 0 and %d", category, maxTicketsPerCategory)
+		if err != nil || n < 0 || n > _maxTicketsPerCategory {
+			return nil, _oops.With("category", category).With("max", _maxTicketsPerCategory).Errorf("ticket count must be an integer within the allowed range")
 		}
 		counts[category] = n
 		total += n
@@ -109,7 +109,7 @@ func parseTicketCounts(c *gin.Context) (map[string]int, error) {
 		if len(counts) == 0 {
 			return counts, nil
 		}
-		return nil, fmt.Errorf("at least one ticket is required")
+		return nil, _oops.Errorf("at least one ticket is required")
 	}
 	return counts, nil
 }
@@ -154,15 +154,15 @@ type bookingRequest struct {
 
 // TRA web booking classes and its per-order ticket ceiling.
 const (
-	traClassStandard = 1
-	traClassMax      = 3
-	traCountMax      = 9
+	_traClassStandard = 1
+	_traClassMax      = 3
+	_traCountMax      = 9
 )
 
-// thsrTicketParams maps a passenger category to its TDX parameter. THSR takes
+// _thsrTicketParams maps a passenger category to its TDX parameter. THSR takes
 // one count parameter per category rather than a single quantity, and only the
 // /web/hsr variant accepts them at all.
-var thsrTicketParams = map[string]string{
+var _thsrTicketParams = map[string]string{
 	"adult":    "adult_ticket",
 	"child":    "children_ticket",
 	"disabled": "disabled_ticket",
@@ -186,7 +186,9 @@ var thsrTicketParams = map[string]string{
 // train_time is a THSR-only field: TRA takes none, so sending it there is at
 // best ignored and at worst another rejected exchange.
 func bookingParams(r bookingRequest) map[string]string {
-	q := map[string]string{"start_station": r.start, "end_station": r.end}
+	q := make(map[string]string, 2)
+	q["start_station"] = r.start
+	q["end_station"] = r.end
 	if r.agency == "hsr" && r.kind == "web" {
 		q["departure_date"] = strings.ReplaceAll(r.date, "-", "")
 		// A 3-digit train number must be zero-padded to 4.
@@ -197,7 +199,7 @@ func bookingParams(r bookingRequest) map[string]string {
 			carriage = "Y"
 		}
 		q["carriage_type"] = carriage
-		for category, param := range thsrTicketParams {
+		for category, param := range _thsrTicketParams {
 			q[param] = strconv.Itoa(r.tickets[category])
 		}
 		return q
@@ -209,12 +211,12 @@ func bookingParams(r bookingRequest) map[string]string {
 		q["departure_date"] = r.date
 		q["departure_number"] = r.train
 		class := r.traClass
-		if class < traClassStandard || class > traClassMax {
-			class = traClassStandard
+		if class < _traClassStandard || class > _traClassMax {
+			class = _traClassStandard
 		}
 		q["ticket_type"] = strconv.Itoa(class)
 		count := r.traCount
-		if count < 1 || count > traCountMax {
+		if count < 1 || count > _traCountMax {
 			count = 1
 		}
 		q["ticket_count"] = strconv.Itoa(count)
@@ -239,7 +241,7 @@ func (b *BookingProxy) exchange(ctx context.Context, client *resty.Client, resou
 		return "", "", err
 	}
 	if res.IsError() || body.Result != "success" || body.Data.Deeplink == "" {
-		return "", "", fmt.Errorf("tdx booking exchange failed: %s", bookingDetail(res, body))
+		return "", "", _oops.With("detail", bookingDetail(res, body)).Errorf("tdx booking exchange failed")
 	}
 	return body.Data.Deeplink, body.Data.Expired, nil
 }
@@ -271,14 +273,14 @@ func HandleBookingDeeplink(booking *BookingProxy) gin.HandlerFunc {
 			train:    strings.TrimSpace(c.Query("train_number")),
 			carriage: strings.ToUpper(strings.TrimSpace(c.Query("carriage_type"))),
 		}
-		if req.start == "" || req.end == "" || !trainDatePattern.MatchString(req.date) {
+		if req.start == "" || req.end == "" || !_trainDatePattern.MatchString(req.date) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "missing or malformed start_station/end_station/train_date"})
 			return
 		}
 		// THSR requires train_time and TRA takes none, so it is required exactly
 		// where it is used — failing here beats an upstream rejection whose
 		// message the app can do nothing with.
-		if req.agency == "hsr" && !trainTimePattern.MatchString(req.time) {
+		if req.agency == "hsr" && !_trainTimePattern.MatchString(req.time) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "train_time must be hh:mm for hsr"})
 			return
 		}
@@ -292,11 +294,11 @@ func HandleBookingDeeplink(booking *BookingProxy) gin.HandlerFunc {
 			return
 		}
 		req.tickets = tickets
-		if req.traClass, err = queryIntInRange(c, "ticket_type", traClassStandard, traClassStandard, traClassMax); err != nil {
+		if req.traClass, err = queryIntInRange(c, "ticket_type", _traClassStandard, _traClassStandard, _traClassMax); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if req.traCount, err = queryIntInRange(c, "ticket_count", 1, 1, traCountMax); err != nil {
+		if req.traCount, err = queryIntInRange(c, "ticket_count", 1, 1, _traCountMax); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}

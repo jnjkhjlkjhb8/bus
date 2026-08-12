@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	testInstallSecret  = "0123456789abcdef0123456789abcdef"
-	wrongInstallSecret = "fedcba9876543210fedcba9876543210"
+	_testInstallSecret  = "0123456789abcdef0123456789abcdef"
+	_wrongInstallSecret = "fedcba9876543210fedcba9876543210"
 )
 
 type fakeFirebasePersistence struct {
@@ -78,7 +78,7 @@ func TestFirebaseServiceDeviceSubscriptionAndReminder(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	server := &FirebaseServer{store: store, now: func() time.Time { return now }}
 
-	ctx := installationContext("install-1", testInstallSecret)
+	ctx := installationContext("install-1", _testInstallSecret)
 	state, err := server.UpsertDevice(ctx, &pb.UpsertDeviceRequest{
 		Identity: &pb.DeviceIdentity{InstallId: "install-1", FcmToken: "token", Platform: "android", AppVersion: "1.0.0"},
 		Prefs:    &pb.DevicePrefs{PushEnabled: true},
@@ -86,7 +86,7 @@ func TestFirebaseServiceDeviceSubscriptionAndReminder(t *testing.T) {
 	if err != nil || state.GetIdentity().GetInstallId() != "install-1" {
 		t.Fatalf("UpsertDevice() = (%v, %v)", state, err)
 	}
-	wantHash := sha256.Sum256([]byte(testInstallSecret))
+	wantHash := sha256.Sum256([]byte(_testInstallSecret))
 	if string(store.secretHash) != string(wantHash[:]) || state.GetIdentity().GetFcmToken() != "" {
 		t.Fatalf("secret hash or response token is unsafe: hash=%x state=%v", store.secretHash, state)
 	}
@@ -154,13 +154,13 @@ func TestFirebaseServiceNormalizesArrivalReminderPlate(t *testing.T) {
 	store := &fakeFirebasePersistence{
 		device: &pb.DeviceState{Identity: &pb.DeviceIdentity{InstallId: "install-1"}},
 	}
-	wantHash := sha256.Sum256([]byte(testInstallSecret))
+	wantHash := sha256.Sum256([]byte(_testInstallSecret))
 	store.secretHash = wantHash[:]
 	now := time.Unix(1_800_000_000, 0)
 	server := &FirebaseServer{store: store, now: func() time.Time { return now }}
 
 	reminder, err := server.CreateArrivalReminder(
-		installationContext("install-1", testInstallSecret),
+		installationContext("install-1", _testInstallSecret),
 		&pb.CreateArrivalReminderRequest{
 			InstallId: "install-1", RouteType: "bus", RouteKey: "route-1", StopKey: "stop-1",
 			Direction: "0", LeadMinutes: 5, ExpiresAtUnix: now.Add(time.Hour).Unix(), Plate: "  kka-1288  ",
@@ -201,19 +201,19 @@ func TestFirebaseServiceRejectsWrongInstallationCredential(t *testing.T) {
 		Identity: &pb.DeviceIdentity{InstallId: "install-1", Platform: "ios"},
 		Prefs:    &pb.DevicePrefs{},
 	}
-	if _, err := server.UpsertDevice(installationContext("install-1", testInstallSecret), request); err != nil {
+	if _, err := server.UpsertDevice(installationContext("install-1", _testInstallSecret), request); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.UpsertDevice(installationContext("install-1", wrongInstallSecret), request); status.Code(err) != codes.PermissionDenied {
+	if _, err := server.UpsertDevice(installationContext("install-1", _wrongInstallSecret), request); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("upsert conflict code = %v, want %v", status.Code(err), codes.PermissionDenied)
 	}
-	_, err := server.ReplaceRouteSubscriptions(installationContext("install-1", wrongInstallSecret), &pb.RouteSubscriptionsRequest{
+	_, err := server.ReplaceRouteSubscriptions(installationContext("install-1", _wrongInstallSecret), &pb.RouteSubscriptionsRequest{
 		InstallId: "install-1", Subscriptions: []*pb.RouteSubscription{{RouteType: "bus", RouteKey: "route-1"}},
 	})
 	if status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("wrong secret code = %v, want %v", status.Code(err), codes.PermissionDenied)
 	}
-	_, err = server.ReplaceRouteSubscriptions(installationContext("other-install", testInstallSecret), &pb.RouteSubscriptionsRequest{
+	_, err = server.ReplaceRouteSubscriptions(installationContext("other-install", _testInstallSecret), &pb.RouteSubscriptionsRequest{
 		InstallId: "install-1", Subscriptions: []*pb.RouteSubscription{{RouteType: "bus", RouteKey: "route-1"}},
 	})
 	if status.Code(err) != codes.PermissionDenied {
@@ -227,7 +227,7 @@ func TestFirebaseServiceRejectsWrongInstallationCredential(t *testing.T) {
 func TestFirebaseServiceRejectsMissingOrShortCredentials(t *testing.T) {
 	store := &fakeFirebasePersistence{}
 	server := &FirebaseServer{store: store, now: time.Now}
-	if _, err := server.UpsertDevice(installationContext("install-1", testInstallSecret), &pb.UpsertDeviceRequest{
+	if _, err := server.UpsertDevice(installationContext("install-1", _testInstallSecret), &pb.UpsertDeviceRequest{
 		Identity: &pb.DeviceIdentity{InstallId: "install-1", Platform: "ios"},
 		Prefs:    &pb.DevicePrefs{},
 	}); err != nil {
@@ -243,7 +243,7 @@ func TestFirebaseServiceRejectsMissingOrShortCredentials(t *testing.T) {
 	}{
 		{"no metadata", context.Background()},
 		{"secret below minimum length", installationContext("install-1", "short-secret")},
-		{"metadata install mismatch", installationContext("install-2", testInstallSecret)},
+		{"metadata install mismatch", installationContext("install-2", _testInstallSecret)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -267,7 +267,7 @@ func TestFirebaseServiceRejectsMissingOrShortCredentials(t *testing.T) {
 func TestFirebaseServiceCancelReminderNotFound(t *testing.T) {
 	store := &fakeFirebasePersistence{cancelMissing: true}
 	server := &FirebaseServer{store: store, now: time.Now}
-	ctx := installationContext("install-1", testInstallSecret)
+	ctx := installationContext("install-1", _testInstallSecret)
 	if _, err := server.UpsertDevice(ctx, &pb.UpsertDeviceRequest{
 		Identity: &pb.DeviceIdentity{InstallId: "install-1", Platform: "ios"},
 		Prefs:    &pb.DevicePrefs{},
@@ -285,7 +285,7 @@ func TestFirebaseServiceCancelReminderNotFound(t *testing.T) {
 func TestFirebaseServiceUpsertDeviceLowercasesPlatform(t *testing.T) {
 	store := &fakeFirebasePersistence{}
 	server := &FirebaseServer{store: store, now: time.Now}
-	state, err := server.UpsertDevice(installationContext("install-1", testInstallSecret), &pb.UpsertDeviceRequest{
+	state, err := server.UpsertDevice(installationContext("install-1", _testInstallSecret), &pb.UpsertDeviceRequest{
 		Identity: &pb.DeviceIdentity{InstallId: "install-1", FcmToken: "token", Platform: "iOS"},
 		Prefs:    &pb.DevicePrefs{PushEnabled: true},
 	})
@@ -300,7 +300,7 @@ func TestFirebaseServiceUpsertDeviceLowercasesPlatform(t *testing.T) {
 func installationContext(installID, secret string) context.Context {
 	return metadata.NewIncomingContext(context.Background(), metadata.Pairs(
 		InstallIDMetadataKey, installID,
-		installSecretMetadataKey, secret,
+		_installSecretMetadataKey, secret,
 	))
 }
 

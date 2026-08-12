@@ -68,7 +68,7 @@ func TestArchiveInsertSplitsBatches(t *testing.T) {
 	if err := archiveInsert(context.Background(), f, "t", cols, rows); err != nil {
 		t.Fatalf("archiveInsert: %v", err)
 	}
-	wantRows := []int{archiveRowsPerInsert, archiveRowsPerInsert, 2500 - 2*archiveRowsPerInsert}
+	wantRows := []int{_archiveRowsPerInsert, _archiveRowsPerInsert, 2500 - 2*_archiveRowsPerInsert}
 	if len(f.stmts) != len(wantRows) {
 		t.Fatalf("statements = %d, want %d", len(f.stmts), len(wantRows))
 	}
@@ -114,7 +114,7 @@ func TestArchiveInsertRejectsRowWidthMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error on short row, got nil")
 	}
-	if !strings.Contains(err.Error(), "want 2") {
+	if !errMentions(err, "cols 2") {
 		t.Errorf("error should name the expected width, got %v", err)
 	}
 }
@@ -131,7 +131,7 @@ func TestArchiveInsertWrapsExecError(t *testing.T) {
 // MySQL DATETIME carries no zone, so timestamps must leave Go already in UTC
 // rather than relying on the driver's loc setting.
 func TestArchiveUTC(t *testing.T) {
-	local := time.Date(2026, 7, 30, 8, 0, 0, 0, taipei)
+	local := time.Date(2026, 7, 30, 8, 0, 0, 0, _taipei)
 	got := archiveUTC([]any{"x", local, nil, int32(3)})
 	ts, ok := got[1].(time.Time)
 	if !ok {
@@ -151,10 +151,10 @@ func TestArchiveUTC(t *testing.T) {
 // A batch must never exceed MySQL's placeholder cap; the column count is the
 // half of that product most likely to drift.
 func TestBusEtaHistoryColsFitPlaceholderCeiling(t *testing.T) {
-	if n := len(busEtaHistoryCols); n != 20 {
+	if n := len(_busEtaHistoryCols); n != 20 {
 		t.Errorf("bus_eta_history insert columns = %d, want 20", n)
 	}
-	if got := archiveRowsPerInsert * len(busEtaHistoryCols); got > 65535 {
+	if got := _archiveRowsPerInsert * len(_busEtaHistoryCols); got > 65535 {
 		t.Errorf("batch would bind %d placeholders, over MySQL's 65535 cap", got)
 	}
 }
@@ -162,7 +162,7 @@ func TestBusEtaHistoryColsFitPlaceholderCeiling(t *testing.T) {
 // archiveInsert must normalize timestamps itself: a caller that forgets would
 // otherwise write local-clock values into a zone-less DATETIME column.
 func TestArchiveInsertNormalizesTimestamps(t *testing.T) {
-	local := time.Date(2026, 7, 30, 8, 0, 0, 0, taipei)
+	local := time.Date(2026, 7, 30, 8, 0, 0, 0, _taipei)
 	f := &fakeExecer{}
 	if err := archiveInsert(context.Background(), f, "t", []string{"a"}, [][]any{{local}}); err != nil {
 		t.Fatalf("archiveInsert: %v", err)

@@ -101,10 +101,10 @@ func TestNotificationStoreFiltersRouteAndEnabledDevice(t *testing.T) {
 	}
 }
 
-// claimExecPattern matches the single-statement claim UPDATE: it must stamp
+// _claimExecPattern matches the single-statement claim UPDATE: it must stamp
 // claimed_at, stay conditional on expiry, and accept 'pending' plus timed-out
 // (or pre-column NULL) 'sending' rows in one atomic predicate.
-const claimExecPattern = "UPDATE firebase_arrival_reminder SET status='sending',claimed_at=\\$2" +
+const _claimExecPattern = "UPDATE firebase_arrival_reminder SET status='sending',claimed_at=\\$2" +
 	".*expires_at>\\$2" +
 	".*status='pending' OR \\(status='sending' AND \\(claimed_at IS NULL OR claimed_at<=\\$3\\)\\)"
 
@@ -116,12 +116,12 @@ func TestNotificationStoreClaimIsAtomic(t *testing.T) {
 	defer db.Close()
 	now := time.Now()
 	cutoff := now.Add(-ReminderClaimTimeout)
-	db.ExpectExec(claimExecPattern).WithArgs("r1", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	db.ExpectExec(_claimExecPattern).WithArgs("r1", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	claimed, err := (Store{db: db}).claim(context.Background(), "r1", now)
 	if err != nil || !claimed {
 		t.Fatalf("claimed=%v err=%v", claimed, err)
 	}
-	db.ExpectExec(claimExecPattern).WithArgs("r1", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	db.ExpectExec(_claimExecPattern).WithArgs("r1", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	claimed, err = (Store{db: db}).claim(context.Background(), "r1", now)
 	if err != nil || claimed {
 		t.Fatalf("claimed=%v err=%v", claimed, err)
@@ -148,7 +148,7 @@ func TestNotificationStoreClaimReclaimCutoff(t *testing.T) {
 
 	// Stuck sender: its claimed_at is at/before the cutoff, so the predicate
 	// matches and the reclaim wins the row.
-	db.ExpectExec(claimExecPattern).WithArgs("stuck", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	db.ExpectExec(_claimExecPattern).WithArgs("stuck", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	claimed, err := (Store{db: db}).claim(context.Background(), "stuck", now)
 	if err != nil || !claimed {
 		t.Fatalf("reclaim after timeout: claimed=%v err=%v", claimed, err)
@@ -156,7 +156,7 @@ func TestNotificationStoreClaimReclaimCutoff(t *testing.T) {
 
 	// Live sender: claimed_at is newer than the cutoff, the predicate matches
 	// no row, and the caller must treat the reminder as still owned.
-	db.ExpectExec(claimExecPattern).WithArgs("in-flight", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	db.ExpectExec(_claimExecPattern).WithArgs("in-flight", now, cutoff).WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	claimed, err = (Store{db: db}).claim(context.Background(), "in-flight", now)
 	if err != nil || claimed {
 		t.Fatalf("no reclaim before timeout: claimed=%v err=%v", claimed, err)

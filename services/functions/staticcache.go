@@ -5,12 +5,12 @@ import (
 	"time"
 )
 
-// busStaticMapCache holds each city prefix's station map in memory so the 30s
+// _busStaticMapCache holds each city prefix's station map in memory so the 30s
 // bus ETA cron does not re-query PostgreSQL every tick. A committed city rebuild
 // invalidates its prefix locally and advances the durable Redis generation.
-var busStaticMapCache sync.Map
+var _busStaticMapCache sync.Map
 
-const busStaticMapCacheTTL = 5 * time.Minute
+const _busStaticMapCacheTTL = 5 * time.Minute
 
 type busStaticMapCacheEntry struct {
 	stops      []busStationmap
@@ -24,7 +24,7 @@ func cachedBusStaticMapFrom(cache *sync.Map, prefix, generation string, now time
 		return nil, false
 	}
 	entry, ok := v.(busStaticMapCacheEntry)
-	if !ok || now.Sub(entry.loadedAt) >= busStaticMapCacheTTL {
+	if !ok || now.Sub(entry.loadedAt) >= _busStaticMapCacheTTL {
 		cache.Delete(prefix)
 		return nil, false
 	}
@@ -40,7 +40,7 @@ func cachedBusStaticMapFrom(cache *sync.Map, prefix, generation string, now time
 
 // storeBusStaticMap caches a city prefix's station map for reuse by later ETA ticks.
 func storeBusStaticMap(prefix string, list []busStationmap) {
-	storeBusStaticMapIn(&busStaticMapCache, prefix, list, "", time.Now())
+	storeBusStaticMapIn(&_busStaticMapCache, prefix, list, "", time.Now())
 }
 
 func storeBusStaticMapIn(cache *sync.Map, prefix string, list []busStationmap, generation string, now time.Time) {
@@ -50,17 +50,17 @@ func storeBusStaticMapIn(cache *sync.Map, prefix string, list []busStationmap, g
 // invalidateBusStaticMap clears all maps for tests/process teardown. Production
 // commits use invalidateBusStaticMapCity to avoid evicting unrelated cities.
 func invalidateBusStaticMap() {
-	busStaticMapCache.Range(func(key, _ any) bool {
-		busStaticMapCache.Delete(key)
+	_busStaticMapCache.Range(func(key, _ any) bool {
+		_busStaticMapCache.Delete(key)
 		return true
 	})
 }
 
 func invalidateBusStaticMapCity(prefix string) {
-	busStaticMapCache.Delete(prefix)
+	_busStaticMapCache.Delete(prefix)
 }
 
-// stopOffsetCache holds each subroute's stop offsets, keyed by sub_route_uid.
+// _stopOffsetCache holds each subroute's stop offsets, keyed by sub_route_uid.
 //
 // batchStopOffsets runs busPatternSQL, whose known_stop CTE unnests every
 // raw_tdx.bus_stopofroute row before the uid filter is applied — so the cost is
@@ -73,9 +73,9 @@ func invalidateBusStaticMapCity(prefix string) {
 // 04:00 segmentTimes job. An hour's TTL is well inside that cadence and needs no
 // invalidation hook: the worst case is one hour of yesterday's offsets, on a
 // figure that is a seven-day median.
-var stopOffsetCache sync.Map
+var _stopOffsetCache sync.Map
 
-const stopOffsetCacheTTL = time.Hour
+const _stopOffsetCacheTTL = time.Hour
 
 type stopOffset struct {
 	direction int32
@@ -94,7 +94,7 @@ func cachedStopOffsets(cache *sync.Map, uids []string, now time.Time, out map[st
 	for _, uid := range uids {
 		v, ok := cache.Load(uid)
 		entry, typed := v.(stopOffsetCacheEntry)
-		if !ok || !typed || now.Sub(entry.loadedAt) >= stopOffsetCacheTTL {
+		if !ok || !typed || now.Sub(entry.loadedAt) >= _stopOffsetCacheTTL {
 			cache.Delete(uid)
 			missing = append(missing, uid)
 			continue

@@ -49,6 +49,27 @@ void main() {
     expect(find.text('進站中'), findsOneWidget);
   });
 
+  testWidgets('marks the last bus of the day, and only when confirmed', (
+    tester,
+  ) async {
+    await pump(
+      tester,
+      EtaListTile.fromDisplay(
+        const ArrivalDisplay(
+          label: '9023',
+          destination: '羅東',
+          status: EtaMinutes(8),
+          rank: 10,
+          isLastBus: true,
+        ),
+      ),
+    );
+    expect(find.text('末班車'), findsOneWidget);
+
+    await pump(tester, EtaListTile.fromDisplay(arriving));
+    expect(find.text('末班車'), findsNothing);
+  });
+
   testWidgets('time value uses the mono font (tabular figures)', (
     tester,
   ) async {

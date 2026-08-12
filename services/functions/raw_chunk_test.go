@@ -17,8 +17,12 @@ type readerOnly struct{ io.Reader }
 func chunkRecorder(t *testing.T, chunks *[][]json.RawMessage) func(context.Context, string, ...any) (int64, error) {
 	t.Helper()
 	return func(_ context.Context, _ string, args ...any) (int64, error) {
+		chunk, ok := args[1].([]byte)
+		if !ok {
+			t.Fatalf("args[1] is not a []byte")
+		}
 		var elems []json.RawMessage
-		if err := json.Unmarshal(args[1].([]byte), &elems); err != nil {
+		if err := json.Unmarshal(chunk, &elems); err != nil {
 			return 0, fmt.Errorf("chunk is not a JSON array: %v", err)
 		}
 		*chunks = append(*chunks, elems)
@@ -51,8 +55,8 @@ func TestInsertRawChunksSplitsLargePayload(t *testing.T) {
 			size += len(e)
 		}
 		// Chunks flush after crossing rawChunkBytes, so allow one element of overshoot.
-		if size > rawChunkBytes+300<<10 {
-			t.Errorf("chunk %d is %d bytes, want ≤ ~%d", i, size, rawChunkBytes)
+		if size > _rawChunkBytes+300<<10 {
+			t.Errorf("chunk %d is %d bytes, want ≤ ~%d", i, size, _rawChunkBytes)
 		}
 	}
 	if total != n {

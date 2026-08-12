@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"time"
 
@@ -45,7 +44,7 @@ import (
 // reject a downstream transfer that is in fact catchable.
 
 const (
-	// gtfsRTBusMatchWindow bounds how far a back-projected departure may sit from
+	// _gtfsRTBusMatchWindow bounds how far a back-projected departure may sit from
 	// the scheduled one it is assigned to.
 	//
 	// The back-projection is a live arrival estimate minus an accumulated running
@@ -53,28 +52,28 @@ const (
 	// hold a genuinely late bus and narrow enough that a vehicle never reaches
 	// the departure before or after the one it is running. Beyond it the vehicle
 	// is left unmatched, which costs a trip update and states nothing false.
-	gtfsRTBusMatchWindow = 20 * time.Minute
-	// gtfsRTBusMinCalls is how many stops a vehicle must be predicted at before
+	_gtfsRTBusMatchWindow = 20 * time.Minute
+	// _gtfsRTBusMinCalls is how many stops a vehicle must be predicted at before
 	// its back-projected departure is trusted. One stop is one estimate and one
 	// estimate's error; the median of several is what makes the assignment stable
 	// enough for an order-preserving pass to mean anything.
-	gtfsRTBusMinCalls = 2
-	// gtfsRTScanBatch is the COUNT hint for the live-snapshot scan. It matches
+	_gtfsRTBusMinCalls = 2
+	// _gtfsRTScanBatch is the COUNT hint for the live-snapshot scan. It matches
 	// the one the live jobs' own key sweep uses; the whole keyspace here is a few
 	// thousand keys, so this is a handful of round trips.
-	gtfsRTScanBatch = 500
+	_gtfsRTScanBatch = 500
 )
 
-// busPatternOffsetSQL is every stop's cumulative running time from its route
+// _busPatternOffsetSQL is every stop's cumulative running time from its route
 // direction's origin — the term that turns a predicted arrival back into the
 // departure the vehicle must have left on.
 //
 // Only complete patterns are read, for the same reason busPatternTripsSQL only
 // lays out complete ones: one unknown segment silently compresses every offset
 // after it, and a back-projection off by that much lands on the wrong departure.
-var busPatternOffsetSQL = `
+var _busPatternOffsetSQL = `
   SELECT p.sub_route_uid, p.direction, p.stop_uid, p.offset_secs
-  FROM (` + busPatternSQL + `) p
+  FROM (` + _busPatternSQL + `) p
   WHERE p.complete`
 
 // readBusArrivals reads the whole live bus ETA snapshot.
@@ -87,9 +86,9 @@ func (b *gtfsRTBuilder) readBusArrivals(ctx context.Context) (map[string]*models
 	var keys []string
 	var cursor uint64
 	for {
-		batch, next, err := b.rc.Scan(ctx, cursor, shared.BusRouteEtaPattern(""), gtfsRTScanBatch).Result()
+		batch, next, err := b.rc.Scan(ctx, cursor, shared.BusRouteEtaPattern(""), _gtfsRTScanBatch).Result()
 		if err != nil {
-			return nil, fmt.Errorf("gtfs-rt: scan bus arrivals: %w", err)
+			return nil, _oops.Wrapf(err, "gtfs-rt: scan bus arrivals")
 		}
 		keys = append(keys, batch...)
 		cursor = next
@@ -98,11 +97,11 @@ func (b *gtfsRTBuilder) readBusArrivals(ctx context.Context) (map[string]*models
 		}
 	}
 	arrivals := make(map[string]*models.Bus_RouteArrival, len(keys))
-	for start := 0; start < len(keys); start += gtfsRTMGetBatch {
-		end := min(start+gtfsRTMGetBatch, len(keys))
+	for start := 0; start < len(keys); start += _gtfsRTMGetBatch {
+		end := min(start+_gtfsRTMGetBatch, len(keys))
 		values, err := b.rc.MGet(ctx, keys[start:end]...).Result()
 		if err != nil {
-			return nil, fmt.Errorf("gtfs-rt: read bus arrivals: %w", err)
+			return nil, _oops.Wrapf(err, "gtfs-rt: read bus arrivals")
 		}
 		for _, value := range values {
 			raw, ok := value.(string)
@@ -161,9 +160,9 @@ type gtfsRTCall struct {
 // is refreshed with the rest of the static index rather than per tick: it
 // changes when bus_segment_time is recomputed, which is nightly.
 func loadBusPatternOffsets(ctx context.Context, db *pgxpool.Pool) (map[gtfsRTRouteKey]map[string]int64, error) {
-	rows, err := db.Query(ctx, busPatternOffsetSQL)
+	rows, err := db.Query(ctx, _busPatternOffsetSQL)
 	if err != nil {
-		return nil, fmt.Errorf("gtfs-rt: load bus pattern offsets: %w", err)
+		return nil, _oops.Wrapf(err, "gtfs-rt: load bus pattern offsets")
 	}
 	defer rows.Close()
 	offsets := make(map[gtfsRTRouteKey]map[string]int64, 8192)
@@ -172,7 +171,7 @@ func loadBusPatternOffsets(ctx context.Context, db *pgxpool.Pool) (map[gtfsRTRou
 		var direction int32
 		var offset int64
 		if err := rows.Scan(&subRouteUID, &direction, &stopUID, &offset); err != nil {
-			return nil, fmt.Errorf("gtfs-rt: load bus pattern offsets: scan: %w", err)
+			return nil, _oops.Wrapf(err, "gtfs-rt: load bus pattern offsets: scan")
 		}
 		key := gtfsRTRouteKey{subRouteUID: subRouteUID, direction: direction}
 		if offsets[key] == nil {
@@ -181,7 +180,7 @@ func loadBusPatternOffsets(ctx context.Context, db *pgxpool.Pool) (map[gtfsRTRou
 		offsets[key][stopUID] = offset
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("gtfs-rt: load bus pattern offsets: rows: %w", err)
+		return nil, _oops.Wrapf(err, "gtfs-rt: load bus pattern offsets: rows")
 	}
 	return offsets, nil
 }
@@ -259,7 +258,7 @@ func collectBusVehicles(
 			stats.patternUnknown++
 			continue
 		}
-		if len(projected) < gtfsRTBusMinCalls {
+		if len(projected) < _gtfsRTBusMinCalls {
 			stats.tooFewCalls++
 			continue
 		}
@@ -297,7 +296,7 @@ func matchBusVehicles(vehicles []gtfsRTVehicle, trips []gtfsRTTrip, midnight tim
 	copy(scheduled, trips)
 	sort.Slice(scheduled, func(i, j int) bool { return scheduled[i].departure < scheduled[j].departure })
 
-	window := int64(gtfsRTBusMatchWindow / time.Second)
+	window := int64(_gtfsRTBusMatchWindow / time.Second)
 	matched := make(map[string]gtfsRTVehicle, len(vehicles))
 	vehicleIndex, tripIndex := 0, 0
 	for vehicleIndex < len(vehicles) && tripIndex < len(scheduled) {

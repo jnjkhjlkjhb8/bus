@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"reflect"
 	"time"
@@ -23,37 +22,37 @@ import (
 func decodeLoadArray[T any](dec *json.Decoder, dataset string, validate func(int, T) error) ([]T, error) {
 	tok, err := dec.Token()
 	if err != nil {
-		return nil, fmt.Errorf("%s opening array: %w", dataset, err)
+		return nil, _oops.With("dataset", dataset).Wrapf(err, "opening array")
 	}
 	if tok != json.Delim('[') {
-		return nil, fmt.Errorf("%s opening array: got %v", dataset, tok)
+		return nil, _oops.With("dataset", dataset).With("token", tok).Errorf("opening array")
 	}
 
 	items := make([]T, 0)
 	for index := 0; dec.More(); index++ {
 		var item T
 		if err := dec.Decode(&item); err != nil {
-			return nil, fmt.Errorf("%s element %d decode: %w", dataset, index, err)
+			return nil, _oops.With("dataset", dataset).With("index", index).Wrapf(err, "element decode")
 		}
 		if validate != nil {
 			if err := validate(index, item); err != nil {
-				return nil, fmt.Errorf("%s element %d: %w", dataset, index, err)
+				return nil, _oops.With("dataset", dataset).With("index", index).Wrapf(err, "element")
 			}
 		}
 		items = append(items, item)
 	}
 	if tok, err = dec.Token(); err != nil {
-		return nil, fmt.Errorf("%s closing array: %w", dataset, err)
+		return nil, _oops.With("dataset", dataset).Wrapf(err, "closing array")
 	}
 	if tok != json.Delim(']') {
-		return nil, fmt.Errorf("%s closing array: got %v", dataset, tok)
+		return nil, _oops.With("dataset", dataset).With("token", tok).Errorf("closing array")
 	}
 	var trailing json.RawMessage
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return nil, fmt.Errorf("%s trailing JSON value", dataset)
+			return nil, _oops.With("dataset", dataset).Errorf("trailing JSON value")
 		}
-		return nil, fmt.Errorf("%s trailing JSON: %w", dataset, err)
+		return nil, _oops.With("dataset", dataset).Wrapf(err, "trailing JSON")
 	}
 	return items, nil
 }
@@ -66,7 +65,7 @@ func appendUniqueLoadRow(rows *[][]any, seen map[string][]any, key, label string
 		if reflect.DeepEqual(prior, row) {
 			return nil
 		}
-		return fmt.Errorf("divergent duplicate %s %q", label, key)
+		return _oops.With("label", label).With("key", key).Errorf("divergent duplicate")
 	}
 	seen[key] = row
 	*rows = append(*rows, row)
@@ -200,11 +199,11 @@ func (s pgLoadSink) copyUpsert(ctx context.Context, spec copyUpsertSpec, rows []
 
 func runCopyUpsert(ctx context.Context, db loadTxBeginner, spec copyUpsertSpec, rows [][]any) (resultErr error) {
 	if db == nil {
-		return fmt.Errorf("copy-upsert %s begin: nil database", spec.key)
+		return _oops.With("spec_key", spec.key).Errorf("copy-upsert begin: nil database")
 	}
 	b, err := db.BeginLoadTx(ctx)
 	if err != nil {
-		return fmt.Errorf("copy-upsert %s begin: %w", spec.key, err)
+		return _oops.With("spec_key", spec.key).Wrapf(err, "copy-upsert begin")
 	}
 	committed := false
 	defer func() {
@@ -214,25 +213,25 @@ func runCopyUpsert(ctx context.Context, db loadTxBeginner, spec copyUpsertSpec, 
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := errorWithout(b.Rollback(rollbackCtx), pgx.ErrTxClosed); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("copy-upsert %s rollback: %w", spec.key, err))
+			resultErr = errors.Join(resultErr, _oops.With("spec_key", spec.key).Wrapf(err, "copy-upsert rollback"))
 		}
 	}()
 	for index, st := range spec.preExec {
 		if _, err := b.Exec(ctx, st.sql, st.args...); err != nil {
-			return fmt.Errorf("copy-upsert %s pre-exec %d: %w", spec.key, index, err)
+			return _oops.With("spec_key", spec.key).With("index", index).Wrapf(err, "copy-upsert pre-exec")
 		}
 	}
 	if _, err := b.Exec(ctx, spec.createSQL); err != nil {
-		return fmt.Errorf("copy-upsert %s create temp: %w", spec.key, err)
+		return _oops.With("spec_key", spec.key).Wrapf(err, "copy-upsert create temp")
 	}
 	if _, err := b.CopyFrom(ctx, pgx.Identifier{spec.tempTable}, spec.copyCols, pgx.CopyFromRows(rows)); err != nil {
-		return fmt.Errorf("copy-upsert %s COPY %s: %w", spec.key, spec.tempTable, err)
+		return _oops.With("spec_key", spec.key).With("temp_table", spec.tempTable).Wrapf(err, "copy-upsert COPY")
 	}
 	if _, err := b.Exec(ctx, spec.insertSQL); err != nil {
-		return fmt.Errorf("copy-upsert %s final exec: %w", spec.key, err)
+		return _oops.With("spec_key", spec.key).Wrapf(err, "copy-upsert final exec")
 	}
 	if err := b.Commit(ctx); err != nil {
-		return fmt.Errorf("copy-upsert %s commit: %w", spec.key, err)
+		return _oops.With("spec_key", spec.key).Wrapf(err, "copy-upsert commit")
 	}
 	committed = true
 	zap.S().Infow("success",
