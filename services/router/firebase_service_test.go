@@ -16,6 +16,7 @@ import (
 	"time"
 
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -522,5 +523,89 @@ func TestAppCheckStreamInterceptor(t *testing.T) {
 	}
 	if err := AppCheckStreamInterceptor(nil, false)(nil, missing, info, handler); err != nil {
 		t.Fatalf("disabled interceptor error = %v", err)
+	}
+}
+
+// demandLiveSource is a LiveSource that records only the demand touches; the
+// reminder path never reads or subscribes.
+type demandLiveSource struct{ touches map[string]time.Duration }
+
+func (d *demandLiveSource) get(context.Context, string) ([]byte, bool) { return nil, false }
+func (d *demandLiveSource) scanKeys(context.Context, string) []string  { return nil }
+func (d *demandLiveSource) subscribe(context.Context, string) (<-chan []byte, func(), error) {
+	return nil, func() {}, nil
+}
+
+func (d *demandLiveSource) touch(_ context.Context, key string, ttl time.Duration) {
+	if d.touches == nil {
+		d.touches = map[string]time.Duration{}
+	}
+	d.touches[key] = ttl
+}
+
+// TestCreateArrivalReminderClaimsBusCityDemand covers the reason a bus reminder
+// has to raise demand at all (FDPL-90): it fires from busEta's own per-city
+// tick, and the rider who set it holds no live stream once the app is
+// backgrounded. Without the claim the city drops to its reduced cadence and the
+// reminder is dispatched late or not at all. The TTL has to reach the
+// reminder's own expiry, not the default demand window.
+func TestCreateArrivalReminderClaimsBusCityDemand(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	live := &demandLiveSource{}
+	store := &fakeFirebasePersistence{}
+	server := &FirebaseServer{store: store, now: func() time.Time { return now }, live: live}
+	ctx := installationContext("install-1", _testInstallSecret)
+	if _, err := server.UpsertDevice(ctx, &pb.UpsertDeviceRequest{
+		Identity: &pb.DeviceIdentity{
+			InstallId: "install-1", FcmToken: "t", Platform: "android", AppVersion: "1.0.0",
+		},
+		Prefs: &pb.DevicePrefs{PushEnabled: true},
+	}); err != nil {
+		t.Fatalf("UpsertDevice() error = %v", err)
+	}
+
+	expires := now.Add(40 * time.Minute)
+	if _, err := server.CreateArrivalReminder(ctx, &pb.CreateArrivalReminderRequest{
+		InstallId: "install-1", RouteType: "bus", RouteKey: "ILA1234", StopKey: "S1",
+		Direction: "0", LeadMinutes: 5, ExpiresAtUnix: expires.Unix(),
+	}); err != nil {
+		t.Fatalf("CreateArrivalReminder() error = %v", err)
+	}
+
+	got, ok := live.touches[shared.LiveDemandKey("bus_eta", "YilanCounty")]
+	if !ok {
+		t.Fatalf("touches = %v, want the Yilan bus demand key", live.touches)
+	}
+	if got != 40*time.Minute {
+		t.Fatalf("demand TTL = %v, want the reminder's own 40m expiry", got)
+	}
+}
+
+// TestCreateArrivalReminderSkipsRailDemand keeps rail out of the gate: rail
+// reminders carry a fire_at and dispatch on a schedule, so they do not depend
+// on any city staying at full polling cadence.
+func TestCreateArrivalReminderSkipsRailDemand(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	live := &demandLiveSource{}
+	store := &fakeFirebasePersistence{}
+	server := &FirebaseServer{store: store, now: func() time.Time { return now }, live: live}
+	ctx := installationContext("install-1", _testInstallSecret)
+	if _, err := server.UpsertDevice(ctx, &pb.UpsertDeviceRequest{
+		Identity: &pb.DeviceIdentity{
+			InstallId: "install-1", FcmToken: "t", Platform: "android", AppVersion: "1.0.0",
+		},
+		Prefs: &pb.DevicePrefs{PushEnabled: true},
+	}); err != nil {
+		t.Fatalf("UpsertDevice() error = %v", err)
+	}
+
+	if _, err := server.CreateArrivalReminder(ctx, &pb.CreateArrivalReminderRequest{
+		InstallId: "install-1", RouteType: "tra", RouteKey: "1234", StopKey: "S1",
+		Direction: "0", LeadMinutes: 5, ExpiresAtUnix: now.Add(time.Hour).Unix(),
+	}); err != nil {
+		t.Fatalf("CreateArrivalReminder() error = %v", err)
+	}
+	if len(live.touches) != 0 {
+		t.Fatalf("touches = %v, want none for a rail reminder", live.touches)
 	}
 }

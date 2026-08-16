@@ -14,6 +14,7 @@ import (
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/appcheck"
 	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -46,6 +47,12 @@ type FirebaseServer struct {
 	pb.UnimplementedFirebase_ServiceServer
 	store firebasePersistence
 	now   func() time.Time
+	// live carries the demand touch for a new bus reminder. A bus reminder
+	// fires from busEta's own tick, so the city it names has to stay on full
+	// cadence until the reminder expires even though nobody is streaming it
+	// (FDPL-90). Nil leaves reminders with no effect on polling, which is what
+	// the tests that do not exercise the gate run with.
+	live LiveSource
 }
 
 // UpsertDevice registers or updates a device installation and its notification
@@ -211,6 +218,7 @@ func (s *FirebaseServer) CreateArrivalReminder(ctx context.Context, request *pb.
 		)
 		return nil, status.Error(codes.Internal, "failed to save arrival reminder")
 	}
+	s.claimReminderDemand(ctx, stored)
 	return &pb.ArrivalReminder{
 		ReminderId: reminderID, InstallId: request.InstallId, RouteType: request.RouteType, RouteKey: request.RouteKey,
 		StopKey: request.StopKey, Direction: request.Direction, LeadMinutes: request.LeadMinutes, ExpiresAtUnix: request.ExpiresAtUnix,
@@ -479,4 +487,38 @@ func verifyAppCheck(ctx context.Context, verifier AppCheckVerifier) error {
 		return status.Error(codes.Unauthenticated, "valid Firebase App Check token required")
 	}
 	return nil
+}
+
+// claimReminderDemand keeps a bus reminder's city on full polling cadence for
+// the reminder's whole life.
+//
+// Only bus needs it: rail reminders carry a fire_at and are dispatched on a
+// schedule, while a bus reminder has no known arrival time and is dispatched
+// from inside busEta's per-city run. A rider who sets one and pockets their
+// phone holds no live stream, so without this the city goes cold and the
+// reminder arrives late or not at all.
+//
+// The TTL runs to the reminder's own expiry, so no renewal is needed. A Redis
+// failure is dropped rather than failing the create: the reminder is already
+// persisted, and functions re-asserts these keys at startup.
+func (s *FirebaseServer) claimReminderDemand(
+	ctx context.Context,
+	reminder FirebaseArrivalReminder,
+) {
+	if s.live == nil || reminder.RouteType != "bus" {
+		return
+	}
+	city := shared.CityFromUID(reminder.RouteKey)
+	if city == "" {
+		return
+	}
+	now := s.now
+	if now == nil {
+		now = time.Now
+	}
+	ttl := reminder.ExpiresAt.Sub(now())
+	if ttl <= 0 {
+		return
+	}
+	s.live.touch(ctx, shared.LiveDemandKey("bus_eta", city), ttl)
 }

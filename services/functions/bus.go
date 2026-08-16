@@ -32,25 +32,29 @@ var _cities = []string{
 // as the authority_code for operators. Every entry in cities must have a key
 // here: readBusCitySnapshot rejects an unmapped city before the writer can turn
 // its partition-replacement prefix into the destructive pattern "%".
-var _citymap = map[string]string{
-	"Taipei": "TPE", "NewTaipei": "NWT", "Taoyuan": "TAO", "Taichung": "TXG",
-	"Tainan": "TNN", "Kaohsiung": "KHH", "InterCity": "THB", "Keelung": "KEE",
-	"Hsinchu": "HSZ", "HsinchuCounty": "HSQ", "MiaoliCounty": "MIA", "ChanghuaCounty": "CHA",
-	"NantouCounty": "NAN", "Chiayi": "CYI", "ChiayiCounty": "CYQ", "YunlinCounty": "YUN",
-	"PingtungCounty": "PIF", "YilanCounty": "ILA", "HualienCounty": "HUA", "TaitungCounty": "TTT",
-	"PenghuCounty": "PEN", "KinmenCounty": "KIN", "LienchiangCounty": "LIE",
-}
+// The prefixes themselves live in shared, because the router resolves the same
+// mapping to attribute a live subscription to a city and a second copy of the
+// table is the silent-mismatch bug shared/keys.go exists to prevent. These two
+// stay as package-local maps derived from it rather than aliases: they are read
+// by index at a few dozen call sites, and one loader test shadows an entry —
+// aliasing would let that write reach the shared contract and every reader of it.
+var _citymap = func() map[string]string {
+	out := make(map[string]string, len(_cities))
+	for _, city := range _cities {
+		out[city] = shared.UIDPrefixForCity(city)
+	}
+	return out
+}()
 
 // _citymap2 is the inverse of citymap, resolving a short prefix back to a TDX
 // city code. Used when rail data carries LocationCityCode prefixes.
-var _citymap2 = map[string]string{
-	"TPE": "Taipei", "NWT": "NewTaipei", "TAO": "Taoyuan", "TXG": "Taichung",
-	"TNN": "Tainan", "KHH": "Kaohsiung", "THB": "InterCity", "KEE": "Keelung",
-	"HSZ": "Hsinchu", "HSQ": "HsinchuCounty", "MIA": "MiaoliCounty", "CHA": "ChanghuaCounty",
-	"NAN": "NantouCounty", "CYI": "Chiayi", "CYQ": "ChiayiCounty", "YUN": "YunlinCounty",
-	"PIF": "PingtungCounty", "ILA": "YilanCounty", "HUA": "HualienCounty", "TTT": "TaitungCounty",
-	"PEN": "PenghuCounty", "KIN": "KinmenCounty", "LIE": "LienchiangCounty",
-}
+var _citymap2 = func() map[string]string {
+	out := make(map[string]string, len(_citymap))
+	for city, prefix := range _citymap {
+		out[prefix] = city
+	}
+	return out
+}()
 
 // _busSubroutesUpsertSQL upserts one subroute per (sub_route_uid, direction) into
 // bus_subroutes from the temp_bus staging table, building the stops array from

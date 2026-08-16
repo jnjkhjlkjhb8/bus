@@ -23,7 +23,19 @@ type fakeLiveSource struct {
 	scans  map[string][]string
 	ch     chan []byte
 	ops    []string
+	// touches records every demand-key write in order, so a test can assert
+	// both that a stream claims demand and how often it renews it.
+	touches []string
 }
+
+func (s *fakeLiveSource) touch(_ context.Context, key string, _ time.Duration) {
+	s.touches = append(s.touches, key)
+	// Also recorded in ops so a test can assert the touch's order against the
+	// subscribe, which is the property that matters for a cold city.
+	s.ops = append(s.ops, "touch:"+key)
+}
+
+func (s *subscribeErrLiveSource) touch(context.Context, string, time.Duration) {}
 
 func newFakeLiveSource() *fakeLiveSource {
 	return &fakeLiveSource{
@@ -290,5 +302,44 @@ func TestStreamLiveSendErrorStopsStream(t *testing.T) {
 	src.ch <- []byte("live")
 	if err := <-errc; !errors.Is(err, sendErr) {
 		t.Fatalf("want send error propagated, got %v", err)
+	}
+}
+
+// TestStreamLiveClaimsDemandBeforeSubscribing proves the half of FDPL-90 the
+// router owns: a stream with a demand key must write it before it subscribes.
+// A city nobody is watching publishes nothing, so this first write is the only
+// thing that can raise its polling cadence — do it after subscribing (or only
+// on the first frame) and the stream waits on a frame that needs the write to
+// exist before it can be produced.
+func TestStreamLiveClaimsDemandBeforeSubscribing(t *testing.T) {
+	src := newFakeLiveSource()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_ = StreamLive(ctx, src, LiveStreamSpec{
+		channel:   "bus_eta_route:ILA1234",
+		demandKey: "live:demand:bus_eta:YilanCounty",
+	}, func([]byte) error { return nil })
+
+	if len(src.touches) != 1 || src.touches[0] != "live:demand:bus_eta:YilanCounty" {
+		t.Fatalf("touches = %v, want one write of the demand key", src.touches)
+	}
+	if len(src.ops) == 0 || src.ops[0] != "touch:live:demand:bus_eta:YilanCounty" {
+		t.Fatalf("ops = %v, want the demand touch before the subscribe", src.ops)
+	}
+}
+
+// TestStreamLiveWithoutDemandKeyTouchesNothing keeps the streams that carry no
+// city (TRA, THSR, alerts) out of the demand path entirely.
+func TestStreamLiveWithoutDemandKeyTouchesNothing(t *testing.T) {
+	src := newFakeLiveSource()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	spec := LiveStreamSpec{channel: "tra:delay:all"}
+	_ = StreamLive(ctx, src, spec, func([]byte) error { return nil })
+
+	if len(src.touches) != 0 {
+		t.Fatalf("touches = %v, want none", src.touches)
 	}
 }

@@ -439,7 +439,8 @@ func run() error {
 		// flight is canceled and joined before those backends close under it.
 		runtime.addCleanup(maasServer.Close)
 		pb.RegisterMaasServiceServer(grpcServer, maasServer)
-		pb.RegisterFirebase_ServiceServer(grpcServer, &FirebaseServer{store: NewFirebaseStore(db), now: time.Now})
+		pb.RegisterFirebase_ServiceServer(grpcServer,
+			&FirebaseServer{store: NewFirebaseStore(db), now: time.Now, live: live})
 		pb.RegisterFeedback_ServiceServer(grpcServer, &FeedbackServer{
 			store:    NewFeedbackStore(db),
 			devices:  NewFirebaseStore(db),

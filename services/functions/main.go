@@ -619,6 +619,12 @@ func runLegacyProd(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, rawPoo
 		)
 	}
 	weatherCancel()
+	// Re-assert the demand keys of cities holding a pending bus reminder before
+	// the first live tick can gate any of them away (FDPL-90). Bounded like the
+	// weather prime above so a slow database delays boot finitely.
+	demandCtx, demandCancel := context.WithTimeout(context.Background(), _weatherHTTPTimeout)
+	restoreReminderDemand(demandCtx, db, redisLiveSink{rc: rc})
+	demandCancel()
 	// The ingestor lands raw_tdx at 03:00 and the ROLE=loader container transforms
 	// it into this env's schema at 03:30. changetovector runs in that same loader
 	// process right after the load (registerLoaderCrons -> runVectorRefresh), and

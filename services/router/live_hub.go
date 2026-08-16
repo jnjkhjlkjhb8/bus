@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -70,6 +71,12 @@ func (h *LiveHub) get(ctx context.Context, key string) ([]byte, bool) {
 
 func (h *LiveHub) scanKeys(ctx context.Context, pattern string) []string {
 	return h.source.scanKeys(ctx, pattern)
+}
+
+// touch passes the demand signal straight through: the hub multiplexes
+// subscriptions, but every subscriber renews its own city independently.
+func (h *LiveHub) touch(ctx context.Context, key string, ttl time.Duration) {
+	h.source.touch(ctx, key, ttl)
 }
 
 func (h *LiveHub) subscribe(ctx context.Context, channel string) (<-chan []byte, func(), error) {

@@ -155,6 +155,66 @@ func LiveOwnedKeysKey(dataset, partition string) string {
 	return fmt.Sprintf("live:owned:%s:%s", dataset, partition)
 }
 
+// LiveDemandKey marks one city as currently watched by at least one rider. The
+// router sets it (with a TTL) whenever a live stream for that city is open;
+// functions reads it to decide whether the city gets its full cadence this tick
+// or the reduced one (FDPL-90). Its TTL must stay above the reduced cadence: a
+// city that has gone cold publishes nothing, so the only thing that can refresh
+// this key is the initial write a new subscriber makes.
+func LiveDemandKey(dataset, city string) string {
+	return fmt.Sprintf("live:demand:%s:%s", dataset, city)
+}
+
+// LiveColdKey marks one unwatched city as already fetched recently. Its TTL is
+// the reduced cadence: while it exists the city's ticks are skipped, and its
+// expiry is what lets the next tick through.
+func LiveColdKey(dataset, city string) string {
+	return fmt.Sprintf("live:cold:%s:%s", dataset, city)
+}
+
+// _cityUIDPrefix maps a TDX city code to the short prefix its UIDs carry. Both
+// binaries need the mapping — functions to build keys per city, the router to
+// resolve the city out of a UID it was asked for — so it lives here with the
+// rest of the cross-binary key contract rather than being copied into each. It
+// is reached only through UIDPrefixForCity and CityFromUID: exporting the map
+// itself would hand every caller the ability to mutate the contract.
+var _cityUIDPrefix = map[string]string{
+	"Taipei": "TPE", "NewTaipei": "NWT", "Taoyuan": "TAO", "Taichung": "TXG",
+	"Tainan": "TNN", "Kaohsiung": "KHH", "InterCity": "THB", "Keelung": "KEE",
+	"Hsinchu": "HSZ", "HsinchuCounty": "HSQ", "MiaoliCounty": "MIA", "ChanghuaCounty": "CHA",
+	"NantouCounty": "NAN", "Chiayi": "CYI", "ChiayiCounty": "CYQ", "YunlinCounty": "YUN",
+	"PingtungCounty": "PIF", "YilanCounty": "ILA", "HualienCounty": "HUA", "TaitungCounty": "TTT",
+	"PenghuCounty": "PEN", "KinmenCounty": "KIN", "LienchiangCounty": "LIE",
+}
+
+// _cityFromUIDPrefix is the inverse of _cityUIDPrefix.
+var _cityFromUIDPrefix = func() map[string]string {
+	out := make(map[string]string, len(_cityUIDPrefix))
+	for city, prefix := range _cityUIDPrefix {
+		out[prefix] = city
+	}
+	return out
+}()
+
+// UIDPrefixForCity returns the short prefix a TDX city's UIDs carry, or "" for
+// a city with no mapping. Callers treat "" as a city they must not build keys
+// for: a missing prefix would collapse a per-city key pattern into one matching
+// every city.
+func UIDPrefixForCity(city string) string {
+	return _cityUIDPrefix[city]
+}
+
+// CityFromUID resolves the TDX city code from a UID that starts with a city
+// prefix (bus sub-route UIDs, bike station UIDs, rail LocationCityCode). It
+// returns "" for a UID too short to carry one or carrying an unknown prefix,
+// which callers treat as "no city to attribute this to" rather than as an error.
+func CityFromUID(uid string) string {
+	if len(uid) < 3 {
+		return ""
+	}
+	return _cityFromUIDPrefix[uid[:3]]
+}
+
 // WeatherKey returns the key holding one city's cached weather snapshot. It is a
 // cross-module contract: weatherSync writes it (60-minute TTL) and the bus ETA
 // path reads it for prediction features, so both sides construct it here.

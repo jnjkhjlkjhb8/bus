@@ -98,6 +98,25 @@ made by claude
   - `tra:delay:station`：180 秒（hash，trainNo → 觀測站 StationID）
 - Bus DailyTimetable
   - `bus_daily_timetable:*`：23.5 小時
+- 需求分層輪詢（FDPL-90；builder：`shared.LiveDemandKey` / `shared.LiveColdKey`）
+  - `live:demand:{dataset}:{city}`：600 秒。router 在該城市的即時串流建立時寫入，
+    串流期間每 4 分鐘續期。存在代表「有乘客正在看」，functions 讓該城市維持 30 秒滿速輪詢。
+  - `live:cold:{dataset}:{city}`：300 秒。無人觀看的城市被抓取後寫入；存在期間該城市的
+    tick 一律跳過，其過期就是放行下一次抓取的時鐘。
+  - dataset 目前只有 `bus_eta` 與 `bike`：這兩個佔 TDX 請求配額約 99%。
+    Taipei/NewTaipei 的公車走 Data.taipei，不耗 TDX 配額，因此不納入閘門。
+  - 兩者的 TTL 是一組不可分的配對：`live:demand` 必須大於 `live:cold`。
+    冷城市不發佈任何訊息，能標記它為「被觀看」的只有新訂閱者自己寫下的那一筆，
+    該筆必須活過到下一次降速抓取真正產出 frame 為止，否則冷城市永遠回不了溫。
+  - 被跳過的 tick 會依照 304 的同一套規則重新續命該城市的資料 key，
+    所以無人觀看的城市是「資料舊幾分鐘」，不是「沒有資料」。
+  - 兩個永遠不受閘門影響的例外：**快照 tick**（`snapshotTick`，每 10 分鐘固定 30 秒窗）
+    一律照抓，否則 `bus_eta_history` → `segmentsByEstimate` → `bus_segment_time`
+    的觀測樣本會掉九成；**待發公車到站提醒**的城市由 router 在建立提醒時寫入
+    `live:demand`，TTL 直接設到該提醒的 `expires_at`（公車提醒的 `fire_at` 為 NULL，
+    是從 busEta 的 tick 內派送的，城市一降速提醒就不會響）。
+    functions 開機時會用一句 `SELECT ... GROUP BY` 依各城市最晚到期時間重新寫回這些 key，
+    補上 Redis 重啟／驅逐與部署前既有提醒兩個缺口。
 - GTFS-RT
   - `gtfs_rt:feed`：3 分鐘（重建週期 30 秒的數倍，慢一拍不會讓 feed 變空，
     但 builder 真的死了會在幾分鐘內變成 503 而非繼續供應舊資料）

@@ -168,6 +168,19 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 		if _, skip := _bikeAvailabilitySkip[city]; skip {
 			continue
 		}
+		if !liveDemandGate(ctx, sink, "bike", city) {
+			// Nobody is watching this city and it was fetched within the reduced
+			// cadence. The reduced cadence outlives bikeLiveTTL, so re-arm the
+			// keys this city owns exactly as its 304 path does (bindFetch) —
+			// otherwise an unwatched city's docks would read as "no data" rather
+			// than as data a few minutes old.
+			ownedKey := shared.LiveOwnedKeysKey("bike", city)
+			if err := sink.refreshOwnedTTL(ctx, ownedKey, _bikeLiveTTL); err != nil {
+				jobErr = errors.Join(jobErr,
+					_oops.With("city", city).Wrapf(err, "refresh unwatched bike TTLs"))
+			}
+			continue
+		}
 		zap.S().Infow("city start",
 			"component", "bike_eta",
 			"action", "bike_eta",

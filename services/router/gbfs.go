@@ -189,9 +189,12 @@ func handleGBFSStationStatus(db *pgxpool.Pool, rc *redis.Client) gin.HandlerFunc
 			return
 		}
 		// The upstream payload carries no per-station observation time, so every
-		// row reports the time this response was built. bikeEta refreshes on a 30s
-		// cadence and the keys carry a TTL, so a key that is present was written
-		// within that window — the value is accurate to the cadence, not invented.
+		// row reports the time this response was built. A key that is present was
+		// written within its TTL, so the value is accurate to bikeEta's cadence
+		// rather than invented — but that cadence is now per-city: a city no rider
+		// is streaming refreshes every few minutes instead of every 30s (FDPL-90),
+		// and this endpoint does not claim demand for the cities it reads, since
+		// it reads every station in the country on every call.
 		now := time.Now().Unix()
 		statuses := make([]gbfsStatus, 0, len(stations))
 		for start := 0; start < len(stations); start += _gbfsStatusChunk {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/redis/go-redis/v9"
@@ -23,6 +24,10 @@ type LiveSource interface {
 	// subscription died. ctx covers establishing the subscription only: the
 	// returned channel outlives it and is torn down through the close func.
 	subscribe(ctx context.Context, channel string) (<-chan []byte, func(), error)
+	// touch writes key with ttl, replacing any existing TTL. It carries the
+	// demand signal to functions and nothing reads it back here, so a failure
+	// costs freshness rather than correctness and is not returned.
+	touch(ctx context.Context, key string, ttl time.Duration)
 }
 
 // LiveStreamSpec describes one gRPC live stream: which channel to follow,
@@ -32,7 +37,20 @@ type LiveStreamSpec struct {
 	seedKeys []string
 	seedScan string            // optional SCAN pattern; matches seed in key order returned
 	usable   func([]byte) bool // nil means non-empty
+	// demandKey, when set, is touched for as long as this stream is open so
+	// functions keeps the city it names on its full polling cadence
+	// (FDPL-90). Empty leaves the stream with no effect on polling.
+	demandKey string
 }
+
+// _demandTTL is how long one touch keeps a city on its full cadence, and
+// _demandRefresh how often an open stream renews that. Both mirror
+// functions/live.go: the TTL must match liveDemandTTL there, and the refresh
+// must stay well under it so a renewal is never the one that arrives late.
+const (
+	_demandTTL     = 10 * time.Minute
+	_demandRefresh = 4 * time.Minute
+)
 
 var errLiveSourceClosed = errors.New("live source subscription closed")
 
@@ -52,6 +70,13 @@ func StreamLive(ctx context.Context, src LiveSource, spec LiveStreamSpec, send f
 	usable := spec.usable
 	if usable == nil {
 		usable = func(b []byte) bool { return len(b) > 0 }
+	}
+
+	// Claim demand before subscribing: a cold city has no frames to renew from,
+	// so this first touch is what gets it polled often enough to produce one.
+	touched := time.Now()
+	if spec.demandKey != "" {
+		src.touch(ctx, spec.demandKey, _demandTTL)
 	}
 
 	ch, closeSub, err := src.subscribe(ctx, spec.channel)
@@ -97,6 +122,10 @@ func StreamLive(ctx context.Context, src LiveSource, spec LiveStreamSpec, send f
 				)
 				return errLiveSourceClosed
 			}
+			if spec.demandKey != "" && time.Since(touched) >= _demandRefresh {
+				src.touch(ctx, spec.demandKey, _demandTTL)
+				touched = time.Now()
+			}
 			if !usable(val) {
 				continue
 			}
@@ -125,6 +154,15 @@ func (r RedisLiveSource) get(ctx context.Context, key string) ([]byte, bool) {
 		return nil, false
 	}
 	return val, true
+}
+
+// touch renews a demand key. A Redis failure here only means the city it names
+// may drop to its reduced cadence, so it is counted and dropped rather than
+// failing the stream that is otherwise working.
+func (r RedisLiveSource) touch(ctx context.Context, key string, ttl time.Duration) {
+	if err := r.rc.Set(ctx, key, "1", ttl).Err(); err != nil {
+		obs.IncRedisError()
+	}
 }
 
 func (r RedisLiveSource) scanKeys(ctx context.Context, pattern string) []string {

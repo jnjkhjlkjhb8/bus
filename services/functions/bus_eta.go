@@ -153,6 +153,11 @@ type busLiveJob struct {
 	// snapshot is fixed for the whole run so every city lands on the same side
 	// of the history sampling clock (see snapshotTick).
 	snapshot bool
+	// demandDataset is the liveDemandGate dataset name, or "" to fetch every
+	// city every tick. Only the TDX-backed job sets it: busEtaFast reads
+	// Data.taipei, which costs no TDX quota, so gating it would slow down the
+	// two busiest cities to save nothing (FDPL-90).
+	demandDataset string
 }
 
 const _busFeedCacheTTL = 10 * time.Minute
@@ -272,7 +277,8 @@ func busEta(
 	db *pgxpool.Pool,
 	dispatcher *notify.Dispatcher,
 ) error {
-	return runBusEtaTick(ctx, "bus_eta", _busEtaSlowCities, _busEtaTickInterval, nil, nil, fetch, sink, db, dispatcher)
+	return runBusEtaTick(ctx, "bus_eta", _busEtaSlowCities, _busEtaTickInterval,
+		nil, nil, fetch, sink, db, dispatcher, "bus_eta")
 }
 
 // busEtaFast refreshes busEtaFastCities' live bus arrivals on their own 15s
@@ -293,7 +299,8 @@ func busEtaFast(
 		vehicles[city] = feed
 		etaFeeds[city] = feed
 	}
-	return runBusEtaTick(ctx, "bus_eta_fast", _busEtaFastCities, _busEtaFastTickInterval, vehicles, etaFeeds, fetch, sink, db, dispatcher)
+	return runBusEtaTick(ctx, "bus_eta_fast", _busEtaFastCities, _busEtaFastTickInterval,
+		vehicles, etaFeeds, fetch, sink, db, dispatcher, "")
 }
 
 // runBusEtaTick is the shared body of busEta and busEtaFast: build the job,
@@ -310,6 +317,7 @@ func runBusEtaTick(
 	sink liveSink,
 	db *pgxpool.Pool,
 	dispatcher *notify.Dispatcher,
+	demandDataset string,
 ) error {
 	zap.S().Infow("start", "component", component, "action", "Bus_eta", "event", "start")
 	job := busLiveJob{
@@ -320,6 +328,8 @@ func runBusEtaTick(
 		eta:      eta,
 		now:      time.Now,
 		snapshot: snapshotTick(time.Now(), tickInterval),
+
+		demandDataset: demandDataset,
 	}
 	jobErr := runBusEtaCities(ctx, cityList, &job, dispatcher)
 	zap.S().Infow("complete", "component", component, "action", "Bus_eta", "event", "complete")
@@ -354,6 +364,24 @@ func (j busLiveJob) runCityGuarded(ctx context.Context, city string) (err error)
 	return j.runCity(ctx, city)
 }
 
+// shouldRunCity reports whether this tick fetches city.
+//
+// A job with no demandDataset always does. Otherwise the demand gate decides,
+// with one exception: a snapshot tick is never skipped, whoever is or is not
+// watching. snapshotTick is a fixed 30s window per 10 minutes of wall clock, so
+// a reduced-cadence fetch lands inside it only about one time in twenty —
+// gating it would cost an unwatched city roughly nine tenths of its
+// bus_eta_history, and those rows are the only input segmentsByEstimate reduces
+// into bus_segment_time. Rural cities are both the least watched and the ones
+// whose ETAs lean hardest on those predictions, so this is the one place the
+// gate must not save a request. It costs six extra fetches per city per hour.
+func (j busLiveJob) shouldRunCity(ctx context.Context, city string) bool {
+	if j.demandDataset == "" || j.snapshot {
+		return true
+	}
+	return liveDemandGate(ctx, j.sink, j.demandDataset, city)
+}
+
 func runBusEtaCities(ctx context.Context, cityNames []string, job *busLiveJob, target busArrivalNotifier) error {
 	arrivalBatch := &busArrivalBatch{target: target}
 	job.notifier = arrivalBatch
@@ -369,6 +397,17 @@ func runBusEtaCities(ctx context.Context, cityNames []string, job *busLiveJob, t
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			if !job.shouldRunCity(ctx, city) {
+				// Nobody is watching this city and it was fetched within the
+				// reduced cadence. Its published ETAs are still the best answer
+				// available, and the reduced cadence outlives busLiveTTL, so the
+				// skip re-arms them exactly as a 304 would rather than letting
+				// the city go blank between fetches (CONTEXT.md 304→TTL rule).
+				if err := job.sink.refreshTTL(ctx, busEtaTTLPatterns(city)); err != nil {
+					errCh <- _oops.With("city", city).Wrapf(err, "refresh unwatched bus ETA TTLs")
+				}
+				return
+			}
 			if err := job.runCityGuarded(ctx, city); err != nil {
 				errCh <- _oops.With("city", city).Wrapf(err, "bus ETA city run")
 			}

@@ -450,6 +450,75 @@ const (
 	_ownedKeysTTL     = 24 * time.Hour
 )
 
+// The reduced cadence an unwatched city falls back to, and the window a rider's
+// live subscription keeps their city at full cadence for (FDPL-90). Bus and bike
+// poll all 23 TDX cities every 30s regardless of whether anyone is looking,
+// which is ~99% of this project's TDX request budget; a city nobody is watching
+// does not need a 30s refresh, only a fresh enough one to answer the next rider.
+//
+// The two are a pair, not independent knobs. liveDemandTTL must stay above
+// liveColdCadence: a cold city publishes nothing, so a subscriber's own initial
+// write is the only thing that can mark it watched, and that write has to
+// outlive the gap until the next reduced-cadence tick actually produces a frame.
+// Invert them and a cold city can never warm up.
+const (
+	_liveColdCadence = 5 * time.Minute
+	_liveDemandTTL   = 10 * time.Minute
+)
+
+// liveDemandGate reports whether dataset's city should be fetched this tick.
+//
+// A watched city always is. An unwatched one is fetched once per
+// liveColdCadence, which the cold marker's own TTL times: while the marker
+// exists the tick is skipped, and its expiry is what lets the next one through.
+// No timestamp is stored anywhere; Redis expiry is the clock.
+//
+// A Redis read that fails outright answers true. Losing freshness for every
+// city is a far worse failure than spending the requests the job would have
+// spent anyway, so the gate degrades to the pre-FDPL-90 behaviour.
+func liveDemandGate(ctx context.Context, sink liveSink, dataset, city string) bool {
+	_, err := sink.getString(ctx, shared.LiveDemandKey(dataset, city))
+	if err == nil {
+		return true
+	}
+	if !errors.Is(err, redis.Nil) {
+		zap.S().Warnw("demand read failed",
+			"component", "live",
+			"action", "demand_gate",
+			"dataset", dataset,
+			"city", city,
+			"event", "failed",
+			"err", err,
+		)
+		return true
+	}
+
+	coldKey := shared.LiveColdKey(dataset, city)
+	_, err = sink.getString(ctx, coldKey)
+	if err == nil {
+		return false
+	}
+	if !errors.Is(err, redis.Nil) {
+		return true
+	}
+
+	// Claim this cadence window before fetching. A failed write only costs the
+	// next tick a second fetch, so it is logged rather than turned into a skip.
+	pipe := sink.pipeline()
+	pipe.Set(coldKey, "1", _liveColdCadence)
+	if err := pipe.Exec(ctx); err != nil {
+		zap.S().Warnw("cold marker write failed",
+			"component", "live",
+			"action", "demand_gate",
+			"dataset", dataset,
+			"city", city,
+			"event", "failed",
+			"err", err,
+		)
+	}
+	return true
+}
+
 // liveRegistry lists every realtime dataset the runner knows how to refresh, in
 // the order runLegacyProd invokes them within a shared cron tick
 // (bike before bus on the 30s tick). db and dispatcher are captured by the specs
@@ -616,4 +685,100 @@ func registerLiveCrons(r *cron.Cron, tdx *shared.TDXClient, rc *redis.Client, db
 			}
 		})
 	})
+}
+
+// _reminderDemandCitiesSQL lists the cities holding a pending bus arrival
+// reminder. Rail reminders carry a fire_at and dispatch on a schedule, so only
+// bus rows matter here.
+// The latest expiry per city is what the demand key's TTL has to reach: a
+// shorter one would reopen the same silent hole partway through the reminder
+// it was written for.
+const _reminderDemandCitiesSQL = `
+	SELECT left(route_key, 3) AS city_prefix, max(expires_at)
+	FROM firebase_arrival_reminder
+	WHERE route_type = 'bus' AND status = 'pending' AND expires_at > NOW()
+	GROUP BY city_prefix`
+
+// restoreReminderDemand re-asserts the demand keys of every city holding a
+// pending bus reminder, and returns how many it wrote.
+//
+// The router writes these when a reminder is created, which covers the normal
+// case at zero runtime cost. This closes the two holes that leaves. The keys
+// live in Redis, which is a cache here: a restart or an eviction drops them
+// while the reminder itself sits in PostgreSQL, and the failure is silent —
+// the city quietly drops to its reduced cadence and the reminder never fires,
+// with no error anywhere to notice. Reminders that already existed when this
+// gate was deployed have no key either. One query at boot answers both.
+//
+// Failures are logged and swallowed: a reminder that fires late is worse than
+// a slow start, but neither is worth refusing to boot over.
+func restoreReminderDemand(ctx context.Context, db *pgxpool.Pool, sink liveSink) int {
+	if db == nil || sink == nil {
+		return 0
+	}
+	rows, err := db.Query(ctx, _reminderDemandCitiesSQL)
+	if err != nil {
+		zap.S().Errorw("query failed",
+			"component", "live",
+			"action", "restore_reminder_demand",
+			"event", "failed",
+			"err", err,
+		)
+		return 0
+	}
+	defer rows.Close()
+
+	pipe := sink.pipeline()
+	restored := 0
+	now := time.Now()
+	for rows.Next() {
+		var (
+			prefix    string
+			expiresAt time.Time
+		)
+		if err := rows.Scan(&prefix, &expiresAt); err != nil {
+			zap.S().Errorw("scan failed",
+				"component", "live",
+				"action", "restore_reminder_demand",
+				"event", "failed",
+				"err", err,
+			)
+			return 0
+		}
+		city := shared.CityFromUID(prefix)
+		ttl := expiresAt.Sub(now)
+		if city == "" || ttl <= 0 {
+			continue
+		}
+		pipe.Set(shared.LiveDemandKey("bus_eta", city), "1", ttl)
+		restored++
+	}
+	if err := rows.Err(); err != nil {
+		zap.S().Errorw("rows failed",
+			"component", "live",
+			"action", "restore_reminder_demand",
+			"event", "failed",
+			"err", err,
+		)
+		return 0
+	}
+	if restored == 0 {
+		return 0
+	}
+	if err := pipe.Exec(ctx); err != nil {
+		zap.S().Errorw("write failed",
+			"component", "live",
+			"action", "restore_reminder_demand",
+			"event", "failed",
+			"err", err,
+		)
+		return 0
+	}
+	zap.S().Infow("success",
+		"component", "live",
+		"action", "restore_reminder_demand",
+		"event", "success",
+		"cities", restored,
+	)
+	return restored
 }

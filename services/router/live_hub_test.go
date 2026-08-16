@@ -18,6 +18,8 @@ type hubSource struct {
 	cancellations map[string]int
 }
 
+func (s *hubSource) touch(context.Context, string, time.Duration) {}
+
 func newHubSource() *hubSource {
 	return &hubSource{
 		channels:      map[string]chan []byte{},

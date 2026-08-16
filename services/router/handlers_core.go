@@ -82,9 +82,10 @@ func (s *BusRouteserver) BusRouteEta(in *pb.Bus_Ask_Route, stream pb.Bus_Route_S
 	zap.S().Infow("call", "component", "grpc", "action", "bus_route_eta", "event", "call", "sub_route_uid", in.SubRouteUID)
 	key := shared.BusRouteEtaKey(in.SubRouteUID)
 	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
-		channel:  key,
-		seedKeys: []string{key},
-		usable:   usableBusEtaPayload,
+		channel:   key,
+		seedKeys:  []string{key},
+		usable:    usableBusEtaPayload,
+		demandKey: busEtaDemandKey(shared.CityFromUID(in.SubRouteUID)),
 	}, func(data []byte) error {
 		arrival, err := DecodePayload(data, &pb.Bus_RouteArrival{})
 		if err != nil {
@@ -118,9 +119,10 @@ func streamBusStationEta(db CoreDB, live LiveSource, in *pb.Bus_Ask_StationGroup
 	}
 	key := shared.BusStationEtaKey(city, groupUID)
 	return StreamLive(stream.Context(), live, LiveStreamSpec{
-		channel:  key,
-		seedKeys: []string{key},
-		usable:   usableBusEtaPayload,
+		channel:   key,
+		seedKeys:  []string{key},
+		usable:    usableBusEtaPayload,
+		demandKey: busEtaDemandKey(city),
 	}, func(data []byte) error {
 		arrival, err := DecodePayload(data, &pb.Bus_StationArrival{})
 		if err != nil {
@@ -254,9 +256,14 @@ func (s *BikeServer) BikeStatic(ctx context.Context, in *pb.BikeRequest) (*pb.Bi
 func (s *BikeServer) bikeEta(in *pb.BikeRequest, stream pb.Bike_Service_EtaServer) error {
 	zap.S().Infow("call", "component", "grpc", "action", "bike_eta", "event", "call", "station_uid", in.StationUID)
 	key := shared.BikeAvailabilityKey(in.StationUID)
+	demand := ""
+	if city := shared.CityFromUID(in.StationUID); city != "" {
+		demand = shared.LiveDemandKey("bike", city)
+	}
 	return StreamLive(stream.Context(), s.live, LiveStreamSpec{
-		channel:  key,
-		seedKeys: []string{key},
+		channel:   key,
+		seedKeys:  []string{key},
+		demandKey: demand,
 	}, func(data []byte) error {
 		eta, err := DecodePayload(data, &pb.BikeEta{})
 		if err != nil {
@@ -611,4 +618,16 @@ func (s *NearServer) FindNear(stream pb.Near_Station_Service_NearServer) error {
 		}
 		zap.S().Infow("success", "component", "grpc", "action", "send_newdata", "event", "success")
 	}
+}
+
+// busEtaDemandKey names the demand key for one city's TDX bus polling, or ""
+// for a UID whose city could not be resolved. The dataset name must match the
+// one functions gates busEta with. Taipei and New Taipei are not gated there
+// (their ETAs come from Data.taipei, not TDX), so their key is simply never
+// read — the router does not need to know which cities those are.
+func busEtaDemandKey(city string) string {
+	if city == "" {
+		return ""
+	}
+	return shared.LiveDemandKey("bus_eta", city)
 }
