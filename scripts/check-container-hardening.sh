@@ -103,47 +103,58 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. OSRM preprocessing marker derived from PBF checksum + profile
+# 4. MOTIS import is content-addressed on both of its inputs
 # ---------------------------------------------------------------------------
 note ""
-note "== OSRM preprocessing marker is content-based =="
-osrm_init_cmd=$(awk '/^  osrm-init:/{f=1} f{print} f && /restart:/{exit}' docker/docker-compose.yaml)
-if echo "$osrm_init_cmd" | grep -q 'sha256sum' && echo "$osrm_init_cmd" | grep -q 'profile'; then
-  ok "osrm-init derives its marker from a checksum + profile name"
+note "== MOTIS import directory is content-addressed =="
+motis_import_cmd=$(awk '/^  motis-import:/{f=1} f{print} f && /restart:/{exit}' docker/docker-compose.yaml)
+# Both inputs, not one: a data set rebuilt only when the PBF moves would serve
+# yesterday's timetable, and one rebuilt only when gtfs.zip moves would route
+# over a stale street graph. The directory name is derived from both, so its
+# existence is the marker and there is no separate file to survive a partial
+# build.
+if echo "$motis_import_cmd" | grep -q 'gtfs_sha=' && echo "$motis_import_cmd" | grep -q 'pbf_sha='; then
+  ok "motis-import derives its data directory from both input checksums"
 else
-  bad "osrm-init's preprocessing marker is not derived from the PBF checksum + profile (stale-data risk)"
+  bad "motis-import's data directory is not derived from the gtfs.zip + PBF checksums (stale-data risk)"
+fi
+if echo "$motis_import_cmd" | grep -q '\.build' && echo "$motis_import_cmd" | grep -qE 'mv .*\.build/data'; then
+  ok "motis-import builds out of line and renames the finished set into place"
+else
+  bad "motis-import does not build into .build/ and rename (a running motis could read a half-built set)"
 fi
 
 # ---------------------------------------------------------------------------
-# 5. OSRM healthcheck hits a real endpoint
+# 5. MOTIS healthcheck hits a real endpoint
 # ---------------------------------------------------------------------------
 note ""
-note "== OSRM healthcheck uses a real OSRM HTTP endpoint =="
-osrm_healthcheck_test=$(awk '
-  /^  osrm:$/ { f=1; next }
+note "== MOTIS healthcheck uses a real MOTIS HTTP endpoint =="
+motis_healthcheck_test=$(awk '
+  /^  motis:$/ { f=1; next }
   f && /^  [a-zA-Z0-9_-]+:$/ { exit }
   f && /^ *test:/ { print }
 ' docker/docker-compose.yaml | grep -v '^ *#')
-if echo "$osrm_healthcheck_test" | grep -q '/health'; then
-  bad "osrm healthcheck calls /health, which osrm-routed does not expose"
-elif echo "$osrm_healthcheck_test" | grep -qE '/nearest/v1/|/route/v1/'; then
-  ok "osrm healthcheck calls a documented OSRM HTTP service endpoint"
+# /api/v1/health is the one endpoint that reports feed state rather than
+# liveness: 200 only after a full update cycle over every configured feed, 400
+# before. A probe against a routing endpoint would pass while the realtime feed
+# had been failing all day, which is the failure worth catching.
+if echo "$motis_healthcheck_test" | grep -q '/api/v1/health'; then
+  ok "motis healthcheck asserts feed freshness via /api/v1/health"
+elif echo "$motis_healthcheck_test" | grep -qE '/api/v1/geocode|/api/v1/reverse-geocode|/api/v6/'; then
+  bad "motis healthcheck probes a routing endpoint; /api/v1/health also proves the feeds are being consumed"
 else
-  bad "osrm healthcheck does not reference a documented OSRM endpoint"
+  bad "motis healthcheck does not reference a documented MOTIS endpoint"
 fi
-# The endpoint being right is not enough -- the probe binary must exist in
-# the image. osrm/osrm-backend:v5.25.0 is Debian-based with NO wget, curl,
-# or busybox (verified via `docker run --entrypoint sh ... -c 'command -v
-# ...'`); it does ship bash, so the probe must use bash's /dev/tcp
-# redirection. A wget/curl probe execs fine per compose config but fails
-# with "command not found" at runtime, leaving the container unhealthy
-# forever.
-if echo "$osrm_healthcheck_test" | grep -qE 'wget|curl'; then
-  bad "osrm healthcheck invokes wget/curl, neither of which exists in osrm/osrm-backend:v5.25.0"
-elif echo "$osrm_healthcheck_test" | grep -q '/dev/tcp/'; then
-  ok "osrm healthcheck probes via bash /dev/tcp (only HTTP client available in the image)"
+# The endpoint being right is not enough -- the probe binary must exist in the
+# image. ghcr.io/motis-project/motis is Alpine-based, so busybox wget is
+# present and curl is not. (The OSRM image this replaced shipped neither, which
+# is why its probe had to go through bash's /dev/tcp.)
+if echo "$motis_healthcheck_test" | grep -q 'curl'; then
+  bad "motis healthcheck invokes curl, which the Alpine-based MOTIS image does not ship"
+elif echo "$motis_healthcheck_test" | grep -q 'wget'; then
+  ok "motis healthcheck probes via busybox wget (present in the Alpine-based image)"
 else
-  bad "osrm healthcheck does not use bash /dev/tcp -- verify its probe binary exists in the pinned image"
+  bad "motis healthcheck does not use wget -- verify its probe binary exists in the pinned image"
 fi
 
 # ---------------------------------------------------------------------------
@@ -167,13 +178,14 @@ else
     -f docker/docker-compose.yaml \
     -f docker/docker-compose.prod.yaml \
     --profile gpu \
+    --profile motis \
     config >"$cfg" 2>"$work_dir/config.err"; then
     cat "$work_dir/config.err" >&2
     exit 1
   fi
 
-  services="router functions ingestor loader redis powersync cloudflared osrm osrm-fetch osrm-init"
-  long_running="router functions ingestor loader redis powersync cloudflared osrm"
+  services="router functions ingestor loader redis powersync cloudflared motis motis-import osrm-fetch"
+  long_running="router functions ingestor loader redis powersync cloudflared motis"
 
   service_block() {
     # service_block <name> <file> — prints the YAML block for one service.

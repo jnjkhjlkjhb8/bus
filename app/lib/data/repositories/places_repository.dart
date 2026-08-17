@@ -6,6 +6,7 @@ import 'package:flutter_google_places_sdk/flutter_google_places_sdk.dart'
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:uuid/uuid.dart';
+import 'package:wheres_the_bus/core/http/http_client.dart';
 import 'package:wheres_the_bus/features/go/model/planned_place.dart';
 
 /// One autocomplete row: a place id plus display text, no coordinates yet.
@@ -22,6 +23,22 @@ class PlaceSuggestion {
   final String secondaryText;
 }
 
+/// Place lookup for the planner's origin/destination picker: our own
+/// MOTIS-backed geocoder first, Google Places when it comes up empty.
+///
+/// The order is not an optimisation, it is a coverage split (ADR-0022). MOTIS
+/// reads OpenStreetMap, which covers Taiwan addresses and transit stops well
+/// and named businesses poorly; Google covers the businesses. Riders type both.
+/// Trying ours first means the common address/stop query costs no Google
+/// billing and resolves without the second details round trip Google needs —
+/// MOTIS returns coordinates with the suggestion — while a search for 鼎泰豐
+/// still finds it.
+///
+/// An empty MOTIS result falls through. An *error* also falls through, which
+/// is why the endpoint answers 503 rather than an empty list when it cannot
+/// reach MOTIS: "nothing matched" and "I could not look" have to stay
+/// distinguishable here, and only one of them should stop the search.
+///
 /// Google Places API (New), reached two different ways.
 ///
 /// Android goes through the native SDK: an Android-restricted key is bound to
@@ -90,8 +107,20 @@ class PlacesRepository {
   /// it, so Google bills them as a single session. Cleared in [details].
   String? _sessionToken;
 
-  Future<List<PlaceSuggestion>> autocomplete(String query) async {
-    if (query.isEmpty || _apiKey.isEmpty) return const [];
+  /// Coordinates MOTIS already resolved, keyed by the suggestion id handed to
+  /// the view. [details] reads this before reaching for Google, which is what
+  /// lets a MOTIS pick skip the round trip entirely. Replaced wholesale on each
+  /// MOTIS lookup so it cannot grow for the life of the app.
+  Map<String, PlannedPlace> _motisPlaces = const {};
+
+  Future<List<PlaceSuggestion>> autocomplete(
+    String query, {
+    LatLng? bias,
+  }) async {
+    if (query.isEmpty) return const [];
+    final fromMotis = await _motisAutocomplete(query, bias);
+    if (fromMotis.isNotEmpty) return fromMotis;
+    if (_apiKey.isEmpty) return const [];
     if (_useRest) return _restAutocomplete(query);
     final client = _client;
     if (client == null) return const [];
@@ -110,6 +139,8 @@ class PlacesRepository {
   }
 
   Future<PlannedPlace> details(String placeId) async {
+    final resolved = _motisPlaces[placeId];
+    if (resolved != null) return resolved;
     if (_apiKey.isEmpty) {
       throw StateError('Places API key not configured');
     }
@@ -127,6 +158,31 @@ class PlacesRepository {
       lng: res.place?.latLng?.lng,
       name: res.place?.name,
     );
+  }
+
+  /// Our own geocoder, through the router. Any failure returns an empty list so
+  /// the Google path runs: this source is an addition, and it must never be
+  /// able to take the picker down with it.
+  Future<List<PlaceSuggestion>> _motisAutocomplete(
+    String query,
+    LatLng? bias,
+  ) async {
+    try {
+      final response = await HttpClient.instance.dio.get<Map<String, dynamic>>(
+        '/api/geocode',
+        queryParameters: {
+          'text': query,
+          if (bias != null) 'lat': bias.latitude,
+          if (bias != null) 'lon': bias.longitude,
+        },
+      );
+      final parsed = motisSuggestionsFromJson(response.data ?? const {});
+      _motisPlaces = parsed.places;
+      return parsed.suggestions;
+    } on Object {
+      _motisPlaces = const {};
+      return const [];
+    }
   }
 
   Future<List<PlaceSuggestion>> _restAutocomplete(String query) async {
@@ -217,4 +273,49 @@ class PlacesRepository {
 
   /// Unwraps a Places `LocalizedText` (`{"text": ...}`) node.
   static String? _text(Object? node) => (node as Map?)?['text'] as String?;
+
+  /// Pure mapper (unit-tested): a `/api/geocode` response -> suggestion rows
+  /// plus the coordinates each one already carries.
+  ///
+  /// The ids are positional and namespaced (`motis:0`), not the upstream OSM
+  /// id: they only have to be unique within one response and never collide with
+  /// a Google place id, because [details] tells the two apart by looking the id
+  /// up in this map first.
+  static MotisPlaceResults motisSuggestionsFromJson(Map<String, dynamic> json) {
+    final suggestions = <PlaceSuggestion>[];
+    final places = <String, PlannedPlace>{};
+    final rows = json['suggestions'] as List? ?? const [];
+    for (var i = 0; i < rows.length; i++) {
+      final row = rows[i] as Map?;
+      if (row == null) continue;
+      final name = row['name'] as String?;
+      final lat = row['lat'] as num?;
+      final lng = row['lon'] as num?;
+      // A row the rider can tap and get nothing from is worse than no row.
+      if (name == null || name.isEmpty || lat == null || lng == null) continue;
+      final id = 'motis:$i';
+      suggestions.add(
+        PlaceSuggestion(
+          placeId: id,
+          primaryText: name,
+          secondaryText: row['address'] as String? ?? '',
+        ),
+      );
+      places[id] = PlannedPlace(
+        name: name,
+        latLng: LatLng(lat.toDouble(), lng.toDouble()),
+      );
+    }
+    return MotisPlaceResults(suggestions: suggestions, places: places);
+  }
+}
+
+/// One `/api/geocode` response: the rows to show, and the coordinates they
+/// resolve to. The two travel together because MOTIS answers both in one call,
+/// unlike Google, which needs a second lookup per pick.
+class MotisPlaceResults {
+  const MotisPlaceResults({required this.suggestions, required this.places});
+
+  final List<PlaceSuggestion> suggestions;
+  final Map<String, PlannedPlace> places;
 }

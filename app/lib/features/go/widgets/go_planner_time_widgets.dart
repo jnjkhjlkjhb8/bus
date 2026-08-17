@@ -1,5 +1,12 @@
 part of '../view/go_screen.dart';
 
+/// How far ahead the planner accepts a date. Mirrors `num_days` in
+/// motis/config.yml: the backend loads 15 days of timetable, so day 16 has no
+/// answer to give. Kept as a constant rather than fetched, because the two only
+/// change together and a mismatch shows up at the first query rather than
+/// silently.
+const _kPlannerHorizon = Duration(days: 15);
+
 class _GoMessage extends StatelessWidget {
   const _GoMessage({
     required this.icon,
@@ -337,6 +344,12 @@ class _TimeModeSheetState extends State<_TimeModeSheet> {
               const SizedBox(height: 8),
               AppDatePicker(
                 selectedDay: _at,
+                firstDay: DateTime.now(),
+                // The planner can only answer inside the timetable
+                // window MOTIS has loaded (ADR-0022). Offering a date
+                // past it returns an empty result the rider cannot
+                // tell from "no route exists".
+                lastDay: DateTime.now().add(_kPlannerHorizon),
                 onDaySelected: (date) => Navigator.pop(context, date),
               ),
             ],

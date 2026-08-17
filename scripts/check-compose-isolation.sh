@@ -40,7 +40,18 @@ bad() {
 
 expand() {
   # expand <env-name> <compose-override-file> <env-example-file> <project-name>
+  #        [profile...]
+  # The profiles must mirror the Makefile's COMPOSE_PROFILES for that target:
+  # expanding prod without the motis profile would silently drop the services
+  # this file is asserting about, and expanding staging *with* it would defeat
+  # the point of the profile.
   local env_name="$1" override="$2" env_file="$3" project="$4"
+  shift 4
+  local profile_args=()
+  local profile
+  for profile in "$@"; do
+    profile_args+=(--profile "$profile")
+  done
   local out="$work_dir/${env_name}.yaml"
   if ! ENV_FILE="$env_file" docker compose \
     --project-directory . \
@@ -48,6 +59,7 @@ expand() {
     --env-file "$env_file" \
     -f docker/docker-compose.yaml \
     -f "$override" \
+    ${profile_args[@]+"${profile_args[@]}"} \
     config >"$out" 2>"$work_dir/${env_name}.err"; then
     cat "$work_dir/${env_name}.err" >&2
     exit 1
@@ -56,9 +68,9 @@ expand() {
 }
 
 note "== Expanding configs =="
-test_cfg=$(expand test docker/docker-compose.test.yaml env/test.env.example bus-test)
+test_cfg=$(expand test docker/docker-compose.test.yaml env/test.env.example bus-test motis)
 staging_cfg=$(expand staging docker/docker-compose.staging.yaml env/staging.env.example bus-staging)
-prod_cfg=$(expand prod docker/docker-compose.prod.yaml env/prod.env.example bus-prod)
+prod_cfg=$(expand prod docker/docker-compose.prod.yaml env/prod.env.example bus-prod motis)
 note "  wrote $test_cfg, $staging_cfg, $prod_cfg"
 
 project_name() { grep -m1 '^name:' "$1" | awk '{print $2}'; }
@@ -147,7 +159,7 @@ assert_networks() {
   fi
 }
 # router is the only service allowed to span all three networks (it is the
-# shared dependency: powersync's jwks_uri, redis, and osrm all sit behind
+# shared dependency: powersync's jwks_uri, redis, and MOTIS all sit behind
 # it). Every other service gets exactly the network(s) its actual traffic
 # needs -- see the top-level `networks:` comment in docker/docker-
 # compose.yaml for the full rationale per service.
@@ -158,7 +170,9 @@ assert_networks staging "$staging_cfg" loader "backend"
 assert_networks staging "$staging_cfg" powersync "frontend"
 assert_networks staging "$staging_cfg" cloudflared "frontend"
 assert_networks staging "$staging_cfg" redis "backend"
-assert_networks staging "$staging_cfg" osrm "routing"
+# staging deliberately has no MOTIS service (ADR-0022): its router reaches
+# prod's over the host gateway, so there is nothing to assert here. That
+# absence is checked below rather than as a network membership.
 assert_networks prod "$prod_cfg" router "backend frontend routing"
 assert_networks prod "$prod_cfg" functions "backend"
 assert_networks prod "$prod_cfg" ingestor "backend"
@@ -166,7 +180,20 @@ assert_networks prod "$prod_cfg" loader "backend"
 assert_networks prod "$prod_cfg" powersync "frontend"
 assert_networks prod "$prod_cfg" cloudflared "frontend"
 assert_networks prod "$prod_cfg" redis "backend"
-assert_networks prod "$prod_cfg" osrm "routing"
+assert_networks prod "$prod_cfg" motis "routing"
+# staging must not create a MOTIS of its own. Two imported data sets (street
+# graph plus timetable, twice) do not fit on the host, and the guard is the
+# Compose profile both MOTIS services carry: only the prod and test targets
+# set COMPOSE_PROFILES=motis. A profile accidentally dropped from the services,
+# or added to the staging target, shows up here as a service that exists in an
+# expansion run without any profile enabled.
+staging_motis=$(grep -cE '^  (motis|motis-import):' "$staging_cfg" || true)
+if [ "$staging_motis" -eq 0 ]; then
+  ok "staging creates no MOTIS service (profile-gated, shares prod's)"
+else
+  bad "staging expands $staging_motis MOTIS service(s); it must share prod's instead (ADR-0022)"
+fi
+
 # powersync must never be able to reach Redis: the concrete blast-radius
 # claim behind the frontend/backend split (a compromised powersync, which is
 # the one service in this compose file reachable from an edge proxy per its

@@ -29,24 +29,26 @@ RENDERED_PROD := env/.rendered/prod
 COMPOSE_TEST := ENV_FILE=env/test.env \
 	ENV_FILE_ROUTER=$(RENDERED_TEST)/router.env ENV_FILE_FUNCTIONS=$(RENDERED_TEST)/functions.env \
 	ENV_FILE_INGESTOR=$(RENDERED_TEST)/ingestor.env ENV_FILE_LOADER=$(RENDERED_TEST)/loader.env \
-	ENV_FILE_POWERSYNC=$(RENDERED_TEST)/powersync.env \
+	ENV_FILE_POWERSYNC=$(RENDERED_TEST)/powersync.env ENV_FILE_MOTIS=$(RENDERED_TEST)/motis.env \
+	COMPOSE_PROFILES=motis \
 	$(COMPOSE) -p test --env-file ./env/test.env -f docker/docker-compose.yaml -f docker/docker-compose.test.yaml
 COMPOSE_STAGING := ENV_FILE=env/staging.env \
 	ENV_FILE_ROUTER=$(RENDERED_STAGING)/router.env ENV_FILE_FUNCTIONS=$(RENDERED_STAGING)/functions.env \
 	ENV_FILE_INGESTOR=$(RENDERED_STAGING)/ingestor.env ENV_FILE_LOADER=$(RENDERED_STAGING)/loader.env \
-	ENV_FILE_POWERSYNC=$(RENDERED_STAGING)/powersync.env \
+	ENV_FILE_POWERSYNC=$(RENDERED_STAGING)/powersync.env ENV_FILE_MOTIS=$(RENDERED_STAGING)/motis.env \
 	$(COMPOSE) -p staging --env-file ./env/staging.env -f docker/docker-compose.yaml -f docker/docker-compose.staging.yaml
 COMPOSE_PROD := ENV_FILE=env/prod.env \
 	ENV_FILE_ROUTER=$(RENDERED_PROD)/router.env ENV_FILE_FUNCTIONS=$(RENDERED_PROD)/functions.env \
 	ENV_FILE_INGESTOR=$(RENDERED_PROD)/ingestor.env ENV_FILE_LOADER=$(RENDERED_PROD)/loader.env \
-	ENV_FILE_POWERSYNC=$(RENDERED_PROD)/powersync.env \
+	ENV_FILE_POWERSYNC=$(RENDERED_PROD)/powersync.env ENV_FILE_MOTIS=$(RENDERED_PROD)/motis.env \
+	COMPOSE_PROFILES=motis \
 	$(COMPOSE) -p prod --env-file ./env/prod.env -f docker/docker-compose.yaml -f docker/docker-compose.prod.yaml
 
 # Optional service filter for the logs- targets: `make logs-prod SERVICE=router`.
 # Empty (the default) follows every service in the environment.
 SERVICE ?=
 
-.PHONY: up-test up-staging up-prod logs-test logs-staging logs-prod down-test down-staging down-prod migrations-check run-test run-staging build-prod test test-go test-flutter lint lint-fix lint-tool proto-go proto-dart l10n-push l10n-pull l10n-pull-sources verify render-env-test render-env-staging render-env-prod
+.PHONY: up-test up-staging up-prod logs-test logs-staging logs-prod down-test down-staging down-prod migrations-check run-test run-staging build-prod test test-go test-flutter lint lint-fix lint-tool proto-go proto-dart l10n-push l10n-pull l10n-pull-sources verify render-env-test render-env-staging render-env-prod refresh-motis-prod
 
 test: test-go test-flutter
 
@@ -131,20 +133,25 @@ up-staging: render-env-staging
 up-prod: render-env-prod
 	$(COMPOSE_PROD) up -d --build --wait
 
-# Re-fetch the OSM extract, rebuild the routing graph if Geofabrik has rotated
-# -latest, and restart osrm so it maps the new set. osrm-init swaps the .osrm
-# files by rename, which a running osrm-routed does not observe -- it keeps the
-# inodes it mmapped at start -- so the restart is what actually publishes the
-# rebuild. Both steps are no-ops when the extract has not changed.
+# Re-fetch the OSM extract, rebuild the MOTIS data set if either input has
+# changed, and restart motis so it maps the new one. motis-import renames the
+# finished directory into place, which a running motis does not observe -- it
+# keeps the inodes it mmapped at start -- so the restart is what actually
+# publishes the rebuild. Both steps are no-ops when neither gtfs.zip nor the
+# PBF has changed, because the built directory is content-addressed on both.
 #
-# Geofabrik rotates weekly; osrm-data is shared with staging. Run monthly:
-#   0 4 1 * * cd /srv/bus && make refresh-osrm-prod >> /var/log/osrm-refresh.log 2>&1
+# This is also the nightly hook: the loader publishes gtfs.zip at the end of
+# its 03:30 chain, so run this after it. Geofabrik rotates the PBF weekly and
+# osrm-data is shared with staging.
+#   30 4 * * * cd /srv/bus && make refresh-motis-prod >> /var/log/motis-refresh.log 2>&1
 #
-# Walk routing degrades to geodesic distance while osrm is down (enrichWalkSections
-# and nearby both treat it as optional), so the restart needs no announcement.
-refresh-osrm-prod: render-env-prod
-	$(COMPOSE_PROD) up osrm-fetch osrm-init
-	$(COMPOSE_PROD) restart osrm
+# The planner returns errors while motis is down rather than degrading -- there
+# is deliberately no automatic TDX fallback (ADR-0022) -- so unlike the OSRM
+# refresh this replaced, the restart is user-visible for the few seconds it
+# takes. MAAS_BACKEND=tdx is the way to cover a longer outage.
+refresh-motis-prod: render-env-prod
+	$(COMPOSE_PROD) up osrm-fetch motis-import
+	$(COMPOSE_PROD) restart motis
 
 # logs- follows (Ctrl-C to stop) and starts from the last 200 lines, enough to
 # catch the failure that prompted the call without replaying the whole history.

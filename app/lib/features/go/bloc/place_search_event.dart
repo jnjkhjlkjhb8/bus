@@ -1,3 +1,4 @@
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:wheres_the_bus/features/go/bloc/place_search_state.dart';
 import 'package:wheres_the_bus/features/go/model/planned_place.dart';
 
@@ -11,9 +12,15 @@ class PlaceSearchStarted extends PlaceSearchEvent {
 }
 
 /// A keystroke. Debounced, and superseded by any later keystroke.
+///
+/// [bias] is where the rider is, when the view knows. It is passed rather than
+/// read from the location service here because that service's cached fix is a
+/// one-shot the home screen's startup path depends on; the view already holds
+/// a position for its current-location option.
 class PlaceQueryChanged extends PlaceSearchEvent {
-  const PlaceQueryChanged(this.query);
+  const PlaceQueryChanged(this.query, {this.bias});
   final String query;
+  final LatLng? bias;
 }
 
 /// Resolve a suggestion's coordinates. [intent] decides what the view does

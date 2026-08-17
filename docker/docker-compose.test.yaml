@@ -48,14 +48,5 @@ services:
   powersync:
     profiles: ["sync"]
 
-  osrm-fetch:
-    profiles: ["osrm"]
-
-  osrm-init:
-    profiles: ["osrm"]
-
-  osrm:
-    profiles: ["osrm"]
-
 volumes:
   postgres_test_data:

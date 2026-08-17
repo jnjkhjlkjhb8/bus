@@ -6,20 +6,38 @@ class AppDatePicker extends StatelessWidget {
   const AppDatePicker({
     required this.selectedDay,
     required this.onDaySelected,
+    this.firstDay,
+    this.lastDay,
     super.key,
   });
 
   final DateTime? selectedDay;
   final ValueChanged<DateTime> onDaySelected;
 
+  /// Selectable range. Defaults to a year either side, which is what the rail
+  /// timetable can answer. The route planner passes a much narrower window:
+  /// its answers come from the loaded MOTIS timetable, and a date past that
+  /// window returns no plan rather than a worse one (ADR-0022). Offering a day
+  /// that cannot be answered is the bug; the bound is the fix.
+  final DateTime? firstDay;
+  final DateTime? lastDay;
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final now = DateTime.now();
-    final focused = selectedDay ?? now;
+    final first = firstDay ?? DateTime(now.year - 1);
+    final last = lastDay ?? DateTime(now.year + 1);
+    // A selection outside the range would assert inside TableCalendar, so the
+    // focused day is clamped rather than trusted.
+    final focused = switch (selectedDay ?? now) {
+      final day when day.isBefore(first) => first,
+      final day when day.isAfter(last) => last,
+      final day => day,
+    };
     return TableCalendar<Object>(
-      firstDay: DateTime(now.year - 1),
-      lastDay: DateTime(now.year + 1),
+      firstDay: first,
+      lastDay: last,
       focusedDay: focused,
       availableCalendarFormats: const {CalendarFormat.month: ''},
       selectedDayPredicate: (d) =>

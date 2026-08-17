@@ -81,7 +81,7 @@ class PlaceSearchBloc extends Bloc<PlaceSearchEvent, PlaceSearchState> {
 
     List<PlaceSuggestion> results;
     try {
-      results = await _places.autocomplete(query);
+      results = await _places.autocomplete(query, bias: event.bias);
     } on Object {
       // A failed lookup reads as "nothing matched" rather than an error state:
       // the next keystroke retries anyway, so an alert here would be noise.

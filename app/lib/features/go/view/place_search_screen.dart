@@ -158,9 +158,16 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
   // rows below take callbacks, so nothing looks it up from the tree.
   final _bloc = PlaceSearchBloc()..add(const PlaceSearchStarted());
 
+  /// Where the rider is, for biasing geocoding results towards them. Read once
+  /// when the screen opens and never awaited on the typing path: a suggestion
+  /// list must not wait on a location fix, so an unresolved bias simply means
+  /// the first keystrokes are unbiased.
+  LatLng? _bias;
+
   @override
   void initState() {
     super.initState();
+    unawaited(_readBias());
     // A hosted field is the reason the screen exists, so it always takes focus.
     // Deferred a frame: requesting focus during the route transition drops
     // frames of the push the rider is watching.
@@ -180,7 +187,14 @@ class _PlaceSearchViewState extends State<PlaceSearchView> {
     super.dispose();
   }
 
-  void _onQueryChanged(String value) => _bloc.add(PlaceQueryChanged(value));
+  Future<void> _readBias() async {
+    final position = await LocationService.instance.lastKnownPosition();
+    if (!mounted || position == null) return;
+    setState(() => _bias = LatLng(position.latitude, position.longitude));
+  }
+
+  void _onQueryChanged(String value) =>
+      _bloc.add(PlaceQueryChanged(value, bias: _bias));
 
   /// Acts on the bloc's one-shot outcomes: the pieces that need a
   /// [BuildContext] — snackbars, dialogs, and handing the place to the host.

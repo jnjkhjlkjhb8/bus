@@ -357,7 +357,12 @@ WITH metro AS (
     AND COALESCE(dailytraininfo->'TrainTypeName'->>'Zh_tw', '') <> ''
   ORDER BY dailytraininfo->>'TrainTypeID'
 ), thsr AS (
-  SELECT 'THSR', 'THSR', '` + thsrName + `', '', 2, '', 'THSR'
+  -- 101 (extended: High Speed Rail Service), not the plain 2 TRA uses. Both
+  -- would otherwise land on the same routing class -- nigiri maps 2 to
+  -- kRegional and 101 to kHighSpeed (nigiri src/loader/gtfs/route.cc) -- and a
+  -- planner filtered to 台鐵 would then return 高鐵 itineraries and vice versa.
+  -- The distinction is the app's, exposed as two separate mode chips.
+  SELECT 'THSR', 'THSR', '` + thsrName + `', '', 101, '', 'THSR'
 ), bus AS (
   SELECT DISTINCT ON (r.routeuid)
     r.routeuid AS route_id,

@@ -37,7 +37,7 @@ made by claude
   估計器的複雜度）；`services/router/http.go` 的 `safeAccessLogger` 已把
   每筆請求的 `latency=` 寫進 stdout 結構化 log，可先用日誌聚合抓 P95。
 - **初始目標**：P95 < 500ms（本地 PostgreSQL 查詢 + Redis 快取路徑）；
-  MaaS 路線規劃（呼叫 TDX + OSRM）例外，P95 < 3s。
+  MaaS 路線規劃（呼叫 MOTIS）例外，P95 < 3s。
 - **待辦**：若日誌聚合估計顯示目標明顯不合理，再評估是否值得為
   histogram 引入 Prometheus client library（目前 `router_grpc_*` /
   `router_http_*` 沿用 repo 既有的手刻 plain-text exposition，見

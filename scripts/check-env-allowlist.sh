@@ -22,7 +22,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 allowlist_dir="scripts/env-allowlists"
-services=(router functions ingestor loader powersync)
+services=(router functions ingestor loader powersync motis)
 envs=(test staging prod)
 
 fail=0

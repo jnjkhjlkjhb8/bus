@@ -35,6 +35,8 @@ type MaasServer struct {
 	cache       MaasCache
 	db          maasDB
 	maasClient  *resty.Client
+	motisClient *motisClient
+	health      *plannerHealthMonitor
 	osrmClient  *resty.Client
 	sfGroup     singleflight.Group
 	workSlots   chan struct{}
@@ -117,6 +119,17 @@ func (c *RedisMaasCache) Close() error {
 type maasSharedWorkConfig struct {
 	MaxConcurrent int
 	Timeout       time.Duration
+	// Motis is the planner when set, and nil selects the TDX proxy.
+	Motis *motisClient
+	// Health decides, per request, whether MOTIS is answering. Nil means the
+	// operator's selection stands unconditionally.
+	//
+	// ADR-0022 originally chose no automatic fallback at all. `/api/v1/health`
+	// narrowed that: it reports whether MOTIS has actually consumed the feeds
+	// the router serves it, which is a real failure a plain 200 check cannot
+	// see. The switch therefore fires on an explicit unhealthy verdict and
+	// nothing else, and it is loud -- see planner_health.go.
+	Health *plannerHealthMonitor
 }
 
 var DefaultMaasSharedWorkConfig = maasSharedWorkConfig{
@@ -157,8 +170,10 @@ func NewMaasServerWithCache(cache MaasCache, db maasDB, tdx *shared.TDXClient, w
 	}
 	lifecycleCtx, cancel := context.WithCancel(context.Background())
 	return &MaasServer{
-		cache: cache, db: db, maasClient: c, osrmClient: resty.New().SetTimeout(5 * time.Second),
-		workSlots: make(chan struct{}, workConfig.MaxConcurrent), workTimeout: workConfig.Timeout,
+		cache: cache, db: db, maasClient: c,
+		motisClient: workConfig.Motis, health: workConfig.Health,
+		osrmClient: resty.New().SetTimeout(5 * time.Second),
+		workSlots:  make(chan struct{}, workConfig.MaxConcurrent), workTimeout: workConfig.Timeout,
 		lifecycleCtx: lifecycleCtx, lifecycleCancel: cancel,
 	}
 }
@@ -344,18 +359,24 @@ func (s *MaasServer) PlanStream(req *pb.MaasPlanRequest, stream pb.MaasService_P
 		return status.FromContextError(err).Err()
 	}
 
-	api, err := s.fetch(workCtx, req)
+	useMotis := s.useMotis()
+	plan, err := s.planUpstream(workCtx, req, useMotis)
 	if err != nil {
 		return maasPlanError(err)
 	}
-	// refs alias response's sections, so enrichGeometry below fills in the very
-	// message that was just sent — the second Send carries the same routes with
-	// their paths resolved.
-	response, refs := convertRoutes(workCtx, s.db, api)
+	// refs alias response's sections, so enrich below fills in the very message
+	// that was just sent — the second Send carries the same routes with their
+	// paths resolved. Ranking happens before the first Send: it reorders and
+	// trims the list the rider reads, so doing it later would reshuffle the
+	// cards under them.
+	response, refs := convertRoutes(workCtx, s.db, plan.api)
+	response.PreviousPageCursor = plan.previous
+	response.NextPageCursor = plan.next
+	s.rank(response, req, useMotis)
 	if err := stream.Send(&pb.MaasPlanUpdate{Plan: response}); err != nil {
 		return err
 	}
-	enrichGeometry(workCtx, s.db, s.osrmClient, refs)
+	s.enrich(workCtx, refs, plan.geometry, useMotis)
 	// Cached before the last Send: the work is already paid for, and a client
 	// that disconnects during that send should not throw it away.
 	s.cachePlan(workCtx, cacheKey, response)
@@ -438,11 +459,80 @@ func maasTimeParam(date, timeStr string, arriveBy bool, now time.Time) (depart, 
 }
 
 func (s *MaasServer) get(ctx context.Context, req *pb.MaasPlanRequest) (*pb.MaasPlanResponse, error) {
+	useMotis := s.useMotis()
+	plan, err := s.planUpstream(ctx, req, useMotis)
+	if err != nil {
+		return nil, err
+	}
+	out, refs := convertRoutes(ctx, s.db, plan.api)
+	out.PreviousPageCursor = plan.previous
+	out.NextPageCursor = plan.next
+	s.enrich(ctx, refs, plan.geometry, useMotis)
+	s.rank(out, req, useMotis)
+	return out, nil
+}
+
+// useMotis reports whether this request goes to MOTIS. Read once per request by
+// [MaasServer.plan] and threaded through, rather than re-read at each stage: a
+// health flip between the plan call and the geometry step would otherwise leave
+// one request half-converted.
+func (s *MaasServer) useMotis() bool {
+	if s.motisClient == nil {
+		return false
+	}
+	if s.health == nil {
+		return true
+	}
+	return s.health.UseMotis()
+}
+
+// planUpstream calls whichever planner is configured. The MOTIS path also
+// returns the walk geometry it already computed; the TDX path returns nil there
+// and pays OSRM for it in [MaasServer.enrich].
+func (s *MaasServer) planUpstream(ctx context.Context, req *pb.MaasPlanRequest, useMotis bool) (*motisPlanResult, error) {
+	if useMotis {
+		return s.motisClient.Plan(ctx, req)
+	}
 	api, err := s.fetch(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-	return convert(ctx, s.db, s.osrmClient, api), nil
+	// TDX returns no walk geometry and does not page, so the result carries the
+	// plan and nothing else; the empty cursors are what tell the app not to
+	// offer an earlier/later action it cannot honour.
+	return &motisPlanResult{api: api}, nil
+}
+
+// enrich draws the map geometry. Walk paths come from the plan itself under
+// MOTIS and from OSRM under TDX; rail line shapes come from the database either
+// way. A walk-geometry slice that does not line up with the sections is
+// discarded rather than applied by guesswork, and the OSRM path is not used as
+// a substitute -- OSRM is gone under MOTIS, so the honest result is a straight
+// line, which is what the app already falls back to.
+func (s *MaasServer) enrich(ctx context.Context, refs []maasSectionRef, walks []*motisWalkGeometry, useMotis bool) {
+	if useMotis {
+		if !applyMotisWalkGeometry(refs, walks) {
+			zap.S().Errorw("walk geometry mismatch",
+				"component", "maas",
+				"action", "enrich",
+				"event", "geometry_mismatch",
+				"sections", len(refs),
+				"geometry", len(walks),
+			)
+		}
+		enrichTransitPaths(ctx, s.db, refs)
+		return
+	}
+	enrichGeometry(ctx, s.db, s.osrmClient, refs)
+}
+
+// rank applies the rider's price/time preference. Only MOTIS needs it: TDX
+// takes gc as a search input and has already ordered its answer.
+func (s *MaasServer) rank(out *pb.MaasPlanResponse, req *pb.MaasPlanRequest, useMotis bool) {
+	if !useMotis {
+		return
+	}
+	rankMotisRoutes(out, req.Gc, req.Top)
 }
 
 // fetch is the upstream TDX MaaS call on its own, so PlanStream can run the two

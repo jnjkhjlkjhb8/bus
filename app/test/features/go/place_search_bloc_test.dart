@@ -166,7 +166,7 @@ class _FakePlaces implements PlacesRepository {
       _pending.remove(query)?.complete(results);
 
   @override
-  Future<List<PlaceSuggestion>> autocomplete(String query) {
+  Future<List<PlaceSuggestion>> autocomplete(String query, {LatLng? bias}) {
     queries.add(query);
     return (_pending[query] = Completer<List<PlaceSuggestion>>()).future;
   }

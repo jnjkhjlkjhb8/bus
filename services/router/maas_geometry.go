@@ -16,7 +16,18 @@ import (
 // geometry enrichment for MaaS plan responses. Split out of maas.go to
 // keep that file within its size budget; no behavior change.
 
-// enrichWalkSections treats OSRM as optional enrichment: cancellation, timeout,
+// enrichWalkSections is the TDX planner's walk geometry. It is reached only
+// when MAAS_BACKEND=tdx, and OSRM is no longer part of the stack (ADR-0022), so
+// in practice every lookup here now fails and the sections keep their straight
+// departure-to-arrival line. That is deliberate: the kill switch is a degraded
+// mode, not an equivalent one -- routes, times, fares, transfers and
+// notification identities all still resolve, only the walk leg's map line is a
+// straight line. The code is kept rather than deleted because restoring it is
+// then a matter of putting the osrm services back in the compose file, and
+// because it carries the Traditional Chinese turn phrasing MOTIS's own steps
+// reuse (motisStepInstruction).
+//
+// It treats OSRM as optional enrichment: cancellation, timeout,
 // and routing failures leave the TDX duration and empty geometry untouched. The
 // indexed section references preserve response order while errgroup bounds the
 // number of concurrent OSRM requests.

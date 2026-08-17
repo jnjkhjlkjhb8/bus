@@ -8,7 +8,7 @@ Flutter App
     ├─ HTTP :8080       → router (JWT / JWKS / embed)
     └─ HTTP :8081       → PowerSync (資料同步)
 
-router / functions / powersync / osrm / redis
+router / functions / powersync / motis / redis
     │
     └─ PostgreSQL（外部）
 ```
@@ -23,13 +23,13 @@ router / functions / powersync / osrm / redis
 | ingestor | bus-functions (Go, `ROLE=ingestor`；TDX 憑證僅 prod，無憑證時直接跳過、零請求) | — | 384 MB |
 | loader | bus-functions (Go, `ROLE=loader`) | — | 384 MB |
 | powersync | journeyapps/powersync-service | 8081 | 384 MB |
-| osrm | osrm/osrm-backend | 127.0.0.1:5000 | 2048 MB |
+| motis | ghcr.io/motis-project/motis | 127.0.0.1:8082 | 2048 MB |
 
-OSRM 的上限必須高於 `osrm-data/` 的實際大小（目前約 1.2 GB）：`osrm-routed`
+MOTIS 的上限必須高於匯入後資料集的實際大小：`motis server`
 是 mmap 讀取，cgroup 會把那些 page cache 算進容器帳上，上限低於資料量時每次
 `/table` 查詢都要重新從磁碟讀 cell metrics。
 
-Redis 與 OSRM 僅對 localhost 開放，不對外暴露。
+Redis 與 MOTIS 僅對 localhost 開放，不對外暴露。MOTIS 的 8082 之所以要 publish，是因為 staging 的 router 在同一台主機的另一個 compose project 裡，需要經由 host gateway 連到 prod 的 MOTIS（ADR-0022）。
 
 ## 程式結構
 
@@ -48,7 +48,7 @@ Redis 與 OSRM 僅對 localhost 開放，不對外暴露。
   - pgxpool：MaxConns=20，MinConns=2，MaxConnLifetime=30m，MaxConnIdleTime=5m
   - Redis pool：PoolSize=20，MinIdleConns=3，PoolTimeout=5s
   - process 內 TTL cache（`cache.go`）：`BusRouteStatic` / `BikeStatic` 各快取 1 小時
-  - `Near_Station_Service`：5 種站型以 goroutine 並行查詢；共用單一 `*resty.Client`（OSRM）
+  - `Near_Station_Service`：5 種站型以 goroutine 並行查詢；共用單一 `*resty.Client`（MOTIS `/api/v1/one-to-many`）
   - 鐵路（台鐵 / 高鐵）為純讀取路徑：查已載入的環境 schema 表，miss 時回傳 `codes.NotFound`，不再向 TDX 抓取
 
 ## 外部依賴
@@ -85,4 +85,4 @@ PostgreSQL ──→ PowerSync ──sync──→ Flutter SQLite（離線搜尋
 - `models/*.proto`：proto 定義
 - `models/*_grpc.pb.go`：gRPC 介面
 - `powersync/`：PowerSync 設定（`config.yaml`、`sync-rules.yaml`）
-- `osrm-data/`：OSRM 預處理檔案
+- `osrm-data/`：Geofabrik 的台灣 OSM extract（`motis-import` 唯讀掛載；目錄名沿用，改名沒有功能收益）

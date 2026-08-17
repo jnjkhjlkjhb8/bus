@@ -42,6 +42,16 @@ const (
 	// MOTIS polls its realtime endpoints once a minute by default, and the feed
 	// has exactly one authenticated consumer, so this is generous already.
 	_httpGTFSRTRateLimit = 10
+	// Per minute, and tighter than /api/search's 30 per second because the two
+	// are backed by different things: /api/search hits Postgres, while this one
+	// hits the planner. Spending MOTIS on autocomplete would degrade route
+	// planning, which is the more expensive thing to lose.
+	_httpGeocodeRateLimit = 60
+	// Per minute. The app polls this when the planner opens and caches the
+	// answer for 20s, so this is generous by an order of magnitude on purpose:
+	// an app rate-limited here falls back to guessing which options exist,
+	// which is the thing the endpoint was added to stop.
+	_httpPlannerStatusRateLimit = 60
 	// One fetch per app launch, answered from a process-local cache, so this
 	// only has to survive a device relaunching in a loop.
 	_httpStaticVersionRateLimit = 60
@@ -80,7 +90,15 @@ type httpServerConfig struct {
 	TokenRateLimit    int
 	JWKSRateLimit     int
 	SearchRateLimit   int
-	MetricsRateLimit  int
+	// Where MOTIS is reached, and whether it is the configured planner. Both
+	// come from main so the geocode proxy cannot disagree with the planner
+	// about which backend is live.
+	MotisBaseURL string
+	MotisEnabled bool
+	// The same monitor MaasServer consults, so /api/planner reports the backend
+	// that is actually answering rather than a second opinion about it.
+	plannerHealth    *plannerHealthMonitor
+	MetricsRateLimit int
 	// booking is the TDX deeplink proxy for the rail 訂購 handoff (ADR-0012).
 	// Set in main; nil in tests and any env without a TDX client, where the
 	// endpoint returns 503 and the app falls back to a plain booking site link.
@@ -116,6 +134,10 @@ func httpServerConfigFromEnv() (httpServerConfig, error) {
 		MetricsCredential:      metricsCredential,
 		TrustedProxies:         trustedProxies,
 		GTFSRealtimeCredential: gtfsRTCredential,
+		MotisBaseURL:           MotisBaseURLFromEnv(),
+		// Read from the same env var the planner reads, so the geocode proxy
+		// and the planner can never disagree about which backend is live.
+		MotisEnabled: !MaasBackendFromEnv(),
 	}, nil
 }
 
@@ -257,6 +279,16 @@ func newHTTPRouter(db *pgxpool.Pool, live *LiveHub, key *rsa.PrivateKey, config 
 	r.GET(StaticVersionPath,
 		httpRateLimit(limiter, "GET "+StaticVersionPath, _httpStaticVersionRateLimit, time.Minute),
 		HandleStaticVersion(db))
+	// Mounted only when MOTIS is the configured planner: with MAAS_BACKEND=tdx
+	// there is nothing behind this route, and the app's Google Places fallback
+	// becomes its only source (ADR-0022).
+	RegisterGeocodeRoutes(r, config.MotisBaseURL, config.MotisEnabled,
+		httpRateLimit(limiter, "GET "+GeocodePath, _httpGeocodeRateLimit, time.Minute))
+	// Always mounted, unlike the geocode proxy: an app that cannot tell which
+	// planner is live has to guess which options it may offer, and guessing is
+	// what this exists to remove.
+	RegisterPlannerStatusRoutes(r, config.plannerHealth,
+		httpRateLimit(limiter, "GET "+PlannerStatusPath, _httpPlannerStatusRateLimit, time.Minute))
 	r.GET("/api/booking/deeplink",
 		httpRateLimit(limiter, "GET /api/booking/deeplink", _httpBookingRateLimit, time.Minute),
 		HandleBookingDeeplink(config.booking))

@@ -384,6 +384,21 @@ func run() error {
 			return _oops.Wrapf(err, "listen for gRPC")
 		}
 		runtime.addCleanup(func() { _ = lis.Close() })
+		// The planner health monitor has to exist before prepareHTTPServer,
+		// which takes httpConfig by value: assigning it afterwards would leave
+		// /api/planner reporting a monitor the HTTP router never received.
+		// Started here for the same reason -- Start runs one check
+		// synchronously, so the first request already has a real verdict
+		// rather than the monitor's optimistic default.
+		motisBaseURL := MotisBaseURLFromEnv()
+		var plannerMonitor *plannerHealthMonitor
+		if httpConfig.MotisEnabled {
+			plannerMonitor = newPlannerHealthMonitor(newMotisHealthClient(motisBaseURL))
+			healthCtx, stopHealth := context.WithCancel(context.Background())
+			runtime.addCleanup(stopHealth)
+			plannerMonitor.Start(healthCtx)
+		}
+		httpConfig.plannerHealth = plannerMonitor
 		httpRuntime, err := prepareHTTPServer(db, live, httpConfig, loadOrGenerateKey, net.Listen)
 		if err != nil {
 			return err
@@ -430,10 +445,26 @@ func run() error {
 		pb.RegisterTRATimetableServiceServer(grpcServer, &TraTimetableServer{db: db, rc: rc, live: live})
 		pb.RegisterTRA_DetainServiceServer(grpcServer, &TraDetainServer{db: db, rc: rc, live: live})
 		pb.RegisterThsr_DetainServiceServer(grpcServer, &ThsrDetainServer{db: db, rc: rc, live: live})
-		nearbyRouter := NewOSRMWalkingRouter(resty.New().SetTimeout(5*time.Second), "http://osrm:5000")
+		nearbyRouter := NewMotisWalkingRouter(resty.New().SetTimeout(5*time.Second), motisBaseURL)
 		pb.RegisterNear_Station_ServiceServer(grpcServer, &NearServer{discovery: NewNearbyDiscovery(NewPostgresNearbyStore(db), nearbyRouter)})
 		pb.RegisterAlert_ServiceServer(grpcServer, &AlertServer{live: live})
-		maasServer := NewMaasServerWithCache(maasCache, db, tdx, DefaultMaasSharedWorkConfig)
+		// MAAS_BACKEND is the manual kill switch (ADR-0022). Selecting tdx leaves
+		// the MOTIS client unbuilt, which is what makes the switch total: there
+		// is no path that reaches MOTIS while the switch says otherwise.
+		maasWorkConfig := DefaultMaasSharedWorkConfig
+		if httpConfig.MotisEnabled {
+			maasWorkConfig.Motis = NewMotisClient(motisBaseURL)
+			// The same monitor /api/planner reports, so the backend the app is
+			// told about is the backend that answers its next plan request.
+			maasWorkConfig.Health = plannerMonitor
+		}
+		zap.S().Infow("planner selected",
+			"component", "maas",
+			"action", "startup",
+			"backend", maasBackendName(maasWorkConfig.Motis != nil),
+			"motis_base_url", motisBaseURL,
+		)
+		maasServer := NewMaasServerWithCache(maasCache, db, tdx, maasWorkConfig)
 		// Registered after rc/db/maasCache's cleanups above, so in cleanup's
 		// LIFO order MaasServer.Close runs first: every shared singleflight
 		// flight is canceled and joined before those backends close under it.
