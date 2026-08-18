@@ -73,6 +73,30 @@ class SettingsRepository {
   /// of showing the old ticket type until the screen is rebuilt.
   static const String fareTypeKey = 'fare_type';
 
+  /// Whether the planner must route step-free.
+  ///
+  /// Lives here rather than in the planner's per-trip options because needing
+  /// it is a fact about the rider, not about one journey: it has to survive a
+  /// restart and apply by default, never be re-picked before each search.
+  bool get stepFreeRouting =>
+      _boolValue(stepFreeRoutingKey, defaultValue: false);
+  set stepFreeRouting(bool value) => _store.put(stepFreeRoutingKey, value);
+
+  static const String stepFreeRoutingKey = 'step_free_routing';
+
+  /// Walking pace handed to the planner, in centimetres per second.
+  ///
+  /// 0 means "leave the planner's own default alone" (1.4 m/s), which is what
+  /// the middle option offers; it is not a missing value. Stored as an integer
+  /// because the UI offers three discrete paces and a float on the wire would
+  /// invite two clients that both picked "slower" to disagree in the third
+  /// decimal.
+  int get walkSpeedCmPerSec =>
+      _store.get(walkSpeedKey, defaultValue: 0) as int? ?? 0;
+  set walkSpeedCmPerSec(int value) => _store.put(walkSpeedKey, value);
+
+  static const String walkSpeedKey = 'walk_speed_cm_per_sec';
+
   /// Persisted appearance preference: 'system', 'light', or 'dark'.
   /// Guarded on [SettingsStore.ready] so it is safe to read before the box
   /// opens (the pre-init splash reads it and must not throw).

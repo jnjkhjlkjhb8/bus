@@ -162,9 +162,11 @@ FROM (
     train_no AS trip_short_name,
     direction_id,
     wheelchair AS wheelchair_accessible,
-    -- No shape: rail_shapes is per line and a train crosses lines.
-    '' AS shape_id
+    COALESCE(ts.shape_id, '') AS shape_id
   FROM (` + _railTripSource + `) t
+  -- The stitched shape, when this trip's calls made one (gtfs_rail_shape.go).
+  LEFT JOIN ` + _gtfsRailTripShapeTable + ` ts
+    ON ts.trip_id = t.operator || ':' || t.train_no || ':' || to_char(t.service_date, 'YYYYMMDD')
   WHERE jsonb_typeof(stoptimes) = 'array' AND jsonb_array_length(stoptimes) > 1
   UNION ALL
   SELECT
@@ -244,7 +246,8 @@ WITH calls AS (
       + split_part(c->>'ArrivalTime', ':', 2)::int * 60 AS arr,
     split_part(c->>'DepartureTime', ':', 1)::int * 3600
       + split_part(c->>'DepartureTime', ':', 2)::int * 60 AS dep,
-    COALESCE((c->>'SuspendedFlag')::int, 0) AS suspended
+    COALESCE((c->>'SuspendedFlag')::int, 0) AS pickup,
+    COALESCE((c->>'SuspendedFlag')::int, 0) AS drop_off
   FROM (` + _railTripSource + `) t
   CROSS JOIN LATERAL jsonb_array_elements(t.stoptimes) c
   WHERE jsonb_typeof(t.stoptimes) = 'array'
@@ -259,6 +262,7 @@ WITH calls AS (
       + split_part(c->>'ArrivalTime', ':', 2)::int * 60,
     split_part(c->>'DepartureTime', ':', 1)::int * 3600
       + split_part(c->>'DepartureTime', ':', 2)::int * 60,
+    0,
     0
   FROM (` + _busScheduleSource + `) w
   CROSS JOIN LATERAL jsonb_array_elements(w.stop_times) c
@@ -268,7 +272,7 @@ WITH calls AS (
   UNION ALL
   -- The origin-only networks: departure plus each stop's accumulated running
   -- time, rather than a call list the source never published.
-  SELECT trip_id, stop_sequence, stop_id, arr, dep, suspended
+  SELECT trip_id, stop_sequence, stop_id, arr, dep, pickup, drop_off
   FROM (` + _busPatternStopTimesSQL + `) bps
 ), deduped AS (
   -- stop_sequence is renumbered rather than copied. TDX repeats StopSequence
@@ -281,7 +285,7 @@ WITH calls AS (
   -- the same minute and therefore share a trip_id: one trip is better than two
   -- interleaved into a journey that does not exist.
   SELECT DISTINCT ON (trip_id, stop_id)
-    trip_id, stop_id, arr, dep, suspended,
+    trip_id, stop_id, arr, dep, pickup, drop_off,
     ROW_NUMBER() OVER (PARTITION BY trip_id ORDER BY stop_sequence, arr, stop_id)::int AS stop_sequence
   FROM calls
   ORDER BY trip_id, stop_id, stop_sequence
@@ -314,7 +318,7 @@ WITH calls AS (
       OVER (PARTITION BY trip_id) AS broken
   FROM lagged
 ), timed AS (
-  SELECT trip_id, stop_id, stop_sequence, suspended,
+  SELECT trip_id, stop_id, stop_sequence, pickup, drop_off,
     day_offset * 86400 + arr AS arr_s,
     day_offset * 86400 + CASE WHEN dep < arr THEN dep + 86400 ELSE dep END AS dep_s
   FROM rolled
@@ -327,6 +331,7 @@ WITH calls AS (
     'M:' || p.system || ':' || p.routeid || ':' || p.direction::text || ':' || svc.service_id,
     p.system || ':' || p.station_id || ':platform',
     p.stop_sequence,
+    0,
     0,
     p.offset_secs,
     p.offset_secs
@@ -349,8 +354,8 @@ SELECT DISTINCT
     lpad((dep_s % 60)::text, 2, '0') AS departure_time,
   stop_id,
   stop_sequence,
-  suspended AS pickup_type,
-  suspended AS drop_off_type
+  pickup AS pickup_type,
+  drop_off AS drop_off_type
 FROM timed
 ORDER BY trip_id, stop_sequence`
 
@@ -621,11 +626,9 @@ ORDER BY from_stop_id, to_stop_id`
 // assignable to a trip: a bus trip runs one subroute in one direction, and a
 // metro route belongs to one line.
 //
-// TRA and THSR are absent. rail_shapes is keyed by line, but a train crosses
-// lines freely — a 自強 runs the 西部幹線 into the 南迴線 — so no single shape
-// describes a train's path, and stitching them per trip is a different job from
-// this one. Their trips carry no shape_id, which GTFS permits; a planner draws
-// straight lines between their stops.
+// TRA and THSR are stitched rather than stored: rail_shapes is keyed by line and
+// a train crosses lines freely, so their geometry is assembled per stop sequence
+// in gtfs_rail_shape.go and appended here.
 //
 // A trip claims a shape only when one exists, checked on the trips side. The
 // check has to live in exactly one place: when both files filtered independently
@@ -665,12 +668,17 @@ WITH shape AS (
 ), deduped AS (
   SELECT DISTINCT ON (shape_id) shape_id, geom FROM shape ORDER BY shape_id, ST_NPoints(geom) DESC
 )
-SELECT
-  d.shape_id,
-  ST_Y(p.geom)::numeric(9,6) AS shape_pt_lat,
-  ST_X(p.geom)::numeric(9,6) AS shape_pt_lon,
-  p.path[1] AS shape_pt_sequence
-FROM deduped d
-CROSS JOIN LATERAL ST_DumpPoints(d.geom) p
-WHERE ST_Y(p.geom) BETWEEN 21 AND 26.5 AND ST_X(p.geom) BETWEEN 118 AND 122.5
-ORDER BY d.shape_id, p.path[1]`
+SELECT shape_id, shape_pt_lat, shape_pt_lon, shape_pt_sequence
+FROM (
+  SELECT
+    d.shape_id,
+    ST_Y(p.geom)::numeric(9,6) AS shape_pt_lat,
+    ST_X(p.geom)::numeric(9,6) AS shape_pt_lon,
+    p.path[1] AS shape_pt_sequence
+  FROM deduped d
+  CROSS JOIN LATERAL ST_DumpPoints(d.geom) p
+  WHERE ST_Y(p.geom) BETWEEN 21 AND 26.5 AND ST_X(p.geom) BETWEEN 118 AND 122.5
+  UNION ALL
+  ` + gtfsRailShapePointsSQL + `
+) s
+ORDER BY shape_id, shape_pt_sequence`

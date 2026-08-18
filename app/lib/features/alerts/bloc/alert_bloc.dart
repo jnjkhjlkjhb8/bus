@@ -192,21 +192,13 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
     _lastSourcesCsv = event.sourcesCsv;
 
     final parsed = parseAlertSources(event.sourcesCsv);
-    // One `bus:<city>` token is two subscriptions: TDX splits advisories and
-    // disruptions across separate topics, and both are that city's alerts.
     final desired = <AlertSourceId>{
       for (final system in parsed.metro)
         AlertSourceId(AlertSourceKind.metro, system),
-      for (final city in parsed.bus) ...[
-        AlertSourceId(AlertSourceKind.busNews, city),
+      for (final city in parsed.bus)
         AlertSourceId(AlertSourceKind.busAlert, city),
-      ],
     };
-    const configured = {
-      AlertSourceKind.metro,
-      AlertSourceKind.busNews,
-      AlertSourceKind.busAlert,
-    };
+    const configured = {AlertSourceKind.metro, AlertSourceKind.busAlert};
     final current = _subs.keys
         .where((s) => configured.contains(s.kind))
         .toSet();
@@ -222,8 +214,7 @@ class AlertBloc extends Bloc<AlertEvent, AlertState> {
     for (final source in toAdd) {
       _listenSource(source, switch (source.kind) {
         AlertSourceKind.metro => () => _repository.metroAlert(source.code),
-        AlertSourceKind.busAlert => () => _repository.busAlert(source.code),
-        _ => () => _repository.busNews(source.code),
+        _ => () => _repository.busAlert(source.code),
       });
     }
 

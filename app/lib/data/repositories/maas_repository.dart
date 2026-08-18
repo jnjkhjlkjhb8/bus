@@ -2,6 +2,7 @@ import 'package:grpc/grpc.dart';
 import 'package:wheres_the_bus/core/grpc/grpc_client.dart';
 import 'package:wheres_the_bus/data/generated/maas.pbgrpc.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/models/plan_options.dart';
 
 /// One stage of a streamed plan. `complete` is false while the router is still
 /// resolving map geometry: the routes are final, but a section may still have
@@ -42,8 +43,13 @@ class MaasRepository {
   MaasServiceClient get _grpc => _client ?? GrpcClient.instance.maas;
 
   /// Streams the plan in stages — routes first, map geometry second — so the
-  /// results list can appear without waiting for the OSRM walk paths.
-  /// Cancelling the subscription cancels the RPC.
+  /// results list can appear without waiting for the walk paths. Cancelling
+  /// the subscription cancels the RPC.
+  ///
+  /// [pageCursor] echoes a cursor from a previous response to ask for earlier
+  /// or later departures; anything else is rejected upstream. [legAlternatives]
+  /// asks for that many replacement services per transit leg — 0, the default,
+  /// asks for none.
   Stream<PlanUpdate> planStream({
     required double fromLat,
     required double fromLon,
@@ -52,15 +58,9 @@ class MaasRepository {
     required String date,
     required String time,
     bool arriveBy = false,
-    double gc = 0.0,
-    List<int> transitModes = const [3, 4, 5, 6, 7, 8, 9],
-    int top = 5,
-    int transferMin = 15,
-    int transferMax = 60,
-    int firstMileMode = 0,
-    int firstMileTime = 10,
-    int lastMileMode = 0,
-    int lastMileTime = 10,
+    PlanOptions options = const PlanOptions(),
+    String pageCursor = '',
+    int legAlternatives = 0,
   }) {
     return _grpc
         .planStream(
@@ -72,15 +72,9 @@ class MaasRepository {
             date: date,
             time: time,
             arriveBy: arriveBy,
-            gc: gc,
-            transitModes: transitModes,
-            top: top,
-            transferMin: transferMin,
-            transferMax: transferMax,
-            firstMileMode: firstMileMode,
-            firstMileTime: firstMileTime,
-            lastMileMode: lastMileMode,
-            lastMileTime: lastMileTime,
+            options: options,
+            pageCursor: pageCursor,
+            legAlternatives: legAlternatives,
           ),
         )
         .map(
@@ -117,17 +111,11 @@ class MaasRepository {
     required String date,
     required String time,
     required bool arriveBy,
-    required double gc,
-    required List<int> transitModes,
-    required int top,
-    required int transferMin,
-    required int transferMax,
-    required int firstMileMode,
-    required int firstMileTime,
-    required int lastMileMode,
-    required int lastMileTime,
+    required PlanOptions options,
+    required String pageCursor,
+    required int legAlternatives,
   }) {
-    return MaasPlanRequest(
+    final request = MaasPlanRequest(
       fromLat: fromLat,
       fromLon: fromLon,
       toLat: toLat,
@@ -135,15 +123,27 @@ class MaasRepository {
       date: date,
       time: time,
       arriveBy: arriveBy,
-      gc: gc,
-      transitModes: transitModes,
-      top: top,
-      transferTimeMin: transferMin,
-      transferTimeMax: transferMax,
-      firstMileMode: firstMileMode,
-      firstMileTime: firstMileTime,
-      lastMileMode: lastMileMode,
-      lastMileTime: lastMileTime,
+      gc: options.gc,
+      transitModes: options.transitModes,
+      top: options.top,
+      transferTimeMin: options.transferMin,
+      transferTimeMax: options.transferMax,
+      firstMileMode: options.firstMileMode,
+      firstMileTime: options.firstMileTime,
+      lastMileMode: options.lastMileMode,
+      lastMileTime: options.lastMileTime,
+      wheelchair: options.wheelchair,
+      walkSpeedCmPerSec: options.walkSpeedCmPerSec,
+      avoidReservation: options.avoidReservation,
+      carryBike: options.carryBike,
+      pageCursor: pageCursor,
+      legAlternatives: legAlternatives,
     );
+    // Left unset rather than sent as 0: this field carries proto3 presence
+    // precisely because 0 is a request — direct connections only — and a rider
+    // who never touched the control has not made it.
+    final maxTransfers = options.maxTransfers;
+    if (maxTransfers != null) request.maxTransfers = maxTransfers;
+    return request;
   }
 }

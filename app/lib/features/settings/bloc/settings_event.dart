@@ -65,6 +65,27 @@ class FareTypeSelected extends SettingsEvent {
   List<Object?> get props => [fareType];
 }
 
+/// The rider flipped 設定 › 無障礙路線. Applies to every plan from here on,
+/// not just the next one.
+class StepFreeRoutingToggled extends SettingsEvent {
+  const StepFreeRoutingToggled({required this.value});
+
+  final bool value;
+
+  @override
+  List<Object?> get props => [value];
+}
+
+/// The rider picked a walking pace in 設定 › 步行速度.
+class WalkPaceSelected extends SettingsEvent {
+  const WalkPaceSelected(this.pace);
+
+  final WalkPace pace;
+
+  @override
+  List<Object?> get props => [pace];
+}
+
 /// The rider tapped 檢查更新. Pulls a fresh Remote Config revision and
 /// re-resolves the running build against it.
 class UpdateCheckRequested extends SettingsEvent {

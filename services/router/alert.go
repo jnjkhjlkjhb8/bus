@@ -19,17 +19,9 @@ type AlertServer struct {
 	live LiveSource
 }
 
-// BusNews streams bus service-news alerts for the requested city. The city is
+// BusAlert streams bus service disruptions for the requested city. The city is
 // interpolated into the Redis channel name, so an empty city subscribes to a
 // channel that never receives messages.
-func (s *AlertServer) BusNews(in *pb.Alert_Bus_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
-	key := shared.AlertBusNewsChannel(in.City)
-	return streamAlert(s.live, key, stream)
-}
-
-// BusAlert streams bus service disruptions for the requested city. It is a
-// separate channel from BusNews: TDX publishes advisories and disruptions on
-// different topics, and each mirrors its own latest-payload key.
 func (s *AlertServer) BusAlert(in *pb.Alert_Bus_Ask, stream grpc.ServerStreamingServer[pb.Alert_Msg]) error {
 	return streamAlert(s.live, shared.AlertBusAlertChannel(in.City), stream)
 }

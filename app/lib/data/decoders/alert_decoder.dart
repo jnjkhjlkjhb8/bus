@@ -21,6 +21,7 @@ class AlertDecoder {
         ? null
         : DateTime.fromMillisecondsSinceEpoch(item.timeUnix.toInt() * 1000),
     source: source,
+    department: item.department.isEmpty ? null : item.department,
   );
 
   AlertSeverity _level(String level) => switch (level) {

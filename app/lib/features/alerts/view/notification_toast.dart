@@ -301,7 +301,10 @@ class _ToastLayerState extends State<_ToastLayer> {
                     children: [
                       Padding(
                         padding: const EdgeInsets.only(top: 1),
-                        child: AlertSourceChip(source: alert.source),
+                        child: AlertSourceChip(
+                          source: alert.source,
+                          department: alert.department,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(

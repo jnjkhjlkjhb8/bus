@@ -20,6 +20,7 @@ class AppRoutes {
   static const settingsAppearance = '/settings/appearance';
   static const settingsFareType = '/settings/fare-type';
   static const settingsLanguage = '/settings/language';
+  static const settingsWalkPace = '/settings/walk-pace';
   static const search = '/search';
   static const favorites = '/favorites';
   static const busStop = '/bus/stop';

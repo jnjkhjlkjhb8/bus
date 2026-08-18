@@ -28,10 +28,10 @@ type mqttTopicCfg struct {
 // _mqttTopics is the set of TDX MQTT subscriptions and their cache TTLs. TDX
 // publishes only news and alert topics — there is no vehicle-position or
 // near-stop stream — so every subscription here is advisory text on a 5-minute
-// TTL. Bus alerts stay on v2: routeAlerts reads the v2 field names.
+// TTL. Bus alerts stay on v2: routeAlerts reads the v2 field names. Bus News
+// (route/timetable notices, as opposed to disruptions) is deliberately not
+// subscribed — Alert is the only bus stream the app carries.
 var _mqttTopics = []mqttTopicCfg{
-	{"v2/Bus/News/City/+", 5 * time.Minute},
-	{"v2/Bus/News/InterCity", 5 * time.Minute},
 	{"v2/Bus/Alert/City/+", 5 * time.Minute},
 	{"v2/Bus/Alert/InterCity", 5 * time.Minute},
 	{"v2/Rail/Metro/Alert/#", 5 * time.Minute},
@@ -218,13 +218,14 @@ func normalizeAlerts(topic string, payload []byte) ([]*pb.Alert_Item, bool) {
 		}
 		at[body] = len(out)
 		out = append(out, &pb.Alert_Item{
-			Id:        alertID(body),
-			RouteType: routeType,
-			RouteKeys: keys,
-			Title:     title,
-			Body:      body,
-			Level:     alertLevel(m),
-			TimeUnix:  alertTime(m),
+			Id:         alertID(body),
+			RouteType:  routeType,
+			RouteKeys:  keys,
+			Title:      title,
+			Body:       body,
+			Level:      alertLevel(m),
+			TimeUnix:   alertTime(m),
+			Department: firstString(m, "Department"),
 		})
 	}
 	return out, true

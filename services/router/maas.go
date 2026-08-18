@@ -230,6 +230,10 @@ type tdxSection struct {
 	Transport         tdxTransport `json:"transport"`
 	IntermediateStops []tdxStop    `json:"intermediateStops"`
 	Agency            tdxAgency    `json:"agency"`
+	// Services that could replace this leg. MOTIS-only and never part of a TDX
+	// payload, hence the ignored tag: TDX has no equivalent, so unmarshalling
+	// must not go looking for one.
+	Alternatives []tdxSection `json:"-"`
 }
 type tdxSummary struct {
 	Duration int64   `json:"duration"`
@@ -619,6 +623,7 @@ func convert(ctx context.Context, db maasDB, osrmClient *resty.Client, api *tdxA
 func convertRoutes(ctx context.Context, db maasDB, api *tdxAPIResponse) (*pb.MaasPlanResponse, []maasSectionRef) {
 	out := &pb.MaasPlanResponse{}
 	refs := make([]maasSectionRef, 0)
+	altRefs := make([]maasSectionRef, 0)
 	for _, route := range api.Data.Routes {
 		pbRoute := &pb.Route{
 			TravelTime: route.TravelTime,
@@ -632,12 +637,60 @@ func convertRoutes(ctx context.Context, db maasDB, api *tdxAPIResponse) (*pb.Maa
 			refs = append(refs, maasSectionRef{
 				index: int32(len(refs)), source: sec, target: pbSec, route: pbRoute,
 			})
+			for _, alt := range sec.Alternatives {
+				pbAlt := convertAlternative(alt)
+				pbSec.Alternatives = append(pbSec.Alternatives, pbAlt)
+				altRefs = append(altRefs, maasSectionRef{source: alt, target: pbAlt})
+			}
 		}
 		out.Routes = append(out.Routes, pbRoute)
 	}
-	batchBusNotificationIdentities(ctx, db, refs)
+	// Alternatives are kept out of `refs` because the MOTIS walk geometry is
+	// paired to it positionally; they join only the identity lookup, and only
+	// after their indices continue past the real sections so the one batch
+	// query can still map every row back to its section.
+	for i := range altRefs {
+		altRefs[i].index = int32(len(refs) + i)
+	}
+	identityRefs := make([]maasSectionRef, 0, len(refs)+len(altRefs))
+	identityRefs = append(identityRefs, refs...)
+	identityRefs = append(identityRefs, altRefs...)
+	batchBusNotificationIdentities(ctx, db, identityRefs)
+	// No fare on an alternative: it is a departure the rider is being told
+	// exists, not one the plan has priced.
 	batchSectionFares(ctx, db, refs)
 	return out, refs
+}
+
+// convertAlternative maps a replacement service onto the wire. Deliberately
+// four fields and not [convertSection]'s full set: an alternative answers "what
+// else runs this leg?", which needs the service's name and its two times and
+// nothing more. The empty identity is what the batch lookup fills in, and what
+// decides whether the app can offer a tap through to the route.
+func convertAlternative(sec tdxSection) *pb.Section {
+	return &pb.Section{
+		Type: sec.Type,
+		Transport: &pb.Transport{
+			Mode:       sec.Transport.Mode,
+			Name:       sec.Transport.Name,
+			ShortName:  sec.Transport.ShortName,
+			LongName:   sec.Transport.LongName,
+			Headsign:   sec.Transport.Headsign,
+			Category:   sec.Transport.Category,
+			RouteColor: sec.Transport.RouteColor,
+		},
+		Departure: &pb.Place{
+			Name: sec.Departure.Place.Name,
+			Type: sec.Departure.Place.Type,
+			Time: sec.Departure.Time,
+		},
+		Arrival: &pb.Place{
+			Name: sec.Arrival.Place.Name,
+			Type: sec.Arrival.Place.Type,
+			Time: sec.Arrival.Time,
+		},
+		NotificationIdentity: &pb.NotificationIdentity{},
+	}
 }
 
 // enrichGeometry is the second half of convert: the OSRM foot paths and the

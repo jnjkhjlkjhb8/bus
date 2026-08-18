@@ -13,7 +13,7 @@ import '../../../support/helpers/in_memory_settings_store.dart';
 
 void main() {
   const traSource = AlertSourceId(AlertSourceKind.tra);
-  const busSource = AlertSourceId(AlertSourceKind.busNews, 'Taipei');
+  const busSource = AlertSourceId(AlertSourceKind.busAlert, 'Taipei');
 
   test("AlertReceived adds a source's alerts to active alerts", () async {
     final bloc = AlertBloc();
@@ -218,16 +218,9 @@ void main() {
       config.add('metro:TRTC,bus:Taipei');
       await pumpEventQueue();
 
-      // One bus token opens both of that city's topics.
       expect(
         repository.subscribed,
-        containsAll([
-          'tra',
-          'thsr',
-          'metro:TRTC',
-          'busNews:Taipei',
-          'busAlert:Taipei',
-        ]),
+        containsAll(['tra', 'thsr', 'metro:TRTC', 'busAlert:Taipei']),
       );
     });
 
@@ -256,14 +249,8 @@ void main() {
         config.add('metro:TRTC,bus:Taichung');
         await pumpEventQueue();
 
-        expect(
-          repository.cancelled,
-          containsAll(['busNews:Taipei', 'busAlert:Taipei']),
-        );
-        expect(
-          repository.subscribed,
-          containsAll(['busNews:Taichung', 'busAlert:Taichung']),
-        );
+        expect(repository.cancelled, containsAll(['busAlert:Taipei']));
+        expect(repository.subscribed, containsAll(['busAlert:Taichung']));
         // The kept metro subscription must never be cancelled.
         expect(repository.cancelled, isNot(contains('metro:TRTC')));
         expect(
@@ -283,13 +270,7 @@ void main() {
 
       expect(
         repository.cancelled,
-        containsAll([
-          'tra',
-          'thsr',
-          'metro:TRTC',
-          'busNews:Taipei',
-          'busAlert:Taipei',
-        ]),
+        containsAll(['tra', 'thsr', 'metro:TRTC', 'busAlert:Taipei']),
       );
     });
   });
@@ -321,9 +302,6 @@ class _RecordingAlertRepository extends AlertRepository {
   @override
   Stream<List<AlertViewModel>> metroAlert(String system) =>
       _stream('metro:$system');
-
-  @override
-  Stream<List<AlertViewModel>> busNews(String city) => _stream('busNews:$city');
 
   @override
   Stream<List<AlertViewModel>> busAlert(String city) =>

@@ -229,16 +229,8 @@ func MQTTChannel(topic string) string {
 	return "mqtt:" + strings.ReplaceAll(topic, "/", ":")
 }
 
-// AlertBusNewsChannel returns the channel carrying one city's bus service
-// news. An empty city subscribes to a channel that never receives messages.
-func AlertBusNewsChannel(city string) string {
-	return "mqtt:v2:Bus:News:City:" + city
-}
-
 // AlertBusAlertChannel returns the channel carrying one city's bus service
-// disruptions. News and disruptions stay on separate channels because each
-// mirrors its own latest-payload key, and a shared key would let whichever
-// topic published last decide what a new subscriber is seeded with.
+// disruptions.
 func AlertBusAlertChannel(city string) string {
 	return "mqtt:v2:Bus:Alert:City:" + city
 }

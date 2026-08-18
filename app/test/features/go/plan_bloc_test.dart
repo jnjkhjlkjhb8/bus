@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/models/plan_options.dart';
 import 'package:wheres_the_bus/data/repositories/maas_repository.dart';
 import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_bus/features/go/bloc/plan_event.dart';
@@ -344,15 +345,9 @@ class _ControlledMaasRepository implements MaasRepository {
     required String date,
     required String time,
     bool arriveBy = false,
-    double gc = 0.0,
-    List<int> transitModes = const [3, 4, 5, 6, 7, 8, 9],
-    int top = 5,
-    int transferMin = 15,
-    int transferMax = 60,
-    int firstMileMode = 0,
-    int firstMileTime = 10,
-    int lastMileMode = 0,
-    int lastMileTime = 10,
+    PlanOptions options = const PlanOptions(),
+    String pageCursor = '',
+    int legAlternatives = 0,
   }) {
     final pending = completers[_calls++].future;
     final controller = StreamController<PlanUpdate>();
@@ -390,15 +385,9 @@ class _FakeMaasRepository implements MaasRepository {
     required String date,
     required String time,
     bool arriveBy = false,
-    double gc = 0.0,
-    List<int> transitModes = const [3, 4, 5, 6, 7, 8, 9],
-    int top = 5,
-    int transferMin = 15,
-    int transferMax = 60,
-    int firstMileMode = 0,
-    int firstMileTime = 10,
-    int lastMileMode = 0,
-    int lastMileTime = 10,
+    PlanOptions options = const PlanOptions(),
+    String pageCursor = '',
+    int legAlternatives = 0,
   }) async* {
     final error = this.error;
     if (error != null) throw error;

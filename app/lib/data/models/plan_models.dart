@@ -2,16 +2,28 @@ import 'package:equatable/equatable.dart';
 import 'package:wheres_the_bus/data/generated/maas.pb.dart' as maas;
 
 class PlanResult extends Equatable {
-  const PlanResult({required this.routes});
+  const PlanResult({
+    required this.routes,
+    this.previousPageCursor = '',
+    this.nextPageCursor = '',
+  });
 
   factory PlanResult.fromProto(maas.MaasPlanResponse proto) => PlanResult(
     routes: [for (final route in proto.routes) PlanRoute.fromProto(route)],
+    previousPageCursor: proto.previousPageCursor,
+    nextPageCursor: proto.nextPageCursor,
   );
 
   final List<PlanRoute> routes;
 
+  /// Cursors for the 更早 / 更晚 departures action. Empty when the planner does
+  /// not page (TDX) or there is nothing further in that direction — which is
+  /// also what tells the results list not to offer the action.
+  final String previousPageCursor;
+  final String nextPageCursor;
+
   @override
-  List<Object?> get props => [routes];
+  List<Object?> get props => [routes, previousPageCursor, nextPageCursor];
 }
 
 class PlanRoute extends Equatable {
@@ -125,6 +137,7 @@ class PlanSection extends Equatable {
     this.walkPath = const [],
     this.walkSteps = const [],
     this.transitPath = const [],
+    this.alternatives = const [],
   });
 
   factory PlanSection.fromProto(maas.Section proto) => PlanSection(
@@ -142,6 +155,9 @@ class PlanSection extends Equatable {
     walkSteps: [for (final s in proto.walkSteps) PlanWalkStep.fromProto(s)],
     transitPath: [
       for (final p in proto.transitPath) PlanPoint.fromProto(p),
+    ],
+    alternatives: [
+      for (final a in proto.alternatives) PlanSection.fromProto(a),
     ],
   );
 
@@ -170,6 +186,13 @@ class PlanSection extends Equatable {
   /// stops, same fallback as an unresolved [walkPath]).
   final List<PlanPoint> transitPath;
 
+  /// Other services that run this leg, when the plan asked for them. Only
+  /// [transport], [departure], [arrival] and [identity] are set on one: the
+  /// planner frames an alternative as a walk, a service and another walk, and
+  /// the two walks are how it proved the swap fits, not a choice the rider
+  /// makes. An alternative never carries alternatives of its own.
+  final List<PlanSection> alternatives;
+
   @override
   List<Object?> get props => [
     type,
@@ -183,6 +206,7 @@ class PlanSection extends Equatable {
     walkPath,
     walkSteps,
     transitPath,
+    alternatives,
   ];
 }
 

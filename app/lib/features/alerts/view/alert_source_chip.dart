@@ -17,10 +17,23 @@ String alertRelativeTime(AppI18n i18n, DateTime time, DateTime now) {
   return '${time.month}/${time.day}';
 }
 
+/// A CJK codepoint, cheaply detected without a locale library: TDX's
+/// `Department` field is either a readable Chinese name ("臺北市公共運輸處")
+/// or, on the one feed that doesn't carry one (InterCity Alert), a bare
+/// operator code ("THB"). The presence of a CJK character is what
+/// distinguishes the two.
+final _cjk = RegExp('[一-鿿]');
+
 /// Label + operator color for an [AlertSource]. Metro/bus resolve their code to
-/// a localized operator name; rail kinds are fixed. Returns null for a null
-/// source so callers can omit the chip entirely.
-({String label, Color color})? _resolve(AppI18n i18n, AlertSource source) {
+/// a localized operator name; rail kinds are fixed. [department] is TDX's own
+/// publisher name for this alert and takes priority over the hardcoded bus
+/// city map whenever it's a real name rather than an operator code. Returns
+/// null for a null source so callers can omit the chip entirely.
+({String label, Color color})? _resolve(
+  AppI18n i18n,
+  AlertSource source,
+  String? department,
+) {
   switch (source.kind) {
     case AlertSourceKind.metro:
       final label = switch (source.code) {
@@ -35,19 +48,18 @@ String alertRelativeTime(AppI18n i18n, DateTime time, DateTime now) {
       return (label: i18n.modeTra, color: AppTheme.trainRangecar);
     case AlertSourceKind.thsr:
       return (label: i18n.modeThsr, color: AppTheme.trainThsr);
-    // News and disruptions are separate streams but one operator to the rider,
-    // so both wear the same chip.
-    case AlertSourceKind.busNews:
     case AlertSourceKind.busAlert:
-      final label = switch (source.code) {
-        'Taipei' => i18n.operatorBusTaipei,
-        'NewTaipei' => i18n.operatorBusNewTaipei,
-        'Taoyuan' => i18n.operatorBusTaoyuan,
-        'Taichung' => i18n.operatorBusTaichung,
-        'Tainan' => i18n.operatorBusTainan,
-        'Kaohsiung' => i18n.operatorBusKaohsiung,
-        _ => i18n.modeBus,
-      };
+      final label = department != null && _cjk.hasMatch(department)
+          ? department
+          : switch (source.code) {
+              'Taipei' => i18n.operatorBusTaipei,
+              'NewTaipei' => i18n.operatorBusNewTaipei,
+              'Taoyuan' => i18n.operatorBusTaoyuan,
+              'Taichung' => i18n.operatorBusTaichung,
+              'Tainan' => i18n.operatorBusTainan,
+              'Kaohsiung' => i18n.operatorBusKaohsiung,
+              _ => i18n.modeBus,
+            };
       // Ink carries the bus chip. In dark mode a #111111 fill would vanish, so
       // fall back to the inverse surface pair which keeps the contrast.
       return (label: label, color: AppTheme.inkLight);
@@ -63,15 +75,18 @@ String alertRelativeTime(AppI18n i18n, DateTime time, DateTime now) {
 /// Compact operator tag: which system an alert belongs to, colored by operator
 /// (colors are data here, not decoration). Renders nothing for a null source.
 class AlertSourceChip extends StatelessWidget {
-  const AlertSourceChip({required this.source, super.key});
+  const AlertSourceChip({required this.source, this.department, super.key});
 
   final AlertSource? source;
+
+  /// TDX's own publishing department for this alert, if the feed carried one.
+  final String? department;
 
   @override
   Widget build(BuildContext context) {
     final source = this.source;
     if (source == null) return const SizedBox.shrink();
-    final resolved = _resolve(AppI18n.of(context), source);
+    final resolved = _resolve(AppI18n.of(context), source, department);
     if (resolved == null) return const SizedBox.shrink();
 
     final cs = Theme.of(context).colorScheme;

@@ -1,0 +1,116 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+
+	"go.uber.org/zap"
+)
+
+// TDX's DisplayStopOfRoute is the route-level companion to StopOfRoute: where
+// StopOfRoute records how each subroute actually runs — the shape an estimate
+// needs — this is the whole route linearised across its branches, so a page can
+// show 307 once instead of once per variant.
+//
+// Landed and loaded only. Nothing reads bus_display_stop_map yet; the route
+// screen that would is a separate piece of work.
+
+// rawBusDisplayStopOfRoute decodes one element: a route direction and its
+// linearised stop list.
+type rawBusDisplayStopOfRoute struct {
+	RouteUID  string `json:"RouteUID"`
+	Direction uint8  `json:"Direction"`
+	Stops     []struct {
+		StopUID  string `json:"StopUID"`
+		StopName struct {
+			Zhtw string `json:"Zh_tw"`
+		} `json:"StopName"`
+		StopSequence uint8  `json:"StopSequence"`
+		StationID    string `json:"StationID"`
+	} `json:"Stops"`
+}
+
+// loadBusDisplayStops replaces one city's linearised route stop lists.
+//
+// It is a standalone loader rather than a ninth input to the bus city snapshot
+// on purpose: the snapshot requires every correlated partition to have landed in
+// the same ingest cycle, so folding this in would make a city's whole static
+// load depend on a list nothing reads yet.
+func loadBusDisplayStops(ctx context.Context, dec *json.Decoder, sink loadSink, city string) error {
+	if strings.TrimSpace(city) == "" {
+		return errors.New("bus display stops: city is required")
+	}
+	prefix := _citymap[city]
+	if prefix == "" {
+		return _oops.With("city", city).Errorf("bus display stops: city has no UID prefix")
+	}
+	routes, err := decodeLoadArray[rawBusDisplayStopOfRoute](dec, "bus display stops "+city,
+		func(_ int, route rawBusDisplayStopOfRoute) error {
+			if !uidBelongsToPrefix(route.RouteUID, prefix) {
+				return _oops.With("route_uid", route.RouteUID).With("city", city).Errorf("RouteUID does not belong")
+			}
+			return nil
+		})
+	if err != nil {
+		return err
+	}
+	rows := busDisplayStopRows(routes)
+	if len(rows) == 0 {
+		zap.S().Infow("no display stops",
+			"component", "bus_displaystops",
+			"action", "bus_displaystop",
+			"city", city,
+			"event", "no_display_stops",
+		)
+		return nil
+	}
+	return sink.copyUpsert(ctx, copyUpsertSpec{
+		key: "bus_displaystop",
+		// Partition-replace, so a stop dropped from a route leaves with it. The
+		// upsert alone would keep it forever, and a stale stop in a route's own
+		// stop list is exactly the defect this list exists to avoid.
+		preExec: []copyUpsertStmt{{
+			sql:  `DELETE FROM bus_display_stop_map WHERE route_uid LIKE $1`,
+			args: []any{prefix + "%"},
+		}},
+		createSQL: `CREATE TEMP TABLE temp_bus_display_stop (
+			route_uid text, direction smallint, stop_uid text,
+			stop_sequence smallint, station_id text, stop_name text
+		) ON COMMIT DROP`,
+		tempTable: "temp_bus_display_stop",
+		copyCols:  []string{"route_uid", "direction", "stop_uid", "stop_sequence", "station_id", "stop_name"},
+		insertSQL: `INSERT INTO bus_display_stop_map (
+			route_uid, direction, stop_uid, stop_sequence, station_id, stop_name, updated_at)
+		SELECT DISTINCT ON (route_uid, direction, stop_uid)
+			route_uid, direction, stop_uid, stop_sequence, station_id, stop_name, NOW()
+		FROM temp_bus_display_stop
+		ORDER BY route_uid, direction, stop_uid, stop_sequence
+		ON CONFLICT (route_uid, direction, stop_uid) DO UPDATE SET
+			stop_sequence = EXCLUDED.stop_sequence,
+			station_id = EXCLUDED.station_id,
+			stop_name = EXCLUDED.stop_name,
+			updated_at = NOW()`,
+	}, rows)
+}
+
+// busDisplayStopRows flattens the decoded routes into copy rows, dropping the
+// entries that cannot be joined or ordered: a stop with no UID, no station, no
+// name, or no sequence identifies nothing. Split out so the flattening is
+// testable without a database.
+func busDisplayStopRows(routes []rawBusDisplayStopOfRoute) [][]any {
+	var rows [][]any
+	for _, route := range routes {
+		for _, stop := range route.Stops {
+			if stop.StopUID == "" || stop.StationID == "" || stop.StopName.Zhtw == "" || stop.StopSequence == 0 {
+				continue
+			}
+			rows = append(rows, []any{
+				route.RouteUID, int16(route.Direction), stop.StopUID,
+				int16(stop.StopSequence), stop.StationID, stop.StopName.Zhtw,
+			})
+		}
+	}
+	return rows
+}

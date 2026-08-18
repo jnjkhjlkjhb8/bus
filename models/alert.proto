@@ -2,7 +2,6 @@ syntax = "proto3";
 option go_package = "github.com/jnjkhjlkjhb8/wheres_the_bus/models";
 
 service Alert_Service {
-  rpc busNews(Alert_Bus_Ask)       returns (stream Alert_Msg) {}
   rpc busAlert(Alert_Bus_Ask)      returns (stream Alert_Msg) {}
   rpc metroAlert(Alert_Metro_Ask)  returns (stream Alert_Msg) {}
   rpc traAlert(Alert_Ask)          returns (stream Alert_Msg) {}
@@ -33,4 +32,5 @@ message Alert_Item {
   string body = 5;
   string level = 6;
   int64 time_unix = 7;
+  string department = 8;
 }

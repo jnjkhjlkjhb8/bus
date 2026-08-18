@@ -152,6 +152,24 @@ class _SettingsView extends StatelessWidget {
     }
   }
 
+  /// Picks the rider's usual walking pace, applied to every plan.
+  Future<void> _pickWalkPace(
+    BuildContext context,
+    AppI18n i18n,
+    WalkPace current,
+  ) async {
+    final picked = await _pick(
+      context,
+      AppRoutes.settingsWalkPace,
+      WalkPace.values,
+      current,
+      (e) => e.labelOf(i18n),
+    );
+    if (picked != null && context.mounted) {
+      context.read<SettingsBloc>().add(WalkPaceSelected(picked));
+    }
+  }
+
   /// Picks the rider's ticket type, on the shared single-choice picker screen.
   Future<void> _pickFareType(
     BuildContext context,
@@ -232,6 +250,31 @@ class _SettingsView extends StatelessWidget {
                             bloc.add(LiveActivityToggled(value: v)),
                       ),
                     ],
+                  ],
+                ),
+                const SizedBox(height: 24),
+                _SettingsSection(
+                  title: i18n.settingsSectionPlanner,
+                  // Both rows stay visible whichever planner is live. Needing
+                  // step-free routing is a fact about the rider; a row that
+                  // vanished when the backend changed would read as the
+                  // setting having been lost.
+                  footer: i18n.settingsPlannerFooter,
+                  children: [
+                    _SettingsSwitchRow(
+                      icon: Icons.accessible_rounded,
+                      label: i18n.settingsStepFree,
+                      value: state.stepFreeRouting,
+                      onChanged: (v) =>
+                          bloc.add(StepFreeRoutingToggled(value: v)),
+                    ),
+                    _SettingsRow(
+                      icon: Icons.directions_walk_rounded,
+                      label: i18n.settingsWalkPace,
+                      value: state.walkPace.labelOf(i18n),
+                      chevron: true,
+                      onTap: () => _pickWalkPace(context, i18n, state.walkPace),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 24),

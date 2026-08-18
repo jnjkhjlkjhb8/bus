@@ -4,7 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:go_router/go_router.dart';
 import 'package:wheres_the_bus/app/router/app_routes.dart';
 import 'package:wheres_the_bus/data/models/favorite.dart';
-import 'package:wheres_the_bus/features/rail/rail_system_labels.dart';
+import 'package:wheres_the_bus/shared/rail_system_labels.dart';
 import 'package:wheres_the_bus/shared/widgets/transport_icon.dart';
 
 TransportType transportTypeForFavorite(Favorite fav) {

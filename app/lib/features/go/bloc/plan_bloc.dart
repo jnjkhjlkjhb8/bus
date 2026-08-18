@@ -140,15 +140,9 @@ class PlanBloc extends Bloc<PlanEvent, PlanState> {
           date: event.date,
           time: event.time,
           arriveBy: event.arriveBy,
-          gc: event.gc,
-          transitModes: event.transitModes,
-          top: event.top,
-          transferMin: event.transferMin,
-          transferMax: event.transferMax,
-          firstMileMode: event.firstMileMode,
-          firstMileTime: event.firstMileTime,
-          lastMileMode: event.lastMileMode,
-          lastMileTime: event.lastMileTime,
+          options: event.options,
+          pageCursor: event.pageCursor,
+          legAlternatives: event.legAlternatives,
         )
         .listen(
           (update) {

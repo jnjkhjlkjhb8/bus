@@ -92,6 +92,11 @@ func gtfsTempTables() []gtfsTempTable {
 		// stop_areas.txt looks a stop up per fare area, so this one is indexed
 		// even though every other reader of it scans.
 		{name: _gtfsStopTable, sql: _gtfsStopsSQL, indexOn: "stop_id"},
+		// Rail geometry: the clipped segments first, then the trip-to-shape
+		// mapping shapes.txt and trips.txt both read. Both are joined to per stop
+		// pair and per trip rather than scanned, hence the indexes.
+		{name: _gtfsRailSegTable, sql: gtfsRailSegSQL, indexOn: "from_stop, to_stop"},
+		{name: _gtfsRailTripShapeTable, sql: gtfsRailTripShapeSQL, indexOn: "trip_id"},
 		{name: _gtfsFareSrcTable, sql: _busFareSourceSQL, indexOn: "city, routeid"},
 		{name: _gtfsStopUIDTable, sql: _busStopUIDSQL, indexOn: "city, stop_id"},
 		{name: _gtfsStopSeqTable, sql: _busStopSeqSQL, indexOn: "subrouteuid, direction, stop_id"},
@@ -196,6 +201,9 @@ func buildGTFSFeed(ctx context.Context, db *pgxpool.Pool, dir string, runDate ti
 	}
 	if err := temp.Close(); err != nil {
 		return "", 0, _oops.Wrapf(err, "gtfs export: close")
+	}
+	if err := os.Chmod(tempName, 0o644); err != nil {
+		return "", 0, _oops.With("temp", tempName).Wrapf(err, "gtfs export: chmod")
 	}
 	if err := os.Rename(tempName, final); err != nil {
 		return "", 0, _oops.With("final", final).Wrapf(err, "gtfs export: publish")

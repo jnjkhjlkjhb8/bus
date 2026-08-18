@@ -204,10 +204,7 @@ class _LastRouteCard extends StatelessWidget {
               Row(
                 children: [
                   Expanded(
-                    child: LegStrip(
-                      sections: route.sections,
-                      detailed: false,
-                    ),
+                    child: LegStrip(sections: route.sections),
                   ),
                   const SizedBox(width: 8),
                   Text(
@@ -390,6 +387,17 @@ Map<int, String> _kTransitModes(AppI18n i18n) => {
   8: i18n.modeFerry,
   9: i18n.modeCableCar,
 };
+/// The interchange caps the sheet offers, keyed by what actually goes on the
+/// wire. Null is "no cap" — the field is left unset — and 0 is a real request
+/// for direct connections only; the two are different answers, which is why
+/// this is a nullable key rather than a count with a sentinel.
+Map<int?, String> _kTransferCaps(AppI18n i18n) => {
+  null: i18n.goMaxTransfersAny,
+  0: i18n.goMaxTransfersDirect,
+  1: i18n.goMaxTransfersCount(1),
+  2: i18n.goMaxTransfersCount(2),
+};
+
 // TDX first/last-mile mode ids.
 Map<int, String> _kMileModes(AppI18n i18n) => {
   0: i18n.modeWalking,
@@ -398,24 +406,31 @@ Map<int, String> _kMileModes(AppI18n i18n) => {
   3: i18n.modeSharedBike,
 };
 
-/// Options sheet for all TDX MaaS routing parameters. Returns the edited
-/// [PlanOptions] on 套用, or null on dismiss.
+/// Options sheet for the routing parameters the live planner honours. Returns
+/// the edited [PlanOptions] on 套用, or null on dismiss.
+///
+/// [capabilities] decides what is offered. The five shared controls are always
+/// first and always in the same order, so the sheet does not reshuffle under
+/// the rider when the backend changes -- only the tail appears or disappears.
 Future<PlanOptions?> showOptionsSheet(
   BuildContext context, {
   required PlanOptions current,
+  required PlannerCapabilities capabilities,
 }) {
   return showModalBottomSheet<PlanOptions>(
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
-    builder: (_) => _OptionsSheet(initial: current),
+    builder: (_) =>
+        _OptionsSheet(initial: current, capabilities: capabilities),
   );
 }
 
 class _OptionsSheet extends StatefulWidget {
-  const _OptionsSheet({required this.initial});
+  const _OptionsSheet({required this.initial, required this.capabilities});
 
   final PlanOptions initial;
+  final PlannerCapabilities capabilities;
 
   @override
   State<_OptionsSheet> createState() => _OptionsSheetState();
@@ -548,6 +563,49 @@ class _OptionsSheetState extends State<_OptionsSheet> {
                     (t) => setState(() => _o = _o.copyWith(lastMileTime: t)),
                     cs,
                   ),
+                  // The planner-specific tail. No heading of its own: these
+                  // are more conditions on the same search, not a different
+                  // kind of thing, and a section header that disappeared with
+                  // its contents would read as the sheet having been cut off.
+                  if (widget.capabilities.has(
+                    PlannerCapabilities.maxTransfers,
+                  )) ...[
+                    const SizedBox(height: 16),
+                    _sectionRow(AppI18n.of(context).goMaxTransfers, '', cs),
+                    const SizedBox(height: 8),
+                    AppSlidingSegment<int?>(
+                      options: _kTransferCaps(AppI18n.of(context)),
+                      value: _o.maxTransfers,
+                      onChanged: (v) => setState(
+                        () => _o = v == null
+                            ? _o.copyWith(clearMaxTransfers: true)
+                            : _o.copyWith(maxTransfers: v),
+                      ),
+                    ),
+                  ],
+                  if (widget.capabilities.has(
+                    PlannerCapabilities.avoidReservation,
+                  )) ...[
+                    const SizedBox(height: 12),
+                    _switchRow(
+                      AppI18n.of(context).goAvoidReservation,
+                      value: _o.avoidReservation,
+                      onChanged: (v) =>
+                          setState(() => _o = _o.copyWith(avoidReservation: v)),
+                      cs: cs,
+                    ),
+                  ],
+                  if (widget.capabilities.has(
+                    PlannerCapabilities.carryBike,
+                  )) ...[
+                    _switchRow(
+                      AppI18n.of(context).goCarryBike,
+                      value: _o.carryBike,
+                      onChanged: (v) =>
+                          setState(() => _o = _o.copyWith(carryBike: v)),
+                      cs: cs,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -566,6 +624,31 @@ class _OptionsSheetState extends State<_OptionsSheet> {
       ),
     );
   }
+
+  /// A label and a switch on one row, at the same weight as the sheet's other
+  /// section labels -- these are conditions on the search, not settings.
+  Widget _switchRow(
+    String title, {
+    required bool value,
+    required ValueChanged<bool> onChanged,
+    required ColorScheme cs,
+  }) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            title,
+            style: AppTextStyles.bodyLarge.copyWith(
+              color: cs.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        AppSwitch(value: value, onChanged: onChanged),
+      ],
+    ),
+  );
 
   Widget _sectionRow(String title, String value, ColorScheme cs) => Row(
     children: [

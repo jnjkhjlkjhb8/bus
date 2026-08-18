@@ -282,6 +282,20 @@ func TestNormalizeAlertsRequireIdentity(t *testing.T) {
 	}
 }
 
+// TestNormalizeAlertsCapturesDepartment verifies the publishing department
+// TDX names on the alert is carried through as-is, so the app can label a row
+// by its real publisher rather than a hardcoded city name.
+func TestNormalizeAlertsCapturesDepartment(t *testing.T) {
+	got, ok := normalizeAlerts("v2/Bus/Alert/City/Taipei", []byte(`[{"Department":"臺北市公共運輸處","Description":"x"}]`))
+	if !ok || len(got) != 1 || got[0].Department != "臺北市公共運輸處" {
+		t.Fatalf("got=%v ok=%v", got, ok)
+	}
+	got, ok = normalizeAlerts("v2/Bus/Alert/City/Taipei", []byte(`[{"Description":"x"}]`))
+	if !ok || len(got) != 1 || got[0].Department != "" {
+		t.Fatalf("missing Department must yield empty, got=%v ok=%v", got, ok)
+	}
+}
+
 // A payload that cannot be understood must not become an empty snapshot: the
 // snapshot is what seeds every new subscriber, so writing nothing over the last
 // good one would blank the alert list for everyone.

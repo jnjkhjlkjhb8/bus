@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/models/plan_options.dart';
 import 'package:wheres_the_bus/data/repositories/maas_repository.dart';
 import 'package:wheres_the_bus/data/tracking/journey_models.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
@@ -1072,14 +1073,8 @@ class _FakeMaasRepository implements MaasRepository {
     required String date,
     required String time,
     bool arriveBy = false,
-    double gc = 0,
-    List<int> transitModes = const [3, 4, 5, 6, 7, 8, 9],
-    int top = 5,
-    int transferMin = 15,
-    int transferMax = 60,
-    int firstMileMode = 0,
-    int firstMileTime = 10,
-    int lastMileMode = 0,
-    int lastMileTime = 10,
+    PlanOptions options = const PlanOptions(),
+    String pageCursor = '',
+    int legAlternatives = 0,
   }) => Stream.value((result: PlanResult(routes: routes), complete: true));
 }

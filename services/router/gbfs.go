@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"time"
 
@@ -82,15 +83,24 @@ func handleGBFSDiscovery() gin.HandlerFunc {
 // requestBaseURL reconstructs the scheme://host the client used. gin has already
 // applied the trusted-proxy rules to X-Forwarded-*, so an untrusted client
 // cannot forge either value.
+//
+// A direct client whose Host header carries no port gets _httpPort appended.
+// MOTIS's HTTP client sends only the host part, so without this the discovery
+// document advertises the sub-feeds on port 80 and every fetch is refused. A
+// forwarded request is left alone: there the port-less host is the proxy's
+// public name, and 8080 is not reachable on it.
 func requestBaseURL(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
+	host := r.Host
 	if forwarded := r.Header.Get("X-Forwarded-Proto"); forwarded != "" {
 		scheme = forwarded
+	} else if _, _, err := net.SplitHostPort(host); err != nil {
+		host = net.JoinHostPort(host, _httpPort)
 	}
-	return scheme + "://" + r.Host
+	return scheme + "://" + host
 }
 
 func handleGBFSSystemInformation() gin.HandlerFunc {

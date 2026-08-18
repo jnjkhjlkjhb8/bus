@@ -53,16 +53,21 @@ void main() {
   });
 
   group('AlertSourceChip', () {
-    Future<void> pump(WidgetTester tester, AlertSource? source) =>
-        tester.pumpWidget(
-          MaterialApp(
-            locale: const Locale('zh'),
-            localizationsDelegates: AppI18n.localizationsDelegates,
-            supportedLocales: AppI18n.supportedLocales,
+    Future<void> pump(
+      WidgetTester tester,
+      AlertSource? source, {
+      String? department,
+    }) => tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppI18n.localizationsDelegates,
+        supportedLocales: AppI18n.supportedLocales,
 
-            home: Scaffold(body: AlertSourceChip(source: source)),
-          ),
-        );
+        home: Scaffold(
+          body: AlertSourceChip(source: source, department: department),
+        ),
+      ),
+    );
 
     testWidgets('maps a metro operator code to its label', (tester) async {
       await pump(tester, const AlertSource(AlertSourceKind.metro, 'TRTC'));
@@ -77,6 +82,39 @@ void main() {
     testWidgets('renders nothing for a null source', (tester) async {
       await pump(tester, null);
       expect(find.byType(Text), findsNothing);
+    });
+
+    testWidgets(
+      "a bus alert's real department name wins over the hardcoded city map",
+      (tester) async {
+        await pump(
+          tester,
+          const AlertSource(AlertSourceKind.busAlert, 'Taipei'),
+          department: '臺北市公共運輸處',
+        );
+        expect(find.text('臺北市公共運輸處'), findsOneWidget);
+        expect(find.text('北市公車'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'a department that is just an operator code (no CJK) falls back to '
+      'the hardcoded city map',
+      (tester) async {
+        await pump(
+          tester,
+          const AlertSource(AlertSourceKind.busAlert, 'Taipei'),
+          department: 'THB',
+        );
+        expect(find.text('北市公車'), findsOneWidget);
+      },
+    );
+
+    testWidgets('no department falls back to the hardcoded city map', (
+      tester,
+    ) async {
+      await pump(tester, const AlertSource(AlertSourceKind.busAlert, 'Taipei'));
+      expect(find.text('北市公車'), findsOneWidget);
     });
   });
 }

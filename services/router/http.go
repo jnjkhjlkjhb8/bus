@@ -31,6 +31,9 @@ import (
 )
 
 const (
+	// The only port the HTTP server ever serves on, so a self-referential URL
+	// (the GBFS discovery document) can name it without a config setting.
+	_httpPort             = "8080"
 	_metricsCredentialEnv = "ROUTER_METRICS_TOKEN"
 	_trustedProxiesEnv    = "ROUTER_TRUSTED_PROXIES"
 	_httpTokenRateLimit   = 10
@@ -243,7 +246,7 @@ func prepareHTTPServer(
 		WriteTimeout:      _httpWriteTimeout,
 		IdleTimeout:       _httpIdleTimeout,
 	}
-	listener, err := listen("tcp", "0.0.0.0:8080")
+	listener, err := listen("tcp", net.JoinHostPort("0.0.0.0", _httpPort))
 	if err != nil {
 		return preparedHTTPServer{}, _oops.Wrapf(err, "listen for HTTP")
 	}

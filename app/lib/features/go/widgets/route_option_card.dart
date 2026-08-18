@@ -6,7 +6,6 @@ import 'package:wheres_the_bus/features/go/widgets/transit_visuals.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
 import 'package:wheres_the_bus/shared/motion/app_motion.dart';
 import 'package:wheres_the_bus/shared/motion/pressable.dart';
-import 'package:wheres_the_bus/shared/widgets/app_badge.dart';
 
 String formatClock(String raw) {
   if (raw.isEmpty) return '';
@@ -63,7 +62,6 @@ class RouteOptionCard extends StatelessWidget {
     required this.route,
     required this.highlighted,
     required this.onTap,
-    this.badge,
     this.isSaved = false,
     this.onToggleSave,
     super.key,
@@ -71,7 +69,6 @@ class RouteOptionCard extends StatelessWidget {
 
   final PlanRoute route;
   final bool highlighted;
-  final String? badge;
   final VoidCallback onTap;
 
   /// Whether this route is currently in the saved snapshots.
@@ -84,61 +81,57 @@ class RouteOptionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final minutes = routeMinutes(route);
+    final departure = formatClock(route.startTime);
     final arrival = formatClock(route.endTime);
     final sections = route.sections;
     final origin = sections.isNotEmpty ? sections.first.departure.name : '';
     final dest = sections.isNotEmpty ? sections.last.arrival.name : '';
 
+    // Left column, heaviest first: how long the journey takes, then when it
+    // happens. The fare sits alone at the top right, competing with nothing
+    // for width — which is what keeps the window from ellipsising on a narrow
+    // phone. The "fastest" badge is gone: the list is already ordered by it,
+    // so the badge restated the position of the first card and nothing else.
     final header = Row(
-      crossAxisAlignment: CrossAxisAlignment.baseline,
-      textBaseline: TextBaseline.alphabetic,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          '$minutes',
-          style: AppTextStyles.timeValue(
-            size: AppTextStyles.heading1.fontSize,
-            weight: AppTextStyles.heading1.fontWeight,
-            color: cs.onSurface,
-          ),
-        ),
-        const SizedBox(width: 2),
-        Padding(
-          padding: const EdgeInsets.only(bottom: 2),
-          child: Text(
-            AppI18n.of(context).goMinutesUnit,
-            style: AppTextStyles.bodySmall.copyWith(
-              color: cs.onSurfaceVariant,
-            ),
-          ),
-        ),
-        if (badge != null) ...[
-          const SizedBox(width: 8),
-          _Badge(label: badge!),
-        ],
-        const Spacer(),
-        if (arrival.isNotEmpty)
-          Row(
-            mainAxisSize: MainAxisSize.min,
+        // Expanded, not Flexible: the left column claims the full width so the
+        // fare is pinned to the right edge instead of hugging the times.
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                AppI18n.of(context).goArriveLabel,
-                style: AppTextStyles.bodySmall.copyWith(
-                  color: cs.onSurfaceVariant,
-                ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  Text(
+                    '$minutes',
+                    style: AppTextStyles.timeValue(
+                      size: AppTextStyles.heading1.fontSize,
+                      weight: AppTextStyles.heading1.fontWeight,
+                      color: cs.onSurface,
+                    ),
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    AppI18n.of(context).goMinutesUnit,
+                    style: AppTextStyles.bodySmall.copyWith(
+                      color: cs.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
-              Text(
-                arrival,
-                style: AppTextStyles.timeValue(
-                  size: AppTextStyles.bodySmall.fontSize,
-                  color: cs.onSurfaceVariant,
-                ),
-              ),
+              _DepartArriveWindow(departure: departure, arrival: arrival),
             ],
           ),
-        if (onToggleSave != null) ...[
-          const SizedBox(width: 8),
-          _SaveButton(saved: isSaved, onTap: onToggleSave!),
-        ],
+        ),
+        if (route.totalFare > 0)
+          Padding(
+            padding: const EdgeInsets.only(left: 8, top: 2),
+            child: _Fare(amount: route.totalFare),
+          ),
       ],
     );
 
@@ -147,7 +140,7 @@ class RouteOptionCard extends StatelessWidget {
       children: [
         header,
         const SizedBox(height: 10),
-        LegStrip(sections: sections, detailed: highlighted),
+        LegStrip(sections: sections),
         if (highlighted && (origin.isNotEmpty || dest.isNotEmpty)) ...[
           const SizedBox(height: 8),
           Row(
@@ -195,34 +188,17 @@ class RouteOptionCard extends StatelessWidget {
                 color: cs.onSurfaceVariant,
               ),
             ),
-            const SizedBox(width: 12),
-            Icon(
-              Icons.directions_walk_rounded,
-              size: 14,
-              color: cs.onSurfaceVariant,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              AppI18n.of(context).walkMinutes(walkMinutes(route)),
-              style: AppTextStyles.bodySmall.copyWith(
-                color: cs.onSurfaceVariant,
-              ),
-            ),
-            if (route.totalFare > 0) ...[
+            // No walking total here any more: every walk in the strip above
+            // now reports its own minutes, so a sum would be the same fact
+            // stated twice. The transfer count stays because it is what these
+            // cards get compared on, and counting chips is not that.
+            //
+            // The bookmark trades places with the fare: price belongs with
+            // the other facts about the journey, the control belongs with
+            // the other chrome.
+            if (onToggleSave != null) ...[
               const Spacer(),
-              Text(
-                r'NT$ ',
-                style: AppTextStyles.bodySmall.copyWith(
-                  color: cs.onSurfaceVariant,
-                ),
-              ),
-              Text(
-                '${route.totalFare}',
-                style: AppTextStyles.timeValue(
-                  size: AppTextStyles.bodySmall.fontSize,
-                  color: cs.onSurface,
-                ),
-              ),
+              _SaveButton(saved: isSaved, onTap: onToggleSave!),
             ],
           ],
         ),
@@ -278,111 +254,259 @@ class _SaveButton extends StatelessWidget {
   }
 }
 
-/// The route's legs as a chip run: line badges for transit, a walking glyph
-/// for the pedestrian stretches, chevrons between. Shared with the waiting
-/// state's "last time" card, which shows the same shape at a glance.
+/// The whole journey as one run of chips, in order: what the rider rides, and
+/// the gaps between. Two vocabularies only — a filled chip is something with a
+/// timetable, a bare grey glyph is time spent not on it — so the shape of a
+/// route reads before any of its words do.
+///
+/// Every leg reports its own minutes, including the scheduled wait between two
+/// legs, which no section covers: it exists only as the gap between one
+/// arrival and the next departure, and is often the largest single number in
+/// the route.
 class LegStrip extends StatelessWidget {
-  const LegStrip({required this.sections, required this.detailed, super.key});
+  const LegStrip({required this.sections, super.key});
 
   final List<PlanSection> sections;
-  final bool detailed;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final i18n = AppI18n.of(context);
     final children = <Widget>[];
+
+    void chevron() => children.add(
+      Icon(Icons.chevron_right_rounded, size: 15, color: cs.outline),
+    );
+
     for (final (i, s) in sections.indexed) {
-      final color = transitColor(s.transport, cs);
-      if (isWalk(s)) {
+      final wait = waitMinutesBefore(sections, i);
+      if (wait > 0) {
         children.add(
-          _WalkPill(minutes: sectionMinutes(s), detailed: detailed),
+          _GapChip(
+            icon: Icons.schedule_rounded,
+            minutes: wait,
+            semanticLabel: i18n.goWaitMinutes(wait),
+          ),
+        );
+        chevron();
+      }
+      if (isWalk(s)) {
+        final minutes = sectionMinutes(s);
+        children.add(
+          _GapChip(
+            icon: Icons.directions_walk_rounded,
+            minutes: minutes,
+            semanticLabel: i18n.goWalkLegSemantics(minutes),
+          ),
         );
       } else {
         children.add(
-          AppBadge(
-            label: detailed
-                ? AppI18n.of(context).legLabelWithMinutes(
-                    sectionLabel(AppI18n.of(context), s),
-                    sectionMinutes(s),
-                  )
-                : sectionLabel(AppI18n.of(context), s),
-            color: color,
+          _LegPill(
+            icon: transitIcon(s.transport.mode),
+            label: sectionLabel(i18n, s),
+            minutes: sectionMinutes(s),
+            lineColor: transitColor(s.transport, cs),
           ),
         );
       }
-      if (i < sections.length - 1) {
-        children.add(
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Icon(
-              Icons.chevron_right_rounded,
-              size: 16,
-              color: cs.outline,
-            ),
-          ),
-        );
-      }
+      if (i < sections.length - 1) chevron();
     }
     return Wrap(
       crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 4,
       runSpacing: 6,
       children: children,
     );
   }
 }
 
-class _WalkPill extends StatelessWidget {
-  const _WalkPill({required this.minutes, required this.detailed});
+/// A stretch of the journey spent off a vehicle — walking, or waiting for the
+/// next one. Deliberately the same chip in both cases, differing only by glyph:
+/// both are time the rider spends getting nowhere, and drawing them alike is
+/// what lets the coloured chips read as "the parts that move".
+class _GapChip extends StatelessWidget {
+  const _GapChip({
+    required this.icon,
+    required this.minutes,
+    required this.semanticLabel,
+  });
 
+  final IconData icon;
   final int minutes;
-  final bool detailed;
+  final String semanticLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Semantics(
+      label: semanticLabel,
+      excludeSemantics: true,
+      child: SizedBox(
+        height: _kLegChipHeight,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: cs.onSurfaceVariant),
+            const SizedBox(width: 3),
+            Text(
+              AppI18n.of(context).minutesTight(minutes),
+              style: AppTextStyles.timeValue(
+                size: AppTextStyles.bodySmall.fontSize,
+                color: cs.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One transit leg: the mode's glyph and the line's name in a single pill,
+/// on an achromatic surface, with the line's own colour carried by the glyph
+/// alone.
+///
+/// The chip used to be filled with the line colour. Four filled chips in a row
+/// is four saturated blocks competing for the same glance, on a screen whose
+/// only accent is meant to be Ink. Moving the colour onto the glyph keeps the
+/// line identity — the Domain Colour Rule names icons as a carrier — and hands
+/// the row's visual weight back to the route names.
+class _LegPill extends StatelessWidget {
+  const _LegPill({
+    required this.icon,
+    required this.label,
+    required this.minutes,
+    required this.lineColor,
+  });
+
+  final IconData icon;
+  final String label;
+  final int minutes;
+  final Color lineColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final surface = cs.surfaceContainerHighest;
+    return Container(
+      height: _kLegChipHeight,
+      padding: const EdgeInsets.fromLTRB(6, 0, 8, 0),
+      decoration: BoxDecoration(
+        color: surface,
+        borderRadius: BorderRadius.circular(AppTheme.radiusChip),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: legibleLineColor(lineColor, surface)),
+          // Hairline between the glyph and the name: the glyph is data about
+          // the mode, the name is data about the line, and at this size they
+          // read as one word without it.
+          Container(
+            width: 1,
+            height: 12,
+            margin: const EdgeInsets.symmetric(horizontal: 6),
+            color: cs.outline,
+          ),
+          Text(
+            label,
+            style: AppTextStyles.bodySmall.copyWith(
+              color: cs.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            AppI18n.of(context).minutesTight(minutes),
+            style: AppTextStyles.timeValue(
+              size: AppTextStyles.bodySmall.fontSize,
+              color: cs.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One height for every chip in the strip, so a wrapped row still reads as a
+/// single band rather than a ragged one.
+const double _kLegChipHeight = 22;
+
+/// When the journey happens, as one line. Times are mono so the two clocks
+/// line up with every other time in the app; the words between them are not.
+class _DepartArriveWindow extends StatelessWidget {
+  const _DepartArriveWindow({required this.departure, required this.arrival});
+
+  final String departure;
+  final String arrival;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final i18n = AppI18n.of(context);
+    if (departure.isEmpty && arrival.isEmpty) return const SizedBox.shrink();
+    final clock = AppTextStyles.timeValue(
+      size: AppTextStyles.bodySmall.fontSize,
+      color: cs.onSurfaceVariant,
+    );
+    // An arrow rather than the words 出發 / 抵達. It is four characters
+    // shorter, which is the difference between fitting and ellipsising on a
+    // 320pt screen, and the direction is not something a rider has to read.
+    if (departure.isEmpty || arrival.isEmpty) {
+      return Text(
+        departure.isEmpty ? arrival : departure,
+        style: clock,
+        semanticsLabel: departure.isEmpty
+            ? '${i18n.goArriveLabel}$arrival'
+            : '$departure${i18n.goDepartSuffix}',
+      );
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(departure, style: clock),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 5),
+          child: Icon(
+            Icons.arrow_right_alt_rounded,
+            size: 14,
+            color: cs.outline,
+          ),
+        ),
+        Text(arrival, style: clock),
+      ],
+    );
+  }
+}
+
+class _Fare extends StatelessWidget {
+  const _Fare({required this.amount});
+
+  final int amount;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     return Row(
       mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.baseline,
+      textBaseline: TextBaseline.alphabetic,
       children: [
-        Icon(
-          Icons.directions_walk_rounded,
-          size: 16,
-          color: cs.onSurfaceVariant,
+        Text(
+          r'NT$',
+          style: AppTextStyles.bodySmall.copyWith(color: cs.onSurfaceVariant),
         ),
-        if (detailed) ...[
-          const SizedBox(width: 2),
-          Text(
-            AppI18n.of(context).minutesTight(minutes),
-            style: AppTextStyles.bodySmall.copyWith(
-              color: cs.onSurfaceVariant,
-            ),
+        const SizedBox(width: 3),
+        Text(
+          '$amount',
+          style: AppTextStyles.timeValue(
+            size: AppTextStyles.bodyRegular.fontSize,
+            weight: FontWeight.w600,
+            color: cs.onSurface,
           ),
-        ],
-      ],
-    );
-  }
-}
-
-class _Badge extends StatelessWidget {
-  const _Badge({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: cs.onSurface,
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Text(
-        label,
-        style: AppTextStyles.bodyVerySmall.copyWith(
-          color: cs.surface,
-          fontWeight: FontWeight.bold,
         ),
-      ),
+      ],
     );
   }
 }

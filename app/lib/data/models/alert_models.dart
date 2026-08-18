@@ -4,13 +4,11 @@ enum AlertSeverity { red, yellow, green }
 
 /// Which transit domain an alert came from. The subscription layer knows this;
 /// carrying it to the UI lets a row show which system is affected at a glance.
-/// Bus splits into two kinds because TDX publishes advisories and disruptions
-/// on separate topics, and each is its own live stream. The two `app` kinds are
-/// not streams at all — they are ops-authored notices read from Remote Config,
-/// carried through the same pipeline so read/dismiss/badge behave identically.
+/// The two `app` kinds are not streams at all — they are ops-authored notices
+/// read from Remote Config, carried through the same pipeline so
+/// read/dismiss/badge behave identically.
 enum AlertSourceKind {
   metro,
-  busNews,
   busAlert,
   tra,
   thsr,
@@ -24,9 +22,6 @@ enum AlertSourceKind {
 enum NoticeKind {
   /// Something is broken or degraded right now.
   disruption,
-
-  /// Route changes, timetable revisions — informational, never urgent.
-  news,
 
   /// Ops-authored: maintenance windows and app announcements.
   announcement,
@@ -65,6 +60,7 @@ class AlertViewModel extends Equatable {
     this.title,
     this.time,
     this.source,
+    this.department,
   });
 
   /// The alert text, and the row's identity: it is the dedupe, read, and
@@ -90,20 +86,22 @@ class AlertViewModel extends Equatable {
   /// Which system and operator the alert came from, if known.
   final AlertSource? source;
 
+  /// TDX's own publishing department for this alert, verbatim (e.g.
+  /// "臺北市公共運輸處"), when the feed carries one.
+  final String? department;
+
   /// What this notice is. Derived from [source] so it can never disagree with
   /// the stream the row came from.
   NoticeKind get kind => switch (source?.kind) {
-    AlertSourceKind.busNews => NoticeKind.news,
     AlertSourceKind.appMaintenance ||
     AlertSourceKind.appNotice => NoticeKind.announcement,
     _ => NoticeKind.disruption,
   };
 
   /// How loud this notice may be. Severity only decides tone for disruptions:
-  /// news and announcements are never critical no matter what level the feed
-  /// puts on them.
+  /// announcements are never critical no matter what level the feed puts on
+  /// them.
   NoticeTone get tone => switch (kind) {
-    NoticeKind.news => NoticeTone.info,
     NoticeKind.announcement =>
       source?.kind == AlertSourceKind.appMaintenance
           ? NoticeTone.caution

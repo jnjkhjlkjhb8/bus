@@ -312,7 +312,10 @@ class _NotificationRowState extends State<_NotificationRow> {
           children: [
             Row(
               children: [
-                AlertSourceChip(source: alert.source),
+                AlertSourceChip(
+                  source: alert.source,
+                  department: alert.department,
+                ),
                 if (alert.source != null && isRed) const SizedBox(width: 8),
                 if (isRed) _SeverityTag(accent: colors.accent, cs: cs),
                 const Spacer(),

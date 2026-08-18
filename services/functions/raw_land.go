@@ -522,18 +522,12 @@ func dumpRawTDXReaderWithDB(
 	})
 }
 
-// landRawTDX runs one raw_tdx landing transaction, bounded by its own timeout so
-// a dead Azure peer cannot block the pgx socket read indefinitely (there is no
-// server statement_timeout, and TCP keepalive is too slow to notice). On timeout
-// pgx cancels the query; dumpRawTDX retries, and if all attempts fail the caller
-// leaves the IMS cache un-advanced so this partition refetches next run.
-func landRawTDX(ctx context.Context, t rawTarget, marker, landingCycle string, body io.Reader) error {
-	if _ingestDB == nil {
-		return _oops.Wrapf(errRawDump, "ingestDB is nil")
-	}
-	return landRawTDXWithDB(ctx, _ingestDB, t, marker, landingCycle, body)
-}
-
+// landRawTDXWithDB runs one raw_tdx landing transaction, bounded by its own
+// timeout so a dead Azure peer cannot block the pgx socket read indefinitely
+// (there is no server statement_timeout, and TCP keepalive is too slow to
+// notice). On timeout pgx cancels the query; dumpRawTDX retries, and if all
+// attempts fail the caller leaves the IMS cache un-advanced so this partition
+// refetches next run.
 func landRawTDXWithDB(
 	ctx context.Context,
 	db rawLandingBeginner,

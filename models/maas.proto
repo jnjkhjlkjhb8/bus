@@ -110,6 +110,19 @@ message Section {
   // router could not snap the stops to a known line geometry — the app then
   // falls back to a straight departure→intermediateStops→arrival line.
   repeated Location transitPath = 12;
+  // Other services that can replace this transit leg, populated only when the
+  // request asked for them (legAlternatives > 0) and the planner is MOTIS.
+  //
+  // Self-referential because an alternative *is* a transit leg, and reusing
+  // Section is what lets the bus notification-identity lookup resolve one the
+  // same way it resolves the leg it replaces — which is what makes an
+  // alternative tappable through to the route screen. Only `transport`,
+  // `departure`, `arrival` and `notification_identity` are ever set on one:
+  // MOTIS frames each alternative as [walk, transit, walk], and the two walks
+  // are the context it used to prove the swap fits, not something the rider
+  // chooses. Alternatives never nest — this field is always empty on a
+  // Section that is itself an alternative.
+  repeated Section alternatives = 13;
 }
 
 message WalkStep {

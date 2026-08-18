@@ -16,7 +16,6 @@ import 'package:wheres_the_bus/features/go/model/planned_place.dart';
 import 'package:wheres_the_bus/features/go/view/go_screen.dart';
 import 'package:wheres_the_bus/features/home/home_screen.dart';
 import 'package:wheres_the_bus/features/metro/view/metro_screen.dart';
-import 'package:wheres_the_bus/features/rail/rail_system_labels.dart';
 import 'package:wheres_the_bus/features/rail/view/rail_screen.dart';
 import 'package:wheres_the_bus/features/rail/view/rail_train_screen.dart';
 import 'package:wheres_the_bus/features/search/view/search_screen.dart';
@@ -24,6 +23,7 @@ import 'package:wheres_the_bus/features/settings/bloc/settings_state.dart';
 import 'package:wheres_the_bus/features/settings/settings_option_screen.dart';
 import 'package:wheres_the_bus/features/settings/settings_screen.dart';
 import 'package:wheres_the_bus/l10n/app_i18n.dart';
+import 'package:wheres_the_bus/shared/rail_system_labels.dart';
 import 'package:wheres_the_bus/shared/widgets/main_scaffold.dart';
 
 Page<T> _page<T>(Widget child) => MaterialPage<T>(child: child);
@@ -198,6 +198,20 @@ List<RouteBase> buildAppRoutes({
                     selected: SettingsRepository.instance.fareType.labelOf(
                       i18n,
                     ),
+                  );
+                },
+              ),
+              GoRoute(
+                path: 'walk-pace',
+                pageBuilder: (context, state) {
+                  final i18n = AppI18n.of(context);
+                  return _settingsOptionPage<String>(
+                    state.extra,
+                    title: i18n.settingsWalkPace,
+                    options: [for (final e in WalkPace.values) e.labelOf(i18n)],
+                    selected: WalkPace.fromCmPerSec(
+                      SettingsRepository.instance.walkSpeedCmPerSec,
+                    ).labelOf(i18n),
                   );
                 },
               ),

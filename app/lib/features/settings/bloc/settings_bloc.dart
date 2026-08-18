@@ -43,6 +43,8 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
     on<FareTypeSelected>(_onFareTypeSelected);
     on<LiveActivityToggled>(_onLiveActivityToggled);
     on<ShakeToReportToggled>(_onShakeToReportToggled);
+    on<StepFreeRoutingToggled>(_onStepFreeRoutingToggled);
+    on<WalkPaceSelected>(_onWalkPaceSelected);
     on<PushToggled>(_onPushToggled);
     on<UpdateCheckRequested>(_onUpdateCheckRequested);
     on<AppMetadataLoaded>(_onAppMetadataLoaded);
@@ -102,6 +104,8 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
     fareType: s.fareType,
     liveActivityEnabled: s.liveActivityEnabled,
     shakeToReport: s.shakeToReport,
+    stepFreeRouting: s.stepFreeRouting,
+    walkPace: WalkPace.fromCmPerSec(s.walkSpeedCmPerSec),
   );
 
   void _onAppearanceSelected(
@@ -118,6 +122,21 @@ class SettingsBloc extends Bloc<SettingsEvent, SettingsState> {
   void _onLanguageSelected(LanguageSelected e, Emitter<SettingsState> emit) {
     _settings.languageCode = e.language.key;
     emit(state.copyWith(language: e.language));
+  }
+
+  // Both of these are read when a plan is built, not watched, so the write
+  // is what the next search picks up; the emit only updates the row.
+  void _onStepFreeRoutingToggled(
+    StepFreeRoutingToggled e,
+    Emitter<SettingsState> emit,
+  ) {
+    _settings.stepFreeRouting = e.value;
+    emit(state.copyWith(stepFreeRouting: e.value));
+  }
+
+  void _onWalkPaceSelected(WalkPaceSelected e, Emitter<SettingsState> emit) {
+    _settings.walkSpeedCmPerSec = e.pace.cmPerSec;
+    emit(state.copyWith(walkPace: e.pace));
   }
 
   void _onFareTypeSelected(FareTypeSelected e, Emitter<SettingsState> emit) {

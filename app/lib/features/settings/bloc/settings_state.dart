@@ -61,6 +61,29 @@ enum Language {
   };
 }
 
+/// Walking paces offered in 設定 › 路線規劃, in centimetres per second.
+///
+/// [standard] is 0 on purpose: it hands the pace back to the planner's own
+/// default rather than asserting a number of our own, the same way
+/// [Language.system] hands locale resolution back to the device.
+enum WalkPace {
+  slower(100),
+  standard(0),
+  faster(180);
+
+  const WalkPace(this.cmPerSec);
+  final int cmPerSec;
+
+  static WalkPace fromCmPerSec(int value) =>
+      values.firstWhere((e) => e.cmPerSec == value, orElse: () => standard);
+
+  String labelOf(AppI18n i18n) => switch (this) {
+    WalkPace.slower => i18n.settingsWalkPaceSlower,
+    WalkPace.standard => i18n.settingsWalkPaceStandard,
+    WalkPace.faster => i18n.settingsWalkPaceFaster,
+  };
+}
+
 /// What 設定 › 檢查更新 is currently showing.
 ///
 /// [failed] is a first-class outcome rather than a silent fall back to
@@ -77,6 +100,8 @@ class SettingsState extends Equatable {
     this.fareType = FareType.full,
     this.liveActivityEnabled = true,
     this.shakeToReport = true,
+    this.stepFreeRouting = false,
+    this.walkPace = WalkPace.standard,
     this.appVersion = '',
     this.powerSyncLastSyncedAt,
     this.updateCheck = UpdateCheck.idle,
@@ -94,6 +119,13 @@ class SettingsState extends Equatable {
 
   /// Whether shaking the phone offers to open the report form.
   final bool shakeToReport;
+
+  /// Whether the planner must route step-free. A fact about the rider, so it
+  /// is set once here rather than per journey.
+  final bool stepFreeRouting;
+
+  /// The rider's usual walking pace, applied to every plan.
+  final WalkPace walkPace;
 
   /// Real running-app version from `PackageInfo`, empty until it loads
   /// (F46). Never hardcoded.
@@ -119,6 +151,8 @@ class SettingsState extends Equatable {
     FareType? fareType,
     bool? liveActivityEnabled,
     bool? shakeToReport,
+    bool? stepFreeRouting,
+    WalkPace? walkPace,
     String? appVersion,
     DateTime? powerSyncLastSyncedAt,
     UpdateCheck? updateCheck,
@@ -131,6 +165,8 @@ class SettingsState extends Equatable {
     fareType: fareType ?? this.fareType,
     liveActivityEnabled: liveActivityEnabled ?? this.liveActivityEnabled,
     shakeToReport: shakeToReport ?? this.shakeToReport,
+    stepFreeRouting: stepFreeRouting ?? this.stepFreeRouting,
+    walkPace: walkPace ?? this.walkPace,
     appVersion: appVersion ?? this.appVersion,
     powerSyncLastSyncedAt: powerSyncLastSyncedAt ?? this.powerSyncLastSyncedAt,
     updateCheck: updateCheck ?? this.updateCheck,
@@ -146,6 +182,8 @@ class SettingsState extends Equatable {
     fareType,
     liveActivityEnabled,
     shakeToReport,
+    stepFreeRouting,
+    walkPace,
     appVersion,
     powerSyncLastSyncedAt,
     updateCheck,

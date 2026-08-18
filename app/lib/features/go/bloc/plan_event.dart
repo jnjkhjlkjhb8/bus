@@ -1,4 +1,5 @@
 import 'package:wheres_the_bus/data/models/plan_models.dart';
+import 'package:wheres_the_bus/data/models/plan_options.dart';
 
 abstract class PlanEvent {
   const PlanEvent();
@@ -30,15 +31,9 @@ class PlanSearchRequested extends PlanEvent {
     required this.date,
     required this.time,
     this.arriveBy = false,
-    this.gc = 0.0,
-    this.transitModes = const [3, 4, 5, 6, 7, 8, 9],
-    this.top = 5,
-    this.transferMin = 15,
-    this.transferMax = 60,
-    this.firstMileMode = 0,
-    this.firstMileTime = 10,
-    this.lastMileMode = 0,
-    this.lastMileTime = 10,
+    this.options = const PlanOptions(),
+    this.pageCursor = '',
+    this.legAlternatives = 0,
   });
 
   final double fromLat;
@@ -48,15 +43,17 @@ class PlanSearchRequested extends PlanEvent {
   final String date;
   final String time;
   final bool arriveBy;
-  final double gc;
-  final List<int> transitModes;
-  final int top;
-  final int transferMin;
-  final int transferMax;
-  final int firstMileMode;
-  final int firstMileTime;
-  final int lastMileMode;
-  final int lastMileTime;
+
+  /// Everything the rider chose, in one object rather than fifteen parameters
+  /// re-listed at each hop between the screen, this event and the RPC.
+  final PlanOptions options;
+
+  /// Echoed from a previous response to ask for earlier or later departures.
+  /// Empty is a fresh search, which is what resets the paging.
+  final String pageCursor;
+
+  /// How many replacement services to ask for per transit leg.
+  final int legAlternatives;
 }
 
 /// Give up on the in-flight query. Cancels the RPC and returns to the state the

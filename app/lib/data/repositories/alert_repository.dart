@@ -22,15 +22,8 @@ class AlertRepository {
   Future<void> persistReadAlerts(Set<String> read) =>
       _settings.setReadAlerts(read);
 
-  /// Server-streaming: emits bus service news for [city] until cancelled.
-  Stream<List<AlertViewModel>> busNews(String city) => _decoded(
-    _grpc.busNews(Alert_Bus_Ask(city: city)),
-    AlertSource(AlertSourceKind.busNews, city),
-  );
-
-  /// Server-streaming: emits bus service disruptions for [city]. TDX publishes
-  /// these on a topic of their own, so they are a separate stream from
-  /// [busNews] rather than a severity within it.
+  /// Server-streaming: emits bus service disruptions for [city] until
+  /// cancelled.
   Stream<List<AlertViewModel>> busAlert(String city) => _decoded(
     _grpc.busAlert(Alert_Bus_Ask(city: city)),
     AlertSource(AlertSourceKind.busAlert, city),

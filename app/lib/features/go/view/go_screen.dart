@@ -16,6 +16,7 @@ import 'package:wheres_the_bus/core/haptics/haptic_service.dart';
 import 'package:wheres_the_bus/core/location/location_service.dart';
 import 'package:wheres_the_bus/data/models/plan_models.dart';
 import 'package:wheres_the_bus/data/repositories/maas_repository.dart';
+import 'package:wheres_the_bus/data/repositories/planner_repository.dart';
 import 'package:wheres_the_bus/data/repositories/settings_repository.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_bloc.dart';
 import 'package:wheres_the_bus/data/tracking/journey_session_event.dart';
@@ -24,7 +25,7 @@ import 'package:wheres_the_bus/features/go/bloc/plan_bloc.dart';
 import 'package:wheres_the_bus/features/go/bloc/plan_event.dart';
 import 'package:wheres_the_bus/features/go/bloc/plan_state.dart';
 import 'package:wheres_the_bus/features/go/map/go_plan_overlay.dart';
-import 'package:wheres_the_bus/features/go/model/plan_options.dart';
+import 'package:wheres_the_bus/data/models/plan_options.dart';
 import 'package:wheres_the_bus/features/go/model/planned_place.dart';
 import 'package:wheres_the_bus/features/go/navigation/navigation_coordinator.dart';
 import 'package:wheres_the_bus/features/go/view/place_search_screen.dart';
@@ -42,12 +43,14 @@ import 'package:wheres_the_bus/shared/widgets/app_quantity_selector.dart';
 import 'package:wheres_the_bus/shared/widgets/app_range_slider.dart';
 import 'package:wheres_the_bus/shared/widgets/app_slider.dart';
 import 'package:wheres_the_bus/shared/widgets/app_sliding_segment.dart';
+import 'package:wheres_the_bus/shared/widgets/app_switch.dart';
 import 'package:wheres_the_bus/shared/widgets/app_snackbar.dart';
 import 'package:wheres_the_bus/shared/widgets/app_time_picker.dart';
 import 'package:wheres_the_bus/shared/widgets/bottom_sheet_shell.dart';
 import 'package:wheres_the_bus/shared/widgets/divider_line.dart';
 import 'package:wheres_the_bus/shared/widgets/filter_chip_group.dart';
 
+part 'go_screen_camera.dart';
 part '../widgets/go_navigation_steps_widgets.dart';
 part '../widgets/go_navigation_widgets.dart';
 part '../widgets/go_planner_time_widgets.dart';
@@ -101,6 +104,10 @@ class _GoScreenState extends State<GoScreen> {
   OriginStatus _originStatus = OriginStatus.resolving;
   PlannedPlace? _dest;
   PlanOptions _options = const PlanOptions();
+  // What the live planner honours. Starts at the five both backends share, so
+  // the options sheet is never empty and never offers a control that silently
+  // does nothing; the real answer replaces it as soon as /api/planner responds.
+  PlannerCapabilities _capabilities = const PlannerCapabilities.shared();
   // Departure/arrival time stance for the query. `_timeAt` is only consulted
   // when `_timeMode` is not `leaveNow`.
   _TimeMode _timeMode = _TimeMode.leaveNow;
@@ -182,6 +189,15 @@ class _GoScreenState extends State<GoScreen> {
     if (context.read<PlanBloc>().state.activeLegIndex == null) {
       unawaited(_initOrigin());
     }
+    unawaited(_loadCapabilities());
+  }
+
+  /// Asks the router which planner is live. Failure is not surfaced: the
+  /// repository already degrades to the shared five, and a rider opening the
+  /// planner has no use for the news that a capability probe timed out.
+  Future<void> _loadCapabilities() async {
+    final capabilities = await PlannerRepository.instance.capabilities();
+    if (mounted) setState(() => _capabilities = capabilities);
   }
 
   @override
@@ -277,7 +293,11 @@ class _GoScreenState extends State<GoScreen> {
     _maybePlan();
   }
 
-  void _maybePlan() {
+  /// [pageCursor] is empty for every ordinary search, which is what makes
+  /// paging reset itself: editing an endpoint, the time or the options runs
+  /// through here with no cursor and lands back on the first page. Only the
+  /// 更早 / 更晚 actions pass one, and only the one the last response returned.
+  void _maybePlan({String pageCursor = ''}) {
     final from = _origin;
     final to = _dest;
     if (from == null || to == null) return;
@@ -299,22 +319,42 @@ class _GoScreenState extends State<GoScreen> {
         date: '${when.year}-${two(when.month)}-${two(when.day)}',
         time: '${two(when.hour)}:${two(when.minute)}',
         arriveBy: _timeMode == _TimeMode.arriveBy,
-        gc: _options.gc,
-        transitModes: _options.transitModes,
-        top: _options.top,
-        transferMin: _options.transferMin,
-        transferMax: _options.transferMax,
-        firstMileMode: _options.firstMileMode,
-        firstMileTime: _options.firstMileTime,
-        lastMileMode: _options.lastMileMode,
-        lastMileTime: _options.lastMileTime,
+        // The rider's own routing facts are folded in here rather than stored
+        // in the sheet's options: they belong to the person, and reading them
+        // at query time means a change in Settings applies to the next search
+        // without the planner screen having to listen for it.
+        options: _options.copyWith(
+          wheelchair: SettingsRepository.instance.stepFreeRouting,
+          walkSpeedCmPerSec: SettingsRepository.instance.walkSpeedCmPerSec,
+        ),
+        pageCursor: pageCursor,
+        legAlternatives: _capabilities.has(PlannerCapabilities.legAlternatives)
+            ? _kLegAlternatives
+            : 0,
       ),
     );
   }
 
+  /// How many replacements to ask for per transit leg. Three is what fits
+  /// under a leg without the itinerary turning into a timetable; asking for
+  /// none and fetching them on tap would mean a second full plan, which the
+  /// planner is free to answer differently from the one on screen.
+  static const int _kLegAlternatives = 3;
+
   void _retry() {
     unawaited(HapticService.instance.lightTap());
     _maybePlan();
+  }
+
+  /// Ask the planner for the departures before or after the ones on screen.
+  ///
+  /// The cursor is opaque and only valid against the query that produced it,
+  /// so every other path through [_maybePlan] clears it — editing an endpoint,
+  /// the time, or the options starts a fresh page-one search.
+  void _page(String cursor) {
+    if (cursor.isEmpty) return;
+    unawaited(HapticService.instance.lightTap());
+    _maybePlan(pageCursor: cursor);
   }
 
   // Give up on a query that is taking too long. The destination is cleared with
@@ -365,7 +405,11 @@ class _GoScreenState extends State<GoScreen> {
       _kSameTripMeters;
 
   Future<void> _adjustOptions() async {
-    final picked = await showOptionsSheet(context, current: _options);
+    final picked = await showOptionsSheet(
+      context,
+      current: _options,
+      capabilities: _capabilities,
+    );
     if (picked == null || !mounted || picked == _options) return;
     setState(() => _options = picked);
     _maybePlan();
@@ -463,34 +507,6 @@ class _GoScreenState extends State<GoScreen> {
         ),
       );
     }
-  }
-
-  // Wraps every app-initiated camera animation so onCameraMoveStarted can tell
-  // programmatic moves from user gestures (only the latter pause follow mode).
-  Future<void> _animateCameraGuarded(CameraUpdate update) async {
-    final map = _map;
-    if (map == null) return;
-    _programmaticMoves++;
-    try {
-      await map.animateCamera(update);
-    } finally {
-      _programmaticMoves--;
-      _lastProgrammaticMove = DateTime.now();
-    }
-  }
-
-  // Subscribes to the compass only while navigating; a no-op if already live so
-  // a nav restart doesn't stack subscriptions.
-  void _startCompass() {
-    _compassSub ??= LocationService.instance.compassStream().listen(
-      _onCompassHeading,
-    );
-  }
-
-  void _stopCompass() {
-    unawaited(_compassSub?.cancel());
-    _compassSub = null;
-    _lastAppliedHeading = null;
   }
 
   // Compass event: rotate only the puck to the phone's heading while
@@ -634,55 +650,6 @@ class _GoScreenState extends State<GoScreen> {
         ),
       ),
     );
-  }
-
-  LatLng? _latLngOrNull(PlanPoint? point) {
-    if (point == null) return null;
-    return LatLng(point.lat, point.lng);
-  }
-
-  void _fitTo(PlanRoute route) => _fitBounds(routePoints(route));
-
-  // Results phase frames every alternative at once.
-  void _fitAll(PlanResult result) {
-    final points = [
-      for (final route in result.routes) ...routePoints(route),
-    ];
-    _fitBounds(points);
-  }
-
-  void _fitBounds(List<LatLng> points) {
-    if (points.length < 2) return;
-    var minLat = points.first.latitude;
-    var maxLat = points.first.latitude;
-    var minLng = points.first.longitude;
-    var maxLng = points.first.longitude;
-    for (final p in points) {
-      minLat = p.latitude < minLat ? p.latitude : minLat;
-      maxLat = p.latitude > maxLat ? p.latitude : maxLat;
-      minLng = p.longitude < minLng ? p.longitude : minLng;
-      maxLng = p.longitude > maxLng ? p.longitude : maxLng;
-    }
-    unawaited(
-      _animateCameraGuarded(
-        CameraUpdate.newLatLngBounds(
-          LatLngBounds(
-            southwest: LatLng(minLat, minLng),
-            northeast: LatLng(maxLat, maxLng),
-          ),
-          72,
-        ),
-      ),
-    );
-  }
-
-  // Frames the pair while the query runs, so the map is about this trip from
-  // the first frame instead of sitting on a default city view.
-  void _fitPending() {
-    final from = _origin?.latLng;
-    final to = _dest?.latLng;
-    if (from == null || to == null) return;
-    _fitBounds([from, to]);
   }
 
   @override
@@ -977,6 +944,7 @@ class _GoScreenState extends State<GoScreen> {
             onCancel: _cancelPlan,
             onAdjustOptions: _adjustOptions,
             onAdjustTime: _adjustTime,
+            onPage: _page,
             onToggleSave: _toggleSave,
           );
     return AnimatedSwitcher(

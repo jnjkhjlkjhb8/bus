@@ -298,6 +298,7 @@ class _PlannerSheet extends StatelessWidget {
     required this.onAdjustOptions,
     required this.onAdjustTime,
     required this.onToggleSave,
+    required this.onPage,
     super.key,
   });
 
@@ -316,6 +317,10 @@ class _PlannerSheet extends StatelessWidget {
   final VoidCallback onAdjustOptions;
   final VoidCallback onAdjustTime;
   final void Function(PlanRoute) onToggleSave;
+
+  /// Asks the planner for earlier or later departures, carrying the opaque
+  /// cursor the last response returned for that direction.
+  final void Function(String cursor) onPage;
 
   @override
   Widget build(BuildContext context) {
@@ -357,6 +362,7 @@ class _PlannerSheet extends StatelessWidget {
               onRetry: onRetry,
               onCancel: onCancel,
               onToggleSave: onToggleSave,
+              onPage: onPage,
             ),
           ),
         ],
@@ -396,6 +402,55 @@ class _SheetTitle extends StatelessWidget {
   }
 }
 
+/// Asks the planner for the departures on either side of the ones on screen.
+///
+/// Full card width rather than a text link: it sits in the same column as the
+/// route cards, is reached one-handed while scrolling, and needs the same
+/// 44pt target as everything else in the list.
+class _PageAction extends StatelessWidget {
+  const _PageAction({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Pressable(
+      onTap: onTap,
+      semanticLabel: label,
+      child: Container(
+        height: 44,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: cs.surface,
+          border: Border.all(color: cs.outlineVariant),
+          borderRadius: BorderRadius.circular(AppTheme.radiusButton),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: cs.onSurface),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: AppTextStyles.bodyRegular.copyWith(
+                color: cs.onSurface,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _PlannerBody extends StatelessWidget {
   const _PlannerBody({
     required this.state,
@@ -406,6 +461,7 @@ class _PlannerBody extends StatelessWidget {
     required this.onRetry,
     required this.onCancel,
     required this.onToggleSave,
+    required this.onPage,
   });
 
   final PlanState state;
@@ -425,6 +481,7 @@ class _PlannerBody extends StatelessWidget {
   final VoidCallback onRetry;
   final VoidCallback onCancel;
   final void Function(PlanRoute) onToggleSave;
+  final void Function(String cursor) onPage;
 
   @override
   Widget build(BuildContext context) {
@@ -477,18 +534,43 @@ class _PlannerBody extends StatelessWidget {
             hint: AppI18n.of(context).goNoRouteHint,
           );
         }
-        return ListView.separated(
+        // Earlier above the first card, later below the last: the direction
+        // matches the time axis, so scrolling to the bottom of the list runs
+        // into "later" the way a rider expects. Each appears only when the
+        // planner actually returned a cursor for that direction — a button
+        // that leads nowhere is worse than no button.
+        final earlier = state.result?.previousPageCursor ?? '';
+        final later = state.result?.nextPageCursor ?? '';
+        return ListView(
           padding: const EdgeInsets.all(16),
-          itemCount: routes.length,
-          separatorBuilder: (_, _) => const SizedBox(height: 10),
-          itemBuilder: (context, i) => RouteOptionCard(
-            route: routes[i],
-            highlighted: i == 0,
-            badge: i == 0 ? AppI18n.of(context).goBadgeFastest : null,
-            isSaved: state.savedKeys.contains(routes[i].savedKey),
-            onTap: () => onSelect(routes[i]),
-            onToggleSave: () => onToggleSave(routes[i]),
-          ),
+          children: [
+            if (earlier.isNotEmpty) ...[
+              _PageAction(
+                label: AppI18n.of(context).goEarlierDepartures,
+                icon: Icons.keyboard_arrow_up_rounded,
+                onTap: () => onPage(earlier),
+              ),
+              const SizedBox(height: 10),
+            ],
+            for (final (i, route) in routes.indexed) ...[
+              if (i > 0) const SizedBox(height: 10),
+              RouteOptionCard(
+                route: route,
+                highlighted: i == 0,
+                isSaved: state.savedKeys.contains(route.savedKey),
+                onTap: () => onSelect(route),
+                onToggleSave: () => onToggleSave(route),
+              ),
+            ],
+            if (later.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              _PageAction(
+                label: AppI18n.of(context).goLaterDepartures,
+                icon: Icons.keyboard_arrow_down_rounded,
+                onTap: () => onPage(later),
+              ),
+            ],
+          ],
         );
     }
   }
