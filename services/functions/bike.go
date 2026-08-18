@@ -176,6 +176,11 @@ func bikeEta(ctx context.Context, fetch boundFetch, sink liveSink, db *pgxpool.P
 			// than as data a few minutes old.
 			ownedKey := shared.LiveOwnedKeysKey("bike", city)
 			if err := sink.refreshOwnedTTL(ctx, ownedKey, _bikeLiveTTL); err != nil {
+				pipe := sink.pipeline()
+				pipe.Expire(shared.LiveColdKey("bike", city), 0)
+				if execErr := pipe.Exec(ctx); execErr != nil {
+					err = errors.Join(err, _oops.Wrapf(execErr, "drop bike cadence claim"))
+				}
 				jobErr = errors.Join(jobErr,
 					_oops.With("city", city).Wrapf(err, "refresh unwatched bike TTLs"))
 			}

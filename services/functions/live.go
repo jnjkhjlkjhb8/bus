@@ -366,7 +366,10 @@ func (s redisLiveSink) refreshOwnedTTL(ctx context.Context, key string, ttl time
 		// Keep the stale membership until marker invalidation succeeds and the
 		// resulting full fetch atomically replaces it. Deleting it here would make
 		// a failed invalidation invisible to the next 304, preventing a retry.
-		return _oops.With("key", key).With("missing", missing).Errorf("ownership set contains missing live keys")
+		return _oops.With("key", key).
+			With("missing_count", len(missing)).
+			With("missing_sample", missing[:min(len(missing), 5)]).
+			Errorf("ownership set contains missing live keys")
 	}
 	renewed, err := rc.Expire(ctx, key, _ownedKeysTTL).Result()
 	if err != nil {
@@ -463,7 +466,6 @@ const (
 // Invert them and a cold city can never warm up.
 const (
 	_liveColdCadence = 5 * time.Minute
-	_liveDemandTTL   = 10 * time.Minute
 )
 
 // liveDemandGate reports whether dataset's city should be fetched this tick.
