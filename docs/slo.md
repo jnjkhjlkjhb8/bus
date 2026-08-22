@@ -22,7 +22,7 @@ made by claude
   `router_http_requests_total` / `router_http_errors_total`（按 route
   pattern 標籤，只有 5xx 才計入 error，見 `safeAccessLogger`）。
   `router_db_errors_total`（第 8 節之外的另一個計數器，見
-  `services/router/main.go` 的 `grpcStatusFor`）才是排除
+  `services/api/main.go` 的 `grpcStatusFor`）才是排除
   `codes.NotFound` 的版本——那是專門量測「後端儲存本身壞掉」而非
   「這次 API 呼叫沒中」的訊號，兩者刻意分開。
 - **初始目標**：99.5% 月可用率（≈ 每月 3.6 小時的錯誤預算）。單機部署、
@@ -34,7 +34,7 @@ made by claude
 - **定義**：一元 RPC / HTTP 請求的 P95 延遲。
 - **測量來源**：目前沒有延遲直方圖（P2-04 範圍內只加計數器，不引入
   histogram/summary，避免無 Prometheus client library 情況下手刻分位數
-  估計器的複雜度）；`services/router/http.go` 的 `safeAccessLogger` 已把
+  估計器的複雜度）；`services/api/http.go` 的 `safeAccessLogger` 已把
   每筆請求的 `latency=` 寫進 stdout 結構化 log，可先用日誌聚合抓 P95。
 - **初始目標**：P95 < 500ms（本地 PostgreSQL 查詢 + Redis 快取路徑）；
   MaaS 路線規劃（呼叫 MOTIS）例外，P95 < 3s。
@@ -51,7 +51,7 @@ made by claude
 - **測量來源**：
   - 公車/公共自行車：`@every 30s`；MRT `@every 10s`；
     TRA `@every 2min`。每次 tick 的成功/失敗與 overrun 都寫
-    `services/functions/live.go` 的 `[LIVE] action=tick ...` 結構化 log。
+    `services/worker/live.go` 的 `[LIVE] action=tick ...` 結構化 log。
 - **初始目標**：同一 job 連續 3 次 tick 失敗（約 30s cadence 下 1.5 分鐘）
   即視為新鮮度劣化，觸發 `docs/runbooks/incident-response.md` 的檢查流程。
 
@@ -60,7 +60,7 @@ made by claude
 - **定義**：gRPC live stream 非預期斷線率（排除客戶端主動取消：
   `context.Canceled`）。
 - **測量來源**：`GET /metrics` 的 `router_stream_disconnects_total`（見
-  `services/router/livestream.go` 的 `streamLive`；目前是單一未分標籤的
+  `services/api/livestream.go` 的 `streamLive`；目前是單一未分標籤的
   計數器，涵蓋所有終止原因——client 斷線、upstream 關閉、send 失敗——按
   channel 標籤化會重新引入使用者可控 ID 的高基數問題，見
   `services/obs/metrics.go` 的說明）；搭配
@@ -87,7 +87,7 @@ made by claude
   合理的「查無資料」，不是失敗；5xx 才是失敗）。
 - **測量來源**：`router_http_requests_total{path="/api/search"}` /
   `router_http_errors_total{path="/api/search"}`（同第 1 節機制，見
-  `services/router/search.go` 的 `handleSearch`，所有查詢失敗
+  `services/api/search.go` 的 `handleSearch`，所有查詢失敗
   都回 500，因此已完整落在 http error 計數內）。
 - **初始目標**：5xx 錯誤率 < 1%。
 
@@ -99,7 +99,7 @@ made by claude
   見 `migrations/005_firebase_notifications.sql`）。commit `03e4a2c94`
   「fix: reclaim arrival reminders stuck in sending after a crash」讓卡在
   `sending` 的提醒在 claim 逾時（`ReminderClaimTimeout`，
-  `services/functions/notify/notification_store.go`）後被下次 tick 回收
+  `services/worker/notify/notification_store.go`）後被下次 tick 回收
   重試，而不是永久卡住。目前沒有彙總成功率的 log gauge 或 metrics
   endpoint——這是已知缺口，留給下一輪迭代；現況只能靠查
   `firebase_arrival_reminder` 的 `status` 分布（例如 `fired` 對
@@ -111,10 +111,10 @@ made by claude
 - **定義**：nightly ingest → load → changetovector → segmentTimes 這條
   管線多久內對下游可用。
 - **測量來源**：
-  - Pipeline marker lag：`services/functions/pipeline_marker.go` 的
+  - Pipeline marker lag：`services/worker/pipeline_marker.go` 的
     `[PIPELINE] action=record_marker event=recorded ... gauge=marker_lag_seconds`
     結構化 log（`load` 與 `changetovector` 兩個 job 都會寫）。
-  - Quarantine ratio：`services/functions/loader.go` 的
+  - Quarantine ratio：`services/worker/loader.go` 的
     `[LOAD] action=quarantine event=dropped ... ratio=` 結構化 log
     （per dataset/partition，`loadQuarantine.report`）。
 - **初始目標**：`load` 與 `changetovector` 的 `marker_lag_seconds` 應在各自
@@ -137,19 +137,19 @@ made by claude
 
 | 訊號 | 來源 | 檔案 |
 |---|---|---|
-| gRPC/HTTP 請求與錯誤計數 | `GET /metrics`（router，需 `ROUTER_METRICS_TOKEN`） | `services/obs/metrics.go`, `services/router/http.go` |
-| Live stream 斷線/踢除計數 | `GET /metrics` | `services/router/livestream.go`, `services/router/live_hub.go` |
+| gRPC/HTTP 請求與錯誤計數 | `GET /metrics`（router，需 `ROUTER_METRICS_TOKEN`） | `services/obs/metrics.go`, `services/api/http.go` |
+| Live stream 斷線/踢除計數 | `GET /metrics` | `services/api/livestream.go`, `services/api/live_hub.go` |
 | Redis/DB error 計數 | `GET /metrics` | `services/obs/metrics.go` |
-| Overrun/skip | 結構化 log（`event=overrun`, cron 內建 skip） | `services/functions/live.go`, `services/functions/main.go` |
-| Pipeline marker lag | 結構化 log（`gauge=marker_lag_seconds`） | `services/functions/pipeline_marker.go` |
-| Quarantine ratio | 結構化 log（`event=dropped ... ratio=`） | `services/functions/loader.go` |
-| Container liveness | health touch-file + compose healthcheck | `services/functions/healthfile.go`, `docker/docker-compose.yaml` |
+| Overrun/skip | 結構化 log（`event=overrun`, cron 內建 skip） | `services/worker/live.go`, `services/worker/main.go` |
+| Pipeline marker lag | 結構化 log（`gauge=marker_lag_seconds`） | `services/worker/pipeline_marker.go` |
+| Quarantine ratio | 結構化 log（`event=dropped ... ratio=`） | `services/worker/loader.go` |
+| Container liveness | health touch-file + compose healthcheck | `services/worker/healthfile.go`, `docker/docker-compose.yaml` |
 
 **為何 functions 用檔案而非 HTTP endpoint**：functions 的三種角色
 （legacy prod / ingestor / loader）都沒有 HTTP listener（`main.go` 的
 `switch mode` 只啟動 cron scheduler，不開任何 port）。新開網路 port 會在
 單機部署上新增一塊沒有對應防護（TLS、rate limit、credential）的攻擊面，
-換來的操作收益很小——`healthFilePath`（`services/functions/healthfile.go`）
+換來的操作收益很小——`healthFilePath`（`services/worker/healthfile.go`）
 用「寫本地 tmpfs 檔案給 compose healthcheck 讀」這個模式在本專案夠用。
 若未來需要 Prometheus 直接 scrape functions（例如接上外部 dashboard），
 再評估另開唯讀、僅限 backend network 的 `/metrics` port——那會是新的

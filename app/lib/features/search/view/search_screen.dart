@@ -47,6 +47,21 @@ String _backHere(BuildContext context) {
   return AppRoutes.searchLocation(query: query.isEmpty ? null : query);
 }
 
+/// Leaves the search screen. Usually a plain pop back to whatever pushed it,
+/// but this screen can also be the only entry on the stack — reached fresh
+/// via a deep link, or via state restoration after Android reclaims the
+/// process while search was open, which restores only the current location,
+/// not the push history beneath it. `pop()` in that case has nothing to do
+/// (and the system back gesture falls through to exiting the app), so it
+/// goes home instead.
+void _closeSearch(BuildContext context) {
+  if (context.canPop()) {
+    context.pop();
+  } else {
+    context.go(AppRoutes.home);
+  }
+}
+
 void _navigateToResult(BuildContext context, SearchResult result) {
   // Persist the selection through the recent-search repository (owned by
   // SearchBloc) so every entry point — result rows, recents, and AI — records
@@ -230,170 +245,176 @@ class _SearchViewState extends State<_SearchView> {
     final topPad = MediaQuery.paddingOf(context).top;
     final bottomPad = MediaQuery.paddingOf(context).bottom;
 
-    return Scaffold(
-      backgroundColor: cs.surface,
-      body: Column(
-        children: [
-          Container(
-            color: cs.surface,
-            padding: EdgeInsets.fromLTRB(16, topPad + 12, 16, 12),
-            child: Row(
-              children: [
-                Pressable(
-                  onTap: () => context.pop(),
-                  semanticLabel: AppI18n.of(context).searchCloseSemantics,
-                  // 40pt visual, 48dp touch target: the circle stays the size
-                  // the layout wants while the hit area meets the platform
-                  // minimum (Pressable hit-tests the whole opaque box).
-                  child: SizedBox(
-                    width: _minTouchTarget,
-                    height: _minTouchTarget,
-                    child: Center(
-                      child: Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: cs.surfaceContainerLow,
-                          shape: BoxShape.circle,
-                          boxShadow: AppShadows.cardFor(cs.brightness),
-                        ),
-                        child: Center(
-                          child: Icon(
-                            Icons.close_rounded,
-                            size: 20,
-                            color: cs.onSurface,
+    return PopScope(
+      canPop: context.canPop(),
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) context.go(AppRoutes.home);
+      },
+      child: Scaffold(
+        backgroundColor: cs.surface,
+        body: Column(
+          children: [
+            Container(
+              color: cs.surface,
+              padding: EdgeInsets.fromLTRB(16, topPad + 12, 16, 12),
+              child: Row(
+                children: [
+                  Pressable(
+                    onTap: () => _closeSearch(context),
+                    semanticLabel: AppI18n.of(context).searchCloseSemantics,
+                    // 40pt visual, 48dp touch target: the circle stays the size
+                    // the layout wants while the hit area meets the platform
+                    // minimum (Pressable hit-tests the whole opaque box).
+                    child: SizedBox(
+                      width: _minTouchTarget,
+                      height: _minTouchTarget,
+                      child: Center(
+                        child: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: cs.surfaceContainerLow,
+                            shape: BoxShape.circle,
+                            boxShadow: AppShadows.cardFor(cs.brightness),
+                          ),
+                          child: Center(
+                            child: Icon(
+                              Icons.close_rounded,
+                              size: 20,
+                              color: cs.onSurface,
+                            ),
                           ),
                         ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: Container(
-                    // minHeight, not a fixed height: at large text scales the
-                    // field has to grow with its content instead of clipping
-                    // it (Settings offers a large-text mode).
-                    constraints: const BoxConstraints(
-                      minHeight: _minTouchTarget,
-                    ),
-                    decoration: BoxDecoration(
-                      color: cs.surfaceContainerLow,
-                      borderRadius: BorderRadius.circular(12),
-                      boxShadow: AppShadows.cardFor(cs.brightness),
-                    ),
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.search_rounded,
-                          size: 18,
-                          color: cs.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: TextField(
-                            controller: _controller,
-                            focusNode: _focusNode,
-                            onChanged: _onChanged,
-                            onSubmitted: _onSubmitted,
-                            textInputAction: TextInputAction.search,
-                            inputFormatters: [
-                              LengthLimitingTextInputFormatter(
-                                _maxQueryLength,
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Container(
+                      // minHeight, not a fixed height: at large text scales the
+                      // field has to grow with its content instead of clipping
+                      // it (Settings offers a large-text mode).
+                      constraints: const BoxConstraints(
+                        minHeight: _minTouchTarget,
+                      ),
+                      decoration: BoxDecoration(
+                        color: cs.surfaceContainerLow,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: AppShadows.cardFor(cs.brightness),
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.search_rounded,
+                            size: 18,
+                            color: cs.onSurfaceVariant,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextField(
+                              controller: _controller,
+                              focusNode: _focusNode,
+                              onChanged: _onChanged,
+                              onSubmitted: _onSubmitted,
+                              textInputAction: TextInputAction.search,
+                              inputFormatters: [
+                                LengthLimitingTextInputFormatter(
+                                  _maxQueryLength,
+                                ),
+                              ],
+                              style: AppTextStyles.bodyRegular.copyWith(
+                                color: cs.onSurface,
                               ),
-                            ],
-                            style: AppTextStyles.bodyRegular.copyWith(
-                              color: cs.onSurface,
-                            ),
-                            decoration: InputDecoration(
-                              hintText: AppI18n.of(context).searchHint,
-                              hintStyle: AppTextStyles.bodyRegular.copyWith(
-                                color: cs.onSurfaceVariant,
-                              ),
-                              border: InputBorder.none,
-                              isDense: true,
-                              contentPadding: const EdgeInsets.symmetric(
-                                vertical: 12,
+                              decoration: InputDecoration(
+                                hintText: AppI18n.of(context).searchHint,
+                                hintStyle: AppTextStyles.bodyRegular.copyWith(
+                                  color: cs.onSurfaceVariant,
+                                ),
+                                border: InputBorder.none,
+                                isDense: true,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  vertical: 12,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        BlocBuilder<SearchBloc, SearchState>(
-                          buildWhen: (p, c) =>
-                              p.query.isEmpty != c.query.isEmpty,
-                          builder: (context, state) {
-                            if (state.query.isEmpty) {
-                              return const SizedBox.shrink();
-                            }
-                            return Pressable(
-                              onTap: _onClear,
-                              semanticLabel: AppI18n.of(
-                                context,
-                              ).searchClearSemantics,
-                              child: SizedBox(
-                                width: _minTouchTarget,
-                                height: _minTouchTarget,
-                                child: Center(
-                                  child: Container(
-                                    width: 18,
-                                    height: 18,
-                                    decoration: BoxDecoration(
-                                      // onSurfaceVariant, not outline: this is
-                                      // a control, so it owes 3:1 against its
-                                      // background (WCAG 1.4.11). outline
-                                      // (#BFBFBF) manages 1.84:1.
-                                      color: cs.onSurfaceVariant,
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: Icon(
-                                      Icons.close_rounded,
-                                      size: 12,
-                                      color: cs.surfaceContainerLow,
+                          BlocBuilder<SearchBloc, SearchState>(
+                            buildWhen: (p, c) =>
+                                p.query.isEmpty != c.query.isEmpty,
+                            builder: (context, state) {
+                              if (state.query.isEmpty) {
+                                return const SizedBox.shrink();
+                              }
+                              return Pressable(
+                                onTap: _onClear,
+                                semanticLabel: AppI18n.of(
+                                  context,
+                                ).searchClearSemantics,
+                                child: SizedBox(
+                                  width: _minTouchTarget,
+                                  height: _minTouchTarget,
+                                  child: Center(
+                                    child: Container(
+                                      width: 18,
+                                      height: 18,
+                                      decoration: BoxDecoration(
+                                        // onSurfaceVariant, not outline: this
+                                        // is a control, so it owes 3:1 against
+                                        // its background (WCAG 1.4.11).
+                                        // outline (#BFBFBF) manages 1.84:1.
+                                        color: cs.onSurfaceVariant,
+                                        shape: BoxShape.circle,
+                                      ),
+                                      child: Icon(
+                                        Icons.close_rounded,
+                                        size: 12,
+                                        color: cs.surfaceContainerLow,
+                                      ),
                                     ),
                                   ),
                                 ),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
+                              );
+                            },
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          // Above the switcher, not inside it: the answer has to survive the
-          // body swapping between recents, results, and empty as the field
-          // changes under it.
-          BlocBuilder<SearchBloc, SearchState>(
-            buildWhen: (p, c) => p.query != c.query,
-            builder: (context, state) => GenUiAskLane(
-              query: state.query,
-              onAsk: _ask,
-              onOpen: (result) => _navigateToResult(context, result),
+            // Above the switcher, not inside it: the answer has to survive the
+            // body swapping between recents, results, and empty as the field
+            // changes under it.
+            BlocBuilder<SearchBloc, SearchState>(
+              buildWhen: (p, c) => p.query != c.query,
+              builder: (context, state) => GenUiAskLane(
+                query: state.query,
+                onAsk: _ask,
+                onOpen: (result) => _navigateToResult(context, result),
+              ),
             ),
-          ),
-          Expanded(
-            child: BlocBuilder<SearchBloc, SearchState>(
-              builder: (context, state) {
-                final body = _buildBody(context, state, cs, bottomPad);
-                final reduceMotion = MediaQuery.disableAnimationsOf(context);
-                return AnimatedSwitcher(
-                  duration: reduceMotion ? Duration.zero : AppMotion.short,
-                  switchInCurve: AppMotion.easeOut,
-                  switchOutCurve: AppMotion.easeOut,
-                  transitionBuilder: AppMotion.switchFade,
-                  child: KeyedSubtree(
-                    key: ValueKey(_bodyKey(state)),
-                    child: body,
-                  ),
-                );
-              },
+            Expanded(
+              child: BlocBuilder<SearchBloc, SearchState>(
+                builder: (context, state) {
+                  final body = _buildBody(context, state, cs, bottomPad);
+                  final reduceMotion = MediaQuery.disableAnimationsOf(context);
+                  return AnimatedSwitcher(
+                    duration: reduceMotion ? Duration.zero : AppMotion.short,
+                    switchInCurve: AppMotion.easeOut,
+                    switchOutCurve: AppMotion.easeOut,
+                    transitionBuilder: AppMotion.switchFade,
+                    child: KeyedSubtree(
+                      key: ValueKey(_bodyKey(state)),
+                      child: body,
+                    ),
+                  );
+                },
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

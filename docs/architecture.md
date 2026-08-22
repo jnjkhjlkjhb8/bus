@@ -33,7 +33,7 @@ Redis 與 MOTIS 僅對 localhost 開放，不對外暴露。MOTIS 的 8082 之�
 
 ## 程式結構
 
-- `services/functions`
+- `services/worker`
   - 排程執行器；一個映像以 `ROLE` 環境變數分兩種模式：
     - `ROLE=ingestor`：Stage 1，03:00 把 TDX 原始 payload 落地共用 `raw_tdx` schema。容器每個環境都會啟動（只有 `make up-test` 不啟動），但 TDX 憑證只放在 prod；`ingestRaw` 在缺任一憑證時直接跳過整趟落地、不發出任何請求（真正的 no-op，只記一行 `event=idle reason=no_credentials`）。每趟落地都是 conditional GET，但週日的 03:00 會丟掉 If-Modified-Since marker 無條件重抓全部端點：TDX 若刪除資料而沒有推進 `Last-Modified`，只有全量重抓看得到。全量落地結束後會掃一次 `raw_tdx.landing_state`，把超過七天沒被碰過的分區記成 `event=stale_partition`（只回報，不刪除）。
     - `ROLE=""`（每個環境）：Stage 2 loader（03:30 `raw_tdx` → 該環境 `PG_SCHEMA`）＋ 即時 ETA ＋ MQTT ＋ 通知。
@@ -41,7 +41,7 @@ Redis 與 MOTIS 僅對 localhost 開放，不對外暴露。MOTIS 的 8082 之�
   - 使用 `robfig/cron` 設定排程（見 `docs/ingestion.md`）
   - pgxpool：MaxConns=10，MinConns=2，MaxConnLifetime=30m，MaxConnIdleTime=5m
   - Redis pool：PoolSize=20，MinIdleConns=3，PoolTimeout=5s
-- `services/router`
+- `services/api`
   - gRPC 服務端（:50051），查詢 DB/Redis 並回傳 protobuf
   - HTTP 服務端（:8080）：`/api/token/powersync`、`/api/.well-known/jwks.json`、`/api/embed`、`/api/static-version`（本環境靜態資料版本，App 離線快取的 epoch，ADR-0017）
   - 串流以 Redis Pub/Sub 實作（`sub.Channel()` channel-based，無 busy-loop）
@@ -56,6 +56,7 @@ Redis 與 MOTIS 僅對 localhost 開放，不對外暴露。MOTIS 的 8082 之�
 | 依賴 | 說明 |
 |---|---|
 | PostgreSQL | 靜態資料、時刻表、站點、路線等持久化 |
+| MySQL 封存主機 | 觀測歷史與上游原文；`bus_eta_history`／`bus_stop_event`／`bike_availability_history` 唯一的家，另有 `raw_tdx_archive` 與 `live_archive*`。`ARCHIVE_MYSQL_DSN`，僅 prod。見 `docs/archive.md`、ADR-0023 |
 | TDX REST API | 排程擷取交通靜態與即時資料 |
 | TDX MQTT | 推送式即時告警（`mqtt.transportdata.tw:8883`） |
 
@@ -80,8 +81,8 @@ PostgreSQL ──→ PowerSync ──sync──→ Flutter SQLite（離線搜尋
 
 ## 專案路徑
 
-- `services/functions/*.go`：排程、原始落地（ingestor）、loader、MQTT 訂閱
-- `services/router/*.go`：gRPC 服務、HTTP 端點
+- `services/worker/*.go`：排程、原始落地（ingestor）、loader、MQTT 訂閱
+- `services/api/*.go`：gRPC 服務、HTTP 端點
 - `models/*.proto`：proto 定義
 - `models/*_grpc.pb.go`：gRPC 介面
 - `powersync/`：PowerSync 設定（`config.yaml`、`sync-rules.yaml`）

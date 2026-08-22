@@ -95,12 +95,12 @@ loader 測試以 `raw_tdx` fixture 做確定性 replay，不需網路：
 
 ```bash
 DATABASE_URL=... go run ./scripts/export-fixtures \
-  -table thsr_station -out services/functions/testdata/raw_tdx/thsr_station.json
+  -table thsr_station -out services/worker/testdata/raw_tdx/thsr_station.json
 DATABASE_URL=... go run ./scripts/export-fixtures \
   -table tra_dailytimetable -partcol traindate -part 2026-07-05 -out <file>
 ```
 
-`export-fixtures` 是唯讀工具，重建查詢與 `rawTDXSource.datasetJSON` 同形。測試中的檔案 `loadSource` adapter（`fixtureSource`，`loader_test.go`）從 `services/functions/testdata/raw_tdx/` 讀取已提交的 fixture，因為匯出與重建契約一致（小寫 key、無 `fetched_at`），fixture 可 byte-identical 地穿過 loader 的真實轉換函式。
+`export-fixtures` 是唯讀工具，重建查詢與 `rawTDXSource.datasetJSON` 同形。測試中的檔案 `loadSource` adapter（`fixtureSource`，`loader_test.go`）從 `services/worker/testdata/raw_tdx/` 讀取已提交的 fixture，因為匯出與重建契約一致（小寫 key、無 `fetched_at`），fixture 可 byte-identical 地穿過 loader 的真實轉換函式。
 
 ## busDailyroute（啟動時載入 ＋ 每小時增量）
 
@@ -137,7 +137,7 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
 
 ## mrtTrack（捷運下車提醒 tracker，每 15 秒；ADR-0015）
 
-`registerMrtTrackCron`（`services/functions/mrt_track.go`）排一個 15 秒 cron，推進進行中的車廂綁定 session。它**不是 liveSpec，永不打 TDX**。
+`registerMrtTrackCron`（`services/worker/mrt_track.go`）排一個 15 秒 cron，推進進行中的車廂綁定 session。它**不是 liveSpec，永不打 TDX**。
 
 - **列舉 session**：`Store.ActiveMrtTracks` 查 `firebase_arrival_reminder` 中 `route_type='mrt'`、`status IN ('pending','sending','fired')`、未過期的列（LEFT JOIN device token；不以 `push_enabled` 過濾，卡片即使無法震動也要繼續更新）。位置真相在 Redis `mrt_track:state:{track_id}`。
 - **事件驅動輪詢**：只處理 `nextPollAt` 已到期的 session。每次成功讀取後 `nextPollAt = now + 解析的 CountdownTime + 10 秒 buffer`（不解析中文 `UpdateTime`），故一趟車約 = 站數次 GetTrainInfo。
@@ -161,7 +161,7 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
 
 台鐵 / 高鐵時刻表、站點、票價現在完全由 loader 從 `raw_tdx` 寫入環境 schema，**router 不再持有時刻表的 TDX client**（ADR-0005）。router 對這些查詢是純讀取路徑：cache miss 時查環境 schema 的已載入表；若查無資料（例如日期超出已落地視窗 today..+60 / +45），回傳 `codes.NotFound` 而不觸發 TDX 抓取。
 
-（`services/router/tra.go` / `thsr.go` 中仍有 `callApi` / `getToken`，那是 MaaS 路線規劃器用的，不在鐵路靜態時刻表讀取路徑上。）
+（`services/api/tra.go` / `thsr.go` 中仍有 `callApi` / `getToken`，那是 MaaS 路線規劃器用的，不在鐵路靜態時刻表讀取路徑上。）
 
 ## busEta（每 30 秒）
 
@@ -201,7 +201,7 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
 
 `sample_count` 一併存下，由讀取端自行決定信心門檻。ETA 預測與 GTFS 匯出都以 `busPatternSQL` 沿站序累加這些站間時間。
 
-2026-08-02 之前還有第三個階段 `computeSegmentTimes`，以 `plate_numb` 分組配對同一台車先後抵達兩站。它已移除：在 45,775 個重疊 hop 上與 estimate 差分法的中位數只差 2 秒，「抵達」本身也是由 estimate 推算的（`recorded_at + estimate`），而它是唯一需要連續密集觀測的讀取端——會把資料缺口當成公車進站。詳見 `services/functions/segment_time.go` 的檔頭。
+2026-08-02 之前還有第三個階段 `computeSegmentTimes`，以 `plate_numb` 分組配對同一台車先後抵達兩站。它已移除：在 45,775 個重疊 hop 上與 estimate 差分法的中位數只差 2 秒，「抵達」本身也是由 estimate 推算的（`recorded_at + estimate`），而它是唯一需要連續密集觀測的讀取端——會把資料缺口當成公車進站。詳見 `services/worker/segment_time.go` 的檔頭。
 
 ## cleanupBusHistory（每日 04:30）
 
@@ -209,7 +209,7 @@ DATABASE_URL=... go run ./scripts/export-fixtures \
 
 ## TDX MQTT 訂閱
 
-- 實作位置：`services/functions/mqtt.go`，啟動函數 `startMQTT(rc)`
+- 實作位置：`services/worker/mqtt.go`，啟動函數 `startMQTT(rc)`
 - 在 `main.go` 於 cron 排程啟動後呼叫，程式結束時呼叫 `Disconnect(500)`
 - 若 `MQTT_CLIENT_ID` / `MQTT_USERNAME` / `MQTT_PASSWORD` 任一為空則跳過，不影響其他排程
 

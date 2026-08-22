@@ -6,12 +6,12 @@
 // Usage:
 //
 //	DATABASE_URL=... go run ./scripts/export-fixtures \
-//	  -table thsr_station -out services/functions/testdata/raw_tdx/thsr_station.json
+//	  -table thsr_station -out services/worker/testdata/raw_tdx/thsr_station.json
 //	DATABASE_URL=... go run ./scripts/export-fixtures \
 //	  -table tra_dailytimetable -partcol traindate -part 2026-07-05 -out ...
 //
 // The reconstruction query is byte-for-byte the same shape as
-// rawTDXSource.datasetJSON in services/functions/loader.go: to_jsonb of each row
+// rawTDXSource.datasetJSON in services/worker/loader.go: to_jsonb of each row
 // minus the fetched_at (and partition) bookkeeping columns, with the
 // thsr_dailytimetable traindate re-derived as a YYYY-MM-DD string. A fixture
 // exported here therefore replays identically through the loader. The SQL is

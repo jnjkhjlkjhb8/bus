@@ -56,16 +56,16 @@ anchor() {
 
 note "guardrail test presence + smoke run"
 anchor "fault-injection/atomicity" \
-  services/functions/raw_landing_state_test.go ./services/functions \
+  services/worker/internal/raw/landing_state_test.go ./services/worker/internal/raw \
   'TestLandRawTDXCommitsRowsAndStateAtomically'
 anchor "fault-injection/atomicity" \
-  services/functions/notify/notification_store_test.go ./services/functions/notify \
+  services/worker/notify/notification_store_test.go ./services/worker/notify \
   'TestNotificationStoreClaimIsAtomic'
 anchor "cancellation/overlap" \
-  services/functions/job_runner_test.go ./services/functions \
+  services/worker/job_runner_test.go ./services/worker \
   'TestBootRunUsesTimeoutAndSameOverlapGuard|TestStaticPipelineReleasesAfterCancellationAndPanic'
 anchor "authenticated metrics" \
-  services/router/http_test.go ./services/router \
+  services/api/http_test.go ./services/api \
   'TestMetricsRequiresConfiguredCredential|TestMetricsAuthenticationPrecedesPrincipalRateLimit|TestMetricsBearerParsingAndSecurityHeaders'
 
 note "accessibility matrix"

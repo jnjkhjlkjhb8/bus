@@ -149,14 +149,16 @@ class FirebaseBootstrap {
     // injects the exact `HiveStore.init()` future it started Hive with.
     await hiveReady;
     const isProd = FirebaseGate.appEnv == 'production';
+    const debugToken = FirebaseGate.appCheckDebugToken;
+    final pinnedDebugToken = debugToken.isEmpty ? null : debugToken;
     await runOptionalSteps([
       () => FirebaseAppCheck.instance.activate(
         providerApple: isProd
             ? const AppleAppAttestProvider()
-            : const AppleDebugProvider(),
+            : AppleDebugProvider(debugToken: pinnedDebugToken),
         providerAndroid: isProd
             ? const AndroidPlayIntegrityProvider()
-            : const AndroidDebugProvider(),
+            : AndroidDebugProvider(debugToken: pinnedDebugToken),
       ),
     ]);
     FlutterError.onError = (details) {

@@ -17,8 +17,8 @@
 #       must not import data/generated/ (protoc output). Existing offenders
 #       are ratcheted in scripts/testdata/proto-confinement-allowlist.txt.
 #
-#   (c) Go service layering — services/router must not import
-#       services/functions (or its subpackages) and vice versa;
+#   (c) Go service layering — services/api must not import
+#       services/worker (or its subpackages) and vice versa;
 #       services/shared, services/obs, and models are the approved seams.
 #       Detection is a per-file import-block scan, so it works on a tree
 #       where generated pb.go stubs are absent.
@@ -86,13 +86,13 @@ scan_proto_confinement() {
 # Emits "<file>|<forbidden-import>" for router<->functions imports.
 scan_go_layering() {
   local root="$1" f
-  list_go_files "$root" "services/router" | while read -r f; do
-    grep -n "\"$go_module/services/functions" "$root/$f" 2>/dev/null \
-      | while IFS= read -r _; do printf '%s|services/functions\n' "$f"; done
+  list_go_files "$root" "services/api" | while read -r f; do
+    grep -n "\"$go_module/services/worker" "$root/$f" 2>/dev/null \
+      | while IFS= read -r _; do printf '%s|services/worker\n' "$f"; done
   done
-  list_go_files "$root" "services/functions" | while read -r f; do
-    grep -n "\"$go_module/services/router" "$root/$f" 2>/dev/null \
-      | while IFS= read -r _; do printf '%s|services/router\n' "$f"; done
+  list_go_files "$root" "services/worker" | while read -r f; do
+    grep -n "\"$go_module/services/api" "$root/$f" 2>/dev/null \
+      | while IFS= read -r _; do printf '%s|services/api\n' "$f"; done
   done
 }
 
@@ -150,7 +150,7 @@ run_checks() {
     found=1
     bad "layering breach: ${crossing%%|*} imports ${crossing##*|} (move shared code to services/shared)"
   done < <(scan_go_layering "$root" | sort -u)
-  [ -z "$found" ] && ok "services/router and services/functions do not import each other"
+  [ -z "$found" ] && ok "services/api and services/worker do not import each other"
 }
 
 self_test() {
@@ -161,13 +161,13 @@ self_test() {
 
   # Synthetic violations, one per boundary. Never touches the repository.
   mkdir -p "$st_root/app/lib/features/bus" "$st_root/app/lib/features/rail" \
-    "$st_root/app/lib/shared" "$st_root/services/router" "$st_root/services/functions"
+    "$st_root/app/lib/shared" "$st_root/services/api" "$st_root/services/worker"
   printf "import 'package:%s/features/rail/rail_bloc.dart';\n" "$dart_pkg" \
     >"$st_root/app/lib/features/bus/violate_feature.dart"
   printf "import 'package:%s/data/generated/bus.pb.dart';\n" "$dart_pkg" \
     >"$st_root/app/lib/shared/violate_proto.dart"
-  printf 'package router\n\nimport "%s/services/functions"\n' "$go_module" \
-    >"$st_root/services/router/violate_layering.go"
+  printf 'package router\n\nimport "%s/services/worker"\n' "$go_module" \
+    >"$st_root/services/api/violate_layering.go"
 
   echo "self-test: expecting three FAIL lines against a synthetic tree"
   local st_out

@@ -34,8 +34,8 @@ made by claude
 - MRT 下車提醒（ADR-0015）
   - `mrt_track:state:{track_id}`（一個 session 的即時位置狀態，`models.MrtTrackState` proto；router 的 `CreateTrack` 初始化並供 `WatchTrack` seed，functions tracker 每站覆寫。builder：`shared.MrtTrackKey`）
 - GTFS-RT（ADR-0019）
-  - `gtfs_rt:feed`（序列化後的整份 `FeedMessage`；`services/functions` 的
-    `gtfsRTBuilder` 每 30 秒覆寫，`services/router` 的
+  - `gtfs_rt:feed`（序列化後的整份 `FeedMessage`；`services/worker` 的
+    `gtfsRTBuilder` 每 30 秒覆寫，`services/api` 的
     `/api/gtfs-rt/trip-updates.pb` 原樣吐出。TTL 是刻意的存活檢查：builder 停了
     key 就過期，endpoint 回 503，規劃器退回靜態時刻表，而不是拿到一份沒人發現
     已經過期數小時的快照。builder：`shared.GTFSRealtimeKey`）
@@ -53,12 +53,12 @@ made by claude
   - `THSR_timetable:{date}:{origin_station_id}:{destination_station_id}`
   - `THSR_Stoptimes:{date}:{train_no}`
   - `THSR_StationBoard:{date}:{station_id}:{direction}`
-  - `thsr_seats:{date}:{train_no}`（即時 AvailableSeatStatus 快照；由 `services/functions` 的 `thsr_seats` live job 每 10 分鐘寫入。builder：`shared.ThsrSeatsKey`）
+  - `thsr_seats:{date}:{train_no}`（即時 AvailableSeatStatus 快照；由 `services/worker` 的 `thsr_seats` live job 每 10 分鐘寫入。builder：`shared.ThsrSeatsKey`）
   - `thsr_seats:{date}:*`（每日一個 Pub/Sub 頻道字串：live job 以此字串 PUBLISH 每列車快照，router 的 `AvailableSeats` 以同字串 SUBSCRIBE 並用它 SCAN 上面的 per-train key 做 seed。此處「`*`」是雙方共用的字面頻道名，非 glob。builder：`shared.ThsrSeatsPattern`）
 - TDX 用戶端（`shared/tdx.go` 的 `TDXClient` 使用；key builder 在 `shared/keys.go`）
   - `shared:tdx:access_token`：OAuth bearer token（命名空間版；legacy fallback `TDX_Token`，401 時兩者一併刪除）。builder：`shared.TDXTokenKey` / `TDXTokenKeyLegacy`
   - `shared:raw:last_modified:{name}`：ingestor 的 If-Modified-Since 標記。builder：`shared.TDXRawIMSKey`
-  - `LastTimeGet_{name}`：legacy prod 轉換路徑與 `services/functions` live job（含 THSR 座位抓取，`name=thsr_availableseats`）的 If-Modified-Since 標記。builder：`shared.TDXLegacyIMSKey`
+  - `LastTimeGet_{name}`：legacy prod 轉換路徑與 `services/worker` live job（含 THSR 座位抓取，`name=thsr_availableseats`）的 If-Modified-Since 標記。builder：`shared.TDXLegacyIMSKey`
 
 ## Hash key
 - `tra:delay`

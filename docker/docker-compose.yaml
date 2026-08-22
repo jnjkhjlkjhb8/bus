@@ -49,7 +49,7 @@ services:
   router:
     build:
       context: .
-      dockerfile: services/router/Dockerfile
+      dockerfile: services/api/Dockerfile
     # ROUTER_IMAGE lets a deploy pin an exact CI-built digest
     # (ghcr.io/.../bus-router@sha256:...) via `docker compose pull` without a
     # host build; build: above stays so a bare `docker compose up --build`
@@ -117,7 +117,7 @@ services:
   functions:
     build:
       context: .
-      dockerfile: services/functions/Dockerfile
+      dockerfile: services/worker/Dockerfile
     # FUNCTIONS_IMAGE is shared by functions/ingestor/loader (one image, three
     # ROLE values) -- see the ROUTER_IMAGE comment above for why build: and
     # image: coexist.
@@ -131,7 +131,7 @@ services:
       - backend
     # TDXClient.GetInto (services/shared/tdx.go) spools each response to
     # os.CreateTemp("", ...), i.e. the default $TMPDIR (/tmp) — that's the
-    # only path this binary writes to. touchHealthFile (services/functions/
+    # only path this binary writes to. touchHealthFile (services/worker/
     # healthfile.go) also writes its liveness marker here on every cron tick.
     tmpfs:
       - /tmp:size=256m
@@ -151,7 +151,7 @@ services:
       # This role's fastest cron (mrtEta) ticks every 10s, so a marker older
       # than 2 minutes means the scheduler loop has stalled -- addStaticCron
       # touches /tmp/healthy after every job returns, success or failure
-      # (services/functions/healthfile.go), so this proves cron dispatch is
+      # (services/worker/healthfile.go), so this proves cron dispatch is
       # alive, not that any single TDX-dependent job succeeded.
       test: ["CMD-SHELL", "find /tmp/healthy -mmin -2 2>/dev/null | grep -q ."]
       interval: 30s
@@ -161,7 +161,7 @@ services:
   ingestor:
     build:
       context: .
-      dockerfile: services/functions/Dockerfile
+      dockerfile: services/worker/Dockerfile
     image: ${FUNCTIONS_IMAGE:-functions}
     env_file: ${ENV_FILE_INGESTOR:-${ENV_FILE:-./.env}}
     environment:
@@ -194,12 +194,12 @@ services:
       # touch-file freshness check (as functions above uses) would report
       # unhealthy for the ~23.5 idle hours between ticks. Just prove the
       # process itself is alive.
-      # busybox pgrep's -x matches the full command line (e.g. "./functions
+      # busybox pgrep's -x matches the full command line (e.g. "./worker
       # run changetovector"), not just the process name, so it never matches
       # plain "functions" -- verified against this image directly. The
       # unqualified pgrep matches by process name (comm), which is exactly
       # "functions" for this binary.
-      test: ["CMD-SHELL", "pgrep functions"]
+      test: ["CMD-SHELL", "pgrep worker"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -207,7 +207,7 @@ services:
   loader:
     build:
       context: .
-      dockerfile: services/functions/Dockerfile
+      dockerfile: services/worker/Dockerfile
     image: ${FUNCTIONS_IMAGE:-functions}
     env_file: ${ENV_FILE_LOADER:-${ENV_FILE:-./.env}}
     environment:
@@ -221,7 +221,7 @@ services:
       - backend
     volumes:
       # The GTFS static feed the loader publishes at the end of its nightly
-      # chain (GTFS_OUT_DIR, services/functions/gtfs.go). It has to outlive the
+      # chain (GTFS_OUT_DIR, services/worker/gtfs.go). It has to outlive the
       # container — the root filesystem is read-only and anything written to a
       # container layer would vanish on the next deploy — and it has to be
       # readable by the planner that consumes it, which is a different
@@ -246,12 +246,12 @@ services:
     restart: unless-stopped
     healthcheck:
       # Daily cron like ingestor above -- process-alive only, not freshness.
-      # busybox pgrep's -x matches the full command line (e.g. "./functions
+      # busybox pgrep's -x matches the full command line (e.g. "./worker
       # run changetovector"), not just the process name, so it never matches
       # plain "functions" -- verified against this image directly. The
       # unqualified pgrep matches by process name (comm), which is exactly
       # "functions" for this binary.
-      test: ["CMD-SHELL", "pgrep functions"]
+      test: ["CMD-SHELL", "pgrep worker"]
       interval: 30s
       timeout: 5s
       retries: 3

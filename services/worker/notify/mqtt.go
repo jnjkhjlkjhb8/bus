@@ -1,0 +1,416 @@
+package notify
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	mqtt "github.com/eclipse/paho.mqtt.golang"
+	pb "github.com/jnjkhjlkjhb8/wheres_the_bus/models"
+	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+	"google.golang.org/protobuf/encoding/protojson"
+)
+
+// mqttTopicCfg is a subscription: an MQTT topic pattern and the Redis TTL applied
+// to messages cached from it.
+type mqttTopicCfg struct {
+	pattern string
+	ttl     time.Duration
+}
+
+// _mqttTopics is the set of TDX MQTT subscriptions and their cache TTLs. TDX
+// publishes only news and alert topics — there is no vehicle-position or
+// near-stop stream — so every subscription here is advisory text on a 5-minute
+// TTL. Bus alerts stay on v2: routeAlerts reads the v2 field names. Bus News
+// (route/timetable notices, as opposed to disruptions) is deliberately not
+// subscribed — Alert is the only bus stream the app carries.
+var _mqttTopics = []mqttTopicCfg{
+	{"v2/Bus/Alert/City/+", 5 * time.Minute},
+	{"v2/Bus/Alert/InterCity", 5 * time.Minute},
+	{"v2/Rail/Metro/Alert/#", 5 * time.Minute},
+	{"v3/Rail/TRA/Alert", 5 * time.Minute},
+	{"v2/Rail/THSR/AlertInfo", 5 * time.Minute},
+}
+
+// MQTTArchiver is handed every message as it arrives, before this package makes
+// anything of it. The alert feed is push-only and TDX republishes nothing, so a
+// message not kept here is gone; archive is nil where archiving is off, which is
+// every environment but prod.
+type MQTTArchiver func(topic string, payload []byte)
+
+// StartMQTT connects to the TDX MQTT broker over TLS and (re)subscribes to all
+// topics on every connect. It returns nil when MQTT_CLIENT_ID / MQTT_USERNAME /
+// MQTT_PASSWORD are unset, so MQTT is simply skipped in environments without
+// credentials. Auto-reconnect is on; the initial connect failing is logged but
+// not fatal — the client keeps retrying. Broker: mqtts://mqtt.transportdata.tw:8883
+func StartMQTT(rc *redis.Client, dispatcher *Dispatcher, archive MQTTArchiver) mqtt.Client {
+	clientID := os.Getenv("MQTT_CLIENT_ID")
+	username := os.Getenv("MQTT_USERNAME")
+	password := os.Getenv("MQTT_PASSWORD")
+	if clientID == "" || username == "" || password == "" {
+		zap.S().Warnw("credentials not set \u2014 skipping MQTT subscriber", "component", "mqtt")
+		return nil
+	}
+	opts := mqtt.NewClientOptions().
+		AddBroker("mqtts://mqtt.transportdata.tw:8883").
+		SetClientID(clientID).
+		SetUsername(username).
+		SetPassword(password).
+		SetCleanSession(true).
+		SetAutoReconnect(true).
+		SetConnectRetry(true).
+		SetConnectRetryInterval(10 * time.Second).
+		SetTLSConfig(&tls.Config{}).
+		SetOnConnectHandler(func(c mqtt.Client) {
+			zap.S().Infow("connected", "component", "mqtt")
+			mqttsubscribeall(c, rc, dispatcher, archive)
+		}).
+		SetConnectionLostHandler(func(_ mqtt.Client, err error) {
+			zap.S().Warnw("connection lost", "component", "mqtt", "err", err)
+		})
+	c := mqtt.NewClient(opts)
+	tok := c.Connect()
+	tok.Wait()
+	if err := tok.Error(); err != nil {
+		zap.S().Errorw("initial connect failed; will auto-retry", "component", "mqtt", "err", err)
+	}
+	return c
+}
+
+// mqttsubscribeall subscribes to every mqttTopics entry at QoS 1, routing each
+// message to mqtthandle with that topic's TTL. It runs on every (re)connect, so
+// subscriptions are restored after a dropped connection. Per-topic subscribe
+// failures are logged.
+func mqttsubscribeall(c mqtt.Client, rc *redis.Client, dispatcher *Dispatcher, archive MQTTArchiver) {
+	for _, t := range _mqttTopics {
+		pattern, ttl := t.pattern, t.ttl
+		tok := c.Subscribe(pattern, 1, func(_ mqtt.Client, msg mqtt.Message) {
+			// Archive before normalizing, so a payload this package cannot parse is
+			// still kept. Those are the messages most worth having: an alert that
+			// never reached a rider leaves no other trace.
+			if archive != nil {
+				archive(msg.Topic(), msg.Payload())
+			}
+			mqtthandle(rc, msg, ttl, dispatcher)
+		})
+		tok.Wait()
+		if err := tok.Error(); err != nil {
+			zap.S().Errorw("subscribe failed", "component", "mqtt", "topic", pattern, "err", err)
+		} else {
+			zap.S().Infow("subscribed", "component", "mqtt", "topic", pattern)
+		}
+	}
+}
+
+// mqtthandle normalizes one MQTT message into the wire shape the app and the
+// push dispatcher share, caches it in Redis (key derived from the topic, with
+// slashes turned into colons) and republishes it on that key for live
+// streaming. The cached snapshot is what a new subscriber is seeded with, so a
+// payload that cannot be parsed is dropped rather than written: overwriting the
+// last good snapshot with nothing would blank every rider's alert list. A valid
+// but empty payload is written — that is TDX saying the disruption cleared.
+//
+// It then dispatches route alerts, using SetNX on an "fcm:alert:" key as a
+// cross-run dedupe claim so the same alert is not pushed twice within its
+// window. Alert dispatch needs the SetNX claim, so a Redis failure skips it:
+// without the claim the same alert would push on every retry.
+func mqtthandle(rc *redis.Client, msg mqtt.Message, ttl time.Duration, dispatcher *Dispatcher) {
+	key := shared.MQTTChannel(msg.Topic())
+	items, ok := normalizeAlerts(msg.Topic(), msg.Payload())
+	if !ok {
+		zap.S().Errorw("unparseable",
+			"component", "mqtt",
+			"action", "normalize",
+			"event", "unparseable",
+			"topic", msg.Topic(),
+		)
+		return
+	}
+	payload, err := protojson.Marshal(&pb.Alert_Msg{Items: items})
+	if err != nil {
+		zap.S().Errorw("marshal failed",
+			"component", "mqtt",
+			"action", "normalize",
+			"event", "marshal_failed",
+			"topic", msg.Topic(),
+			"err", err,
+		)
+		return
+	}
+	// A broker push is a top-level entry point: paho calls this on its own
+	// goroutine with no parent context to inherit, so the handler owns one.
+	ctx := context.Background()
+	if err := rc.Set(ctx, key, payload, ttl).Err(); err != nil {
+		zap.S().Errorw("redis set failed", "component", "mqtt", "key", key, "err", err)
+		return
+	}
+	if err := rc.Publish(ctx, key, payload).Err(); err != nil {
+		zap.S().Errorw("redis publish failed", "component", "mqtt", "key", key, "err", err)
+	}
+	dispatchRouteAlerts(ctx, items, func(key string, ttl time.Duration) bool {
+		ok, err := rc.SetNX(ctx, "fcm:alert:"+key, "1", ttl).Result()
+		return err == nil && ok
+	}, dispatcher)
+}
+
+// _alertDedupeWindow is how long one alert's push claim is held. It spans a full
+// day because TDX republishes an ongoing disruption unchanged for as long as it
+// lasts, and every reconnect re-delivers the broker's retained messages; a
+// window shorter than the disruption re-notifies riders who already read it.
+const _alertDedupeWindow = 24 * time.Hour
+
+// dispatchRouteAlerts pushes each alert whose dedupe key claim succeeds, once
+// per route the alert is scoped to. An alert that names no route dispatches
+// under the empty key, which reaches every subscriber of that transit type.
+// claim is injected (Redis SetNX in production) so the dedupe window is
+// testable.
+func dispatchRouteAlerts(ctx context.Context, items []*pb.Alert_Item, claim func(string, time.Duration) bool, dispatcher *Dispatcher) {
+	for _, item := range items {
+		keys := item.RouteKeys
+		if len(keys) == 0 {
+			keys = []string{""}
+		}
+		for _, routeKey := range keys {
+			if claim(item.RouteType+"\x00"+routeKey+"\x00"+item.Id, _alertDedupeWindow) {
+				dispatcher.routeAlert(ctx, item.RouteType, routeKey, item.Body)
+			}
+		}
+	}
+}
+
+// normalizeAlerts parses one MQTT disruption payload into the alerts it
+// carries. Each transit type scopes its alerts differently, so route keys come
+// from a per-type extractor; an alert that names no route gets no keys at all,
+// which reads as system-wide. TDX repeats one disruption once per route it
+// scopes, so repeats of a body already seen fold their keys into the first
+// entry instead of becoming separate alerts.
+//
+// The bool reports whether the payload was understood. False means the topic
+// carries no disruptions or the JSON did not parse — distinct from a payload
+// that parsed and legitimately holds no alerts.
+func normalizeAlerts(topic string, payload []byte) ([]*pb.Alert_Item, bool) {
+	routeType := alertRouteType(topic)
+	if routeType == "" {
+		return nil, false
+	}
+	var raw any
+	if json.Unmarshal(payload, &raw) != nil {
+		return nil, false
+	}
+	interCity := strings.Contains(topic, "/InterCity")
+	entries := alertItems(raw)
+	out := make([]*pb.Alert_Item, 0, len(entries))
+	at := map[string]int{}
+	for _, m := range entries {
+		title := firstString(m, "NewsTitle", "Title")
+		body := firstString(m, "Description", "NewsContent", "AlertDescription", "Message")
+		if body == "" {
+			body = title
+		}
+		if body == "" {
+			continue
+		}
+		keys := alertRouteKeys(routeType, m)
+		if interCity {
+			for i, key := range keys {
+				keys[i], _ = shared.CanonicalSubroute("InterCity", key, 0)
+			}
+			keys = dedupeStrings(keys)
+		}
+		if index, ok := at[body]; ok {
+			out[index].RouteKeys = dedupeStrings(append(out[index].RouteKeys, keys...))
+			continue
+		}
+		at[body] = len(out)
+		out = append(out, &pb.Alert_Item{
+			Id:         alertID(body),
+			RouteType:  routeType,
+			RouteKeys:  keys,
+			Title:      title,
+			Body:       body,
+			Level:      alertLevel(m),
+			TimeUnix:   alertTime(m),
+			Department: firstString(m, "Department"),
+		})
+	}
+	return out, true
+}
+
+// alertID is one alert's stable identity: the SHA-256 of its body. TDX's own
+// NewsID/AlertID is deliberately unused, and UpdateTime especially so — it
+// changes on every republish of text that has not changed, which is exactly
+// what an identity must not do when it is also the push dedupe key.
+func alertID(body string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(body))) }
+
+// alertLevel grades one alert. TDX publishes Status as a string on some feeds
+// and a number on others, so the value is compared as text either way.
+// Everything that is not an outright suspension is advisory.
+func alertLevel(m map[string]any) string {
+	raw := ""
+	for _, key := range []string{"Status", "status"} {
+		if value, ok := m[key]; ok && value != nil {
+			raw = strings.ToLower(strings.TrimSpace(fmt.Sprint(value)))
+			break
+		}
+	}
+	if raw == "red" || raw == "3" || strings.Contains(raw, "中斷") {
+		return "red"
+	}
+	return "yellow"
+}
+
+// alertTime reads when the alert was published, as a Unix timestamp. TDX omits
+// the zone on some feeds; those are read as Taipei local time, which is the
+// only zone its feeds ever describe. An unreadable time yields 0.
+func alertTime(m map[string]any) int64 {
+	raw := firstString(m, "UpdateTime", "PublishTime")
+	if raw == "" {
+		return 0
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
+		if parsed, err := time.ParseInLocation(layout, raw, _alertLocation); err == nil {
+			return parsed.Unix()
+		}
+	}
+	return 0
+}
+
+// _alertLocation is the zone TDX timestamps are in when they carry no offset.
+// It falls back to a fixed +08:00 so a container without tzdata still reads
+// those timestamps correctly rather than shifting them to UTC.
+var _alertLocation = func() *time.Location {
+	if loc, err := time.LoadLocation("Asia/Taipei"); err == nil {
+		return loc
+	}
+	return time.FixedZone("CST", 8*60*60)
+}()
+
+// alertRouteType maps an MQTT topic to the transit type its payload describes,
+// or "" for a topic that carries no disruption info.
+func alertRouteType(topic string) string {
+	switch {
+	case strings.Contains(topic, "/Bus/"):
+		return "bus"
+	case strings.Contains(topic, "/Metro/"):
+		return "mrt"
+	case strings.Contains(topic, "/TRA/"):
+		return "tra"
+	case strings.Contains(topic, "/THSR/"):
+		return "thsr"
+	}
+	return ""
+}
+
+// alertRouteKeys returns the route keys one alert applies to, or none when it
+// names no route. Bus alerts scope to routes and TRA alerts to train numbers,
+// both of which the app subscribes by; metro alerts scope to lines, which a
+// 收藏 of a station on that line resolves to. THSR scopes only to line
+// sections of its single line, and a rail alert may name no scope at all —
+// those are system-wide and get no keys.
+//
+// Bus never falls through to system-wide: it spans thousands of routes across
+// every operator, so route-less bus News (fare changes, timetable notices)
+// would otherwise push to every bus subscriber in the country.
+func alertRouteKeys(routeType string, m map[string]any) []string {
+	switch routeType {
+	case "bus":
+		return busRouteKeys(m)
+	case "tra":
+		return scopeKeys(m, "Trains", "TrainNo")
+	case "mrt":
+		return dedupeStrings(append(scopeKeys(m, "Lines", "LineID", "LineNo"),
+			scopeKeys(m, "LineSections", "LineID", "LineNo")...))
+	}
+	return nil
+}
+
+// alertItems unwraps a decoded MQTT payload into the individual alert objects
+// it carries. Bus news/alerts arrive as a bare JSON array, while metro and TRA
+// wrap several alerts in an authority envelope
+// ({"AuthorityCode":"TRTC","Alerts":[...]}); a lone object is treated as a
+// one-element payload.
+func alertItems(raw any) []map[string]any {
+	var items []any
+	switch v := raw.(type) {
+	case []any:
+		items = v
+	case map[string]any:
+		items = []any{v}
+		if nested, ok := v["Alerts"].([]any); ok {
+			items = nested
+		}
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// busRouteKeys returns every route key one bus alert applies to. News payloads
+// carry no scope at all; Alert payloads list the affected routes under
+// Scope.SubRoutes / Scope.Routes, where TDX publishes IDs and UIDs
+// inconsistently across operators. Both are emitted — a key with no
+// subscribers simply pushes nothing — and duplicates are dropped.
+func busRouteKeys(m map[string]any) []string {
+	keys := []string{}
+	if top := firstString(m, "SubRouteUID", "RouteUID"); top != "" {
+		keys = append(keys, top)
+	}
+	keys = append(keys, scopeKeys(m, "SubRoutes", "SubRouteUID", "SubRouteID")...)
+	keys = append(keys, scopeKeys(m, "Routes", "RouteUID", "RouteID")...)
+	return dedupeStrings(keys)
+}
+
+// scopeKeys reads one Scope list (Scope.SubRoutes, Scope.Trains, …) and
+// returns each entry's first non-empty value among fields. TDX publishes IDs
+// and UIDs inconsistently across operators, so callers pass both: a key with
+// no subscribers simply pushes nothing.
+func scopeKeys(m map[string]any, list string, fields ...string) []string {
+	scope, _ := m["Scope"].(map[string]any)
+	entries, _ := scope[list].([]any)
+	keys := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if e, ok := entry.(map[string]any); ok {
+			if key := firstString(e, fields...); key != "" {
+				keys = append(keys, key)
+			}
+		}
+	}
+	return dedupeStrings(keys)
+}
+
+// dedupeStrings drops repeats while preserving order.
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := values[:0]
+	for _, v := range values {
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+// firstString returns the trimmed value of the first key in keys that maps to a
+// non-empty string, or "" if none do. Used to read a value that TDX may publish
+// under any of several field names.
+func firstString(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := m[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}

@@ -48,8 +48,8 @@ check_dockerfile_user() {
     ok "$name: USER $last_user in $file"
   fi
 }
-check_dockerfile_user "router" services/router/Dockerfile
-check_dockerfile_user "functions" services/functions/Dockerfile
+check_dockerfile_user "router" services/api/Dockerfile
+check_dockerfile_user "functions" services/worker/Dockerfile
 
 # ---------------------------------------------------------------------------
 # 2. .dockerignore exists and is allowlist-style (excludes the big/sensitive
@@ -265,7 +265,7 @@ else
   done
 
   note "-- Dockerfile FROM base images pinned by digest --"
-  for pair in "router:services/router/Dockerfile" "functions:services/functions/Dockerfile"; do
+  for pair in "router:services/api/Dockerfile" "functions:services/worker/Dockerfile"; do
     name="${pair%%:*}"
     file="${pair#*:}"
     unpinned=$(grep -E '^FROM ' "$file" | grep -v '@sha256:' || true)

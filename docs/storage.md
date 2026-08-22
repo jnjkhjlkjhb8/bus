@@ -78,7 +78,7 @@ made by claude
 - `search_vector`
   - 欄位：`type`, `uid`, `name`, `alias`, `city`, `depart`, `destin`, `geom`, `updated_at`
   - 唯一鍵：`(type, uid, city)`
-  - `alias` 存 `name` 的讀音與簡寫（全拼、拼音首字母、無聲調注音、手工簡寫如 `北車`），由 loader 的 changetovector 階段以 `searchAlias`（`services/functions/search_alias.go`）產生；router 的 `_textSearchSQL` 以與 `name` 相同的 trigram 述詞比對，排序層級一律低於 `name`。migration 之後、下一次 nightly load 之前為 NULL，述詞視同不命中
+  - `alias` 存 `name` 的讀音與簡寫（全拼、拼音首字母、無聲調注音、手工簡寫如 `北車`），由 loader 的 changetovector 階段以 `searchAlias`（`services/worker/search_alias.go`）產生；router 的 `_textSearchSQL` 以與 `name` 相同的 trigram 述詞比對，排序層級一律低於 `name`。migration 之後、下一次 nightly load 之前為 NULL，述詞視同不命中
   - type 值：`bus_route`, `bus_station`, `bike_station`, `mrt_station`, `tra_station`, `thsr_station`, `tra_train`, `thsr_train`
 
 ## PowerSync（離線鏡像）

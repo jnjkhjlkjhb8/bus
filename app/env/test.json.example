@@ -11,5 +11,6 @@
   "GOOGLE_PLACES_API_KEY": "",
   "GOOGLE_PLACES_API_KEY_IOS": "",
   "GOOGLE_PLACES_API_KEY_ANDROID": "",
-  "APP_ENV": "test"
+  "APP_ENV": "test",
+  "APP_CHECK_DEBUG_TOKEN": ""
 }

@@ -55,7 +55,7 @@ timetable:
 
 gbfs:
   # YouBike and the other Taiwan operators, served by the router from
-  # bike_stations plus live availability in Redis (services/router/gbfs.go).
+  # bike_stations plus live availability in Redis (services/api/gbfs.go).
   # This is what backs firstMileMode/lastMileMode = 3 (shared bike).
   feeds:
     tw:
@@ -75,3 +75,11 @@ reverse_geocoding: true
 # No elevation data is shipped, and elevators need an external feed Taiwan has
 # no source for.
 elevators: false
+
+limits:
+  # /api/v1/one-to-many rejects the whole request with 422 once "many" exceeds
+  # this count. nearby.go queries 5 modes at up to 80 candidates each and
+  # sends every candidate in one call, so the worst case is 400; MOTIS's
+  # default of 128 was already being hit in practice (router logs: "MOTIS
+  # one-to-many HTTP" status_code=422 destinations=161).
+  onetomany_max_many: 400

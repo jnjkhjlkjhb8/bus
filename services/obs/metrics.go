@@ -105,7 +105,7 @@ func IncRedisError() {
 }
 
 // IncDBError counts one PostgreSQL query failure that is not a plain
-// not-found result (see grpcStatusFor in services/router/main.go, the sole
+// not-found result (see grpcStatusFor in services/api/main.go, the sole
 // caller): a missing row is expected traffic, not a database health signal.
 func IncDBError() {
 	_dbErrorsTotal.Add(1)

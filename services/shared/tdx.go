@@ -83,7 +83,20 @@ type TDXConfig struct {
 	IMSKey        func(name string) string
 	SinceFallback func(name string) string
 	BaseURL       string
+	Tap           TDXTap
 }
+
+// TDXTap opens a sink for one fetch's response body, so a caller can keep the
+// bytes upstream actually served rather than only what the decoder made of them
+// (ADR-0023). It is consulted once per modified response; returning nil means
+// this fetch is not observed, which is the answer for every name not on the
+// caller's whitelist and for every environment with archiving switched off.
+//
+// The returned writer is closed when the fetch is, and the close is where the
+// caller does whatever it does with the bytes. A write or close failure is the
+// tap's own problem: it must never fail the fetch, because the observation is
+// worth strictly less than the live data it observes.
+type TDXTap func(name string) io.WriteCloser
 
 // TDXClient performs authenticated TDX requests. The zero value is not usable;
 // construct one with NewTDXClient.
@@ -93,6 +106,7 @@ type TDXClient struct {
 	store         TDXStore
 	imsKey        func(name string) string
 	sinceFallback func(name string) string
+	tap           TDXTap
 	tokenRefresh  singleflight.Group
 	maxRetries    int
 	retryWait     time.Duration
@@ -116,6 +130,7 @@ func NewTDXClient(cfg TDXConfig) *TDXClient {
 		store:         cfg.Store,
 		imsKey:        cfg.IMSKey,
 		sinceFallback: cfg.SinceFallback,
+		tap:           cfg.Tap,
 		tokenURL:      _tdxTokenURL,
 		tokenHTTP:     &http.Client{Timeout: 30 * time.Second},
 		maxRetries:    5,
@@ -421,6 +436,43 @@ func decodedTDXBody(resp *resty.Response) (io.ReadCloser, error) {
 	}
 }
 
+// tappedBody mirrors the response body into the tap's sink as the decoder reads
+// it, so observing costs one copy of the stream rather than a second buffer of
+// the whole payload. With no tap the body is returned untouched.
+//
+// The tap's errors are deliberately swallowed here: a broken observer must not
+// break the fetch it is observing. What it must not do is hide — the sink's
+// Close is where the caller counts what it did and did not store.
+func tappedBody(body io.ReadCloser, tap TDXTap, name string) io.ReadCloser {
+	if tap == nil {
+		return body
+	}
+	sink := tap(name)
+	if sink == nil {
+		return body
+	}
+	return &tappedReadCloser{Reader: io.TeeReader(body, sink), body: body, sink: sink}
+}
+
+// tappedReadCloser closes the sink before the body, so the sink sees every byte
+// the body still had buffered — tdxResponseBody.Close drains the remainder, and
+// that drain feeds the tee.
+type tappedReadCloser struct {
+	io.Reader
+
+	body io.ReadCloser
+	sink io.WriteCloser
+}
+
+func (t *tappedReadCloser) Close() error {
+	// Drain first: an early return by the decoder would otherwise leave the tail
+	// of the payload unobserved, producing a truncated archive that still looks
+	// like a complete one.
+	_, _ = io.Copy(io.Discard, t.Reader)
+	_ = t.sink.Close()
+	return t.body.Close()
+}
+
 func noopTDXFetch(invalidate func() error) *TDXFetch {
 	return &TDXFetch{
 		Ack:        func() error { return nil },
@@ -471,6 +523,7 @@ func (c *TDXClient) Get(ctx context.Context, url, name string) (*TDXFetch, error
 	if err != nil {
 		return nil, err
 	}
+	body = tappedBody(body, c.tap, name)
 	return &TDXFetch{
 		Decoder:  json.NewDecoder(body),
 		Modified: true,

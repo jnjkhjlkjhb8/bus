@@ -196,7 +196,7 @@ made by claude
 
 ## Alert_Service (`models/alert.proto`)
 
-來源：TDX MQTT 訊息，由 `services/functions` 接收後**正規化**再存入 Redis
+來源：TDX MQTT 訊息，由 `services/worker` 接收後**正規化**再存入 Redis
 Pub/Sub。TDX 三種 payload 形狀（裸陣列、`{"Alerts":[...]}` 信封、單一物件）在寫入
 時就攤平成 `Alert_Msg { repeated Alert_Item items }`，router 只做 protojson →
 proto 的轉型，app 端不再解析任何 TDX 欄位名（ADR-0016）。

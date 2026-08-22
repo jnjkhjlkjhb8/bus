@@ -113,6 +113,8 @@ def releaseKeyPassword = keystoreProperties.getProperty('keyPassword') ?: System
 def hasReleaseSigningConfig = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
 
 android {
+    compileSdk = 37
+    ndkVersion = "28.2.13676358"
     namespace = "com.example.bus"
     compileSdk = flutter.compileSdkVersion
     compileOptions {
