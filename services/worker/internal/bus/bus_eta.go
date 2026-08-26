@@ -205,35 +205,46 @@ func pickBusEstimate(prev, next busmodel.RawEstimated) busmodel.RawEstimated {
 	return prev
 }
 
-// decodeBusEtaArray streams a TDX ETA array into busmodel.RawEstimated entries. It
-// reports complete=false when the opening array token is missing, any element
-// fails to decode, or the closing token never arrives — all signs of a
+// decodeBusEtaArray streams a TDX ETA array into busmodel.RawEstimated entries.
+// It returns a non-nil error when the opening array token is missing, any
+// element fails to decode, or the closing token never arrives — all signs of a
 // truncated or malformed body. Callers use this to avoid overwriting the live
 // snapshot with a partial (blank-heavy) result: a bad body is treated like a
 // 304, keeping the last good ETAs alive rather than blanking the route for a
 // tick until the next good fetch.
-func decodeBusEtaArray(dec *json.Decoder) (eat []busmodel.RawEstimated, complete bool) {
+//
+// The error names which of those three it was, and carries what was actually
+// read: a body opening with '{' (TDX answering 200 with an error object) and a
+// body cut off mid-array (a truncated gzip stream) are different faults with
+// the same symptom, and one log line has to tell them apart.
+func decodeBusEtaArray(dec *json.Decoder) (eat []busmodel.RawEstimated, err error) {
 	eat = make([]busmodel.RawEstimated, 0)
 	opening, err := dec.Token()
-	if err != nil || opening != json.Delim('[') {
-		return nil, false
+	if err != nil {
+		return nil, fmt.Errorf("read opening array token: %w", err)
+	}
+	if opening != json.Delim('[') {
+		return nil, fmt.Errorf("body is not a JSON array: opens with %v", opening)
 	}
 	for dec.More() {
 		var e busmodel.RawEstimated
 		if err := dec.Decode(&e); err != nil {
-			return eat, false
+			return eat, fmt.Errorf("decode element %d: %w", len(eat), err)
 		}
 		eat = append(eat, e)
 	}
 	closing, err := dec.Token()
-	if err != nil || closing != json.Delim(']') {
-		return eat, false
+	if err != nil {
+		return eat, fmt.Errorf("read closing array token after %d elements: %w", len(eat), err)
+	}
+	if closing != json.Delim(']') {
+		return eat, fmt.Errorf("array does not close after %d elements: got %v", len(eat), closing)
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return eat, false
+		return eat, fmt.Errorf("trailing data after array of %d elements: %v (err %v)", len(eat), trailing, err)
 	}
-	return eat, true
+	return eat, nil
 }
 
 // _busEtaFastCities are Taipei and New Taipei: the cities runCity gets its ETA
@@ -544,12 +555,11 @@ func (j busLiveJob) runCity(ctx context.Context, city string) (err error) {
 		}
 		etaModified = etaFetch.Modified
 		if etaFetch.Modified {
-			var complete bool
-			eat, complete = decodeBusEtaArray(etaFetch.Decoder)
-			closeErr := etaFetch.Close()
 			var decodeErr error
-			if !complete {
-				decodeErr = errors.New("decode bus ETA response: incomplete JSON array")
+			eat, decodeErr = decodeBusEtaArray(etaFetch.Decoder)
+			closeErr := etaFetch.Close()
+			if decodeErr != nil {
+				decodeErr = _oops.With("city", city).Wrapf(decodeErr, "decode bus ETA response")
 			}
 			if decodeErr != nil || closeErr != nil {
 				return errors.Join(decodeErr, closeErr)

@@ -52,9 +52,9 @@ func TestDecodeBusEtaArray(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dec := json.NewDecoder(strings.NewReader(tt.body))
-			eat, complete := decodeBusEtaArray(dec)
-			if complete != tt.wantComplete {
-				t.Fatalf("complete = %v, want %v", complete, tt.wantComplete)
+			eat, err := decodeBusEtaArray(dec)
+			if (err == nil) != tt.wantComplete {
+				t.Fatalf("err = %v, want complete = %v", err, tt.wantComplete)
 			}
 			if len(eat) != tt.wantLen {
 				t.Fatalf("len(eat) = %d, want %d", len(eat), tt.wantLen)
@@ -72,9 +72,9 @@ func TestDecodeBusEtaArray(t *testing.T) {
 func TestDecodeBusEtaArrayFieldNames(t *testing.T) {
 	t.Run("Keelung names the subroute", func(t *testing.T) {
 		body := `[{"PlateNumb":"FAC-156","StopUID":"KEE306194","RouteUID":"KEE0211","SubRouteUID":"KEE021101","Direction":0,"EstimateTime":1118,"StopStatus":0,"UpdateTime":"2026-07-12T20:20:34+08:00"}]`
-		eat, complete := decodeBusEtaArray(json.NewDecoder(strings.NewReader(body)))
-		if !complete || len(eat) != 1 {
-			t.Fatalf("complete=%v len=%d, want true/1", complete, len(eat))
+		eat, err := decodeBusEtaArray(json.NewDecoder(strings.NewReader(body)))
+		if err != nil || len(eat) != 1 {
+			t.Fatalf("err=%v len=%d, want nil/1", err, len(eat))
 		}
 		if eat[0].EstimatedTime != 1118 {
 			t.Errorf("EstimatedTime = %d, want 1118 — the TDX field is EstimateTime", eat[0].EstimatedTime)
@@ -86,9 +86,9 @@ func TestDecodeBusEtaArrayFieldNames(t *testing.T) {
 
 	t.Run("Taipei identifies the arrival by route only", func(t *testing.T) {
 		body := `[{"StopUID":"TPE36407","RouteUID":"TPE10442","RouteID":"10442","Direction":1,"EstimateTime":864,"StopStatus":0,"SrcUpdateTime":"2026-07-12T20:20:30+08:00"}]`
-		eat, complete := decodeBusEtaArray(json.NewDecoder(strings.NewReader(body)))
-		if !complete || len(eat) != 1 {
-			t.Fatalf("complete=%v len=%d, want true/1", complete, len(eat))
+		eat, err := decodeBusEtaArray(json.NewDecoder(strings.NewReader(body)))
+		if err != nil || len(eat) != 1 {
+			t.Fatalf("err=%v len=%d, want nil/1", err, len(eat))
 		}
 		if eat[0].EstimatedTime != 864 {
 			t.Errorf("EstimatedTime = %d, want 864 — the TDX field is EstimateTime", eat[0].EstimatedTime)

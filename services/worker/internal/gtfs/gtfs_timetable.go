@@ -262,10 +262,17 @@ WITH calls AS (
       + split_part(c->>'ArrivalTime', ':', 2)::int * 60,
     split_part(c->>'DepartureTime', ':', 1)::int * 3600
       + split_part(c->>'DepartureTime', ':', 2)::int * 60,
-    0,
-    0
+    COALESCE(sb.pickup, 0),
+    COALESCE(sb.drop_off, 0)
   FROM (` + _busScheduleSource + `) w
   CROSS JOIN LATERAL jsonb_array_elements(w.stop_times) c
+  -- Same StopBoarding restriction the origin-only path applies: a schedule that
+  -- states its own calls is no more allowed to set a rider down at a board-only
+  -- stop. trip_id starts with the subroute uid, which is what the join needs.
+  LEFT JOIN (` + _busStopBoardingSQL + `) sb
+    ON sb.sub_route_uid = split_part(w.trip_id, ':', 1)
+   AND sb.direction     = w.direction_id
+   AND sb.stop_uid      = c->>'StopUID'
   WHERE (c->>'ArrivalTime') ~ '^[0-9]{1,2}:[0-9]{2}$'
     AND (c->>'DepartureTime') ~ '^[0-9]{1,2}:[0-9]{2}$'
     AND COALESCE(c->>'StopUID', '') <> ''

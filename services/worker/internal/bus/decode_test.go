@@ -16,9 +16,8 @@ func TestLiveDecodersRejectWrongDelimitersAndTrailingData(t *testing.T) {
 				t.Fatalf("pipeline.DecodeLiveItems(%q) returned nil", body)
 			}
 
-			_, complete := decodeBusEtaArray(json.NewDecoder(strings.NewReader(body)))
-			if complete {
-				t.Fatalf("decodeBusEtaArray(%q) reported complete", body)
+			if _, err := decodeBusEtaArray(json.NewDecoder(strings.NewReader(body))); err == nil {
+				t.Fatalf("decodeBusEtaArray(%q) returned nil", body)
 			}
 		})
 	}

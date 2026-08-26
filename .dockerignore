@@ -13,10 +13,10 @@
 !services/obs/**
 !services/shared/
 !services/shared/**
-!services/router/
-!services/router/**
-!services/functions/
-!services/functions/**
+!services/api/
+!services/api/**
+!services/worker/
+!services/worker/**
 !embed/
 !embed/**
 
