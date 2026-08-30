@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"time"
 
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/shared"
@@ -467,7 +468,15 @@ const (
 // A Redis read that fails outright answers true. Losing freshness for every
 // city is a far worse failure than spending the requests the job would have
 // spent anyway, so the gate degrades to the pre-FDPL-90 behaviour.
+// Setting LIVE_DEMAND_GATE=off disables the gate entirely: every city is
+// fetched every tick, as before FDPL-90. It is a manual kill switch for when
+// the reduced cadence has to be taken out of the picture; it costs the full
+// TDX request budget for as long as it is set.
 func LiveDemandGate(ctx context.Context, sink LiveSink, dataset, city string) bool {
+	if os.Getenv("LIVE_DEMAND_GATE") == "off" {
+		return true
+	}
+
 	_, err := sink.GetString(ctx, shared.LiveDemandKey(dataset, city))
 	if err == nil {
 		return true
