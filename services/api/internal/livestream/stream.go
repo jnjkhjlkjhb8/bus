@@ -12,6 +12,7 @@ import (
 	"github.com/jnjkhjlkjhb8/wheres_the_bus/services/obs"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 )
 
 // LiveSource is the seam between live-stream handlers and Redis. Two adapters
@@ -88,6 +89,14 @@ func StreamLive(ctx context.Context, src LiveSource, spec LiveStreamSpec, send f
 		return err
 	}
 	defer closeSub()
+	// grpc-go withholds the response headers until the first Send, so a stream
+	// that seeds nothing and waits on a quiet channel returns no bytes at all.
+	// Cloudflare answers the app with 524 after 100 s of that, which the client
+	// reports as UNKNOWN and retries into a reconnect loop. Flushing the headers
+	// here makes the response start immediately regardless of when data arrives.
+	// It fails only off a real gRPC stream (tests), where there is nothing to
+	// flush.
+	_ = grpc.SendHeader(ctx, nil)
 	// Every return past this point ends an established stream (client
 	// disconnect, upstream close, or send failure); a subscribe failure above
 	// never started one, so it is not counted here.

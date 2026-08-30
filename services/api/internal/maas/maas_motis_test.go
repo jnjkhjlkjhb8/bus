@@ -331,8 +331,10 @@ func TestMotisSectionKeepsOnlyTheTransitLegOfEachAlternative(t *testing.T) {
 	if got := section.Alternatives[0].Transport.Number; got != "310" {
 		t.Errorf("first alternative route = %q, want 310", got)
 	}
-	if got := section.Alternatives[0].Departure.Time; got != "2026-08-18T07:14:00Z" {
-		t.Errorf("first alternative departure = %q", got)
+	// Local, like every other timestamp the section carries.
+	wantDeparture := mustParseRFC3339(t, "2026-08-18T07:14:00Z").In(time.Local).Format(time.RFC3339)
+	if got := section.Alternatives[0].Departure.Time; got != wantDeparture {
+		t.Errorf("first alternative departure = %q, want %q", got, wantDeparture)
 	}
 	if got := section.Alternatives[1].Transport.Number; got != "BL" {
 		t.Errorf("interlined alternative route = %q, want BL", got)
@@ -343,4 +345,49 @@ func TestMotisSectionKeepsOnlyTheTransitLegOfEachAlternative(t *testing.T) {
 			t.Errorf("alternative %d carries its own alternatives", i)
 		}
 	}
+}
+
+func TestConvertMotisItinerariesRestatesUTCInLocalTime(t *testing.T) {
+	api, _ := convertMotisItineraries([]motisItinerary{{
+		StartTime: "2026-08-30T22:16:00Z",
+		EndTime:   "2026-08-30T23:08:00Z",
+		Legs: []motisLeg{{
+			Mode:      "BUS",
+			StartTime: "2026-08-30T22:22:00Z",
+			EndTime:   "2026-08-30T22:32:00Z",
+			IntermediateStops: []motisPlace{{
+				Departure: "2026-08-30T22:27:00Z",
+			}},
+		}},
+	}})
+
+	// The app reads these as wall-clock text, so every one of them has to be
+	// the rider's clock: in Taipei 22:16Z is 06:16 the next morning.
+	route := api.Data.Routes[0]
+	section := route.Sections[0]
+	for name, pair := range map[string][2]string{
+		"route start":       {route.StartTime, "2026-08-30T22:16:00Z"},
+		"route end":         {route.EndTime, "2026-08-30T23:08:00Z"},
+		"departure":         {section.Departure.Time, "2026-08-30T22:22:00Z"},
+		"arrival":           {section.Arrival.Time, "2026-08-30T22:32:00Z"},
+		"intermediate stop": {section.IntermediateStops[0].Departure.Time, "2026-08-30T22:27:00Z"},
+	} {
+		want := mustParseRFC3339(t, pair[1]).In(time.Local)
+		got := mustParseRFC3339(t, pair[0])
+		if !got.Equal(want) {
+			t.Fatalf("%s moved in time: %q", name, pair[0])
+		}
+		if pair[0] != want.Format(time.RFC3339) {
+			t.Fatalf("%s not in the router's zone: %q, want %q", name, pair[0], want.Format(time.RFC3339))
+		}
+	}
+}
+
+func mustParseRFC3339(t *testing.T, ts string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		t.Fatalf("unparseable timestamp %q: %v", ts, err)
+	}
+	return parsed
 }

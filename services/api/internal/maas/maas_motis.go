@@ -230,8 +230,8 @@ func convertMotisItineraries(itineraries []motisItinerary) (*tdxAPIResponse, []*
 	for _, itinerary := range itineraries {
 		route := tdxRoute{
 			TravelTime: itinerary.Duration,
-			StartTime:  itinerary.StartTime,
-			EndTime:    itinerary.EndTime,
+			StartTime:  motisLocalTime(itinerary.StartTime),
+			EndTime:    motisLocalTime(itinerary.EndTime),
 			Transfers:  itinerary.Transfers,
 		}
 		for _, leg := range itinerary.Legs {
@@ -255,7 +255,7 @@ func motisSection(leg motisLeg) tdxSection {
 			Length:   leg.Distance,
 		},
 		Departure: tdxPlaceInfo{
-			Time: leg.StartTime,
+			Time: motisLocalTime(leg.StartTime),
 			Place: tdxPlace{
 				Name:     leg.From.Name,
 				Type:     motisPlaceType(leg.From),
@@ -263,7 +263,7 @@ func motisSection(leg motisLeg) tdxSection {
 			},
 		},
 		Arrival: tdxPlaceInfo{
-			Time: leg.EndTime,
+			Time: motisLocalTime(leg.EndTime),
 			Place: tdxPlace{
 				Name:     leg.To.Name,
 				Type:     motisPlaceType(leg.To),
@@ -285,7 +285,7 @@ func motisSection(leg motisLeg) tdxSection {
 	for _, stop := range leg.IntermediateStops {
 		section.IntermediateStops = append(section.IntermediateStops, tdxStop{
 			Departure: tdxPlaceInfo{
-				Time: stop.Departure,
+				Time: motisLocalTime(stop.Departure),
 				Place: tdxPlace{
 					Name:     stop.Name,
 					Location: tdxLocation{Lat: stop.Lat, Lng: stop.Lon},
@@ -627,6 +627,20 @@ func addMotisPreferences(query url.Values, req *pb.MaasPlanRequest) {
 	if alternatives := clampInt(req.LegAlternatives, 1, 5, 0); alternatives > 0 {
 		query.Set("numLegAlternatives", strconv.Itoa(int(alternatives)))
 	}
+}
+
+// motisLocalTime restates a MOTIS timestamp in the router's zone. MOTIS answers
+// in UTC; the wire contract this response reuses is TDX's, whose times are
+// local, and the app reads them as wall-clock text rather than as instants -- a
+// UTC timestamp reaches the rider eight hours early. A value that will not
+// parse is passed through unchanged: an unreadable clock is still the only one
+// the leg has.
+func motisLocalTime(ts string) string {
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return ts
+	}
+	return parsed.In(time.Local).Format(time.RFC3339)
 }
 
 // motisTimeParam renders the departure or arrival instant MOTIS expects. Unlike
